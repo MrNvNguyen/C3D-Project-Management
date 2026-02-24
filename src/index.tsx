@@ -1641,6 +1641,65 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
 })
 
 // ===================================================
+// MONTHLY LABOR COSTS (Admin inputs company total salary)
+// ===================================================
+
+// GET - list all monthly entries (or specific month/year)
+app.get('/api/monthly-labor-costs', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { month, year } = c.req.query()
+    let sql = `SELECT * FROM monthly_labor_costs ORDER BY year DESC, month DESC`
+    let params: any[] = []
+    if (month && year) {
+      sql = `SELECT * FROM monthly_labor_costs WHERE month = ? AND year = ? LIMIT 1`
+      params = [parseInt(month), parseInt(year)]
+    }
+    const rows = params.length
+      ? await db.prepare(sql).bind(...params).all()
+      : await db.prepare(sql).all()
+    return c.json(rows.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST - create or update a monthly entry
+app.post('/api/monthly-labor-costs', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const body = await c.req.json()
+    const { month, year, total_labor_cost, notes } = body
+    if (!month || !year || !total_labor_cost) {
+      return c.json({ error: 'Thiếu thông tin: month, year, total_labor_cost' }, 400)
+    }
+    // Upsert: update if exists, insert if not
+    const existing = await db.prepare(
+      `SELECT id FROM monthly_labor_costs WHERE month = ? AND year = ?`
+    ).bind(parseInt(month), parseInt(year)).first() as any
+
+    if (existing) {
+      await db.prepare(
+        `UPDATE monthly_labor_costs SET total_labor_cost = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+      ).bind(parseFloat(total_labor_cost), notes || '', existing.id).run()
+      return c.json({ success: true, id: existing.id, action: 'updated' })
+    } else {
+      const result = await db.prepare(
+        `INSERT INTO monthly_labor_costs (month, year, total_labor_cost, notes) VALUES (?, ?, ?, ?)`
+      ).bind(parseInt(month), parseInt(year), parseFloat(total_labor_cost), notes || '').run()
+      return c.json({ success: true, id: result.meta.last_row_id, action: 'created' })
+    }
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE - remove a monthly entry
+app.delete('/api/monthly-labor-costs/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    await db.prepare(`DELETE FROM monthly_labor_costs WHERE id = ?`).bind(parseInt(c.req.param('id'))).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
 // LABOR COST CALCULATION (from timesheets)
 // ===================================================
 app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
@@ -1649,8 +1708,15 @@ app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
     const { month, year } = c.req.query()
     const m = (month || String(new Date().getMonth() + 1)).padStart(2, '0')
     const y = year || String(new Date().getFullYear())
+    const mInt = parseInt(m)
+    const yInt = parseInt(y)
 
-    // Total salary pool for the month (sum of all active user monthly salaries)
+    // Try to get admin-entered total labor cost for this month first
+    const manualEntry = await db.prepare(
+      `SELECT * FROM monthly_labor_costs WHERE month = ? AND year = ?`
+    ).bind(mInt, yInt).first() as any
+
+    // Fallback: sum of all active user monthly salaries
     const salaryPool = await db.prepare(
       `SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'`
     ).first() as any
@@ -1662,13 +1728,15 @@ app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
     ).bind(y, m).first() as any
 
     const salaryPoolTotal = salaryPool?.total || 0
+    // Use manual entry if available, else fallback to salary pool
+    const laborCostSource = manualEntry ? manualEntry.total_labor_cost : salaryPoolTotal
     const totalHoursAll = totalHours?.total || 0
-    const costPerHour = totalHoursAll > 0 ? salaryPoolTotal / totalHoursAll : 0
+    const costPerHour = totalHoursAll > 0 ? laborCostSource / totalHoursAll : 0
 
     // Per-project labor cost
     const byProject = await db.prepare(`
       SELECT p.id, p.code, p.name,
-        SUM(ts.regular_hours + ts.overtime_hours) as project_hours
+        COALESCE(SUM(ts.regular_hours + ts.overtime_hours), 0) as project_hours
       FROM projects p
       LEFT JOIN timesheets ts ON ts.project_id = p.id
         AND strftime('%Y', ts.work_date) = ?
@@ -1687,9 +1755,15 @@ app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
 
     return c.json({
       month: `${y}-${m}`,
+      month_int: mInt,
+      year_int: yInt,
       salary_pool: salaryPoolTotal,
+      manual_labor_cost: manualEntry ? manualEntry.total_labor_cost : null,
+      labor_cost_used: laborCostSource,
+      cost_source: manualEntry ? 'manual' : 'salary_pool',
       total_hours: totalHoursAll,
       cost_per_hour: Math.round(costPerHour),
+      notes: manualEntry?.notes || '',
       projects: projectsWithCost
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -1771,6 +1845,7 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS assets (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, brand TEXT, model TEXT, serial_number TEXT, specifications TEXT, purchase_date DATE, purchase_price REAL DEFAULT 0, current_value REAL DEFAULT 0, warranty_expiry DATE, status TEXT DEFAULT 'unused', location TEXT, department TEXT, assigned_to INTEGER, assigned_date DATE, notes TEXT, image_url TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, type TEXT DEFAULT 'info', related_type TEXT, related_id INTEGER, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS cost_types (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT, color TEXT DEFAULT '#6B7280', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0)`,
+      `CREATE TABLE IF NOT EXISTS monthly_labor_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, month INTEGER NOT NULL, year INTEGER NOT NULL, total_labor_cost REAL NOT NULL, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(month, year))`,
     ]
 
     for (const stmt of tables) {

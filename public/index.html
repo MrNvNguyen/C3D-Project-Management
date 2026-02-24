@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>OneCad BIM - Quản Lý Dự Án</title>
   <link rel="icon" href="https://onecadvn.com/Upload/images/logo/logo.png" type="image/png">
   <script src="https://cdn.tailwindcss.com"></script>
@@ -25,24 +25,57 @@
     }
   </script>
   <style>
+    /* ================================================================
+       ZOOM-PROOF RESET & BASE
+    ================================================================ */
+    html {
+      font-size: 14px;
+      -webkit-text-size-adjust: 100%;
+      -moz-text-size-adjust: 100%;
+      -ms-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
     :root { --primary: #00A651; --accent: #0066CC; --warning: #FF6B00; }
-    * { font-family: 'Segoe UI', sans-serif; }
-    body { background: #f0f4f8; }
+    * { font-family: 'Segoe UI', sans-serif; box-sizing: border-box; }
+    body { background: #f0f4f8; margin: 0; padding: 0; }
+
+    /* ================================================================
+       SIDEBAR
+    ================================================================ */
     .sidebar { width: 260px; background: linear-gradient(180deg, #00A651 0%, #006e36 100%); min-height: 100vh; position: fixed; left: 0; top: 0; z-index: 100; transition: transform 0.3s; }
     .sidebar.collapsed { transform: translateX(-260px); }
     .main-content { margin-left: 260px; transition: margin 0.3s; min-height: 100vh; }
     .main-content.expanded { margin-left: 0; }
-    .nav-item { display: flex; align-items: center; padding: 10px 20px; color: rgba(255,255,255,0.8); cursor: pointer; transition: all 0.2s; border-radius: 8px; margin: 2px 10px; }
+    .nav-item { display: flex; align-items: center; padding: 10px 20px; color: rgba(255,255,255,0.8); cursor: pointer; transition: all 0.2s; border-radius: 8px; margin: 2px 10px; font-size: 13px; }
     .nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.2); color: #fff; }
-    .nav-item i { width: 20px; margin-right: 10px; }
+    .nav-item i { width: 20px; margin-right: 10px; flex-shrink: 0; }
+
+    /* ================================================================
+       CARDS & KPI CARDS — fixed padding in px
+    ================================================================ */
     .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 20px; }
-    .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--primary); }
-    .btn-primary { background: #00A651; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; transition: background 0.2s; }
+    .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--primary); min-height: 88px; }
+
+    /* ================================================================
+       CHART CONTAINERS — fixed height, zoom-immune
+    ================================================================ */
+    .chart-container-fixed { position: relative; width: 100%; height: 300px; }
+    .chart-container-sm    { position: relative; width: 100%; height: 220px; }
+    .chart-container-lg    { position: relative; width: 100%; height: 350px; }
+
+    /* ================================================================
+       BUTTONS
+    ================================================================ */
+    .btn-primary { background: #00A651; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; transition: background 0.2s; font-size: 13px; font-weight: 500; }
     .btn-primary:hover { background: #008a43; }
-    .btn-secondary { background: #f3f4f6; color: #374151; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; }
-    .btn-accent { background: #0066CC; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; }
-    .btn-danger { background: #EF4444; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; }
-    .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .btn-secondary { background: #f3f4f6; color: #374151; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; }
+    .btn-accent { background: #0066CC; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; }
+    .btn-danger { background: #EF4444; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; }
+
+    /* ================================================================
+       BADGES
+    ================================================================ */
+    .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
     .badge-todo { background: #f3f4f6; color: #6b7280; }
     .badge-in_progress { background: #dbeafe; color: #1d4ed8; }
     .badge-review { background: #fef3c7; color: #92400e; }
@@ -56,7 +89,12 @@
     .badge-active { background: #d1fae5; color: #065f46; }
     .badge-planning { background: #dbeafe; color: #1d4ed8; }
     .badge-on_hold { background: #fef3c7; color: #92400e; }
+
+    /* ================================================================
+       MISC UI
+    ================================================================ */
     .table-row:hover { background: #f9fafb; }
+    .overdue-row { background: #fff5f5 !important; border-left: 3px solid #ef4444; }
     .progress-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
     .progress-fill { height: 100%; background: linear-gradient(90deg, #00A651, #47c67e); border-radius: 4px; transition: width 0.3s; }
     .progress-fill.danger { background: linear-gradient(90deg, #ef4444, #f87171); }
@@ -65,26 +103,42 @@
     .toast { position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px; border-radius: 8px; padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: slideIn 0.3s ease; }
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     @keyframes fadeOut { to { opacity: 0; transform: translateX(100%); } }
-    .input-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 14px; outline: none; transition: border-color 0.2s; }
+    .input-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color 0.2s; }
     .input-field:focus { border-color: #00A651; box-shadow: 0 0 0 3px rgba(0,166,81,0.1); }
-    .select-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 14px; background: white; outline: none; }
+    .select-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; background: white; outline: none; }
     .select-field:focus { border-color: #00A651; }
-    .label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 4px; }
-    .sidebar-section { padding: 8px 10px 4px; color: rgba(255,255,255,0.5); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+    .label { display: block; font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 4px; }
+    .sidebar-section { padding: 8px 10px 4px; color: rgba(255,255,255,0.5); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
     .top-bar { background: white; height: 60px; display: flex; align-items: center; padding: 0 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); position: sticky; top: 0; z-index: 50; }
     .gantt-bar { height: 24px; border-radius: 4px; position: relative; min-width: 4px; }
     .gantt-today { position: absolute; top: 0; bottom: 0; width: 2px; background: red; z-index: 10; }
-    .overdue-row { background: #fff5f5 !important; border-left: 3px solid #ef4444; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #f1f1f1; }
     ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
     .login-bg { background: linear-gradient(135deg, #00A651 0%, #006e36 50%, #003719 100%); }
     .page { display: none; }
     .page.active { display: block; }
-    .tab-btn { padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; }
+    .tab-btn { padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; }
     .tab-btn.active { background: #00A651; color: white; }
     .tab-btn:not(.active) { color: #6b7280; }
     .tab-btn:not(.active):hover { background: #f3f4f6; }
+
+    /* ================================================================
+       RESPONSIVE — chart height adjustments only
+    ================================================================ */
+    @media (max-width: 1199px) {
+      .chart-container-fixed { height: 260px; }
+      .chart-container-lg { height: 300px; }
+    }
+    @media (max-width: 767px) {
+      .sidebar { transform: translateX(-260px); }
+      .main-content { margin-left: 0; }
+      .chart-container-fixed { height: 220px; }
+      .chart-container-lg { height: 250px; }
+      .chart-container-sm { height: 180px; }
+      .kpi-card { padding: 14px; }
+      .card { padding: 14px; }
+    }
   </style>
 </head>
 <body>
@@ -259,6 +313,7 @@
 
     <!-- Pages Container -->
     <div class="p-6">
+      <div style="max-width:1400px;margin:0 auto">
 
       <!-- ========== DASHBOARD ========== -->
       <div id="page-dashboard" class="page active">
@@ -414,13 +469,13 @@
               <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-bar text-primary mr-2"></i>Năng suất nhân sự (30 ngày)</h3>
               <button onclick="navigate('productivity')" class="text-xs text-primary hover:underline">Chi tiết →</button>
             </div>
-            <canvas id="productivityChart" height="180"></canvas>
+            <div class="chart-container-fixed"><canvas id="productivityChart"></canvas></div>
           </div>
           <div class="card" id="dashDiscipline">
             <div class="flex justify-between items-center mb-3">
               <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-pie text-accent mr-2"></i>Phân bổ theo bộ môn</h3>
             </div>
-            <canvas id="disciplineChart" height="180"></canvas>
+            <div class="chart-container-fixed"><canvas id="disciplineChart"></canvas></div>
           </div>
         </div>
 
@@ -430,7 +485,7 @@
             <div class="flex justify-between items-center mb-3">
               <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-line text-primary mr-2"></i>Giờ làm việc theo tháng</h3>
             </div>
-            <canvas id="hoursChart" height="160"></canvas>
+            <div class="chart-container-sm" style="height:200px"><canvas id="hoursChart"></canvas></div>
           </div>
           <div class="card" id="dashProgress">
             <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-list-check text-accent mr-2"></i>Tiến độ dự án</h3>
@@ -717,11 +772,11 @@
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
           <div class="card">
             <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-chart-bar text-primary mr-2"></i>Doanh thu/Chi phí theo dự án</h3>
-            <canvas id="costProjectChart" height="220"></canvas>
+            <div class="chart-container-fixed"><canvas id="costProjectChart"></canvas></div>
           </div>
           <div class="card">
             <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-chart-line text-accent mr-2"></i>Xu hướng tài chính theo tháng</h3>
-            <canvas id="costMonthlyChart" height="220"></canvas>
+            <div class="chart-container-fixed"><canvas id="costMonthlyChart"></canvas></div>
           </div>
         </div>
 
@@ -938,11 +993,11 @@
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div class="card">
             <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-bar text-primary mr-2"></i>Điểm năng suất nhân sự</h3>
-            <canvas id="prodBarChart" height="220"></canvas>
+            <div class="chart-container-fixed"><canvas id="prodBarChart"></canvas></div>
           </div>
           <div class="card">
             <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-pie text-accent mr-2"></i>Tỷ lệ hoàn thành đúng hạn</h3>
-            <canvas id="prodPieChart" height="220"></canvas>
+            <div class="chart-container-fixed"><canvas id="prodPieChart"></canvas></div>
           </div>
         </div>
 
@@ -1000,7 +1055,7 @@
         <div class="flex justify-between items-center mb-6">
           <div>
             <h1 class="text-2xl font-bold text-gray-800">Chi phí Lương tự động</h1>
-            <p class="text-gray-500 text-sm">Tính chi phí lương dựa trên timesheet thực tế</p>
+            <p class="text-gray-500 text-sm">Nhập tổng chi phí lương tháng → hệ thống tự tính per-hour và phân bổ theo dự án</p>
           </div>
           <div class="flex gap-2">
             <select id="laborMonthFilter" class="select-field" style="width:120px" onchange="loadLaborCost()"></select>
@@ -1008,23 +1063,99 @@
           </div>
         </div>
 
+        <!-- === INPUT FORM: Nhập Chi phí Lương Tháng === -->
+        <div class="card mb-6" id="laborInputCard">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
+              <i class="fas fa-edit text-green-600"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-gray-800">Nhập Chi phí Lương Tháng</h3>
+              <p class="text-xs text-gray-500">Chỉ System Admin | Dữ liệu lưu vào bảng monthly_labor_costs</p>
+            </div>
+            <div id="laborCostSourceBadge" class="ml-auto"></div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+            <div>
+              <label class="label">Tháng <span class="text-red-500">*</span></label>
+              <select id="laborInputMonth" class="select-field"></select>
+            </div>
+            <div>
+              <label class="label">Năm <span class="text-red-500">*</span></label>
+              <select id="laborInputYear" class="select-field"></select>
+            </div>
+            <div>
+              <label class="label">Tổng chi phí lương (VNĐ) <span class="text-red-500">*</span></label>
+              <input type="text" id="laborInputCost" class="input-field" placeholder="Ví dụ: 365,000,000"
+                oninput="formatLaborInput(this)" inputmode="numeric">
+            </div>
+            <div>
+              <label class="label">Ghi chú</label>
+              <input type="text" id="laborInputNotes" class="input-field" placeholder="Ghi chú tháng này...">
+            </div>
+          </div>
+          <div class="flex gap-3 mt-4">
+            <button onclick="saveLaborCost()" class="btn-primary flex items-center gap-2">
+              <i class="fas fa-save"></i>Lưu chi phí lương
+            </button>
+            <button onclick="loadLaborCostHistory()" class="btn-secondary flex items-center gap-2">
+              <i class="fas fa-history"></i>Lịch sử nhập
+            </button>
+          </div>
+          <!-- History table (hidden by default) -->
+          <div id="laborHistoryPanel" style="display:none" class="mt-4 border-t pt-4">
+            <h4 class="font-semibold text-gray-700 mb-3 text-sm">Lịch sử Chi phí Lương đã nhập</h4>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                  <th class="pb-2 pr-3">Tháng/Năm</th>
+                  <th class="pb-2 pr-3 text-right">Tổng chi phí lương</th>
+                  <th class="pb-2 pr-3">Ghi chú</th>
+                  <th class="pb-2 text-right">Hành động</th>
+                </tr></thead>
+                <tbody id="laborHistoryTable" class="divide-y"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         <!-- Summary cards -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div class="kpi-card" style="border-color:#00A651">
-            <p class="text-xs text-gray-500">QUỸ LƯƠNG THÁNG</p>
+            <p class="text-xs text-gray-500 font-medium">QUỸ LƯƠNG SỬ DỤNG</p>
             <p class="text-xl font-bold text-green-600 mt-1" id="laborKpiPool">-</p>
+            <p class="text-xs text-gray-400 mt-1" id="laborKpiSource">-</p>
           </div>
           <div class="kpi-card" style="border-color:#0066CC">
-            <p class="text-xs text-gray-500">TỔNG GIỜ LÀM</p>
+            <p class="text-xs text-gray-500 font-medium">TỔNG GIỜ LÀM</p>
             <p class="text-xl font-bold text-blue-600 mt-1" id="laborKpiHours">-</p>
+            <p class="text-xs text-gray-400 mt-1">từ Timesheet</p>
           </div>
           <div class="kpi-card" style="border-color:#8B5CF6">
-            <p class="text-xs text-gray-500">CHI PHÍ/GIỜ</p>
+            <p class="text-xs text-gray-500 font-medium">CHI PHÍ/GIỜ</p>
             <p class="text-xl font-bold text-purple-600 mt-1" id="laborKpiRate">-</p>
+            <p class="text-xs text-gray-400 mt-1">= Lương ÷ Tổng giờ</p>
           </div>
           <div class="kpi-card" style="border-color:#F59E0B">
-            <p class="text-xs text-gray-500">SỐ DỰ ÁN</p>
+            <p class="text-xs text-gray-500 font-medium">SỐ DỰ ÁN</p>
             <p class="text-xl font-bold text-amber-600 mt-1" id="laborKpiProjects">-</p>
+            <p class="text-xs text-gray-400 mt-1">có timesheet tháng này</p>
+          </div>
+        </div>
+
+        <!-- Formula explanation -->
+        <div class="card mb-4" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border:1px solid #86efac">
+          <div class="flex items-start gap-3">
+            <i class="fas fa-calculator text-green-600 mt-1 text-lg"></i>
+            <div class="text-sm">
+              <p class="font-bold text-green-800 mb-1">Công thức tính tự động:</p>
+              <div class="flex flex-wrap gap-4 text-green-700">
+                <span><strong>Chi phí/giờ</strong> = Tổng lương công ty ÷ Tổng giờ làm công ty</span>
+                <span class="text-green-400">→</span>
+                <span><strong>Chi phí lương dự án</strong> = Giờ làm dự án × Chi phí/giờ</span>
+              </div>
+              <p class="text-xs text-green-600 mt-1" id="laborFormulaDetail">-</p>
+            </div>
           </div>
         </div>
 
@@ -1032,23 +1163,24 @@
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div class="card">
             <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-bar text-primary mr-2"></i>Chi phí lương theo dự án</h3>
-            <canvas id="laborChart" height="250"></canvas>
+            <div style="position:relative;height:250px"><canvas id="laborChart"></canvas></div>
           </div>
           <div class="card">
             <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-pie text-accent mr-2"></i>Tỷ trọng giờ làm theo dự án</h3>
-            <canvas id="laborPieChart" height="250"></canvas>
+            <div style="position:relative;height:250px"><canvas id="laborPieChart"></canvas></div>
           </div>
         </div>
 
         <div class="card">
-          <h3 class="font-bold text-gray-800 text-sm mb-4"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết chi phí lương theo dự án</h3>
+          <h3 class="font-bold text-gray-800 text-sm mb-4"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết chi phí lương theo dự án (tính tự động, chỉ đọc)</h3>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
                 <th class="pb-3 pr-3">Dự án</th>
-                <th class="pb-3 pr-3 text-right">Tổng giờ</th>
-                <th class="pb-3 pr-3 text-right">Chi phí lương</th>
-                <th class="pb-3 text-right">% Tổng lương</th>
+                <th class="pb-3 pr-3 text-right">Giờ làm</th>
+                <th class="pb-3 pr-3 text-right">% Tổng giờ</th>
+                <th class="pb-3 pr-3 text-right">Chi phí/giờ</th>
+                <th class="pb-3 text-right">Chi phí lương <i class="fas fa-lock text-gray-400 ml-1" title="Tự động tính"></i></th>
               </tr></thead>
               <tbody id="laborTable" class="divide-y"></tbody>
             </table>
@@ -1083,9 +1215,10 @@
             </table>
           </div>
         </div>
-      </div>
+      </div><!-- End Pages -->
+      </div><!-- End max-width wrapper -->
 
-    </div><!-- End Pages -->
+    </div><!-- End Pages Container p-6 -->
   </div><!-- End Main Content -->
 </div><!-- End Main App -->
 
@@ -1706,5 +1839,23 @@
   </div>
 </div>
 
+<!-- Zoom prevention + chart resize handler -->
+<script>
+  // Prevent Ctrl+Scroll zoom from breaking layout
+  document.addEventListener('wheel', (e) => {
+    if (e.ctrlKey) e.preventDefault()
+  }, { passive: false })
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '-' || e.key === '0')) {
+      e.preventDefault()
+    }
+  })
+  // Resize all Chart.js instances on window resize
+  window.addEventListener('resize', () => {
+    Object.values(typeof charts !== 'undefined' ? charts : {}).forEach(c => {
+      if (c && typeof c.resize === 'function') c.resize()
+    })
+  })
+</script>
 </body>
 </html>

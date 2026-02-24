@@ -323,7 +323,7 @@ function renderProductivityChart(data) {
       ]
     },
     options: {
-      responsive: true, maintainAspectRatio: true,
+      responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
       scales: {
         y: { beginAtZero: true, title: { display: true, text: 'Tasks' } },
@@ -346,7 +346,7 @@ function renderDisciplineChart(data) {
       datasets: [{ data: top8.map(d => d.count), backgroundColor: colors, borderWidth: 2 }]
     },
     options: {
-      responsive: true, maintainAspectRatio: true,
+      responsive: true, maintainAspectRatio: false,
       plugins: {
         legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12 } },
         tooltip: { callbacks: { label: (c) => ` ${c.label}: ${c.parsed}` } }
@@ -370,7 +370,7 @@ function renderHoursChart(data) {
       ]
     },
     options: {
-      responsive: true, maintainAspectRatio: true,
+      responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
       scales: { y: { beginAtZero: true } }
     }
@@ -1578,7 +1578,7 @@ function renderCostProjectChart(revenues, costs) {
       ]
     },
     options: {
-      responsive: true, maintainAspectRatio: true,
+      responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'top' } },
       scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } }
     }
@@ -1604,7 +1604,7 @@ function renderCostMonthlyChart(data) {
       datasets: [{ label: 'Tổng chi phí', data: months.map(m => monthlyMap[m]), borderColor: '#EF4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true, tension: 0.4 }]
     },
     options: {
-      responsive: true, maintainAspectRatio: true,
+      responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'top' } },
       scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } }
     }
@@ -2223,7 +2223,7 @@ function renderProductivityPage(data) {
         ]
       },
       options: {
-        responsive: true, maintainAspectRatio: true,
+        responsive: true, maintainAspectRatio: false,
         plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
         scales: { y: { beginAtZero: true, max: 100 } }
       }
@@ -2399,10 +2399,88 @@ async function loadFinanceProject() {
 }
 
 // ================================================================
-// LABOR COST PAGE
+// LABOR COST PAGE — with manual monthly input + auto-calculation
 // ================================================================
+
+function formatLaborInput(input) {
+  // Format number with thousand separators as user types
+  const raw = input.value.replace(/[^\d]/g, '')
+  input.value = raw ? new Intl.NumberFormat('vi-VN').format(raw) : ''
+  input.dataset.raw = raw
+}
+
+async function saveLaborCost() {
+  const month = $('laborInputMonth')?.value
+  const year  = $('laborInputYear')?.value
+  const rawEl = $('laborInputCost')
+  const raw   = rawEl?.dataset.raw || rawEl?.value.replace(/[^\d]/g, '')
+  const notes = $('laborInputNotes')?.value || ''
+
+  if (!month || !year || !raw) {
+    toast('Vui lòng nhập đầy đủ tháng, năm và tổng chi phí lương', 'warning')
+    return
+  }
+  try {
+    const result = await api('/monthly-labor-costs', {
+      method: 'POST',
+      data: { month: parseInt(month), year: parseInt(year), total_labor_cost: parseFloat(raw), notes }
+    })
+    toast(`Đã ${result.action === 'updated' ? 'cập nhật' : 'lưu'} chi phí lương tháng ${month}/${year}`, 'success')
+    // Sync filter to the saved month/year and reload
+    if ($('laborMonthFilter')) $('laborMonthFilter').value = month.padStart ? month.padStart(2,'0') : month
+    if ($('laborYearFilter'))  $('laborYearFilter').value  = year
+    loadLaborCost()
+    // Refresh history if visible
+    if ($('laborHistoryPanel')?.style.display !== 'none') loadLaborCostHistory()
+  } catch(e) { toast('Lỗi lưu chi phí lương: ' + e.message, 'error') }
+}
+
+async function loadLaborCostHistory() {
+  const panel = $('laborHistoryPanel')
+  if (!panel) return
+  panel.style.display = 'block'
+  try {
+    const rows = await api('/monthly-labor-costs')
+    const tbody = $('laborHistoryTable')
+    if (!tbody) return
+    const mNames = ['','T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12']
+    tbody.innerHTML = rows.length ? rows.map(r => `
+      <tr class="table-row border-b">
+        <td class="py-2 pr-3 font-medium">${mNames[r.month] || r.month}/${r.year}</td>
+        <td class="py-2 pr-3 text-right text-green-700 font-semibold">${fmt(r.total_labor_cost)} ₫</td>
+        <td class="py-2 pr-3 text-gray-500 text-xs">${r.notes || '-'}</td>
+        <td class="py-2 text-right">
+          <button onclick="editLaborEntry(${r.month},${r.year},${r.total_labor_cost},'${(r.notes||'').replace(/'/g,'')}')"
+            class="text-blue-500 hover:underline text-xs mr-2"><i class="fas fa-edit"></i></button>
+          <button onclick="deleteLaborEntry(${r.id},'${mNames[r.month]}/${r.year}')"
+            class="text-red-500 hover:underline text-xs"><i class="fas fa-trash"></i></button>
+        </td>
+      </tr>
+    `).join('') : '<tr><td colspan="4" class="text-center py-4 text-gray-400">Chưa có dữ liệu nhập</td></tr>'
+  } catch(e) { toast('Lỗi tải lịch sử: ' + e.message, 'error') }
+}
+
+function editLaborEntry(month, year, cost, notes) {
+  if ($('laborInputMonth')) $('laborInputMonth').value = String(month).padStart(2,'0')
+  if ($('laborInputYear'))  $('laborInputYear').value  = year
+  const costEl = $('laborInputCost')
+  if (costEl) { costEl.dataset.raw = cost; costEl.value = new Intl.NumberFormat('vi-VN').format(cost) }
+  if ($('laborInputNotes')) $('laborInputNotes').value = notes
+  $('laborInputCard')?.scrollIntoView({ behavior: 'smooth' })
+}
+
+async function deleteLaborEntry(id, label) {
+  if (!confirm(`Xóa chi phí lương ${label}?`)) return
+  try {
+    await api(`/monthly-labor-costs/${id}`, { method: 'DELETE' })
+    toast('Đã xóa', 'success')
+    loadLaborCostHistory()
+    loadLaborCost()
+  } catch(e) { toast('Lỗi xóa: ' + e.message, 'error') }
+}
+
 async function loadLaborCost() {
-  // Init filters
+  // Init month filter
   const mf = $('laborMonthFilter')
   if (mf && mf.options.length === 0) {
     const mNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
@@ -2413,27 +2491,76 @@ async function loadLaborCost() {
       mf.appendChild(opt)
     })
   }
+  // Init year filter
   const yf = $('laborYearFilter')
   if (yf && yf.options.length === 0) {
-    [2023,2024,2025,2026].forEach(y => {
+    [2023,2024,2025,2026,2027].forEach(y => {
       const opt = document.createElement('option')
       opt.value = y; opt.textContent = y
       if (y === new Date().getFullYear()) opt.selected = true
       yf.appendChild(opt)
     })
   }
+  // Init input form dropdowns (month)
+  const im = $('laborInputMonth')
+  if (im && im.options.length === 0) {
+    const mNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
+    mNames.forEach((n, i) => {
+      const opt = document.createElement('option')
+      opt.value = String(i+1).padStart(2,'0'); opt.textContent = n
+      if (i+1 === new Date().getMonth()+1) opt.selected = true
+      im.appendChild(opt)
+    })
+  }
+  const iy = $('laborInputYear')
+  if (iy && iy.options.length === 0) {
+    [2023,2024,2025,2026,2027].forEach(y => {
+      const opt = document.createElement('option')
+      opt.value = y; opt.textContent = y
+      if (y === new Date().getFullYear()) opt.selected = true
+      iy.appendChild(opt)
+    })
+  }
+
   try {
     const month = $('laborMonthFilter')?.value
-    const year = $('laborYearFilter')?.value
+    const year  = $('laborYearFilter')?.value
     let url = '/finance/labor-cost?'
     if (month) url += `month=${month}&`
-    if (year) url += `year=${year}`
+    if (year)  url += `year=${year}`
     const data = await api(url)
 
-    if ($('laborKpiPool')) $('laborKpiPool').textContent = fmtMoney(data.salary_pool)
-    if ($('laborKpiHours')) $('laborKpiHours').textContent = data.total_hours + 'h'
-    if ($('laborKpiRate')) $('laborKpiRate').textContent = fmtMoney(data.cost_per_hour) + '/h'
+    // KPI cards
+    const laborUsed = data.manual_labor_cost ?? data.salary_pool
+    if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(laborUsed)
+    if ($('laborKpiSource'))   $('laborKpiSource').textContent   = data.cost_source === 'manual' ? '✏️ Đã nhập thủ công' : '⚙️ Tự động từ bảng lương'
+    if ($('laborKpiHours'))    $('laborKpiHours').textContent    = fmt(data.total_hours) + 'h'
+    if ($('laborKpiRate'))     $('laborKpiRate').textContent     = fmtMoney(data.cost_per_hour) + '/h'
     if ($('laborKpiProjects')) $('laborKpiProjects').textContent = data.projects?.length || 0
+
+    // Source badge
+    const badge = $('laborCostSourceBadge')
+    if (badge) {
+      badge.innerHTML = data.cost_source === 'manual'
+        ? `<span class="badge" style="background:#dcfce7;color:#166534;font-size:11px">✏️ Chi phí đã nhập tháng ${data.month_int}/${data.year_int}</span>`
+        : `<span class="badge" style="background:#fef9c3;color:#713f12;font-size:11px">⚠️ Chưa nhập — đang dùng quỹ lương từ bảng lương</span>`
+    }
+
+    // Pre-fill the input form with current month's value if exists
+    if (data.manual_labor_cost && $('laborInputCost') && !$('laborInputCost').dataset.raw) {
+      $('laborInputCost').dataset.raw = data.manual_labor_cost
+      $('laborInputCost').value = new Intl.NumberFormat('vi-VN').format(data.manual_labor_cost)
+      if ($('laborInputNotes')) $('laborInputNotes').value = data.notes || ''
+      if ($('laborInputMonth')) $('laborInputMonth').value = String(data.month_int).padStart(2,'0')
+      if ($('laborInputYear'))  $('laborInputYear').value  = data.year_int
+    }
+
+    // Formula detail
+    const fd = $('laborFormulaDetail')
+    if (fd) {
+      fd.textContent = `${fmtMoney(laborUsed)} ÷ ${fmt(data.total_hours)}h = ${fmtMoney(data.cost_per_hour)}/h`
+        + (data.cost_source === 'manual' ? ` (nguồn: nhập thủ công tháng ${data.month_int}/${data.year_int})` : ' (nguồn: tổng lương nhân sự)')
+    }
 
     // Charts
     destroyChart('labor')
@@ -2443,9 +2570,13 @@ async function loadLaborCost() {
         type: 'bar',
         data: {
           labels: data.projects.map(p => p.code),
-          datasets: [{ label: 'Chi phí lương', data: data.projects.map(p => p.labor_cost), backgroundColor: '#00A651', borderRadius: 4 }]
+          datasets: [{ label: 'Chi phí lương (₫)', data: data.projects.map(p => p.labor_cost), backgroundColor: '#00A651', borderRadius: 4 }]
         },
-        options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } } }
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
+          scales: { y: { beginAtZero: true, ticks: { font: { size: 11 }, callback: v => fmtMoney(v) } } }
+        }
       })
     }
     destroyChart('laborPie')
@@ -2458,11 +2589,14 @@ async function loadLaborCost() {
           labels: data.projects.map(p => p.code + ' (' + p.pct + '%)'),
           datasets: [{ data: data.projects.map(p => p.project_hours), backgroundColor: colors }]
         },
-        options: { responsive: true, plugins: { legend: { position: 'right', labels: { font: { size: 10 } } } } }
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'right', labels: { font: { size: 10 } } } }
+        }
       })
     }
 
-    // Table
+    // Table — enhanced with cost_per_hour column
     const tbody = $('laborTable')
     if (tbody) {
       tbody.innerHTML = data.projects?.map(p => `
@@ -2471,13 +2605,17 @@ async function loadLaborCost() {
             <div class="font-medium text-sm">${p.name}</div>
             <div class="text-xs text-gray-400">${p.code}</div>
           </td>
-          <td class="py-2 pr-3 text-right">${p.project_hours}h</td>
-          <td class="py-2 pr-3 text-right font-medium text-green-600">${fmt(p.labor_cost)} VNĐ</td>
-          <td class="py-2 text-right">
+          <td class="py-2 pr-3 text-right">${fmt(p.project_hours)}h</td>
+          <td class="py-2 pr-3 text-right">
             <span class="badge" style="background:#e0f2fe;color:#0369a1">${p.pct}%</span>
           </td>
+          <td class="py-2 pr-3 text-right text-purple-600">${fmtMoney(data.cost_per_hour)}/h</td>
+          <td class="py-2 text-right font-semibold text-green-700">
+            ${fmt(p.labor_cost)} ₫
+            <i class="fas fa-lock text-gray-300 ml-1 text-xs" title="Tính tự động"></i>
+          </td>
         </tr>
-      `).join('') || '<tr><td colspan="4" class="text-center py-6 text-gray-400">Không có dữ liệu</td></tr>'
+      `).join('') || '<tr><td colspan="5" class="text-center py-6 text-gray-400">Không có dữ liệu timesheet tháng này</td></tr>'
     }
   } catch(e) { toast('Lỗi tải chi phí lương: ' + e.message, 'error') }
 }
