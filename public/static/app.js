@@ -165,7 +165,9 @@ function navigate(page) {
   const breadcrumbs = {
     dashboard: 'Dashboard', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
     tasks: 'Công việc', timesheet: 'Timesheet', gantt: 'Tiến độ Gantt',
-    costs: 'Chi phí & Doanh thu', assets: 'Tài sản', users: 'Nhân sự', profile: 'Hồ sơ'
+    costs: 'Chi phí & Doanh thu', assets: 'Tài sản', users: 'Nhân sự', profile: 'Hồ sơ',
+    productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
+    'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí'
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
@@ -178,6 +180,10 @@ function navigate(page) {
   else if (page === 'assets') loadAssets()
   else if (page === 'users') loadUsers()
   else if (page === 'profile') loadProfile()
+  else if (page === 'productivity') loadProductivity()
+  else if (page === 'finance-project') { loadFinanceProjectPage() }
+  else if (page === 'labor-cost') loadLaborCost()
+  else if (page === 'cost-types') loadCostTypes()
 
   closeAllDropdowns()
 }
@@ -232,9 +238,12 @@ async function initApp() {
   $('topbarName').textContent = currentUser.full_name
   $('topbarRole').textContent = getRoleLabel(currentUser.role)
 
-  // Show admin nav
+  // Show admin nav and new project button
   if (currentUser.role === 'system_admin') {
     $('adminNav').style.display = 'block'
+    $('btnNewProject').classList.remove('hidden')
+  } else if (currentUser.role === 'project_admin') {
+    // project_admin can create projects but no access to financial/asset/user admin
     $('btnNewProject').classList.remove('hidden')
   }
 
@@ -270,6 +279,20 @@ async function loadDashboard() {
     $('kpiCompleted').textContent = stats.completed_tasks
     $('kpiOverdue').textContent = stats.overdue_tasks
     $('kpiRate').textContent = stats.completion_rate + '%'
+    if ($('kpiUsers')) $('kpiUsers').textContent = stats.total_users || 0
+    if ($('kpiAssets')) $('kpiAssets').textContent = stats.total_assets || 0
+
+    // Overall progress bar
+    const totalT = stats.total_tasks || 0
+    const doneT = stats.completed_tasks || 0
+    const rate = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0
+    if ($('dashOverallPct')) $('dashOverallPct').textContent = rate + '%'
+    if ($('dashOverallBar')) $('dashOverallBar').style.width = rate + '%'
+    if ($('dashTasksSummary')) $('dashTasksSummary').textContent = doneT + ' / ' + totalT + ' task hoàn thành'
+    if ($('dashOverdueSummary')) {
+      const ov = stats.overdue_tasks || 0
+      $('dashOverdueSummary').textContent = ov > 0 ? ov + ' task trễ hạn' : ''
+    }
 
     renderProductivityChart(member_productivity)
     renderDisciplineChart(discipline_breakdown)
@@ -537,12 +560,27 @@ async function openProjectDetail(id) {
     $('projectDetailCode').textContent = `${project.code} • ${getProjectTypeName(project.project_type)}`
     $('projectDetailStatus').innerHTML = getStatusBadge(project.status)
 
+    const canEdit = ['system_admin', 'project_admin'].includes(currentUser.role)
+    const canDelete = currentUser.role === 'system_admin'
+
+    // Show edit/delete in project detail header
+    let projActions = document.getElementById('projDetailActions')
+    if (!projActions) {
+      projActions = document.createElement('div')
+      projActions.id = 'projDetailActions'
+      projActions.className = 'flex gap-2 ml-4'
+      const statusEl = $('projectDetailStatus')
+      if (statusEl?.parentElement) statusEl.parentElement.insertBefore(projActions, statusEl.nextSibling)
+    }
+    projActions.innerHTML = `
+      ${canEdit ? `<button onclick="openProjectModal(${JSON.stringify(project).replace(/"/g,'&quot;')})" class="btn-secondary text-xs px-3 py-1.5"><i class="fas fa-edit mr-1"></i>Sửa</button>` : ''}
+      ${canDelete ? `<button onclick="confirmDeleteProject(${project.id}, '${project.name.replace(/'/g,"\\'")}' )" class="btn-danger text-xs px-3 py-1.5"><i class="fas fa-trash mr-1"></i>Xóa</button>` : ''}
+    `
+
     const total = tasks.length
     const done = tasks.filter(t => t.status === 'completed').length
     const overdue = tasks.filter(t => isOverdue(t)).length
     const pct = total > 0 ? Math.round((done / total) * 100) : 0
-
-    const canEdit = ['system_admin', 'project_admin'].includes(currentUser.role)
 
     $('projectDetailContent').innerHTML = `
       <div class="grid grid-cols-1 ${currentUser.role === 'system_admin' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4 mb-6">
@@ -607,7 +645,8 @@ async function openProjectDetail(id) {
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-400">${cat.completed_tasks||0}/${cat.task_count||0}</span>
-                  ${canEdit ? `<button onclick="deleteCategory(${cat.id})" class="text-red-400 hover:text-red-600 text-xs"><i class="fas fa-trash"></i></button>` : ''}
+                  ${canEdit ? `<button onclick="openCategoryModal(${project.id}, ${JSON.stringify(cat).replace(/"/g,'&quot;')})" class="text-blue-400 hover:text-blue-600 text-xs mr-1"><i class="fas fa-edit"></i></button>` : ''}
+              ${canEdit ? `<button onclick="confirmDeleteCategory(${cat.id}, '${cat.name.replace(/'/g,"\\'")}', ${cat.task_count||0})" class="text-red-400 hover:text-red-600 text-xs"><i class="fas fa-trash"></i></button>` : ''}
                 </div>
               </div>
             `).join('') || '<p class="text-gray-400 text-sm text-center">Chưa có hạng mục</p>'}
@@ -655,6 +694,18 @@ async function openProjectDetail(id) {
 
     navigate('project-detail')
   } catch (e) { toast('Lỗi tải dự án: ' + e.message, 'error') }
+}
+
+function confirmDeleteProject(id, name) {
+  showConfirmDelete(
+    'Xóa Dự án',
+    `<p>Bạn có chắc muốn xóa dự án <strong>"${name}"</strong>?</p><p class="text-red-600 mt-1 text-xs font-bold">⚠️ Tất cả task, hạng mục, timesheet, chi phí và doanh thu của dự án sẽ bị xóa vĩnh viễn!</p>`,
+    async () => {
+      await api(`/projects/${id}`, { method: 'delete' })
+      toast('Đã xóa dự án và tất cả dữ liệu liên quan')
+      navigate('projects')
+    }
+  )
 }
 
 function openProjectModal(project = null) {
@@ -769,6 +820,19 @@ $('categoryForm').addEventListener('submit', async (e) => {
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 })
 
+function confirmDeleteCategory(id, name, taskCount) {
+  if (taskCount > 0) {
+    toast(`Không thể xóa: hạng mục có ${taskCount} task đang dùng`, 'error')
+    return
+  }
+  showConfirmDelete('Xóa Hạng mục', `Xóa hạng mục "<strong>${name}</strong>"?`,
+    async () => {
+      await api(`/categories/${id}`, { method: 'delete' })
+      toast('Đã xóa hạng mục')
+    }
+  )
+}
+
 async function deleteCategory(id) {
   if (!confirm('Xóa hạng mục này?')) return
   try {
@@ -792,6 +856,12 @@ async function loadTasks() {
       pf.innerHTML = '<option value="">Tất cả dự án</option>' + allProjects.map(p => `<option value="${p.id}">${p.code}</option>`).join('')
     }
 
+    // Fill discipline filter
+    const df = $('taskDisciplineFilter')
+    if (df && allDisciplines.length) {
+      df.innerHTML = '<option value="">Tất cả bộ môn</option>' + allDisciplines.map(d => `<option value="${d.code}">${d.code} - ${d.name}</option>`).join('')
+    }
+
     renderTasksTable(allTasks)
   } catch (e) { toast('Lỗi tải task: ' + e.message, 'error') }
 }
@@ -799,7 +869,12 @@ async function loadTasks() {
 function renderTasksTable(tasks) {
   const tbody = $('tasksTable')
   if (!tbody) return
-  tbody.innerHTML = tasks.map(t => `
+  const canEditTask = ['system_admin', 'project_admin'].includes(currentUser?.role)
+  const canDeleteTask = ['system_admin', 'project_admin'].includes(currentUser?.role)
+  tbody.innerHTML = tasks.map(t => {
+    const isAssigned = t.assigned_to === currentUser?.id
+    const memberCanEdit = currentUser?.role === 'member' && isAssigned
+    return `
     <tr class="table-row ${isOverdue(t) ? 'overdue-row' : ''}">
       <td class="py-2 pr-3">
         <div class="font-medium text-gray-800 text-sm cursor-pointer hover:text-primary" onclick="openTaskDetail(${t.id})">${t.title}</div>
@@ -820,12 +895,12 @@ function renderTasksTable(tasks) {
       <td class="py-2 pr-3">${getStatusBadge(t.status)}</td>
       <td class="py-2">
         <div class="flex gap-1">
-          <button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>
-          <button onclick="deleteTask(${t.id})" class="text-red-400 hover:text-red-600 px-2 py-1 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>
+          ${(canEditTask || memberCanEdit) ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
+          ${canDeleteTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-400 hover:text-red-600 px-2 py-1 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
         </div>
       </td>
-    </tr>
-  `).join('') || '<tr><td colspan="9" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
+    </tr>`
+  }).join('') || '<tr><td colspan="9" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
 }
 
 function filterTasks() {
@@ -833,13 +908,15 @@ function filterTasks() {
   const status = $('taskStatusFilter').value
   const priority = $('taskPriorityFilter').value
   const project = $('taskProjectFilter').value
+  const discipline = $('taskDisciplineFilter')?.value || ''
   const onlyOverdue = $('taskOverdueFilter').checked
 
   const filtered = allTasks.filter(t =>
-    (!search || t.title.toLowerCase().includes(search)) &&
+    (!search || t.title.toLowerCase().includes(search) || (t.assigned_to_name||'').toLowerCase().includes(search)) &&
     (!status || t.status === status) &&
     (!priority || t.priority === priority) &&
     (!project || String(t.project_id) === project) &&
+    (!discipline || t.discipline_code === discipline) &&
     (!onlyOverdue || isOverdue(t))
   )
   renderTasksTable(filtered)
@@ -851,6 +928,7 @@ async function openTaskModal(taskId = null, projectId = null) {
 
   $('taskModalTitle').textContent = taskId ? 'Chỉnh sửa Task' : 'Tạo Task mới'
   $('taskId').value = taskId || ''
+  const isMember = currentUser?.role === 'member'
 
   // Fill projects
   $('taskProject').innerHTML = '<option value="">-- Chọn dự án --</option>' +
@@ -863,6 +941,10 @@ async function openTaskModal(taskId = null, projectId = null) {
   // Fill assignees
   $('taskAssignee').innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
     allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+
+  // For member: disable admin-only fields
+  const adminOnlyFields = ['taskTitle','taskDesc','taskProject','taskCategory','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
+  adminOnlyFields.forEach(id => { const el = $(id); if(el) el.disabled = isMember })
 
   if (taskId) {
     try {
@@ -945,6 +1027,14 @@ $('taskForm').addEventListener('submit', async (e) => {
     loadTasks()
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
+
+function confirmDeleteTask(id, title) {
+  showConfirmDelete(
+    'Xóa Task',
+    `Bạn có chắc muốn xóa task "<strong>${title}</strong>"? Hành động này không thể hoàn tác.`,
+    async () => { await api(`/tasks/${id}`, { method: 'delete' }); toast('Đã xóa task'); loadTasks() }
+  )
+}
 
 async function deleteTask(id) {
   if (!confirm('Xóa task này?')) return
@@ -1111,6 +1201,20 @@ async function loadTimesheets() {
       if ($('tsCardPending'))  $('tsCardPending').textContent = pending
       if ($('tsCardApproved')) $('tsCardApproved').textContent = approved
       if ($('tsCardHours'))    $('tsCardHours').textContent   = totalH + 'h'
+
+      // Show bulk approve button if there are pending timesheets
+      const bulkBtn = $('tsBulkApproveBtn')
+      if (bulkBtn) {
+        if (pending > 0) {
+          bulkBtn.classList.remove('hidden')
+          bulkBtn.innerHTML = `<i class="fas fa-check-double mr-1"></i>Duyệt tất cả (${pending})`
+        } else {
+          bulkBtn.classList.add('hidden')
+        }
+      }
+    } else {
+      const bulkBtn = $('tsBulkApproveBtn')
+      if (bulkBtn) bulkBtn.classList.add('hidden')
     }
   } catch (e) { toast('Lỗi tải timesheet: ' + e.message, 'error') }
 }
@@ -1301,6 +1405,18 @@ async function rejectTimesheet(id) {
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 
+async function bulkApproveTimesheets() {
+  const pending = allTimesheets.filter(t => t.status === 'submitted')
+  if (!pending.length) { toast('Không có timesheet nào đang chờ duyệt', 'info'); return }
+  if (!confirm(`Duyệt tất cả ${pending.length} timesheet đang chờ?`)) return
+  try {
+    const ids = pending.map(t => t.id)
+    const result = await api('/timesheets/bulk-approve', { method: 'post', data: { ids } })
+    toast(`Đã duyệt ${result.approved}/${pending.length} timesheet`, 'success')
+    loadTimesheets()
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
 async function deleteTimesheet(id) {
   if (!confirm('Xóa timesheet này?')) return
   try {
@@ -1419,7 +1535,7 @@ async function loadCostDashboard() {
     const cpf = $('costProjectFilter')
     if (cpf) cpf.innerHTML = '<option value="">Tất cả dự án</option>' + allProjects.map(p => `<option value="${p.id}">${p.code}</option>`).join('')
 
-    const year = $('costYearFilter')?.value || '2024'
+    const year = $('costYearFilter')?.value || new Date().getFullYear().toString()
     const summary = await api(`/dashboard/cost-summary?year=${year}`)
 
     let totalRevenue = 0, totalCost = 0
@@ -1498,7 +1614,7 @@ function renderCostMonthlyChart(data) {
 async function loadCosts() {
   try {
     const projectId = $('costProjectFilter')?.value
-    const year = $('costYearFilter')?.value || '2024'
+    const year = $('costYearFilter')?.value || new Date().getFullYear().toString()
     let costUrl = `/costs?year=${year}`
     let revUrl = `/revenues?year=${year}`
     if (projectId) { costUrl += `&project_id=${projectId}`; revUrl += `&project_id=${projectId}` }
@@ -1673,6 +1789,7 @@ function renderAssetStats() {
   stats.innerHTML = [
     { label: 'Tổng tài sản', value: allAssets.length, icon: 'laptop', color: '#0066CC', bg: 'bg-blue-100' },
     { label: 'Đang sử dụng', value: byStatus['active'] || 0, icon: 'check-circle', color: '#00A651', bg: 'bg-green-100' },
+    { label: 'Chưa sử dụng', value: byStatus['unused'] || 0, icon: 'box', color: '#6B7280', bg: 'bg-gray-100' },
     { label: 'Bảo trì/Sửa chữa', value: (byStatus['maintenance'] || 0) + (byStatus['repair'] || 0), icon: 'wrench', color: '#FF6B00', bg: 'bg-orange-100' },
     { label: 'Tổng giá trị', value: fmtMoney(totalValue), icon: 'coins', color: '#8B5CF6', bg: 'bg-purple-100' }
   ].map(s => `<div class="kpi-card" style="border-color:${s.color}">
@@ -1691,8 +1808,8 @@ function renderAssetStats() {
 function renderAssetsTable(assets) {
   const tbody = $('assetsTable')
   if (!tbody) return
-  const statusColors = { active: 'badge-completed', maintenance: 'badge-review', repair: 'badge-high', retired: 'badge-cancelled', lost: 'badge-overdue' }
-  const statusLabels = { active: 'Đang dùng', maintenance: 'Bảo trì', repair: 'Sửa chữa', retired: 'Thanh lý', lost: 'Mất' }
+  const statusColors = { active: 'badge-completed', unused: 'badge-todo', maintenance: 'badge-review', repair: 'badge-high', retired: 'badge-cancelled', lost: 'badge-overdue' }
+  const statusLabels = { active: 'Đang dùng', unused: 'Chưa dùng', maintenance: 'Bảo trì', repair: 'Sửa chữa', retired: 'Thanh lý', lost: 'Mất' }
 
   tbody.innerHTML = assets.map(a => `
     <tr class="table-row">
@@ -1872,7 +1989,23 @@ async function openUserModal(userId = null) {
       $('userEmail').value = user.email || ''
       $('userPhone').value = user.phone || ''
       $('userRole').value = user.role || 'member'
-      $('userDepartment').value = user.department || ''
+      // Handle department dropdown
+      const deptEl = $('userDepartment')
+      if (deptEl) {
+        if (deptEl.tagName === 'SELECT') {
+          // Try exact match first, else add custom option
+          let found = false
+          for (const opt of deptEl.options) { if (opt.value === user.department) { found = true; break } }
+          if (!found && user.department) {
+            const opt = document.createElement('option')
+            opt.value = user.department; opt.textContent = user.department
+            deptEl.appendChild(opt)
+          }
+          deptEl.value = user.department || ''
+        } else {
+          deptEl.value = user.department || ''
+        }
+      }
       $('userSalary').value = user.salary_monthly || ''
       $('userPassword').value = ''
     }
@@ -1898,7 +2031,7 @@ $('userForm').addEventListener('submit', async (e) => {
     email: $('userEmail').value,
     phone: $('userPhone').value,
     role: $('userRole').value,
-    department: $('userDepartment').value,
+    department: ($('userDepartment')?.value) || '',
     salary_monthly: parseFloat($('userSalary').value) || 0
   }
   const password = $('userPassword').value
@@ -2011,3 +2144,449 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
     if (e.target === overlay) overlay.style.display = 'none'
   })
 })
+
+// ================================================================
+// CONFIRM DELETE MODAL
+// ================================================================
+function showConfirmDelete(title, message, onConfirm) {
+  $('confirmDeleteTitle').textContent = title
+  $('confirmDeleteMessage').innerHTML = message
+  const btn = $('confirmDeleteBtn')
+  btn.onclick = async () => {
+    try {
+      closeModal('confirmDeleteModal')
+      await onConfirm()
+    } catch(e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+  }
+  openModal('confirmDeleteModal')
+}
+
+// ================================================================
+// DASHBOARD WIDGET TOGGLE
+// ================================================================
+function toggleDashboardWidgets() {
+  const panel = $('dashWidgetPanel')
+  if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none'
+}
+
+function toggleWidget(id, visible) {
+  const el = $(id)
+  if (el) el.style.display = visible === false ? 'none' : ''
+}
+
+// ================================================================
+// PRODUCTIVITY PAGE
+// ================================================================
+let allProductivityData = []
+let prodSortKey = 'score'
+
+async function loadProductivity() {
+  try {
+    if (!allProjects.length) allProjects = await api('/projects')
+    const pf = $('prodProjectFilter')
+    if (pf && pf.options.length <= 1) {
+      allProjects.forEach(p => {
+        const opt = document.createElement('option')
+        opt.value = p.id; opt.textContent = p.code + ' - ' + p.name
+        pf.appendChild(opt)
+      })
+    }
+    const projectId = pf?.value || ''
+    const days = $('prodDaysFilter')?.value || '30'
+    let url = `/productivity?days=${days}`
+    if (projectId) url += `&project_id=${projectId}`
+    allProductivityData = await api(url)
+    renderProductivityPage(allProductivityData)
+  } catch(e) { toast('Lỗi tải năng suất: ' + e.message, 'error') }
+}
+
+function sortProductivity(key) {
+  prodSortKey = key
+  const sorted = [...allProductivityData].sort((a, b) => (b[key] || 0) - (a[key] || 0))
+  renderProductivityPage(sorted)
+}
+
+function renderProductivityPage(data) {
+  // Bar chart: scores
+  destroyChart('prodBar')
+  const ctx1 = $('prodBarChart')
+  if (ctx1 && data.length) {
+    const top = data.slice(0, 10)
+    charts['prodBar'] = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: top.map(u => u.full_name?.split(' ').slice(-1)[0] || u.full_name),
+        datasets: [
+          { label: 'Năng suất (%)', data: top.map(u => u.productivity || 0), backgroundColor: '#00A651', borderRadius: 4 },
+          { label: 'Chính xác (%)', data: top.map(u => u.ontime_rate || 0), backgroundColor: '#0066CC', borderRadius: 4 },
+          { label: 'Điểm TB', data: top.map(u => u.score || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: true,
+        plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
+        scales: { y: { beginAtZero: true, max: 100 } }
+      }
+    })
+  }
+
+  // Pie chart: completed tasks distribution
+  destroyChart('prodPie')
+  const ctx2 = $('prodPieChart')
+  if (ctx2 && data.length) {
+    const topP = data.filter(u => u.completed_tasks > 0).slice(0, 8)
+    const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
+    charts['prodPie'] = new Chart(ctx2, {
+      type: 'pie',
+      data: {
+        labels: topP.map(u => u.full_name?.split(' ').slice(-1)[0]),
+        datasets: [{ data: topP.map(u => u.completed_tasks), backgroundColor: colors }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } }
+      }
+    })
+  }
+
+  // Table
+  const tbody = $('productivityTable')
+  if (!tbody) return
+  const getScoreColor = (s) => s >= 80 ? 'text-green-600' : s >= 60 ? 'text-yellow-600' : 'text-red-600'
+  tbody.innerHTML = data.map((u, i) => `
+    <tr class="table-row">
+      <td class="py-2 pr-3">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(u.full_name||'?').split(' ').pop()?.charAt(0)}</div>
+          <div>
+            <div class="font-medium text-gray-800 text-sm">${u.full_name}</div>
+          </div>
+        </div>
+      </td>
+      <td class="py-2 pr-3 text-xs text-gray-500">${u.department || '-'}</td>
+      <td class="py-2 pr-3 text-center font-medium">${u.total_tasks || 0}</td>
+      <td class="py-2 pr-3 text-center font-medium text-green-600">${u.completed_tasks || 0}</td>
+      <td class="py-2 pr-3 text-center">${Math.round(u.avg_progress || 0)}%</td>
+      <td class="py-2 pr-3 text-center text-green-600">${u.ontime_tasks || 0}</td>
+      <td class="py-2 pr-3 text-center text-red-500">${u.late_completed || 0}</td>
+      <td class="py-2 pr-3 text-center">
+        <div class="flex items-center gap-1 justify-center">
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${u.productivity||0}%"></div></div>
+          <span class="text-xs ${getScoreColor(u.productivity||0)}">${u.productivity||0}%</span>
+        </div>
+      </td>
+      <td class="py-2 pr-3 text-center">
+        <div class="flex items-center gap-1 justify-center">
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${u.ontime_rate||0}%;background:#0066CC"></div></div>
+          <span class="text-xs text-blue-600">${u.ontime_rate||0}%</span>
+        </div>
+      </td>
+      <td class="py-2 text-center">
+        <span class="badge font-bold text-sm px-3 ${u.score>=80?'badge-completed':u.score>=60?'badge-review':'badge-overdue'}">${u.score||0}</span>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có dữ liệu</td></tr>'
+}
+
+// ================================================================
+// FINANCE PROJECT PAGE
+// ================================================================
+async function loadFinanceProjectPage() {
+  try {
+    if (!allProjects.length) allProjects = await api('/projects')
+    const sel = $('finProjSelect')
+    if (sel && sel.options.length <= 1) {
+      allProjects.forEach(p => {
+        const opt = document.createElement('option')
+        opt.value = p.id; opt.textContent = p.code + ' - ' + p.name
+        sel.appendChild(opt)
+      })
+    }
+  } catch(e) { console.error(e) }
+}
+
+async function loadFinanceProject() {
+  const projectId = $('finProjSelect')?.value
+  if (!projectId) return
+  try {
+    const data = await api(`/finance/project/${projectId}`)
+    const el = $('financeProjectContent')
+    if (!el) return
+    const { project, summary, costs_by_type, timeline } = data
+
+    // KPI cards
+    el.innerHTML = `
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="kpi-card" style="border-color:#00A651">
+          <p class="text-xs text-gray-500">DOANH THU (Giá trị HĐ)</p>
+          <p class="text-lg font-bold text-green-600 mt-1">${fmtMoney(summary.total_revenue)}</p>
+        </div>
+        <div class="kpi-card" style="border-color:#EF4444">
+          <p class="text-xs text-gray-500">TỔNG CHI PHÍ</p>
+          <p class="text-lg font-bold text-red-600 mt-1">${fmtMoney(summary.total_cost)}</p>
+        </div>
+        <div class="kpi-card" style="border-color:${summary.profit>=0?'#8B5CF6':'#EF4444'}">
+          <p class="text-xs text-gray-500">LỢI NHUẬN</p>
+          <p class="text-lg font-bold ${summary.profit>=0?'text-purple-600':'text-red-600'} mt-1">${fmtMoney(summary.profit)}</p>
+        </div>
+        <div class="kpi-card" style="border-color:#F59E0B">
+          <p class="text-xs text-gray-500">TỶ SUẤT LN</p>
+          <p class="text-lg font-bold text-amber-600 mt-1">${summary.margin}%</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="card">
+          <h3 class="font-bold text-sm mb-3"><i class="fas fa-chart-pie text-primary mr-2"></i>Chi phí theo loại</h3>
+          <canvas id="finCostPie" height="260"></canvas>
+        </div>
+        <div class="card">
+          <h3 class="font-bold text-sm mb-3"><i class="fas fa-chart-line text-accent mr-2"></i>Chi phí theo thời gian</h3>
+          <canvas id="finTimeline" height="260"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <h3 class="font-bold text-sm mb-3"><i class="fas fa-table text-primary mr-2"></i>Chi tiết chi phí theo loại</h3>
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+            <th class="pb-2 pr-3">Loại chi phí</th>
+            <th class="pb-2 pr-3 text-right">Số tiền</th>
+            <th class="pb-2 text-right">% Tổng</th>
+          </tr></thead>
+          <tbody>
+            ${costs_by_type.map(c => `
+              <tr class="table-row border-b">
+                <td class="py-2 pr-3">${getCostTypeName(c.cost_type)}</td>
+                <td class="py-2 pr-3 text-right font-medium text-red-600">${fmt(c.total)} VNĐ</td>
+                <td class="py-2 text-right text-gray-500">${summary.total_cost > 0 ? Math.round(c.total/summary.total_cost*100) : 0}%</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `
+
+    // Render charts
+    setTimeout(() => {
+      destroyChart('finCostPie')
+      const ctx1 = $('finCostPie')
+      if (ctx1 && costs_by_type.length) {
+        const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444']
+        charts['finCostPie'] = new Chart(ctx1, {
+          type: 'doughnut',
+          data: {
+            labels: costs_by_type.map(c => getCostTypeName(c.cost_type)),
+            datasets: [{ data: costs_by_type.map(c => c.total), backgroundColor: colors }]
+          },
+          options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } }
+        })
+      }
+      destroyChart('finTimeline')
+      const ctx2 = $('finTimeline')
+      if (ctx2 && timeline.length) {
+        const months = [...new Set(timeline.map(t => t.month))].sort()
+        charts['finTimeline'] = new Chart(ctx2, {
+          type: 'bar',
+          data: {
+            labels: months,
+            datasets: [{ label: 'Chi phí', data: months.map(m => timeline.filter(t=>t.month===m).reduce((s,t)=>s+t.total,0)), backgroundColor: '#EF4444', borderRadius: 4 }]
+          },
+          options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } } }
+        })
+      }
+    }, 100)
+
+  } catch(e) { toast('Lỗi tải tài chính dự án: ' + e.message, 'error') }
+}
+
+// ================================================================
+// LABOR COST PAGE
+// ================================================================
+async function loadLaborCost() {
+  // Init filters
+  const mf = $('laborMonthFilter')
+  if (mf && mf.options.length === 0) {
+    const mNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
+    mNames.forEach((n, i) => {
+      const opt = document.createElement('option')
+      opt.value = String(i+1).padStart(2,'0'); opt.textContent = n
+      if (i+1 === new Date().getMonth()+1) opt.selected = true
+      mf.appendChild(opt)
+    })
+  }
+  const yf = $('laborYearFilter')
+  if (yf && yf.options.length === 0) {
+    [2023,2024,2025,2026].forEach(y => {
+      const opt = document.createElement('option')
+      opt.value = y; opt.textContent = y
+      if (y === new Date().getFullYear()) opt.selected = true
+      yf.appendChild(opt)
+    })
+  }
+  try {
+    const month = $('laborMonthFilter')?.value
+    const year = $('laborYearFilter')?.value
+    let url = '/finance/labor-cost?'
+    if (month) url += `month=${month}&`
+    if (year) url += `year=${year}`
+    const data = await api(url)
+
+    if ($('laborKpiPool')) $('laborKpiPool').textContent = fmtMoney(data.salary_pool)
+    if ($('laborKpiHours')) $('laborKpiHours').textContent = data.total_hours + 'h'
+    if ($('laborKpiRate')) $('laborKpiRate').textContent = fmtMoney(data.cost_per_hour) + '/h'
+    if ($('laborKpiProjects')) $('laborKpiProjects').textContent = data.projects?.length || 0
+
+    // Charts
+    destroyChart('labor')
+    const ctx1 = $('laborChart')
+    if (ctx1 && data.projects?.length) {
+      charts['labor'] = new Chart(ctx1, {
+        type: 'bar',
+        data: {
+          labels: data.projects.map(p => p.code),
+          datasets: [{ label: 'Chi phí lương', data: data.projects.map(p => p.labor_cost), backgroundColor: '#00A651', borderRadius: 4 }]
+        },
+        options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } } }
+      })
+    }
+    destroyChart('laborPie')
+    const ctx2 = $('laborPieChart')
+    if (ctx2 && data.projects?.length) {
+      const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
+      charts['laborPie'] = new Chart(ctx2, {
+        type: 'pie',
+        data: {
+          labels: data.projects.map(p => p.code + ' (' + p.pct + '%)'),
+          datasets: [{ data: data.projects.map(p => p.project_hours), backgroundColor: colors }]
+        },
+        options: { responsive: true, plugins: { legend: { position: 'right', labels: { font: { size: 10 } } } } }
+      })
+    }
+
+    // Table
+    const tbody = $('laborTable')
+    if (tbody) {
+      tbody.innerHTML = data.projects?.map(p => `
+        <tr class="table-row border-b">
+          <td class="py-2 pr-3">
+            <div class="font-medium text-sm">${p.name}</div>
+            <div class="text-xs text-gray-400">${p.code}</div>
+          </td>
+          <td class="py-2 pr-3 text-right">${p.project_hours}h</td>
+          <td class="py-2 pr-3 text-right font-medium text-green-600">${fmt(p.labor_cost)} VNĐ</td>
+          <td class="py-2 text-right">
+            <span class="badge" style="background:#e0f2fe;color:#0369a1">${p.pct}%</span>
+          </td>
+        </tr>
+      `).join('') || '<tr><td colspan="4" class="text-center py-6 text-gray-400">Không có dữ liệu</td></tr>'
+    }
+  } catch(e) { toast('Lỗi tải chi phí lương: ' + e.message, 'error') }
+}
+
+// ================================================================
+// COST TYPES PAGE
+// ================================================================
+let allCostTypes = []
+
+async function loadCostTypes() {
+  try {
+    allCostTypes = await api('/cost-types')
+    renderCostTypesTable()
+    // Also update cost type dropdown in cost modal
+    const ctSel = $('costType')
+    if (ctSel && allCostTypes.length) {
+      ctSel.innerHTML = allCostTypes.filter(ct => ct.is_active).map(ct =>
+        `<option value="${ct.code}">${ct.name}</option>`
+      ).join('')
+    }
+  } catch(e) { toast('Lỗi tải loại chi phí: ' + e.message, 'error') }
+}
+
+function renderCostTypesTable() {
+  const tbody = $('costTypesTable')
+  if (!tbody) return
+  tbody.innerHTML = allCostTypes.map(ct => `
+    <tr class="table-row">
+      <td class="py-2 pr-3 font-mono font-bold text-sm text-primary">${ct.code}</td>
+      <td class="py-2 pr-3 font-medium text-gray-800">${ct.name}</td>
+      <td class="py-2 pr-3 text-sm text-gray-500">${ct.description || '-'}</td>
+      <td class="py-2 pr-3 text-center">
+        <span class="inline-block w-6 h-6 rounded-full border-2 border-gray-200" style="background:${ct.color||'#6B7280'}"></span>
+      </td>
+      <td class="py-2 pr-3 text-center text-sm text-gray-600">${ct.usage_count || 0}</td>
+      <td class="py-2 pr-3 text-center">
+        <span class="badge ${ct.is_active ? 'badge-completed' : 'badge-cancelled'}">${ct.is_active ? 'Đang dùng' : 'Ngưng'}</span>
+      </td>
+      <td class="py-2">
+        <div class="flex gap-1">
+          <button onclick="openCostTypeModal(${ct.id})" class="btn-secondary text-xs px-2 py-1"><i class="fas fa-edit"></i></button>
+          ${ct.usage_count > 0 ? `<span class="text-gray-300 text-xs px-2 py-1" title="Đang được sử dụng, không thể xóa"><i class="fas fa-lock"></i></span>` :
+            `<button onclick="deleteCostType(${ct.id},'${ct.name}')" class="text-red-400 hover:text-red-600 px-1.5 text-sm"><i class="fas fa-trash"></i></button>`}
+        </div>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" class="text-center py-8 text-gray-400">Không có loại chi phí</td></tr>'
+}
+
+function openCostTypeModal(id = null) {
+  $('costTypeModalTitle').textContent = id ? 'Chỉnh sửa loại chi phí' : 'Thêm loại chi phí'
+  $('costTypeId').value = id || ''
+  if (id) {
+    const ct = allCostTypes.find(c => c.id === id)
+    if (ct) {
+      $('costTypeCode').value = ct.code || ''
+      $('costTypeCode').disabled = true // code cannot be changed after creation
+      $('costTypeName').value = ct.name || ''
+      $('costTypeDesc').value = ct.description || ''
+      $('costTypeColor').value = ct.color || '#6B7280'
+      $('costTypeColorHex').value = ct.color || '#6B7280'
+      $('costTypeActive').value = ct.is_active ? '1' : '0'
+    }
+  } else {
+    $('costTypeCode').value = ''
+    $('costTypeCode').disabled = false
+    $('costTypeName').value = ''
+    $('costTypeDesc').value = ''
+    $('costTypeColor').value = '#6B7280'
+    $('costTypeColorHex').value = '#6B7280'
+    $('costTypeActive').value = '1'
+  }
+  // Sync color picker and hex
+  $('costTypeColor').oninput = (e) => { $('costTypeColorHex').value = e.target.value }
+  openModal('costTypeModal')
+}
+
+$('costTypeForm').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const id = $('costTypeId').value
+  const data = {
+    name: $('costTypeName').value,
+    description: $('costTypeDesc').value,
+    color: $('costTypeColor').value,
+    is_active: parseInt($('costTypeActive').value)
+  }
+  if (!id) data.code = $('costTypeCode').value
+  try {
+    if (id) await api(`/cost-types/${id}`, { method: 'put', data })
+    else await api('/cost-types', { method: 'post', data })
+    closeModal('costTypeModal')
+    toast(id ? 'Cập nhật loại chi phí thành công' : 'Thêm loại chi phí thành công')
+    loadCostTypes()
+  } catch(e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+})
+
+function deleteCostType(id, name) {
+  showConfirmDelete('Xóa Loại chi phí', `Xóa loại chi phí "<strong>${name}</strong>"?`,
+    async () => {
+      await api(`/cost-types/${id}`, { method: 'delete' })
+      toast('Đã xóa loại chi phí')
+      loadCostTypes()
+    }
+  )
+}
+
+// Update getCostTypeName to use dynamic list
+function getCostTypeNameDynamic(code) {
+  const ct = allCostTypes.find(c => c.code === code)
+  return ct ? ct.name : getCostTypeName(code)
+}
+

@@ -231,11 +231,19 @@ app.post('/api/users', authMiddleware, adminOnly, async (c) => {
       return c.json({ error: 'Missing required fields' }, 400)
     }
 
+    // Auto-append @onecadvn.com if no domain provided
+    let finalEmail = email || null
+    if (finalEmail && !finalEmail.includes('@')) {
+      finalEmail = `${finalEmail}@onecadvn.com`
+    } else if (!finalEmail) {
+      finalEmail = `${username}@onecadvn.com`
+    }
+
     const hash = await hashPassword(password)
     const result = await db.prepare(
       `INSERT INTO users (username, password_hash, full_name, email, phone, role, department, salary_monthly) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(username, hash, full_name, email || null, phone || null, role, department || null, salary_monthly || 0).run()
+    ).bind(username, hash, full_name, finalEmail, phone || null, role, department || null, salary_monthly || 0).run()
 
     return c.json({ success: true, id: result.meta.last_row_id }, 201)
   } catch (e: any) {
@@ -390,15 +398,48 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     const id = parseInt(c.req.param('id'))
     const data = await c.req.json()
     const user = c.get('user') as any
-
-    const fields = ['name', 'description', 'client', 'project_type', 'status', 'start_date', 'end_date', 'budget', 'contract_value', 'location', 'admin_id', 'leader_id', 'progress']
-    const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
-    const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
-
+    // Only system_admin or project admin_id can edit
+    const proj = await db.prepare('SELECT * FROM projects WHERE id = ?').bind(id).first() as any
+    if (!proj) return c.json({ error: 'Not found' }, 404)
+    if (user.role !== 'system_admin' && proj.admin_id !== user.id)
+      return c.json({ error: 'Không có quyền chỉnh sửa dự án này' }, 403)
+    const allowedFields = user.role === 'system_admin'
+      ? ['name','description','client','project_type','status','start_date','end_date','budget','contract_value','location','admin_id','leader_id','progress']
+      : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress']
+    const updates = allowedFields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
+    const values = allowedFields.filter(f => data[f] !== undefined).map(f => data[f])
+    if (!updates.length) return c.json({ error: 'Nothing to update' }, 400)
     updates.push('updated_at = CURRENT_TIMESTAMP')
     values.push(id)
-
     await db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// DELETE project (cascade) — system_admin only
+app.delete('/api/projects/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    if (user.role !== 'system_admin') return c.json({ error: 'Chỉ System Admin mới có thể xóa dự án' }, 403)
+    const id = parseInt(c.req.param('id'))
+    const proj = await db.prepare('SELECT id, name FROM projects WHERE id = ?').bind(id).first()
+    if (!proj) return c.json({ error: 'Dự án không tồn tại' }, 404)
+    // Cascade delete
+    const taskIds = await db.prepare('SELECT id FROM tasks WHERE project_id = ?').bind(id).all()
+    for (const t of (taskIds.results as any[])) {
+      await db.prepare('DELETE FROM task_history WHERE task_id = ?').bind(t.id).run()
+      await db.prepare('DELETE FROM timesheets WHERE task_id = ?').bind(t.id).run()
+    }
+    await db.prepare('DELETE FROM tasks WHERE project_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM categories WHERE project_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM project_members WHERE project_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM timesheets WHERE project_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM project_costs WHERE project_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM project_revenues WHERE project_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM projects WHERE id = ?').bind(id).run()
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -500,7 +541,12 @@ app.put('/api/categories/:id', authMiddleware, async (c) => {
 app.delete('/api/categories/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
+    if (!['system_admin','project_admin'].includes(user.role)) return c.json({ error: 'Forbidden' }, 403)
     const id = parseInt(c.req.param('id'))
+    // Check if any tasks use this category
+    const taskCount = await db.prepare('SELECT COUNT(*) as cnt FROM tasks WHERE category_id = ?').bind(id).first() as any
+    if (taskCount?.cnt > 0) return c.json({ error: `Không thể xóa vì còn ${taskCount.cnt} task sử dụng hạng mục này` }, 400)
     await db.prepare('DELETE FROM categories WHERE id = ?').bind(id).run()
     return c.json({ success: true })
   } catch (e: any) {
@@ -639,7 +685,18 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
     const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(id).first() as any
     if (!task) return c.json({ error: 'Task not found' }, 404)
 
-    const fields = ['title', 'description', 'discipline_code', 'phase', 'priority', 'status', 'assigned_to', 'start_date', 'due_date', 'actual_start_date', 'actual_end_date', 'estimated_hours', 'actual_hours', 'progress', 'category_id']
+    // RBAC: member chỉ được cập nhật progress và status của task được giao
+    const isAdmin = user.role === 'system_admin'
+    const isProjAdmin = user.role === 'project_admin' || user.role === 'project_leader'
+    const isAssigned = task.assigned_to === user.id
+
+    if (!isAdmin && !isProjAdmin && !isAssigned)
+      return c.json({ error: 'Không có quyền chỉnh sửa task này' }, 403)
+
+    // member chỉ được sửa progress/status/actual_hours
+    const fields = (isAdmin || isProjAdmin)
+      ? ['title', 'description', 'discipline_code', 'phase', 'priority', 'status', 'assigned_to', 'start_date', 'due_date', 'actual_start_date', 'actual_end_date', 'estimated_hours', 'actual_hours', 'progress', 'category_id']
+      : ['status', 'progress', 'actual_hours', 'actual_end_date']
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
 
@@ -676,7 +733,12 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
 app.delete('/api/tasks/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
+    if (!['system_admin','project_admin'].includes(user.role)) return c.json({ error: 'Forbidden' }, 403)
     const id = parseInt(c.req.param('id'))
+    // Cascade: delete related timesheets and history
+    await db.prepare('DELETE FROM task_history WHERE task_id = ?').bind(id).run()
+    await db.prepare('UPDATE timesheets SET task_id = NULL WHERE task_id = ?').bind(id).run()
     await db.prepare('DELETE FROM tasks WHERE id = ?').bind(id).run()
     return c.json({ success: true })
   } catch (e: any) {
@@ -862,6 +924,31 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
   }
 })
 
+app.post('/api/timesheets/bulk-approve', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    if (!['system_admin', 'project_admin', 'project_leader'].includes(user.role)) {
+      return c.json({ error: 'Access denied' }, 403)
+    }
+    const { ids } = await c.req.json()
+    if (!ids?.length) return c.json({ error: 'No IDs provided' }, 400)
+
+    let approved = 0
+    for (const id of ids) {
+      try {
+        await db.prepare(
+          `UPDATE timesheets SET status = 'approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitted'`
+        ).bind(user.id, id).run()
+        approved++
+      } catch (_) { /* skip */ }
+    }
+    return c.json({ success: true, approved })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 app.delete('/api/timesheets/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -960,6 +1047,34 @@ app.delete('/api/costs/:id', authMiddleware, adminOnly, async (c) => {
     const db = c.env.DB
     const id = parseInt(c.req.param('id'))
     await db.prepare('DELETE FROM project_costs WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.put('/api/revenues/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const data = await c.req.json()
+    const fields = ['description', 'amount', 'currency', 'revenue_date', 'invoice_number', 'payment_status', 'notes']
+    const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
+    const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
+    updates.push('updated_at = CURRENT_TIMESTAMP')
+    values.push(id)
+    await db.prepare(`UPDATE project_revenues SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.delete('/api/revenues/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    await db.prepare('DELETE FROM project_revenues WHERE id = ?').bind(id).run()
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -1263,6 +1378,206 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+// ===================================================
+// PRODUCTIVITY STATS (detailed per-user)
+// ===================================================
+app.get('/api/productivity', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const { project_id, days } = c.req.query()
+    const daysBack = parseInt(days || '30')
+
+    let baseWhere = `WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')`
+    const params: any[] = []
+    let taskWhere = ''
+    if (project_id) { taskWhere = ` AND t.project_id = ${parseInt(project_id)}`; }
+
+    const rows = await db.prepare(`
+      SELECT u.id, u.full_name, u.department,
+        COUNT(DISTINCT t.id) as total_tasks,
+        SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) as completed_tasks,
+        SUM(CASE WHEN t.status = 'completed' AND (t.actual_end_date IS NULL OR t.actual_end_date <= t.due_date) THEN 1 ELSE 0 END) as ontime_tasks,
+        SUM(CASE WHEN t.status = 'completed' AND t.actual_end_date > t.due_date THEN 1 ELSE 0 END) as late_completed,
+        SUM(CASE WHEN t.due_date < date('now') AND t.status != 'completed' THEN 1 ELSE 0 END) as overdue_tasks,
+        COALESCE(AVG(CASE WHEN t.status = 'completed' THEN t.progress ELSE NULL END), 0) as avg_progress,
+        COALESCE(SUM(ts.regular_hours + ts.overtime_hours), 0) as total_hours_30d
+      FROM users u
+      LEFT JOIN tasks t ON t.assigned_to = u.id ${taskWhere}
+      LEFT JOIN timesheets ts ON ts.user_id = u.id AND ts.work_date >= date('now', '-${daysBack} days')
+      ${baseWhere}
+      GROUP BY u.id
+      ORDER BY completed_tasks DESC, total_hours_30d DESC
+    `).all()
+
+    const data = (rows.results as any[]).map(r => {
+      const productivity = r.total_tasks > 0 ? Math.round((r.completed_tasks / r.total_tasks) * 100) : 0
+      const ontime_rate = r.completed_tasks > 0 ? Math.round((r.ontime_tasks / r.completed_tasks) * 100) : 100
+      const score = Math.round((productivity + ontime_rate) / 2)
+      return { ...r, productivity, ontime_rate, score }
+    })
+    return c.json(data)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ===================================================
+// COST TYPES (System Admin CRUD)
+// ===================================================
+app.get('/api/cost-types', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const rows = await db.prepare(`
+      SELECT ct.*, (SELECT COUNT(*) FROM project_costs pc WHERE pc.cost_type = ct.code) as usage_count
+      FROM cost_types ct ORDER BY ct.sort_order, ct.id
+    `).all()
+    return c.json(rows.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+app.post('/api/cost-types', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { code, name, description, color, is_active } = await c.req.json()
+    if (!code || !name) return c.json({ error: 'code and name required' }, 400)
+    const r = await db.prepare(
+      'INSERT INTO cost_types (code, name, description, color, is_active) VALUES (?, ?, ?, ?, ?)'
+    ).bind(code, name, description || null, color || '#6B7280', is_active !== false ? 1 : 0).run()
+    return c.json({ success: true, id: r.meta.last_row_id }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+app.put('/api/cost-types/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const data = await c.req.json()
+    const fields = ['name', 'description', 'color', 'is_active']
+    const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
+    const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
+    if (!updates.length) return c.json({ error: 'Nothing to update' }, 400)
+    values.push(id)
+    await db.prepare(`UPDATE cost_types SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+app.delete('/api/cost-types/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const ct = await db.prepare('SELECT code FROM cost_types WHERE id = ?').bind(id).first() as any
+    if (!ct) return c.json({ error: 'Not found' }, 404)
+    const usage = await db.prepare('SELECT COUNT(*) as cnt FROM project_costs WHERE cost_type = ?').bind(ct.code).first() as any
+    if (usage?.cnt > 0) return c.json({ error: `Loại chi phí này đang được dùng trong ${usage.cnt} bản ghi, không thể xóa` }, 400)
+    await db.prepare('DELETE FROM cost_types WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// PROJECT FINANCE SUMMARY (per-project)
+// ===================================================
+app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const { month, year } = c.req.query()
+
+    const project = await db.prepare('SELECT * FROM projects WHERE id = ?').bind(projectId).first() as any
+    if (!project) return c.json({ error: 'Not found' }, 404)
+
+    let dateFilter = ''; const fp: any[] = []
+    if (year) { dateFilter += ` AND strftime('%Y', cost_date) = ?`; fp.push(year) }
+    if (month) { dateFilter += ` AND strftime('%m', cost_date) = ?`; fp.push(month.padStart(2,'0')) }
+
+    const costs = await db.prepare(
+      `SELECT cost_type, SUM(amount) as total FROM project_costs WHERE project_id = ? ${dateFilter} GROUP BY cost_type`
+    ).bind(projectId, ...fp).all()
+
+    let revFilter = ''; const rp: any[] = []
+    if (year) { revFilter += ` AND strftime('%Y', revenue_date) = ?`; rp.push(year) }
+    if (month) { revFilter += ` AND strftime('%m', revenue_date) = ?`; rp.push(month.padStart(2,'0')) }
+
+    const revenues = await db.prepare(
+      `SELECT SUM(amount) as total FROM project_revenues WHERE project_id = ? ${revFilter}`
+    ).bind(projectId, ...rp).first() as any
+
+    const timeline = await db.prepare(`
+      SELECT strftime('%Y-%m', cost_date) as month, cost_type, SUM(amount) as total
+      FROM project_costs WHERE project_id = ?
+      GROUP BY month, cost_type ORDER BY month
+    `).bind(projectId).all()
+
+    const totalCost = (costs.results as any[]).reduce((s, c) => s + c.total, 0)
+    const totalRevenue = revenues?.total || project.contract_value || 0
+    const profit = totalRevenue - totalCost
+    const margin = totalRevenue > 0 ? Math.round((profit / totalRevenue) * 100) : 0
+
+    return c.json({
+      project: { id: project.id, code: project.code, name: project.name, contract_value: project.contract_value },
+      summary: { total_revenue: totalRevenue, total_cost: totalCost, profit, margin },
+      costs_by_type: costs.results,
+      timeline: timeline.results
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// LABOR COST CALCULATION (from timesheets)
+// ===================================================
+app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { month, year } = c.req.query()
+    const m = (month || String(new Date().getMonth() + 1)).padStart(2, '0')
+    const y = year || String(new Date().getFullYear())
+
+    // Total salary pool for the month (sum of all active user monthly salaries)
+    const salaryPool = await db.prepare(
+      `SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'`
+    ).first() as any
+
+    // Total hours worked company-wide that month
+    const totalHours = await db.prepare(
+      `SELECT SUM(regular_hours + overtime_hours) as total FROM timesheets
+       WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+    ).bind(y, m).first() as any
+
+    const salaryPoolTotal = salaryPool?.total || 0
+    const totalHoursAll = totalHours?.total || 0
+    const costPerHour = totalHoursAll > 0 ? salaryPoolTotal / totalHoursAll : 0
+
+    // Per-project labor cost
+    const byProject = await db.prepare(`
+      SELECT p.id, p.code, p.name,
+        SUM(ts.regular_hours + ts.overtime_hours) as project_hours
+      FROM projects p
+      LEFT JOIN timesheets ts ON ts.project_id = p.id
+        AND strftime('%Y', ts.work_date) = ?
+        AND strftime('%m', ts.work_date) = ?
+      WHERE p.status != 'cancelled'
+      GROUP BY p.id
+      HAVING project_hours > 0
+      ORDER BY project_hours DESC
+    `).bind(y, m).all()
+
+    const projectsWithCost = (byProject.results as any[]).map(r => ({
+      ...r,
+      labor_cost: Math.round(r.project_hours * costPerHour),
+      pct: totalHoursAll > 0 ? Math.round((r.project_hours / totalHoursAll) * 100) : 0
+    }))
+
+    return c.json({
+      month: `${y}-${m}`,
+      salary_pool: salaryPoolTotal,
+      total_hours: totalHoursAll,
+      cost_per_hour: Math.round(costPerHour),
+      projects: projectsWithCost
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // Disciplines endpoint
 app.get('/api/disciplines', async (c) => {
   try {
@@ -1336,8 +1651,9 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER, work_date DATE NOT NULL, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS project_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, cost_type TEXT NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', cost_date DATE, invoice_number TEXT, vendor TEXT, approved_by INTEGER, notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS project_revenues (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', revenue_date DATE, invoice_number TEXT, payment_status TEXT DEFAULT 'pending', notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
-      `CREATE TABLE IF NOT EXISTS assets (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, brand TEXT, model TEXT, serial_number TEXT, specifications TEXT, purchase_date DATE, purchase_price REAL DEFAULT 0, current_value REAL DEFAULT 0, warranty_expiry DATE, status TEXT DEFAULT 'active', location TEXT, department TEXT, assigned_to INTEGER, assigned_date DATE, notes TEXT, image_url TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE TABLE IF NOT EXISTS assets (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, brand TEXT, model TEXT, serial_number TEXT, specifications TEXT, purchase_date DATE, purchase_price REAL DEFAULT 0, current_value REAL DEFAULT 0, warranty_expiry DATE, status TEXT DEFAULT 'unused', location TEXT, department TEXT, assigned_to INTEGER, assigned_date DATE, notes TEXT, image_url TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, type TEXT DEFAULT 'info', related_type TEXT, related_id INTEGER, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE TABLE IF NOT EXISTS cost_types (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT, color TEXT DEFAULT '#6B7280', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0)`,
     ]
 
     for (const stmt of tables) {
@@ -1350,6 +1666,16 @@ app.post('/api/system/init', async (c) => {
       `INSERT OR IGNORE INTO users (username, password_hash, full_name, email, role, department)
        VALUES ('admin', ?, 'System Administrator', 'admin@onecad.vn', 'system_admin', 'Quản lý hệ thống')`
     ).bind(adminHash).run()
+
+    // ---- Migrate old 2024 dates to 2026 to fix overdue tasks ----
+    await db.prepare(`UPDATE tasks SET due_date = REPLACE(due_date, '2024-', '2026-') WHERE due_date LIKE '2024-%'`).run()
+    await db.prepare(`UPDATE tasks SET start_date = REPLACE(start_date, '2024-', '2026-') WHERE start_date LIKE '2024-%'`).run()
+    await db.prepare(`UPDATE tasks SET actual_end_date = REPLACE(actual_end_date, '2024-', '2026-') WHERE actual_end_date LIKE '2024-%'`).run()
+    await db.prepare(`UPDATE projects SET start_date = REPLACE(start_date, '2024-', '2026-'), end_date = REPLACE(end_date, '2024-', '2026-') WHERE start_date LIKE '2024-%'`).run()
+    await db.prepare(`UPDATE projects SET end_date = REPLACE(end_date, '2025-', '2027-') WHERE end_date LIKE '2025-%'`).run()
+    // Reset overdue flags for tasks that are no longer past due
+    await db.prepare(`UPDATE tasks SET is_overdue = 0 WHERE due_date >= date('now') AND status NOT IN ('completed','cancelled')`).run()
+    await db.prepare(`UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status NOT IN ('completed','cancelled')`).run()
 
     // Reset and re-insert disciplines (clean slate to avoid duplicates)
     await db.prepare('DELETE FROM disciplines').run()
@@ -1390,6 +1716,20 @@ app.post('/api/system/init', async (c) => {
       await db.prepare('INSERT INTO disciplines (code, name, category) VALUES (?, ?, ?)').bind(code, name, category).run()
     }
 
+    // Seed default cost types
+    await db.prepare('DELETE FROM cost_types').run()
+    const costTypes = [
+      ['salary',    'Lương nhân sự',      'Chi phí lương và phúc lợi nhân sự', '#00A651', 1],
+      ['material',  'Chi phí vật liệu',   'Vật tư, nguyên liệu thi công',       '#0066CC', 2],
+      ['equipment', 'Chi phí thiết bị',   'Thuê hoặc khấu hao thiết bị',        '#8B5CF6', 3],
+      ['transport', 'Chi phí vận chuyển', 'Di chuyển, vận chuyển hàng hóa',     '#FF6B00', 4],
+      ['other',     'Chi phí khác',       'Các chi phí phát sinh khác',          '#6B7280', 5],
+    ]
+    for (const [code, name, desc, color, sort] of costTypes) {
+      await db.prepare('INSERT INTO cost_types (code, name, description, color, sort_order) VALUES (?, ?, ?, ?, ?)')
+        .bind(code, name, desc, color, sort).run()
+    }
+
     // Insert demo users
     const memberHash = await hashPassword('Pass@123')
     const demoUsers = [
@@ -1408,9 +1748,9 @@ app.post('/api/system/init', async (c) => {
 
     // Insert sample projects
     const sampleProjects = [
-      ['PRJ001', 'Tòa nhà văn phòng OneCad Tower', 'Dự án thiết kế tòa nhà văn phòng 15 tầng tại Hà Nội', 'OneCad Vietnam', 'building', 'active', '2024-01-15', '2024-12-31', 5000000000],
-      ['PRJ002', 'Cầu vượt đường bộ QL1A', 'Dự án thiết kế cầu vượt tại km 45+200 QL1A', 'Bộ GTVT', 'transport', 'active', '2024-03-01', '2025-06-30', 12000000000],
-      ['PRJ003', 'Khu đô thị Eco City', 'Quy hoạch và thiết kế khu đô thị sinh thái 50ha', 'Eco Land JSC', 'building', 'planning', '2024-06-01', '2025-12-31', 8000000000],
+      ['PRJ001', 'Tòa nhà văn phòng OneCad Tower', 'Dự án thiết kế tòa nhà văn phòng 15 tầng tại Hà Nội', 'OneCad Vietnam', 'building', 'active', '2026-01-15', '2026-12-31', 5000000000],
+      ['PRJ002', 'Cầu vượt đường bộ QL1A', 'Dự án thiết kế cầu vượt tại km 45+200 QL1A', 'Bộ GTVT', 'transport', 'active', '2026-03-01', '2027-06-30', 12000000000],
+      ['PRJ003', 'Khu đô thị Eco City', 'Quy hoạch và thiết kế khu đô thị sinh thái 50ha', 'Eco Land JSC', 'building', 'planning', '2026-06-01', '2027-12-31', 8000000000],
     ]
 
     for (const [code, name, desc, client, type, status, start, end, value] of sampleProjects) {
@@ -1422,11 +1762,14 @@ app.post('/api/system/init', async (c) => {
 
     // Insert sample tasks
     const sampleTasks = [
-      [1, 'Vẽ mặt bằng tầng điển hình', 'AA', 'high', 'in_progress', 2, '2024-01-20', '2024-02-28', 40, 65],
-      [1, 'Thiết kế mặt đứng công trình', 'AA', 'high', 'in_progress', 2, '2024-02-01', '2024-03-15', 30, 40],
-      [1, 'Tính toán móng cọc', 'ES', 'urgent', 'review', 3, '2024-02-01', '2024-02-20', 24, 90],
-      [1, 'Thiết kế khung thép tầng 1', 'ES', 'medium', 'todo', 3, '2024-03-01', '2024-03-30', 20, 0],
-      [2, 'Khảo sát địa chất cầu', 'CT', 'urgent', 'completed', 2, '2024-03-01', '2024-03-20', 16, 100],
+      [1, 'Vẽ mặt bằng tầng điển hình', 'AA', 'high', 'in_progress', 2, '2026-01-20', '2026-04-28', 40, 65],
+      [1, 'Thiết kế mặt đứng công trình', 'AA', 'high', 'in_progress', 2, '2026-02-01', '2026-05-15', 30, 40],
+      [1, 'Tính toán móng cọc', 'ES', 'urgent', 'review', 3, '2026-02-01', '2026-03-30', 24, 90],
+      [1, 'Thiết kế khung thép tầng 1', 'ES', 'medium', 'todo', 3, '2026-03-01', '2026-06-30', 20, 0],
+      [2, 'Khảo sát địa chất cầu', 'CT', 'urgent', 'completed', 2, '2026-03-01', '2026-04-20', 16, 100],
+      [1, 'Hệ thống PCCC tầng hầm', 'EF', 'high', 'todo', 4, '2026-04-01', '2026-07-30', 32, 0],
+      [2, 'Thiết kế móng trụ cầu', 'ES', 'high', 'in_progress', 3, '2026-04-01', '2026-07-15', 48, 30],
+      [1, 'Thiết kế hệ thống điện tầng 1-5', 'EE', 'medium', 'todo', 4, '2026-05-01', '2026-08-30', 24, 0],
     ]
 
     for (const [pid, title, disc, priority, status, assigned, start, due, est, prog] of sampleTasks) {
@@ -1458,24 +1801,24 @@ app.post('/api/system/init', async (c) => {
       }
     }
 
-    // Sample costs & revenues
-    const costTypes = ['salary', 'equipment', 'material', 'travel']
-    for (let m = 1; m <= 12; m++) {
+    // Sample costs & revenues - for year 2026
+    const costTypes2 = ['salary', 'equipment', 'material', 'transport']
+    for (let m = 1; m <= 2; m++) {
       const monthStr = m.toString().padStart(2, '0')
-      for (const type of costTypes) {
+      for (const type of costTypes2) {
         try {
           await db.prepare(
             `INSERT INTO project_costs (project_id, cost_type, description, amount, cost_date, created_by)
              VALUES (1, ?, ?, ?, ?, 1)`
-          ).bind(type, `Chi phi ${type} thang ${m}/2024`, Math.floor(Math.random() * 50000000) + 5000000, `2024-${monthStr}-15`).run()
+          ).bind(type, `Chi phí ${type} tháng ${m}/2026`, Math.floor(Math.random() * 50000000) + 5000000, `2026-${monthStr}-15`).run()
         } catch (_) { /* skip */ }
       }
-      if (m % 3 === 0) {
+      if (m % 2 === 0) {
         try {
           await db.prepare(
             `INSERT INTO project_revenues (project_id, description, amount, revenue_date, payment_status, created_by)
              VALUES (1, ?, ?, ?, 'paid', 1)`
-          ).bind(`Dot thanh toan Q${Math.ceil(m/3)}/2024`, Math.floor(Math.random() * 500000000) + 100000000, `2024-${monthStr}-20`).run()
+          ).bind(`Đợt thanh toán tháng ${m}/2026`, Math.floor(Math.random() * 500000000) + 100000000, `2026-${monthStr}-20`).run()
         } catch (_) { /* skip */ }
       }
     }

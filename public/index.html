@@ -145,6 +145,9 @@
       <div class="nav-item active" onclick="navigate('dashboard')">
         <i class="fas fa-tachometer-alt"></i><span>Dashboard</span>
       </div>
+      <div class="nav-item" onclick="navigate('productivity')">
+        <i class="fas fa-chart-bar"></i><span>Năng suất nhân sự</span>
+      </div>
 
       <div class="sidebar-section mt-3">Quản lý dự án</div>
       <div class="nav-item" onclick="navigate('projects')">
@@ -164,6 +167,15 @@
         <div class="sidebar-section mt-3">Quản lý tài chính</div>
         <div class="nav-item" onclick="navigate('costs')">
           <i class="fas fa-coins"></i><span>Chi phí & Doanh thu</span>
+        </div>
+        <div class="nav-item" onclick="navigate('finance-project')">
+          <i class="fas fa-chart-line"></i><span>Tài chính dự án</span>
+        </div>
+        <div class="nav-item" onclick="navigate('labor-cost')">
+          <i class="fas fa-calculator"></i><span>Chi phí lương</span>
+        </div>
+        <div class="nav-item" onclick="navigate('cost-types')">
+          <i class="fas fa-tags"></i><span>Loại chi phí</span>
         </div>
 
         <div class="sidebar-section mt-3">Tài sản & Nhân sự</div>
@@ -250,19 +262,101 @@
 
       <!-- ========== DASHBOARD ========== -->
       <div id="page-dashboard" class="page active">
-        <div class="flex justify-between items-center mb-6">
+        <div class="flex justify-between items-center mb-4">
           <div>
             <h1 class="text-2xl font-bold text-gray-800">Dashboard</h1>
             <p class="text-gray-500 text-sm mt-1">Tổng quan hệ thống quản lý dự án BIM</p>
           </div>
-          <div class="text-right text-sm text-gray-500">
-            <div class="font-medium" id="currentDate"></div>
-            <div id="currentTime"></div>
+          <div class="flex items-center gap-3">
+            <button onclick="toggleDashboardWidgets()" class="btn-secondary text-xs px-3 py-1.5"><i class="fas fa-cog mr-1"></i>Widget</button>
+            <div class="text-right text-sm text-gray-500">
+              <div class="font-medium" id="currentDate"></div>
+              <div id="currentTime"></div>
+            </div>
           </div>
         </div>
 
-        <!-- KPI Cards -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <!-- Widget Panel -->
+        <div id="dashWidgetPanel" style="display:none" class="card mb-4 bg-gray-50 border border-dashed border-gray-300">
+          <p class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-cog mr-2"></i>Hiển thị/Ẩn widget:</p>
+          <div class="flex flex-wrap gap-3 text-sm">
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-productivity" checked onchange="toggleWidget('dashProductivity', this.checked)"> Năng suất</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-discipline" checked onchange="toggleWidget('dashDiscipline', this.checked)"> Bộ môn</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-hours" checked onchange="toggleWidget('dashHours', this.checked)"> Giờ làm việc</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-progress" checked onchange="toggleWidget('dashProgress', this.checked)"> Tiến độ</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-tasks" checked onchange="toggleWidget('dashTasksCard', this.checked)"> Task trễ hạn</label>
+          </div>
+        </div>
+
+        <!-- KPI Cards - 2-3 col responsive -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+          <div class="kpi-card" style="border-color:#00A651">
+            <div class="flex justify-between items-start">
+              <div><p class="text-xs text-gray-500 font-medium">DỰ ÁN</p>
+                <p class="text-2xl font-bold text-gray-800 mt-1" id="kpiProjects">-</p>
+                <p class="text-xs text-green-600 mt-1"><span id="kpiActiveProjects">-</span> HĐ</p></div>
+              <div class="w-9 h-9 rounded-xl bg-green-100 flex items-center justify-center"><i class="fas fa-project-diagram text-primary"></i></div>
+            </div>
+          </div>
+          <div class="kpi-card" style="border-color:#0066CC">
+            <div class="flex justify-between items-start">
+              <div><p class="text-xs text-gray-500 font-medium">TASK</p>
+                <p class="text-2xl font-bold text-gray-800 mt-1" id="kpiTasks">-</p>
+                <p class="text-xs text-blue-600 mt-1"><span id="kpiCompleted">-</span> xong</p></div>
+              <div class="w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center"><i class="fas fa-tasks text-accent"></i></div>
+            </div>
+          </div>
+          <div class="kpi-card" style="border-color:#FF6B00">
+            <div class="flex justify-between items-start">
+              <div><p class="text-xs text-gray-500 font-medium">TRỄ HẠN</p>
+                <p class="text-2xl font-bold text-red-600 mt-1" id="kpiOverdue">-</p>
+                <p class="text-xs text-orange-600 mt-1">Cần xử lý</p></div>
+              <div class="w-9 h-9 rounded-xl bg-orange-100 flex items-center justify-center"><i class="fas fa-exclamation-triangle text-warning"></i></div>
+            </div>
+          </div>
+          <div class="kpi-card" style="border-color:#8B5CF6">
+            <div class="flex justify-between items-start">
+              <div><p class="text-xs text-gray-500 font-medium">HOÀN THÀNH</p>
+                <p class="text-2xl font-bold text-purple-600 mt-1" id="kpiRate">-</p>
+                <p class="text-xs text-purple-600 mt-1">Tỷ lệ</p></div>
+              <div class="w-9 h-9 rounded-xl bg-purple-100 flex items-center justify-center"><i class="fas fa-chart-pie text-purple-600"></i></div>
+            </div>
+          </div>
+          <div class="kpi-card" style="border-color:#10B981">
+            <div class="flex justify-between items-start">
+              <div><p class="text-xs text-gray-500 font-medium">NHÂN SỰ</p>
+                <p class="text-2xl font-bold text-emerald-600 mt-1" id="kpiUsers">-</p>
+                <p class="text-xs text-emerald-600 mt-1">Hoạt động</p></div>
+              <div class="w-9 h-9 rounded-xl bg-emerald-100 flex items-center justify-center"><i class="fas fa-users text-emerald-600"></i></div>
+            </div>
+          </div>
+          <div class="kpi-card" style="border-color:#F59E0B">
+            <div class="flex justify-between items-start">
+              <div><p class="text-xs text-gray-500 font-medium">TÀI SẢN</p>
+                <p class="text-2xl font-bold text-amber-600 mt-1" id="kpiAssets">-</p>
+                <p class="text-xs text-amber-600 mt-1">Đang dùng</p></div>
+              <div class="w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center"><i class="fas fa-laptop text-amber-600"></i></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Overall Progress -->
+        <div class="card mb-4">
+          <div class="flex justify-between items-center mb-2">
+            <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-line text-primary mr-2"></i>Tiến độ tổng thể</h3>
+            <span class="text-sm font-bold text-primary" id="dashOverallPct">0%</span>
+          </div>
+          <div class="progress-bar h-3 rounded-full">
+            <div class="progress-fill h-3 rounded-full" id="dashOverallBar" style="width:0%"></div>
+          </div>
+          <div class="flex justify-between text-xs text-gray-400 mt-1">
+            <span id="dashTasksSummary">0 / 0 task</span>
+            <span id="dashOverdueSummary" class="text-red-500"></span>
+          </div>
+        </div>
+
+        <!-- Charts Row 1 - 2 col -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div class="kpi-card" style="border-color:#00A651">
             <div class="flex justify-between items-start">
               <div>
@@ -315,47 +409,48 @@
 
         <!-- Charts Row 1 -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-          <div class="card">
-            <div class="flex justify-between items-center mb-4">
-              <h3 class="font-bold text-gray-800"><i class="fas fa-chart-bar text-primary mr-2"></i>Năng suất nhân sự (30 ngày)</h3>
+          <div class="card" id="dashProductivity">
+            <div class="flex justify-between items-center mb-3">
+              <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-bar text-primary mr-2"></i>Năng suất nhân sự (30 ngày)</h3>
+              <button onclick="navigate('productivity')" class="text-xs text-primary hover:underline">Chi tiết →</button>
             </div>
-            <canvas id="productivityChart" height="200"></canvas>
+            <canvas id="productivityChart" height="180"></canvas>
           </div>
-          <div class="card">
-            <div class="flex justify-between items-center mb-4">
-              <h3 class="font-bold text-gray-800"><i class="fas fa-chart-pie text-accent mr-2"></i>Phân bổ theo bộ môn</h3>
+          <div class="card" id="dashDiscipline">
+            <div class="flex justify-between items-center mb-3">
+              <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-pie text-accent mr-2"></i>Phân bổ theo bộ môn</h3>
             </div>
-            <canvas id="disciplineChart" height="200"></canvas>
+            <canvas id="disciplineChart" height="180"></canvas>
           </div>
         </div>
 
-        <!-- Charts Row 2 -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-          <div class="card md:col-span-2">
-            <div class="flex justify-between items-center mb-4">
-              <h3 class="font-bold text-gray-800"><i class="fas fa-chart-line text-primary mr-2"></i>Giờ làm việc theo tháng</h3>
+        <!-- Charts Row 2: hours + progress -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div class="card md:col-span-2" id="dashHours">
+            <div class="flex justify-between items-center mb-3">
+              <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-line text-primary mr-2"></i>Giờ làm việc theo tháng</h3>
             </div>
-            <canvas id="hoursChart" height="180"></canvas>
+            <canvas id="hoursChart" height="160"></canvas>
           </div>
-          <div class="card">
-            <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-list-check text-accent mr-2"></i>Tiến độ dự án</h3>
-            <div id="projectProgressList" class="space-y-3"></div>
+          <div class="card" id="dashProgress">
+            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-list-check text-accent mr-2"></i>Tiến độ dự án</h3>
+            <div id="projectProgressList" class="space-y-2"></div>
           </div>
         </div>
 
         <!-- Recent Tasks -->
-        <div class="card">
-          <div class="flex justify-between items-center mb-4">
-            <h3 class="font-bold text-gray-800"><i class="fas fa-exclamation-circle text-warning mr-2"></i>Task cần chú ý</h3>
+        <div class="card" id="dashTasksCard">
+          <div class="flex justify-between items-center mb-3">
+            <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-exclamation-circle text-warning mr-2"></i>Task cần chú ý (trễ hạn)</h3>
             <button onclick="navigate('tasks')" class="text-sm text-primary hover:underline">Xem tất cả →</button>
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
-              <thead><tr class="text-left text-gray-500 border-b">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
                 <th class="pb-2 font-medium">Tên task</th>
                 <th class="pb-2 font-medium">Dự án</th>
                 <th class="pb-2 font-medium">Phụ trách</th>
-                <th class="pb-2 font-medium">Hạn hoàn thành</th>
+                <th class="pb-2 font-medium">Hạn</th>
                 <th class="pb-2 font-medium">Trạng thái</th>
                 <th class="pb-2 font-medium">Tiến độ</th>
               </tr></thead>
@@ -447,6 +542,9 @@
             <select id="taskProjectFilter" class="select-field" style="width:180px" onchange="filterTasks()">
               <option value="">Tất cả dự án</option>
             </select>
+            <select id="taskDisciplineFilter" class="select-field" style="width:120px" onchange="filterTasks()">
+              <option value="">Tất cả bộ môn</option>
+            </select>
             <label class="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" id="taskOverdueFilter" onchange="filterTasks()"> Chỉ task trễ hạn
             </label>
@@ -480,9 +578,14 @@
             <h1 class="text-2xl font-bold text-gray-800">Quản lý Timesheet</h1>
             <p id="tsPageSubtitle" class="text-gray-500 text-sm">Theo dõi giờ làm việc hàng ngày</p>
           </div>
-          <button onclick="openTimesheetModal()" class="btn-primary flex items-center gap-2">
-            <i class="fas fa-plus"></i>Thêm timesheet
-          </button>
+          <div class="flex gap-2">
+            <button id="tsBulkApproveBtn" onclick="bulkApproveTimesheets()" class="btn-secondary text-sm hidden" title="Duyệt tất cả timesheet đang chờ">
+              <i class="fas fa-check-double mr-1"></i>Duyệt tất cả
+            </button>
+            <button onclick="openTimesheetModal()" class="btn-primary flex items-center gap-2">
+              <i class="fas fa-plus"></i>Thêm timesheet
+            </button>
+          </div>
         </div>
 
         <!-- Summary cards — chỉ hiện với admin -->
@@ -632,9 +735,11 @@
             <select id="costProjectFilter" class="select-field" style="width:180px" onchange="loadCosts()">
               <option value="">Tất cả dự án</option>
             </select>
-            <select id="costYearFilter" class="select-field" style="width:100px" onchange="loadCosts()">
+            <select id="costYearFilter" class="select-field" style="width:100px" onchange="loadCostDashboard()">
               <option value="2024">2024</option>
               <option value="2025">2025</option>
+              <option value="2026" selected>2026</option>
+              <option value="2027">2027</option>
             </select>
           </div>
           <div class="overflow-x-auto">
@@ -678,6 +783,7 @@
             <select id="assetStatusFilter" class="select-field" style="width:140px" onchange="filterAssets()">
               <option value="">Tất cả TT</option>
               <option value="active">Đang dùng</option>
+              <option value="unused">Chưa sử dụng</option>
               <option value="maintenance">Bảo trì</option>
               <option value="repair">Sửa chữa</option>
               <option value="retired">Thanh lý</option>
@@ -779,8 +885,8 @@
                   <input type="tel" id="profilePhoneInput" class="input-field">
                 </div>
                 <div>
-                  <label class="label">Phòng ban</label>
-                  <input type="text" id="profileDeptInput" class="input-field">
+                  <label class="label">Phòng ban/Bộ môn</label>
+                  <input type="text" id="profileDeptInput" class="input-field" placeholder="VD: Kiến trúc, MEP...">
                 </div>
               </div>
               <button onclick="updateProfile()" class="btn-primary mt-4 px-6">Lưu thay đổi</button>
@@ -803,6 +909,178 @@
                 <button onclick="changePassword()" class="btn-primary px-6">Đổi mật khẩu</button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+
+      <!-- ========== PRODUCTIVITY PAGE ========== -->
+      <div id="page-productivity" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Năng suất Nhân sự</h1>
+            <p class="text-gray-500 text-sm">Đánh giá hiệu suất và tiến độ của từng thành viên</p>
+          </div>
+          <div class="flex gap-2">
+            <select id="prodProjectFilter" class="select-field" style="width:200px" onchange="loadProductivity()">
+              <option value="">Tất cả dự án</option>
+            </select>
+            <select id="prodDaysFilter" class="select-field" style="width:130px" onchange="loadProductivity()">
+              <option value="30" selected>30 ngày qua</option>
+              <option value="60">60 ngày qua</option>
+              <option value="90">90 ngày qua</option>
+              <option value="365">Cả năm</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Charts row -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div class="card">
+            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-bar text-primary mr-2"></i>Điểm năng suất nhân sự</h3>
+            <canvas id="prodBarChart" height="220"></canvas>
+          </div>
+          <div class="card">
+            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-pie text-accent mr-2"></i>Tỷ lệ hoàn thành đúng hạn</h3>
+            <canvas id="prodPieChart" height="220"></canvas>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="card">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết năng suất</h3>
+            <div class="flex gap-2">
+              <button onclick="sortProductivity('score')" class="btn-secondary text-xs px-2 py-1">Sắp xếp theo Điểm</button>
+              <button onclick="sortProductivity('completed_tasks')" class="btn-secondary text-xs px-2 py-1">Sắp xếp theo Hoàn thành</button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                <th class="pb-3 pr-3">Nhân viên</th>
+                <th class="pb-3 pr-3">Phòng ban/Bộ môn</th>
+                <th class="pb-3 pr-3 text-center">Task giao</th>
+                <th class="pb-3 pr-3 text-center">Đã xong</th>
+                <th class="pb-3 pr-3 text-center">% TB</th>
+                <th class="pb-3 pr-3 text-center">Đúng hạn</th>
+                <th class="pb-3 pr-3 text-center">Trễ hạn</th>
+                <th class="pb-3 pr-3 text-center">Năng suất</th>
+                <th class="pb-3 pr-3 text-center">Chính xác</th>
+                <th class="pb-3 text-center">Điểm</th>
+              </tr></thead>
+              <tbody id="productivityTable" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== FINANCE PROJECT PAGE ========== -->
+      <div id="page-finance-project" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Tài chính theo Dự án</h1>
+            <p class="text-gray-500 text-sm">Phân tích doanh thu, chi phí, lợi nhuận từng dự án</p>
+          </div>
+          <select id="finProjSelect" class="select-field" style="width:250px" onchange="loadFinanceProject()">
+            <option value="">-- Chọn dự án --</option>
+          </select>
+        </div>
+
+        <div id="financeProjectContent">
+          <div class="text-center text-gray-400 py-12">
+            <i class="fas fa-chart-line text-5xl mb-3"></i>
+            <p>Chọn dự án để xem chi tiết tài chính</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== LABOR COST PAGE ========== -->
+      <div id="page-labor-cost" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Chi phí Lương tự động</h1>
+            <p class="text-gray-500 text-sm">Tính chi phí lương dựa trên timesheet thực tế</p>
+          </div>
+          <div class="flex gap-2">
+            <select id="laborMonthFilter" class="select-field" style="width:120px" onchange="loadLaborCost()"></select>
+            <select id="laborYearFilter" class="select-field" style="width:100px" onchange="loadLaborCost()"></select>
+          </div>
+        </div>
+
+        <!-- Summary cards -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div class="kpi-card" style="border-color:#00A651">
+            <p class="text-xs text-gray-500">QUỸ LƯƠNG THÁNG</p>
+            <p class="text-xl font-bold text-green-600 mt-1" id="laborKpiPool">-</p>
+          </div>
+          <div class="kpi-card" style="border-color:#0066CC">
+            <p class="text-xs text-gray-500">TỔNG GIỜ LÀM</p>
+            <p class="text-xl font-bold text-blue-600 mt-1" id="laborKpiHours">-</p>
+          </div>
+          <div class="kpi-card" style="border-color:#8B5CF6">
+            <p class="text-xs text-gray-500">CHI PHÍ/GIỜ</p>
+            <p class="text-xl font-bold text-purple-600 mt-1" id="laborKpiRate">-</p>
+          </div>
+          <div class="kpi-card" style="border-color:#F59E0B">
+            <p class="text-xs text-gray-500">SỐ DỰ ÁN</p>
+            <p class="text-xl font-bold text-amber-600 mt-1" id="laborKpiProjects">-</p>
+          </div>
+        </div>
+
+        <!-- Chart + Table -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div class="card">
+            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-bar text-primary mr-2"></i>Chi phí lương theo dự án</h3>
+            <canvas id="laborChart" height="250"></canvas>
+          </div>
+          <div class="card">
+            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-pie text-accent mr-2"></i>Tỷ trọng giờ làm theo dự án</h3>
+            <canvas id="laborPieChart" height="250"></canvas>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="font-bold text-gray-800 text-sm mb-4"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết chi phí lương theo dự án</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                <th class="pb-3 pr-3">Dự án</th>
+                <th class="pb-3 pr-3 text-right">Tổng giờ</th>
+                <th class="pb-3 pr-3 text-right">Chi phí lương</th>
+                <th class="pb-3 text-right">% Tổng lương</th>
+              </tr></thead>
+              <tbody id="laborTable" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== COST TYPES PAGE ========== -->
+      <div id="page-cost-types" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Quản lý Loại Chi phí</h1>
+            <p class="text-gray-500 text-sm">Định nghĩa và quản lý các loại chi phí dự án</p>
+          </div>
+          <button onclick="openCostTypeModal()" class="btn-primary flex items-center gap-2">
+            <i class="fas fa-plus"></i>Thêm loại chi phí
+          </button>
+        </div>
+        <div class="card">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                <th class="pb-3 pr-3">Mã</th>
+                <th class="pb-3 pr-3">Tên loại chi phí</th>
+                <th class="pb-3 pr-3">Mô tả</th>
+                <th class="pb-3 pr-3 text-center">Màu sắc</th>
+                <th class="pb-3 pr-3 text-center">Đang dùng</th>
+                <th class="pb-3 pr-3 text-center">Trạng thái</th>
+                <th class="pb-3">Thao tác</th>
+              </tr></thead>
+              <tbody id="costTypesTable" class="divide-y"></tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -1135,6 +1413,7 @@
         <div>
           <label class="label">Trạng thái</label>
           <select id="assetStatus" class="select-field">
+            <option value="unused">Chưa sử dụng</option>
             <option value="active">Đang sử dụng</option>
             <option value="maintenance">Bảo trì</option>
             <option value="repair">Sửa chữa</option>
@@ -1238,8 +1517,18 @@
           </select>
         </div>
         <div>
-          <label class="label">Phòng ban</label>
-          <input type="text" id="userDepartment" class="input-field" placeholder="Kiến trúc, Kết cấu...">
+          <label class="label">Phòng ban/Bộ môn</label>
+          <select id="userDepartment" class="select-field">
+            <option value="">-- Chọn phòng ban --</option>
+            <option value="BIM/Design">BIM/Design</option>
+            <option value="Kiến trúc">Kiến trúc</option>
+            <option value="Kết cấu">Kết cấu</option>
+            <option value="MEP">MEP</option>
+            <option value="Quản lý dự án">Quản lý dự án</option>
+            <option value="Hạ tầng">Hạ tầng</option>
+            <option value="Support">Support</option>
+            <option value="Quản lý hệ thống">Quản lý hệ thống</option>
+          </select>
         </div>
       </div>
       <div>
@@ -1352,5 +1641,70 @@
 </div>
 
 <script src="/static/app.js"></script>
+
+<!-- Cost Type Modal -->
+<div id="costTypeModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="costTypeModalTitle">Thêm loại chi phí</h3>
+      <button onclick="closeModal('costTypeModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="costTypeForm" class="space-y-4">
+      <input type="hidden" id="costTypeId">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Mã loại chi phí *</label>
+          <input type="text" id="costTypeCode" class="input-field" placeholder="VD: salary, material" required>
+        </div>
+        <div>
+          <label class="label">Tên loại chi phí *</label>
+          <input type="text" id="costTypeName" class="input-field" placeholder="Tên hiển thị" required>
+        </div>
+      </div>
+      <div>
+        <label class="label">Mô tả</label>
+        <textarea id="costTypeDesc" class="input-field" rows="2" placeholder="Mô tả loại chi phí"></textarea>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Màu sắc</label>
+          <div class="flex items-center gap-2">
+            <input type="color" id="costTypeColor" value="#6B7280" class="h-10 w-20 rounded border border-gray-300 p-0.5 cursor-pointer">
+            <input type="text" id="costTypeColorHex" class="input-field flex-1" placeholder="#6B7280" oninput="document.getElementById('costTypeColor').value=this.value">
+          </div>
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="costTypeActive" class="select-field">
+            <option value="1">Đang dùng</option>
+            <option value="0">Ngưng dùng</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeModal('costTypeModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary">Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Confirm Delete Modal -->
+<div id="confirmDeleteModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:420px">
+    <div class="text-center">
+      <div class="w-16 h-16 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4">
+        <i class="fas fa-exclamation-triangle text-2xl text-red-600"></i>
+      </div>
+      <h3 class="text-lg font-bold text-gray-800 mb-2" id="confirmDeleteTitle">Xác nhận xóa</h3>
+      <p class="text-gray-500 text-sm mb-6" id="confirmDeleteMessage">Bạn có chắc muốn xóa?</p>
+      <div class="flex gap-3 justify-center">
+        <button onclick="closeModal('confirmDeleteModal')" class="btn-secondary px-6">Hủy</button>
+        <button id="confirmDeleteBtn" onclick="" class="btn-danger px-6">Xác nhận xóa</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
