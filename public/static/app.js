@@ -1127,9 +1127,9 @@ async function loadTimesheets() {
       else                  subtitle.textContent = 'Timesheet cá nhân của bạn'
     }
 
-    // Summary cards — chỉ admin / project_admin
-    const summaryCards = $('tsSummaryCards')
-    if (summaryCards) summaryCards.classList.toggle('hidden', !canSeeAll)
+    // Show cleanup button for admins
+    const cleanupBtn = $('tsCleanupBtn')
+    if (cleanupBtn) cleanupBtn.classList.toggle('hidden', !isAdmin)
 
     // Init month filter
     const monthSel = $('tsMonthFilter')
@@ -1147,7 +1147,7 @@ async function loadTimesheets() {
     // Init year filter
     const yearSel = $('tsYearFilter')
     if (yearSel && yearSel.options.length <= 1) {
-      ;[2023, 2024, 2025, 2026].forEach(y => {
+      ;[2023, 2024, 2025, 2026, 2027].forEach(y => {
         const opt = document.createElement('option')
         opt.value = y; opt.textContent = y
         if (y === new Date().getFullYear()) opt.selected = true
@@ -1162,22 +1162,28 @@ async function loadTimesheets() {
         allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
     }
 
-    // User filter — only admin/project_admin
+    // User filter — only admin/project_admin; show wrapper div
+    const tsUserWrap = $('tsUserFilterWrap')
     const tsUserF = $('tsUserFilter')
-    if (tsUserF) {
+    if (tsUserWrap && tsUserF) {
       if (canSeeAll) {
-        tsUserF.classList.remove('hidden')
+        tsUserWrap.classList.remove('hidden')
+        tsUserWrap.classList.add('flex')
         const usersForFilter = isAdmin ? allUsers : allUsers.filter(u => u.role !== 'system_admin')
         tsUserF.innerHTML = '<option value="">Tất cả nhân viên</option>' +
           usersForFilter.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
       } else {
-        tsUserF.classList.add('hidden')
+        tsUserWrap.classList.add('hidden')
+        tsUserWrap.classList.remove('flex')
       }
     }
 
-    // Status filter
-    const tsStatusF = $('tsStatusFilter')
-    if (tsStatusF) tsStatusF.classList.toggle('hidden', !canSeeAll)
+    // Status filter wrapper
+    const tsStatusWrap = $('tsStatusFilterWrap')
+    if (tsStatusWrap) {
+      if (canSeeAll) { tsStatusWrap.classList.remove('hidden'); tsStatusWrap.classList.add('flex') }
+      else { tsStatusWrap.classList.add('hidden'); tsStatusWrap.classList.remove('flex') }
+    }
 
     // Build query URL
     const month     = $('tsMonthFilter')?.value
@@ -1194,95 +1200,161 @@ async function loadTimesheets() {
     if (status)    url += `status=${status}&`
 
     const resp = await api(url)
-    // API now returns { timesheets: [...], summary: {...} }
+    // API returns { timesheets: [...], summary: {...} }
     allTimesheets = Array.isArray(resp) ? resp : (resp.timesheets || [])
     const apiSummary = (!Array.isArray(resp) && resp.summary) ? resp.summary : null
 
     renderTimesheetTable(allTimesheets, apiSummary)
 
-    // Update summary cards from API summary (accurate, no JOIN inflation)
-    if (canSeeAll) {
-      const pending   = allTimesheets.filter(t => t.status === 'submitted').length
-      const approved  = allTimesheets.filter(t => t.status === 'approved').length
-      const totalH    = apiSummary ? apiSummary.total_hours : allTimesheets.reduce((s, t) => s + (t.regular_hours||0) + (t.overtime_hours||0), 0)
-      if ($('tsCardTotal'))    $('tsCardTotal').textContent    = allTimesheets.length
-      if ($('tsCardPending'))  $('tsCardPending').textContent  = pending
-      if ($('tsCardApproved')) $('tsCardApproved').textContent = approved
-      if ($('tsCardHours'))    $('tsCardHours').textContent    = totalH + 'h'
+    // Update summary KPI cards (visible to all users)
+    const pending   = allTimesheets.filter(t => t.status === 'submitted').length
+    const approved  = allTimesheets.filter(t => t.status === 'approved').length
+    const totalReg  = apiSummary ? (apiSummary.total_regular_hours || 0) : allTimesheets.reduce((s, t) => s + (t.regular_hours||0), 0)
+    const totalOT   = apiSummary ? (apiSummary.total_overtime_hours || 0) : allTimesheets.reduce((s, t) => s + (t.overtime_hours||0), 0)
+    const totalH    = apiSummary ? (apiSummary.total_hours || 0) : totalReg + totalOT
 
-      const bulkBtn = $('tsBulkApproveBtn')
-      if (bulkBtn) {
-        if (pending > 0) {
-          bulkBtn.classList.remove('hidden')
-          bulkBtn.innerHTML = `<i class="fas fa-check-double mr-1"></i>Duyệt tất cả (${pending})`
-        } else {
-          bulkBtn.classList.add('hidden')
-        }
+    if ($('tsCardTotal'))    $('tsCardTotal').textContent    = allTimesheets.length
+    if ($('tsCardPending'))  $('tsCardPending').textContent  = pending
+    if ($('tsCardApproved')) $('tsCardApproved').textContent = approved
+    if ($('tsCardHours'))    $('tsCardHours').textContent    = totalH + 'h'
+    if ($('tsCardHoursDetail')) $('tsCardHoursDetail').textContent = `HC: ${totalReg}h | OT: ${totalOT}h`
+    if ($('tsFilterCount')) $('tsFilterCount').textContent = allTimesheets.length
+
+    // Bulk approve button
+    const bulkBtn = $('tsBulkApproveBtn')
+    if (bulkBtn) {
+      if (canSeeAll && pending > 0) {
+        bulkBtn.classList.remove('hidden')
+        bulkBtn.innerHTML = `<i class="fas fa-check-double mr-1"></i>Duyệt tất cả (${pending})`
+      } else {
+        bulkBtn.classList.add('hidden')
       }
-    } else {
-      const bulkBtn = $('tsBulkApproveBtn')
-      if (bulkBtn) bulkBtn.classList.add('hidden')
     }
 
     // Monthly breakdown panel — admin/project_admin only
+    // Now uses filtered allTimesheets data (respects all filters)
     const dashPanel = $('tsDashboardPanel')
     if (dashPanel) {
       if (canSeeAll) {
         dashPanel.classList.remove('hidden')
         const mon = $('tsMonthFilter')?.value
         const yr  = $('tsYearFilter')?.value
-        if (mon && yr) {
+
+        // Build breakdowns from the ALREADY FILTERED allTimesheets data
+        // This ensures the breakdown reflects the current project/user/status filter
+        const memberMap = {}
+        const projMap = {}
+        let dupGroupsCount = 0
+
+        allTimesheets.forEach(t => {
+          // Per-member aggregation
+          const mk = String(t.user_id)
+          if (!memberMap[mk]) memberMap[mk] = { full_name: t.user_name || '?', department: t.department || '', regular_hours: 0, overtime_hours: 0, total_hours: 0 }
+          memberMap[mk].regular_hours  += (t.regular_hours  || 0)
+          memberMap[mk].overtime_hours += (t.overtime_hours || 0)
+          memberMap[mk].total_hours    += (t.regular_hours  || 0) + (t.overtime_hours || 0)
+          // Per-project aggregation
+          const pk = String(t.project_id)
+          if (!projMap[pk]) projMap[pk] = { code: t.project_code || '?', name: t.project_name || '?', total_hours: 0, member_ids: new Set() }
+          projMap[pk].total_hours += (t.regular_hours || 0) + (t.overtime_hours || 0)
+          projMap[pk].member_ids.add(t.user_id)
+        })
+
+        const byMember  = Object.values(memberMap).sort((a, b) => b.total_hours - a.total_hours)
+        const byProject = Object.values(projMap).sort((a, b) => b.total_hours - a.total_hours).map(p => ({ ...p, member_count: p.member_ids.size }))
+
+        // Member breakdown
+        const memberDiv = $('tsMemberBreakdown')
+        if (memberDiv) {
+          // Show filter context label
+          const filterLabel = projectId ? ` (${(allProjects.find(p => String(p.id) === projectId) || {}).code || ''})` : ''
+          if (byMember.length) {
+            memberDiv.innerHTML = (filterLabel ? `<p class="text-xs text-blue-500 mb-2">📋 Theo dự án${filterLabel}</p>` : '') +
+              byMember.map(m => `
+              <div class="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
+                <div class="flex items-center gap-2">
+                  <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(m.full_name||'?').split(' ').pop()?.charAt(0)}</div>
+                  <div>
+                    <span class="font-medium text-gray-700 text-xs">${m.full_name}</span>
+                    <span class="text-gray-400 text-xs ml-1">${m.department || ''}</span>
+                  </div>
+                </div>
+                <div class="text-right text-xs">
+                  <span class="font-bold text-primary">${m.total_hours}h</span>
+                  <span class="text-gray-400 ml-1">(${m.regular_hours}h + OT:${m.overtime_hours}h)</span>
+                </div>
+              </div>`).join('')
+          } else {
+            memberDiv.innerHTML = '<p class="text-gray-400 text-center py-4 text-xs">Không có dữ liệu</p>'
+          }
+        }
+
+        // Project breakdown
+        const projDiv = $('tsProjectBreakdown')
+        if (projDiv) {
+          const userFilterLabel = userId ? ` (${(allUsers.find(u => String(u.id) === userId) || {}).full_name || ''})` : ''
+          if (byProject.length) {
+            projDiv.innerHTML = (userFilterLabel ? `<p class="text-xs text-blue-500 mb-2">👤 Theo nhân viên${userFilterLabel}</p>` : '') +
+              byProject.map(p => `
+              <div class="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
+                <div>
+                  <span class="font-medium text-gray-700 text-xs">${p.code}</span>
+                  <span class="text-gray-500 ml-1 text-xs truncate" style="max-width:140px;display:inline-block;vertical-align:bottom">${p.name}</span>
+                </div>
+                <div class="text-right text-xs">
+                  <span class="font-bold text-accent">${p.total_hours}h</span>
+                  <span class="text-gray-400 ml-1">${p.member_count} người</span>
+                </div>
+              </div>`).join('')
+          } else {
+            projDiv.innerHTML = '<p class="text-gray-400 text-center py-4 text-xs">Không có dữ liệu</p>'
+          }
+        }
+
+        // Check for duplicate groups from API (only when no specific filter active)
+        if (!projectId && !userId && mon && yr) {
           try {
-            const dash = await api(`/timesheet-dashboard/${mon}/${yr}`)
-            // Member breakdown
-            const memberDiv = $('tsMemberBreakdown')
-            if (memberDiv) {
-              if (dash.by_member && dash.by_member.length) {
-                memberDiv.innerHTML = dash.by_member.map(m => `
-                  <div class="flex items-center justify-between py-1 border-b border-gray-50">
-                    <div class="flex items-center gap-2">
-                      <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(m.full_name||'?').split(' ').pop()?.charAt(0)}</div>
-                      <span class="font-medium text-gray-700">${m.full_name}</span>
-                    </div>
-                    <div class="text-right text-xs">
-                      <span class="font-bold text-primary">${m.total_hours}h</span>
-                      <span class="text-gray-400 ml-1">(HC: ${m.regular_hours}h + OT: ${m.overtime_hours}h)</span>
-                    </div>
-                  </div>`).join('')
-              } else {
-                memberDiv.innerHTML = '<p class="text-gray-400 text-center py-4">Không có dữ liệu</p>'
-              }
-            }
-            // Project breakdown
-            const projDiv = $('tsProjectBreakdown')
-            if (projDiv) {
-              if (dash.by_project && dash.by_project.length) {
-                projDiv.innerHTML = dash.by_project.map(p => `
-                  <div class="flex items-center justify-between py-1 border-b border-gray-50">
-                    <div>
-                      <span class="font-medium text-gray-700">${p.code}</span>
-                      <span class="text-gray-500 ml-1 text-xs">${p.name}</span>
-                    </div>
-                    <div class="text-right text-xs">
-                      <span class="font-bold text-accent">${p.total_hours}h</span>
-                      <span class="text-gray-400 ml-1">${p.member_count} người</span>
-                    </div>
-                  </div>`).join('')
-              } else {
-                projDiv.innerHTML = '<p class="text-gray-400 text-center py-4">Không có dữ liệu</p>'
-              }
-            }
-            // Warn if duplicates detected
-            if (dash.summary?.duplicate_groups > 0) {
-              toast(`⚠️ Phát hiện ${dash.summary.duplicate_groups} nhóm timesheet trùng lặp! Liên hệ admin để dọn dẹp.`, 'warning')
-            }
-          } catch (_) { /* silent fallback */ }
+            const dupCheck = await api(`/timesheets/cleanup-duplicates`)
+            dupGroupsCount = dupCheck.duplicate_groups || 0
+          } catch (_) { /* silent */ }
+        }
+        if (dupGroupsCount > 0) {
+          const dupWarn = $('tsDupWarning'); const dupTxt = $('tsDupWarningText')
+          if (dupWarn) dupWarn.classList.remove('hidden')
+          if (dupTxt) dupTxt.textContent = `⚠️ Phát hiện ${dupGroupsCount} nhóm timesheet trùng lặp!`
+          const dupStatus = $('tsDupStatus'); const dupStatusTxt = $('tsDupStatusText')
+          if (dupStatus) dupStatus.classList.remove('hidden')
+          if (dupStatusTxt) dupStatusTxt.textContent = `${dupGroupsCount} nhóm trùng lặp`
+        } else {
+          const dupWarn = $('tsDupWarning'); if (dupWarn) dupWarn.classList.add('hidden')
+          const dupStatus = $('tsDupStatus'); if (dupStatus) dupStatus.classList.add('hidden')
         }
       } else {
         dashPanel.classList.add('hidden')
       }
     }
+
+    // Show empty state
+    const emptyState = $('tsEmptyState')
+    if (emptyState) emptyState.classList.toggle('hidden', allTimesheets.length > 0)
+
   } catch (e) { toast('Lỗi tải timesheet: ' + e.message, 'error') }
+}
+
+// Cleanup duplicate timesheets (admin only)
+async function runTimesheetCleanup() {
+  if (!confirm('Xác nhận xóa tất cả timesheet trùng lặp? (Giữ bản ghi mới nhất cho mỗi nhóm)')) return
+  try {
+    const result = await api('/timesheets/cleanup-duplicates', { method: 'POST' })
+    if (result.rows_deleted > 0) {
+      toast(`✅ Đã xóa ${result.rows_deleted} bản ghi trùng lặp. Còn lại: ${result.after_count} bản ghi.`, 'success')
+    } else {
+      toast('✅ Không có bản ghi trùng lặp. Dữ liệu sạch!', 'success')
+    }
+    const dupWarn = $('tsDupWarning'); if (dupWarn) dupWarn.classList.add('hidden')
+    const dupStatus = $('tsDupStatus'); if (dupStatus) dupStatus.classList.add('hidden')
+    loadTimesheets()
+  } catch(e) { toast('Lỗi dọn dẹp: ' + e.message, 'error') }
 }
 
 function resetTimesheetFilters() {
@@ -1489,12 +1561,30 @@ $('tsForm').addEventListener('submit', async (e) => {
     description: $('tsDescription').value
   }
   try {
-    if (id) await api(`/timesheets/${id}`, { method: 'put', data })
-    else await api('/timesheets', { method: 'post', data })
+    let result
+    if (id) {
+      result = await api(`/timesheets/${id}`, { method: 'put', data })
+      toast('Đã cập nhật timesheet', 'success')
+    } else {
+      result = await api('/timesheets', { method: 'post', data })
+      // Backend returns action: 'updated' if it auto-updated an existing record
+      if (result && result.action === 'updated') {
+        toast('✅ Đã cập nhật timesheet cho ngày này (đã tồn tại)', 'success')
+      } else {
+        toast('✅ Đã thêm timesheet thành công', 'success')
+      }
+    }
     closeModal('timesheetModal')
-    toast(id ? 'Cập nhật timesheet' : 'Thêm timesheet thành công')
     loadTimesheets()
-  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+  } catch (e) {
+    const errMsg = e.response?.data?.error || e.message || 'Lỗi không xác định'
+    // 409 with exists=true means it's approved, can't edit
+    if (e.response?.status === 409 && e.response?.data?.exists) {
+      toast('⚠️ ' + errMsg, 'warning')
+    } else {
+      toast('Lỗi: ' + errMsg, 'error')
+    }
+  }
 })
 
 async function submitTimesheet(id) {

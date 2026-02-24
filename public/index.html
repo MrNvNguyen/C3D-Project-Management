@@ -628,14 +628,18 @@
 
       <!-- ========== TIMESHEET ========== -->
       <div id="page-timesheet" class="page">
-        <div class="flex justify-between items-center mb-6">
+        <!-- Page Header -->
+        <div class="flex flex-wrap justify-between items-center mb-5 gap-3">
           <div>
             <h1 class="text-2xl font-bold text-gray-800">Quản lý Timesheet</h1>
             <p id="tsPageSubtitle" class="text-gray-500 text-sm">Theo dõi giờ làm việc hàng ngày</p>
           </div>
-          <div class="flex gap-2">
+          <div class="flex flex-wrap gap-2">
             <button id="tsBulkApproveBtn" onclick="bulkApproveTimesheets()" class="btn-secondary text-sm hidden" title="Duyệt tất cả timesheet đang chờ">
               <i class="fas fa-check-double mr-1"></i>Duyệt tất cả
+            </button>
+            <button id="tsCleanupBtn" onclick="runTimesheetCleanup()" class="btn-secondary text-sm hidden text-amber-700 border-amber-300 hover:bg-amber-50" title="Xóa timesheet trùng lặp">
+              <i class="fas fa-broom mr-1 text-amber-500"></i>Dọn duplicate
             </button>
             <button onclick="openTimesheetModal()" class="btn-primary flex items-center gap-2">
               <i class="fas fa-plus"></i>Thêm timesheet
@@ -643,104 +647,152 @@
           </div>
         </div>
 
-        <!-- Summary cards — chỉ hiện với admin -->
-        <div id="tsSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 hidden">
-          <div class="card text-center">
-            <p class="text-xs text-gray-500 mb-1">Tổng bản ghi</p>
-            <p id="tsCardTotal" class="text-2xl font-bold text-primary">0</p>
+        <!-- Summary KPI cards — visible to all users -->
+        <div id="tsSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+          <div class="kpi-card" style="border-color:#00A651">
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Tổng bản ghi</p>
+            <p id="tsCardTotal" class="text-2xl font-bold text-primary mt-1">0</p>
+            <p class="text-xs text-gray-400 mt-1">trong kỳ lọc</p>
           </div>
-          <div class="card text-center">
-            <p class="text-xs text-gray-500 mb-1">Chờ duyệt</p>
-            <p id="tsCardPending" class="text-2xl font-bold text-warning">0</p>
+          <div class="kpi-card" style="border-color:#F59E0B">
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Chờ duyệt</p>
+            <p id="tsCardPending" class="text-2xl font-bold text-amber-500 mt-1">0</p>
+            <p class="text-xs text-gray-400 mt-1">cần xử lý</p>
           </div>
-          <div class="card text-center">
-            <p class="text-xs text-gray-500 mb-1">Đã duyệt</p>
-            <p id="tsCardApproved" class="text-2xl font-bold text-green-600">0</p>
+          <div class="kpi-card" style="border-color:#10B981">
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Đã duyệt</p>
+            <p id="tsCardApproved" class="text-2xl font-bold text-green-600 mt-1">0</p>
+            <p class="text-xs text-gray-400 mt-1">bản ghi</p>
           </div>
-          <div class="card text-center">
-            <p class="text-xs text-gray-500 mb-1">Tổng giờ (tháng)</p>
-            <p id="tsCardHours" class="text-2xl font-bold text-accent">0h</p>
+          <div class="kpi-card" style="border-color:#0066CC">
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Tổng giờ</p>
+            <p id="tsCardHours" class="text-2xl font-bold text-accent mt-1">0h</p>
+            <p class="text-xs text-gray-400 mt-1" id="tsCardHoursDetail">HC: 0h | OT: 0h</p>
           </div>
         </div>
 
-        <!-- Monthly breakdown panel (admin-only) -->
+        <!-- Duplicate warning banner (hidden by default) -->
+        <div id="tsDupWarning" class="hidden bg-red-50 border border-red-200 rounded-lg p-3 mb-4 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <i class="fas fa-exclamation-triangle text-red-500"></i>
+            <span class="text-sm text-red-700" id="tsDupWarningText">Phát hiện timesheet trùng lặp!</span>
+          </div>
+          <button onclick="runTimesheetCleanup()" class="btn-danger text-xs py-1 px-3">
+            <i class="fas fa-broom mr-1"></i>Dọn sạch ngay
+          </button>
+        </div>
+
+        <!-- Monthly breakdown panel (admin/project_admin) -->
         <div id="tsDashboardPanel" class="hidden mb-4">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div class="card">
               <h3 class="font-bold text-gray-700 mb-3 text-sm flex items-center gap-2">
                 <i class="fas fa-users text-primary"></i>Tổng giờ theo nhân viên
+                <span class="text-xs font-normal text-gray-400 ml-1">(theo bộ lọc)</span>
               </h3>
               <div id="tsMemberBreakdown" class="text-sm space-y-2">
-                <p class="text-gray-400 text-center py-4">Chọn tháng/năm để xem</p>
+                <p class="text-gray-400 text-center py-4">Đang tải...</p>
               </div>
             </div>
             <div class="card">
               <h3 class="font-bold text-gray-700 mb-3 text-sm flex items-center gap-2">
                 <i class="fas fa-project-diagram text-accent"></i>Tổng giờ theo dự án
+                <span class="text-xs font-normal text-gray-400 ml-1">(theo bộ lọc)</span>
               </h3>
               <div id="tsProjectBreakdown" class="text-sm space-y-2">
-                <p class="text-gray-400 text-center py-4">Chọn tháng/năm để xem</p>
+                <p class="text-gray-400 text-center py-4">Đang tải...</p>
               </div>
             </div>
           </div>
         </div>
 
+        <!-- Filter bar -->
         <div class="card mb-4">
-          <div class="flex flex-wrap gap-3 items-center">
-            <select id="tsMonthFilter" class="select-field" style="width:120px" onchange="loadTimesheets()">
-              <option value="">Tháng</option>
-            </select>
-            <select id="tsYearFilter" class="select-field" style="width:100px" onchange="loadTimesheets()">
-              <option value="">Năm</option>
-            </select>
-            <select id="tsProjectFilter" class="select-field" style="width:180px" onchange="loadTimesheets()">
-              <option value="">Tất cả dự án</option>
-            </select>
-            <!-- Filter nhân viên: chỉ hiện với project_admin / system_admin -->
-            <select id="tsUserFilter" class="select-field hidden" style="width:160px" onchange="loadTimesheets()">
-              <option value="">Tất cả nhân viên</option>
-            </select>
-            <!-- Filter trạng thái: project_admin / system_admin -->
-            <select id="tsStatusFilter" class="select-field hidden" style="width:140px" onchange="loadTimesheets()">
-              <option value="">Tất cả trạng thái</option>
-              <option value="draft">Nháp</option>
-              <option value="submitted">Chờ duyệt</option>
-              <option value="approved">Đã duyệt</option>
-              <option value="rejected">Từ chối</option>
-            </select>
-            <button onclick="resetTimesheetFilters()" class="btn-secondary text-sm flex items-center gap-1" title="Xóa bộ lọc">
-              <i class="fas fa-times-circle text-gray-500"></i> Reset
-            </button>
-            <button onclick="exportTimesheetExcel()" class="btn-secondary text-sm flex items-center gap-1 text-green-700 border-green-300 hover:bg-green-50" title="Xuất Excel/CSV">
-              <i class="fas fa-file-excel text-green-600"></i> Xuất Excel
-            </button>
-            <div class="ml-auto flex gap-2 text-sm text-gray-600 bg-gray-50 px-4 py-2 rounded-lg">
-              <span>Tổng giờ HC: <strong id="tsTotalRegular" class="text-primary">0</strong></span>
-              <span class="mx-2">|</span>
-              <span>Tổng tăng ca: <strong id="tsTotalOvertime" class="text-warning">0</strong></span>
-              <span class="mx-2">|</span>
-              <span>Tổng cộng: <strong id="tsTotalHours" class="text-accent">0</strong></span>
+          <div class="flex flex-wrap gap-2 items-center">
+            <!-- Month -->
+            <div class="flex flex-col gap-0.5">
+              <label class="text-xs text-gray-500 font-medium">Tháng</label>
+              <select id="tsMonthFilter" class="select-field" style="width:110px" onchange="loadTimesheets()">
+                <option value="">Tất cả</option>
+              </select>
             </div>
+            <!-- Year -->
+            <div class="flex flex-col gap-0.5">
+              <label class="text-xs text-gray-500 font-medium">Năm</label>
+              <select id="tsYearFilter" class="select-field" style="width:90px" onchange="loadTimesheets()">
+                <option value="">Tất cả</option>
+              </select>
+            </div>
+            <!-- Project -->
+            <div class="flex flex-col gap-0.5">
+              <label class="text-xs text-gray-500 font-medium">Dự án</label>
+              <select id="tsProjectFilter" class="select-field" style="width:190px" onchange="loadTimesheets()">
+                <option value="">Tất cả dự án</option>
+              </select>
+            </div>
+            <!-- Member (admin only) -->
+            <div id="tsUserFilterWrap" class="hidden flex-col gap-0.5">
+              <label class="text-xs text-gray-500 font-medium">Nhân viên</label>
+              <select id="tsUserFilter" class="select-field" style="width:170px" onchange="loadTimesheets()">
+                <option value="">Tất cả nhân viên</option>
+              </select>
+            </div>
+            <!-- Status (admin only) -->
+            <div id="tsStatusFilterWrap" class="hidden flex-col gap-0.5">
+              <label class="text-xs text-gray-500 font-medium">Trạng thái</label>
+              <select id="tsStatusFilter" class="select-field" style="width:145px" onchange="loadTimesheets()">
+                <option value="">Tất cả</option>
+                <option value="draft">Nháp</option>
+                <option value="submitted">Chờ duyệt</option>
+                <option value="approved">Đã duyệt</option>
+                <option value="rejected">Từ chối</option>
+              </select>
+            </div>
+            <!-- Action buttons -->
+            <div class="flex items-end gap-2 ml-auto flex-wrap">
+              <button onclick="resetTimesheetFilters()" class="btn-secondary text-sm flex items-center gap-1 h-9" title="Xóa bộ lọc">
+                <i class="fas fa-times-circle text-gray-500"></i> Reset
+              </button>
+              <button onclick="exportTimesheetExcel()" class="btn-secondary text-sm flex items-center gap-1 text-green-700 h-9" title="Xuất Excel/CSV">
+                <i class="fas fa-file-excel text-green-600"></i> Xuất Excel
+              </button>
+            </div>
+          </div>
+          <!-- Totals summary row -->
+          <div class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap gap-4 text-sm text-gray-600">
+            <span>📋 Kết quả: <strong id="tsFilterCount" class="text-gray-800">0</strong> bản ghi</span>
+            <span>⏰ Giờ HC: <strong id="tsTotalRegular" class="text-primary">0h</strong></span>
+            <span>🌙 Tăng ca: <strong id="tsTotalOvertime" class="text-warning">0h</strong></span>
+            <span>🕐 Tổng cộng: <strong id="tsTotalHours" class="text-accent">0h</strong></span>
+            <span id="tsDupStatus" class="hidden text-red-600"><i class="fas fa-exclamation-circle mr-1"></i><span id="tsDupStatusText"></span></span>
           </div>
         </div>
 
+        <!-- Timesheet table -->
         <div class="card">
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
-              <thead><tr id="tsTableHeader" class="text-left text-gray-500 border-b text-xs uppercase">
-                <th class="pb-3 pr-3 font-medium">Ngày</th>
-                <th class="pb-3 pr-3 font-medium ts-col-user">Nhân viên</th>
-                <th class="pb-3 pr-3 font-medium">Dự án</th>
-                <th class="pb-3 pr-3 font-medium">Task</th>
-                <th class="pb-3 pr-3 font-medium text-center">Giờ HC</th>
-                <th class="pb-3 pr-3 font-medium text-center">Tăng ca</th>
-                <th class="pb-3 pr-3 font-medium text-center">Tổng</th>
-                <th class="pb-3 pr-3 font-medium">Mô tả</th>
-                <th class="pb-3 pr-3 font-medium">Trạng thái</th>
-                <th class="pb-3 font-medium">Thao tác</th>
-              </tr></thead>
+              <thead>
+                <tr id="tsTableHeader" class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
+                  <th class="py-2.5 px-3 font-medium">Ngày</th>
+                  <th class="py-2.5 px-3 font-medium ts-col-user">Nhân viên</th>
+                  <th class="py-2.5 px-3 font-medium">Dự án</th>
+                  <th class="py-2.5 px-3 font-medium">Task</th>
+                  <th class="py-2.5 px-3 font-medium text-center">Giờ HC</th>
+                  <th class="py-2.5 px-3 font-medium text-center">Tăng ca</th>
+                  <th class="py-2.5 px-3 font-medium text-center">Tổng</th>
+                  <th class="py-2.5 px-3 font-medium">Mô tả</th>
+                  <th class="py-2.5 px-3 font-medium">Trạng thái</th>
+                  <th class="py-2.5 px-3 font-medium">Thao tác</th>
+                </tr>
+              </thead>
               <tbody id="timesheetTable" class="divide-y"></tbody>
             </table>
+          </div>
+          <div id="tsEmptyState" class="hidden text-center py-12 text-gray-400">
+            <i class="fas fa-clock text-4xl mb-3"></i>
+            <p class="font-medium">Không có timesheet nào</p>
+            <p class="text-sm mt-1">Thử thay đổi bộ lọc hoặc thêm mới</p>
           </div>
         </div>
       </div>

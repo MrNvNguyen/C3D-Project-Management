@@ -816,6 +816,72 @@ app.post('/api/admin/dedup-timesheets', authMiddleware, adminOnly, async (c) => 
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
+// GET /api/timesheets/cleanup-duplicates — check & report duplicate timesheets
+app.get('/api/timesheets/cleanup-duplicates', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const dups = await db.prepare(`
+      SELECT ts.user_id, u.full_name, ts.project_id, p.code as project_code,
+        ts.work_date, COUNT(*) as dup_count,
+        GROUP_CONCAT(ts.id) as ids
+      FROM timesheets ts
+      JOIN users u ON u.id = ts.user_id
+      JOIN projects p ON p.id = ts.project_id
+      GROUP BY ts.user_id, ts.project_id, ts.work_date
+      HAVING COUNT(*) > 1
+      ORDER BY ts.work_date DESC
+    `).all()
+    const total = await db.prepare('SELECT COUNT(*) as cnt FROM timesheets').first() as any
+    return c.json({
+      duplicate_groups: dups.results.length,
+      duplicates: dups.results,
+      total_timesheets: total?.cnt || 0,
+      has_duplicates: dups.results.length > 0
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/timesheets/cleanup-duplicates — delete duplicate timesheets keeping newest (MAX id)
+app.post('/api/timesheets/cleanup-duplicates', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    // Count before
+    const before = await db.prepare('SELECT COUNT(*) as cnt FROM timesheets').first() as any
+    const dupsBefore = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT user_id, project_id, work_date FROM timesheets
+        GROUP BY user_id, project_id, work_date HAVING COUNT(*) > 1
+      )
+    `).first() as any
+
+    // Delete duplicates keeping MAX(id) per group
+    const del = await db.prepare(`
+      DELETE FROM timesheets
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM timesheets
+        GROUP BY user_id, project_id, work_date
+      )
+    `).run()
+
+    const after = await db.prepare('SELECT COUNT(*) as cnt FROM timesheets').first() as any
+    const dupsAfter = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT user_id, project_id, work_date FROM timesheets
+        GROUP BY user_id, project_id, work_date HAVING COUNT(*) > 1
+      )
+    `).first() as any
+
+    return c.json({
+      success: true,
+      before_count: before?.cnt || 0,
+      after_count: after?.cnt || 0,
+      rows_deleted: del.meta?.changes || 0,
+      duplicate_groups_before: dupsBefore?.cnt || 0,
+      duplicate_groups_after: dupsAfter?.cnt || 0
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // ===================================================
 // GET /api/timesheet-dashboard/:month/:year — monthly summary
 // ===================================================
@@ -1012,14 +1078,34 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho dự án này' }, 403)
     }
 
+    // === CREATE-OR-UPDATE: check for existing record before inserting ===
+    const existing = await db.prepare(
+      `SELECT id, status FROM timesheets WHERE user_id = ? AND project_id = ? AND work_date = ? LIMIT 1`
+    ).bind(targetUserId, parseInt(project_id), work_date).first() as any
+
+    if (existing) {
+      // Prevent editing approved timesheets (unless system_admin)
+      if (existing.status === 'approved' && user.role !== 'system_admin') {
+        return c.json({ error: 'Timesheet ngày này đã được duyệt. Không thể cập nhật.', exists: true, id: existing.id, status: existing.status }, 409)
+      }
+      // Update existing record instead of creating a duplicate
+      await db.prepare(
+        `UPDATE timesheets SET task_id = ?, regular_hours = ?, overtime_hours = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+      ).bind(task_id || null, regular_hours || 0, overtime_hours || 0, description || null, existing.id).run()
+      return c.json({ success: true, id: existing.id, action: 'updated' }, 200)
+    }
+
     const result = await db.prepare(
       `INSERT INTO timesheets (user_id, project_id, task_id, work_date, regular_hours, overtime_hours, description)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).bind(targetUserId, project_id, task_id || null, work_date,
       regular_hours || 0, overtime_hours || 0, description || null).run()
 
-    return c.json({ success: true, id: result.meta.last_row_id }, 201)
+    return c.json({ success: true, id: result.meta.last_row_id, action: 'created' }, 201)
   } catch (e: any) {
+    if (e.message?.includes('UNIQUE constraint failed')) {
+      return c.json({ error: 'Timesheet cho ngày này đã tồn tại. Vui lòng chỉnh sửa bản ghi hiện có.', duplicate: true }, 409)
+    }
     return c.json({ error: e.message }, 500)
   }
 })
@@ -3408,6 +3494,17 @@ app.post('/api/system/init', async (c) => {
       await db.prepare(stmt).run()
     }
 
+    // ---- CRITICAL: Always dedup timesheets BEFORE seeding new data ----
+    // This handles DBs created before UNIQUE constraint and any existing dupes
+    try {
+      await db.prepare(`
+        DELETE FROM timesheets
+        WHERE id NOT IN (
+          SELECT MAX(id) FROM timesheets GROUP BY user_id, project_id, work_date
+        )
+      `).run()
+    } catch (_) { /* ignore */ }
+
     // Insert admin user
     const adminHash = await hashPassword('Admin@123')
     await db.prepare(
@@ -3552,33 +3649,37 @@ app.post('/api/system/init', async (c) => {
     } catch (_) { /* ignore if no duplicates */ }
 
 
-    // Sample timesheets — INSERT OR IGNORE to prevent duplicates on re-init
-    const today = new Date()
-    for (let i = 30; i >= 0; i--) {
-      const d = new Date(today)
-      d.setDate(d.getDate() - i)
-      const dateStr = d.toISOString().split('T')[0]
-      if (d.getDay() !== 0 && d.getDay() !== 6) {
-        try {
-          await db.prepare(
-            `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
-             VALUES (?, ?, ?, ?, ?, ?, 'approved')`
-          ).bind(2, 1, dateStr, 8, i % 5 === 0 ? 2 : 0, 'Cong viec hang ngay').run()
-          await db.prepare(
-            `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
-             VALUES (?, ?, ?, ?, ?, ?, 'approved')`
-          ).bind(3, 1, dateStr, 8, i % 7 === 0 ? 3 : 0, 'Cong viec hang ngay').run()
-        } catch (_) { /* skip */ }
+    // Sample timesheets for PRJ001 — INSERT OR IGNORE to prevent duplicates on re-init
+    // Only seed if PRJ001 has fewer than 10 timesheet records (avoid re-seeding)
+    const existingPrj1Ts = await db.prepare(`SELECT COUNT(*) as cnt FROM timesheets WHERE project_id = 1`).first() as any
+    if (!existingPrj1Ts || existingPrj1Ts.cnt < 10) {
+      const today = new Date()
+      for (let i = 30; i >= 0; i--) {
+        const d = new Date(today)
+        d.setDate(d.getDate() - i)
+        const dateStr = d.toISOString().split('T')[0]
+        if (d.getDay() !== 0 && d.getDay() !== 6) {
+          try {
+            await db.prepare(
+              `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'approved')`
+            ).bind(2, 1, dateStr, 8, i % 5 === 0 ? 2 : 0, 'Cong viec hang ngay').run()
+            await db.prepare(
+              `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'approved')`
+            ).bind(3, 1, dateStr, 8, i % 7 === 0 ? 3 : 0, 'Cong viec hang ngay').run()
+          } catch (_) { /* skip */ }
+        }
       }
     }
 
     // Sample costs & revenues - for year 2026
-    // Also clean up any pre-existing timesheet duplicates (for dbs created before UNIQUE constraint)
+    // GLOBAL DEDUP: Always run after ALL timesheet inserts to clean any existing duplicates
     try {
       await db.prepare(`
         DELETE FROM timesheets
         WHERE id NOT IN (
-          SELECT MIN(id) FROM timesheets GROUP BY user_id, project_id, work_date
+          SELECT MAX(id) FROM timesheets GROUP BY user_id, project_id, work_date
         )
       `).run()
     } catch (_) { /* ignore */ }
@@ -3744,20 +3845,23 @@ app.post('/api/system/init', async (c) => {
       } catch (_) {}
     }
 
-    // Timesheets for Project 2 — users 2 & 3 for the past 30 days (weekdays, half-day)
-    const today2 = new Date()
-    for (let i = 30; i >= 0; i--) {
-      const d = new Date(today2); d.setDate(d.getDate() - i)
-      const dateStr = d.toISOString().split('T')[0]
-      if (d.getDay() !== 0 && d.getDay() !== 6) {
-        try {
-          await db.prepare(
-            `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status) VALUES (?, ?, ?, ?, ?, ?, 'approved')`
-          ).bind(2, 2, dateStr, 4, 0, 'Cong viec du an cau').run()
-          await db.prepare(
-            `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status) VALUES (?, ?, ?, ?, ?, ?, 'approved')`
-          ).bind(3, 2, dateStr, 4, i % 5 === 0 ? 2 : 0, 'Cong viec du an cau').run()
-        } catch (_) {}
+    // Timesheets for Project 2 — only seed if PRJ002 has fewer than 10 timesheet records
+    const existingPrj2Ts = await db.prepare(`SELECT COUNT(*) as cnt FROM timesheets WHERE project_id = 2`).first() as any
+    if (!existingPrj2Ts || existingPrj2Ts.cnt < 10) {
+      const today2 = new Date()
+      for (let i = 30; i >= 0; i--) {
+        const d = new Date(today2); d.setDate(d.getDate() - i)
+        const dateStr = d.toISOString().split('T')[0]
+        if (d.getDay() !== 0 && d.getDay() !== 6) {
+          try {
+            await db.prepare(
+              `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status) VALUES (?, ?, ?, ?, ?, ?, 'approved')`
+            ).bind(2, 2, dateStr, 4, 0, 'Cong viec du an cau').run()
+            await db.prepare(
+              `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status) VALUES (?, ?, ?, ?, ?, ?, 'approved')`
+            ).bind(3, 2, dateStr, 4, i % 5 === 0 ? 2 : 0, 'Cong viec du an cau').run()
+          } catch (_) {}
+        }
       }
     }
 
