@@ -685,8 +685,27 @@ app.delete('/api/tasks/:id', authMiddleware, async (c) => {
 })
 
 // ===================================================
-// TIMESHEET ROUTES
 // ===================================================
+// TIMESHEET ROUTES  (role-based access control)
+// system_admin : xem/sửa/xóa tất cả timesheets
+// project_admin: xem/sửa/duyệt timesheets thuộc dự án mình quản lý
+// project_leader: xem timesheets của dự án mình làm leader; sửa của chính mình
+// member       : chỉ xem/tạo/sửa timesheets của chính mình
+// ===================================================
+
+// Helper: kiểm tra project_admin có quản lý project_id này không
+async function isProjectAdmin(db: D1Database, userId: number, projectId: number): Promise<boolean> {
+  const proj = await db.prepare(
+    `SELECT id FROM projects WHERE id = ? AND (admin_id = ? OR leader_id = ?)`
+  ).bind(projectId, userId, userId).first()
+  if (proj) return true
+  // cũng check trong bảng project_members với role project_admin
+  const mem = await db.prepare(
+    `SELECT id FROM project_members WHERE project_id = ? AND user_id = ? AND role IN ('project_admin','project_leader')`
+  ).bind(projectId, userId).first()
+  return !!mem
+}
+
 app.get('/api/timesheets', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -694,7 +713,7 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     const { project_id, user_id, month, year, status } = c.req.query()
 
     let query = `
-      SELECT ts.*, 
+      SELECT ts.*,
         u.full_name as user_name, u.department,
         p.name as project_name, p.code as project_code,
         t.title as task_title
@@ -706,20 +725,36 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     `
     const params: any[] = []
 
-    if (user.role === 'member') {
+    if (user.role === 'system_admin') {
+      // Xem tất cả — chỉ lọc thêm nếu client yêu cầu
+      if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
+      if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
+    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
+      // Xem toàn bộ timesheets của dự án mình quản lý/làm leader
+      query += `
+        AND ts.project_id IN (
+          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+          UNION
+          SELECT project_id FROM project_members
+          WHERE user_id = ? AND role IN ('project_admin','project_leader')
+        )
+      `
+      params.push(user.id, user.id, user.id)
+      // Cho phép lọc thêm theo user_id hoặc project_id cụ thể
+      if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
+      if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
+    } else {
+      // member: chỉ xem của chính mình
       query += ` AND ts.user_id = ?`
       params.push(user.id)
-    } else if (user_id) {
-      query += ` AND ts.user_id = ?`
-      params.push(parseInt(user_id))
+      if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     }
 
-    if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     if (status) { query += ` AND ts.status = ?`; params.push(status) }
-    if (month) { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2, '0')) }
-    if (year) { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
+    if (month)  { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2, '0')) }
+    if (year)   { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
 
-    query += ' ORDER BY ts.work_date DESC'
+    query += ' ORDER BY ts.work_date DESC, ts.id DESC'
     const result = await db.prepare(query).bind(...params).all()
     return c.json(result.results)
   } catch (e: any) {
@@ -736,10 +771,20 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
 
     if (!project_id || !work_date) return c.json({ error: 'project_id and work_date required' }, 400)
 
+    // member chỉ được tạo timesheet cho chính mình
+    // system_admin/project_admin có thể tạo cho user_id bất kỳ (nếu truyền vào)
+    const targetUserId = (data.user_id && user.role !== 'member') ? data.user_id : user.id
+
+    // project_admin/leader chỉ tạo được trong dự án mình quản lý
+    if (user.role === 'project_admin' || user.role === 'project_leader') {
+      const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
+      if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho dự án này' }, 403)
+    }
+
     const result = await db.prepare(
       `INSERT INTO timesheets (user_id, project_id, task_id, work_date, regular_hours, overtime_hours, description)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(user.id, project_id, task_id || null, work_date,
+    ).bind(targetUserId, project_id, task_id || null, work_date,
       regular_hours || 0, overtime_hours || 0, description || null).run()
 
     return c.json({ success: true, id: result.meta.last_row_id }, 201)
@@ -758,23 +803,54 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     const ts = await db.prepare('SELECT * FROM timesheets WHERE id = ?').bind(id).first() as any
     if (!ts) return c.json({ error: 'Timesheet not found' }, 404)
 
-    if (ts.user_id !== user.id && user.role !== 'system_admin') {
-      return c.json({ error: 'Access denied' }, 403)
+    // Kiểm tra quyền chỉnh sửa
+    const isOwner = ts.user_id === user.id
+    const isAdmin = user.role === 'system_admin'
+    const isProjAdmin = (user.role === 'project_admin' || user.role === 'project_leader')
+      && await isProjectAdmin(db, user.id, ts.project_id)
+
+    if (!isOwner && !isAdmin && !isProjAdmin) {
+      return c.json({ error: 'Bạn không có quyền chỉnh sửa timesheet này' }, 403)
     }
 
-    const { regular_hours, overtime_hours, description, status, approved_by } = data
+    // member chỉ sửa được timesheet ở trạng thái draft/rejected của chính mình
+    if (isOwner && !isAdmin && !isProjAdmin) {
+      if (!['draft', 'rejected'].includes(ts.status)) {
+        return c.json({ error: 'Không thể sửa timesheet đã được duyệt hoặc đang chờ duyệt' }, 403)
+      }
+    }
+
+    const { regular_hours, overtime_hours, description, status } = data
     const updates: string[] = []
     const values: any[] = []
 
     if (regular_hours !== undefined) { updates.push('regular_hours = ?'); values.push(regular_hours) }
     if (overtime_hours !== undefined) { updates.push('overtime_hours = ?'); values.push(overtime_hours) }
     if (description !== undefined) { updates.push('description = ?'); values.push(description) }
-    if (status !== undefined && ['system_admin', 'project_admin'].includes(user.role)) {
-      updates.push('status = ?'); values.push(status)
-      if (status === 'approved') {
-        updates.push('approved_by = ?'); values.push(user.id)
-        updates.push('approved_at = CURRENT_TIMESTAMP')
+
+    if (status !== undefined) {
+      if (isAdmin || isProjAdmin) {
+        // project_admin/system_admin: được đổi mọi status (duyệt, từ chối...)
+        updates.push('status = ?'); values.push(status)
+        if (status === 'approved') {
+          updates.push('approved_by = ?'); values.push(user.id)
+          updates.push('approved_at = CURRENT_TIMESTAMP')
+        }
+        if (status === 'rejected') {
+          updates.push('approved_by = ?'); values.push(user.id)
+          updates.push('approved_at = CURRENT_TIMESTAMP')
+        }
+      } else if (isOwner) {
+        // member chỉ được submit (draft → submitted) hoặc rút lại (submitted → draft)
+        if ((ts.status === 'draft' && status === 'submitted') ||
+            (ts.status === 'submitted' && status === 'draft')) {
+          updates.push('status = ?'); values.push(status)
+        }
       }
+    }
+
+    if (!updates.length && status === undefined) {
+      return c.json({ error: 'Không có gì để cập nhật' }, 400)
     }
     updates.push('updated_at = CURRENT_TIMESTAMP')
     values.push(id)
@@ -793,7 +869,16 @@ app.delete('/api/timesheets/:id', authMiddleware, async (c) => {
     const id = parseInt(c.req.param('id'))
     const ts = await db.prepare('SELECT * FROM timesheets WHERE id = ?').bind(id).first() as any
     if (!ts) return c.json({ error: 'Not found' }, 404)
-    if (ts.user_id !== user.id && user.role !== 'system_admin') return c.json({ error: 'Access denied' }, 403)
+
+    const isOwner = ts.user_id === user.id
+    const isAdmin = user.role === 'system_admin'
+    const isProjAdmin = (user.role === 'project_admin' || user.role === 'project_leader')
+      && await isProjectAdmin(db, user.id, ts.project_id)
+
+    if (!isAdmin && !isProjAdmin && !(isOwner && ['draft', 'rejected'].includes(ts.status))) {
+      return c.json({ error: 'Không có quyền xóa timesheet này' }, 403)
+    }
+
     await db.prepare('DELETE FROM timesheets WHERE id = ?').bind(id).run()
     return c.json({ success: true })
   } catch (e: any) {

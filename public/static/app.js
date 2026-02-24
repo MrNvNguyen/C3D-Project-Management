@@ -1018,22 +1018,39 @@ async function loadTimesheets() {
     if (!allProjects.length) allProjects = await api('/projects')
     if (!allUsers.length) allUsers = await api('/users')
 
-    // Init filters
+    const isAdmin  = currentUser.role === 'system_admin'
+    const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+    const canSeeAll = isAdmin || isProjAdmin
+
+    // Subtitle theo role
+    const subtitle = $('tsPageSubtitle')
+    if (subtitle) {
+      if (isAdmin)       subtitle.textContent = 'Xem toàn bộ timesheet tất cả thành viên, tất cả dự án'
+      else if (isProjAdmin) subtitle.textContent = 'Xem & duyệt timesheet của các thành viên trong dự án bạn quản lý'
+      else               subtitle.textContent = 'Timesheet cá nhân của bạn'
+    }
+
+    // Summary cards — chỉ admin / project_admin
+    const summaryCards = $('tsSummaryCards')
+    if (summaryCards) summaryCards.classList.toggle('hidden', !canSeeAll)
+
+    // Init month filter
     const monthSel = $('tsMonthFilter')
     if (monthSel && monthSel.options.length <= 1) {
-      const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
       const monthNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
-      months.forEach((m, i) => {
+      monthNames.forEach((name, i) => {
         const opt = document.createElement('option')
-        opt.value = m; opt.textContent = monthNames[i]
-        if (parseInt(m) === new Date().getMonth() + 1) opt.selected = true
+        opt.value = String(i + 1).padStart(2, '0')
+        opt.textContent = name
+        if (i + 1 === new Date().getMonth() + 1) opt.selected = true
         monthSel.appendChild(opt)
       })
     }
 
+    // Init year filter
     const yearSel = $('tsYearFilter')
     if (yearSel && yearSel.options.length <= 1) {
-      [2023, 2024, 2025, 2026].forEach(y => {
+      ;[2023, 2024, 2025, 2026].forEach(y => {
         const opt = document.createElement('option')
         opt.value = y; opt.textContent = y
         if (y === new Date().getFullYear()) opt.selected = true
@@ -1041,29 +1058,60 @@ async function loadTimesheets() {
       })
     }
 
+    // Project filter — tất cả đều có
     const tsProj = $('tsProjectFilter')
     if (tsProj) {
-      tsProj.innerHTML = '<option value="">Tất cả dự án</option>' + allProjects.map(p => `<option value="${p.id}">${p.code}</option>`).join('')
+      tsProj.innerHTML = '<option value="">Tất cả dự án</option>' +
+        allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
     }
 
+    // User filter — chỉ hiện với project_admin / system_admin
     const tsUserF = $('tsUserFilter')
-    if (tsUserF && currentUser.role !== 'member') {
-      tsUserF.innerHTML = '<option value="">Tất cả nhân viên</option>' + allUsers.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+    if (tsUserF) {
+      if (canSeeAll) {
+        tsUserF.classList.remove('hidden')
+        // system_admin thấy tất cả user; project_admin chỉ thấy member trong dự án mình
+        const usersForFilter = isAdmin
+          ? allUsers
+          : allUsers.filter(u => u.role !== 'system_admin')
+        tsUserF.innerHTML = '<option value="">Tất cả nhân viên</option>' +
+          usersForFilter.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+      } else {
+        tsUserF.classList.add('hidden')
+      }
     }
 
-    const month = $('tsMonthFilter')?.value
-    const year = $('tsYearFilter')?.value
+    // Status filter — chỉ hiện với admin / project_admin
+    const tsStatusF = $('tsStatusFilter')
+    if (tsStatusF) tsStatusF.classList.toggle('hidden', !canSeeAll)
+
+    // Build query URL
+    const month     = $('tsMonthFilter')?.value
+    const year      = $('tsYearFilter')?.value
     const projectId = $('tsProjectFilter')?.value
-    const userId = $('tsUserFilter')?.value
+    const userId    = canSeeAll ? ($('tsUserFilter')?.value || '') : ''
+    const status    = canSeeAll ? ($('tsStatusFilter')?.value || '') : ''
 
     let url = '/timesheets?'
-    if (month) url += `month=${month}&`
-    if (year) url += `year=${year}&`
+    if (month)     url += `month=${month}&`
+    if (year)      url += `year=${year}&`
     if (projectId) url += `project_id=${projectId}&`
-    if (userId) url += `user_id=${userId}&`
+    if (userId)    url += `user_id=${userId}&`
+    if (status)    url += `status=${status}&`
 
     allTimesheets = await api(url)
     renderTimesheetTable(allTimesheets)
+
+    // Cập nhật summary cards
+    if (canSeeAll && allTimesheets.length) {
+      const pending  = allTimesheets.filter(t => t.status === 'submitted').length
+      const approved = allTimesheets.filter(t => t.status === 'approved').length
+      const totalH   = allTimesheets.reduce((s, t) => s + (t.regular_hours||0) + (t.overtime_hours||0), 0)
+      if ($('tsCardTotal'))    $('tsCardTotal').textContent   = allTimesheets.length
+      if ($('tsCardPending'))  $('tsCardPending').textContent = pending
+      if ($('tsCardApproved')) $('tsCardApproved').textContent = approved
+      if ($('tsCardHours'))    $('tsCardHours').textContent   = totalH + 'h'
+    }
   } catch (e) { toast('Lỗi tải timesheet: ' + e.message, 'error') }
 }
 
@@ -1071,40 +1119,81 @@ function renderTimesheetTable(timesheets) {
   const tbody = $('timesheetTable')
   if (!tbody) return
 
+  const isAdmin     = currentUser.role === 'system_admin'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+  const canSeeAll   = isAdmin || isProjAdmin
+  const canApprove  = isAdmin || isProjAdmin
+
   let totalReg = 0, totalOT = 0
   timesheets.forEach(t => { totalReg += t.regular_hours || 0; totalOT += t.overtime_hours || 0 })
   $('tsTotalRegular').textContent = totalReg + 'h'
   $('tsTotalOvertime').textContent = totalOT + 'h'
   $('tsTotalHours').textContent = (totalReg + totalOT) + 'h'
 
-  const statusColors = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
-  const statusLabels = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
+  // Ẩn/hiện cột "Nhân viên"
+  document.querySelectorAll('.ts-col-user').forEach(el => {
+    el.style.display = canSeeAll ? '' : 'none'
+  })
 
-  tbody.innerHTML = timesheets.map(t => `
-    <tr class="table-row">
+  const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
+  const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
+
+  const emptyColspan = canSeeAll ? 10 : 9
+
+  tbody.innerHTML = timesheets.map(t => {
+    const isOwner   = t.user_id === currentUser.id
+    const isDraft   = t.status === 'draft'
+    const isRejected = t.status === 'rejected'
+    const isSubmitted = t.status === 'submitted'
+
+    // Quyền edit: admin/projAdmin luôn được; member chỉ khi draft/rejected của mình
+    const canEdit   = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
+    // Quyền xóa: admin luôn được; projAdmin được; member chỉ khi draft/rejected của mình
+    const canDelete = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
+    // Nút submit (gửi duyệt) — chỉ owner, khi đang draft
+    const canSubmit = isOwner && isDraft
+    // Nút approve — admin/projAdmin, khi submitted
+    const canApproveBt = canApprove && isSubmitted
+    // Nút reject — admin/projAdmin, khi submitted
+    const canRejectBt = canApprove && isSubmitted
+
+    return `
+    <tr class="table-row ${isOwner && !canSeeAll ? 'bg-green-50/30' : ''}">
       <td class="py-2 pr-3 text-sm font-medium">${fmtDate(t.work_date)}</td>
-      <td class="py-2 pr-3 text-sm">${t.user_name || '-'}</td>
-      <td class="py-2 pr-3 text-sm text-gray-600">${t.project_code ? `${t.project_code}` : '-'}</td>
-      <td class="py-2 pr-3 text-xs text-gray-500">${t.task_title || '-'}</td>
+      <td class="py-2 pr-3 text-sm ts-col-user" style="display:${canSeeAll ? '' : 'none'}">
+        <div class="flex items-center gap-1.5">
+          <div class="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(t.user_name||'?').split(' ').pop()?.charAt(0)}</div>
+          <span>${t.user_name || '-'}</span>
+        </div>
+      </td>
+      <td class="py-2 pr-3 text-sm text-gray-600">${t.project_code || '-'}</td>
+      <td class="py-2 pr-3 text-xs text-gray-500 max-w-28 truncate" title="${t.task_title||''}">${t.task_title || '-'}</td>
       <td class="py-2 pr-3 text-center font-medium text-primary">${t.regular_hours}h</td>
       <td class="py-2 pr-3 text-center font-medium text-orange-500">${t.overtime_hours > 0 ? t.overtime_hours + 'h' : '-'}</td>
       <td class="py-2 pr-3 text-center font-bold text-gray-700">${(t.regular_hours + t.overtime_hours)}h</td>
-      <td class="py-2 pr-3 text-xs text-gray-500 max-w-32 truncate">${t.description || '-'}</td>
+      <td class="py-2 pr-3 text-xs text-gray-500 max-w-32 truncate" title="${t.description||''}">${t.description || '-'}</td>
       <td class="py-2 pr-3"><span class="badge ${statusColors[t.status] || 'badge-todo'}">${statusLabels[t.status] || t.status}</span></td>
       <td class="py-2">
-        <div class="flex gap-1">
-          <button onclick="openTimesheetModal(${t.id})" class="btn-secondary text-xs px-2 py-1"><i class="fas fa-edit"></i></button>
-          ${['system_admin','project_admin'].includes(currentUser.role) && t.status === 'submitted' ?
-            `<button onclick="approveTimesheet(${t.id})" class="btn-primary text-xs px-2 py-1" title="Duyệt"><i class="fas fa-check"></i></button>` : ''}
-          <button onclick="deleteTimesheet(${t.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm"><i class="fas fa-trash"></i></button>
+        <div class="flex gap-1 flex-wrap">
+          ${canSubmit ? `<button onclick="submitTimesheet(${t.id})" class="btn-secondary text-xs px-2 py-1 text-blue-600 border-blue-300" title="Gửi duyệt"><i class="fas fa-paper-plane"></i></button>` : ''}
+          ${canEdit   ? `<button onclick="openTimesheetModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
+          ${canApproveBt ? `<button onclick="approveTimesheet(${t.id})" class="btn-primary text-xs px-2 py-1" title="Duyệt"><i class="fas fa-check"></i></button>` : ''}
+          ${canRejectBt  ? `<button onclick="rejectTimesheet(${t.id})" class="text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-1 text-xs" title="Từ chối"><i class="fas fa-times"></i></button>` : ''}
+          ${canDelete ? `<button onclick="deleteTimesheet(${t.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
         </div>
       </td>
-    </tr>
-  `).join('') || '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có timesheet</td></tr>'
+    </tr>`
+  }).join('') || `<tr><td colspan="${emptyColspan}" class="text-center py-8 text-gray-400">
+    <i class="fas fa-clock text-3xl mb-2 block"></i>
+    ${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào. Nhấn "+ Thêm timesheet" để bắt đầu.'}
+  </td></tr>`
 }
 
 async function openTimesheetModal(tsId = null) {
   if (!allProjects.length) allProjects = await api('/projects')
+
+  const isAdmin     = currentUser.role === 'system_admin'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
 
   $('tsModalTitle').textContent = tsId ? 'Sửa Timesheet' : 'Thêm Timesheet'
   $('tsId').value = tsId || ''
@@ -1116,12 +1205,24 @@ async function openTimesheetModal(tsId = null) {
   if (tsId) {
     const ts = allTimesheets.find(t => t.id === tsId)
     if (ts) {
+      // Kiểm tra quyền sửa: member chỉ sửa draft/rejected của mình
+      const isOwner = ts.user_id === currentUser.id
+      if (!isAdmin && !isProjAdmin && !(isOwner && ['draft', 'rejected'].includes(ts.status))) {
+        toast('Bạn không có quyền sửa timesheet này', 'warning')
+        return
+      }
       $('tsDate').value = ts.work_date || ''
       $('tsProject').value = ts.project_id || ''
       $('tsRegularHours').value = ts.regular_hours || 8
       $('tsOvertimeHours').value = ts.overtime_hours || 0
       $('tsDescription').value = ts.description || ''
       await loadTsTasks(ts.project_id, ts.task_id)
+
+      // Disable fields nếu đã submitted (project_admin/system_admin có thể sửa)
+      const locked = !isAdmin && !isProjAdmin && ts.status === 'submitted'
+      ;['tsDate','tsProject','tsRegularHours','tsOvertimeHours','tsDescription','tsTask'].forEach(id => {
+        const el = $(id); if (el) el.disabled = locked
+      })
     }
   } else {
     $('tsDate').value = today()
@@ -1129,6 +1230,9 @@ async function openTimesheetModal(tsId = null) {
     $('tsOvertimeHours').value = 0
     $('tsDescription').value = ''
     $('tsTask').innerHTML = '<option value="">-- Chọn task --</option>'
+    ;['tsDate','tsProject','tsRegularHours','tsOvertimeHours','tsDescription','tsTask'].forEach(id => {
+      const el = $(id); if (el) el.disabled = false
+    })
   }
 
   openModal('timesheetModal')
@@ -1171,10 +1275,28 @@ $('tsForm').addEventListener('submit', async (e) => {
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
 
+async function submitTimesheet(id) {
+  if (!confirm('Gửi timesheet này để chờ duyệt?')) return
+  try {
+    await api(`/timesheets/${id}`, { method: 'put', data: { status: 'submitted' } })
+    toast('Đã gửi timesheet chờ duyệt', 'success')
+    loadTimesheets()
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
 async function approveTimesheet(id) {
   try {
     await api(`/timesheets/${id}`, { method: 'put', data: { status: 'approved' } })
-    toast('Đã duyệt timesheet')
+    toast('Đã duyệt timesheet', 'success')
+    loadTimesheets()
+  } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+async function rejectTimesheet(id) {
+  if (!confirm('Từ chối timesheet này?')) return
+  try {
+    await api(`/timesheets/${id}`, { method: 'put', data: { status: 'rejected' } })
+    toast('Đã từ chối timesheet', 'warning')
     loadTimesheets()
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
@@ -1185,7 +1307,7 @@ async function deleteTimesheet(id) {
     await api(`/timesheets/${id}`, { method: 'delete' })
     toast('Đã xóa timesheet')
     loadTimesheets()
-  } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 }
 
 // ================================================================

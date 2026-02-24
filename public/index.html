@@ -478,11 +478,31 @@
         <div class="flex justify-between items-center mb-6">
           <div>
             <h1 class="text-2xl font-bold text-gray-800">Quản lý Timesheet</h1>
-            <p class="text-gray-500 text-sm">Theo dõi giờ làm việc hàng ngày</p>
+            <p id="tsPageSubtitle" class="text-gray-500 text-sm">Theo dõi giờ làm việc hàng ngày</p>
           </div>
           <button onclick="openTimesheetModal()" class="btn-primary flex items-center gap-2">
             <i class="fas fa-plus"></i>Thêm timesheet
           </button>
+        </div>
+
+        <!-- Summary cards — chỉ hiện với admin -->
+        <div id="tsSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 hidden">
+          <div class="card text-center">
+            <p class="text-xs text-gray-500 mb-1">Tổng bản ghi</p>
+            <p id="tsCardTotal" class="text-2xl font-bold text-primary">0</p>
+          </div>
+          <div class="card text-center">
+            <p class="text-xs text-gray-500 mb-1">Chờ duyệt</p>
+            <p id="tsCardPending" class="text-2xl font-bold text-warning">0</p>
+          </div>
+          <div class="card text-center">
+            <p class="text-xs text-gray-500 mb-1">Đã duyệt</p>
+            <p id="tsCardApproved" class="text-2xl font-bold text-green-600">0</p>
+          </div>
+          <div class="card text-center">
+            <p class="text-xs text-gray-500 mb-1">Tổng giờ (tháng)</p>
+            <p id="tsCardHours" class="text-2xl font-bold text-accent">0h</p>
+          </div>
         </div>
 
         <div class="card mb-4">
@@ -496,8 +516,17 @@
             <select id="tsProjectFilter" class="select-field" style="width:180px" onchange="loadTimesheets()">
               <option value="">Tất cả dự án</option>
             </select>
-            <select id="tsUserFilter" class="select-field" style="width:160px" onchange="loadTimesheets()" id="tsUserFilterAdmin">
+            <!-- Filter nhân viên: chỉ hiện với project_admin / system_admin -->
+            <select id="tsUserFilter" class="select-field hidden" style="width:160px" onchange="loadTimesheets()">
               <option value="">Tất cả nhân viên</option>
+            </select>
+            <!-- Filter trạng thái: project_admin / system_admin -->
+            <select id="tsStatusFilter" class="select-field hidden" style="width:140px" onchange="loadTimesheets()">
+              <option value="">Tất cả trạng thái</option>
+              <option value="draft">Nháp</option>
+              <option value="submitted">Chờ duyệt</option>
+              <option value="approved">Đã duyệt</option>
+              <option value="rejected">Từ chối</option>
             </select>
             <div class="ml-auto flex gap-2 text-sm text-gray-600 bg-gray-50 px-4 py-2 rounded-lg">
               <span>Tổng giờ HC: <strong id="tsTotalRegular" class="text-primary">0</strong></span>
@@ -512,9 +541,9 @@
         <div class="card">
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
-              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+              <thead><tr id="tsTableHeader" class="text-left text-gray-500 border-b text-xs uppercase">
                 <th class="pb-3 pr-3 font-medium">Ngày</th>
-                <th class="pb-3 pr-3 font-medium">Nhân viên</th>
+                <th class="pb-3 pr-3 font-medium ts-col-user">Nhân viên</th>
                 <th class="pb-3 pr-3 font-medium">Dự án</th>
                 <th class="pb-3 pr-3 font-medium">Task</th>
                 <th class="pb-3 pr-3 font-medium text-center">Giờ HC</th>
