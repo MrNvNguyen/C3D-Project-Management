@@ -1782,25 +1782,56 @@ function switchCostTab(tab) {
 }
 
 // ── Phân tích chi tiết ──────────────────────────────────────────────
+// Period-type toggle for Analysis tab
+function onAnalysisPeriodTypeChange() {
+  const pt = $('analysisPeriodType')?.value || 'single'
+  const sc = $('analysisSingleCtrl'); const mc = $('analysisMultiCtrl')
+  if (sc) sc.classList.toggle('hidden', pt !== 'single')
+  if (mc) mc.classList.toggle('hidden', pt !== 'multi')
+}
+
 async function loadCostAnalysis() {
   const projId = $('analysisProjSel')?.value
-  const month  = $('analysisMonthSel')?.value
   const year   = $('analysisYearSel')?.value
+  const periodType = $('analysisPeriodType')?.value || 'single'
   if (!projId) { toast('Vui lòng chọn dự án', 'warning'); return }
-  if (!month || !year) { toast('Vui lòng chọn tháng/năm', 'warning'); return }
+  if (!year) { toast('Vui lòng chọn năm', 'warning'); return }
+
+  // Build query params
+  let apiUrl = `/projects/${projId}/costs-revenue-summary?year=${year}`
+  if (periodType === 'all') {
+    apiUrl += '&all_months=true'
+  } else if (periodType === 'multi') {
+    const checked = [...document.querySelectorAll('.analysisMonthCheck:checked')].map(el => el.value)
+    if (checked.length === 0) { toast('Vui lòng chọn ít nhất một tháng', 'warning'); return }
+    apiUrl += `&months=${checked.join(',')}`
+  } else {
+    const month = $('analysisMonthSel')?.value
+    if (!month) { toast('Vui lòng chọn tháng', 'warning'); return }
+    apiUrl += `&month=${month}`
+  }
 
   try {
-    const data = await api(`/projects/${projId}/costs-summary?month=${month}&year=${year}`)
+    const data = await api(apiUrl)
 
     // Show cards
     const cards = $('analysisCards'); if (cards) cards.classList.remove('hidden')
 
-    $('anaRevenue').textContent   = fmtMoney(data.revenue.month_revenue)
-    $('anaLaborCost').textContent = fmtMoney(data.costs.labor_cost)
-    $('anaOtherCost').textContent = fmtMoney(data.costs.total_other_costs)
-    $('anaTotalCost').textContent = fmtMoney(data.costs.total_costs)
-    $('anaProfit').textContent    = fmtMoney(data.profit.profit)
-    $('anaProfitMargin').textContent = `Tỷ suất LN: ${data.profit.profit_margin ?? 'N/A'}%`
+    // Map from new costs-revenue-summary response
+    const fin = data.financial || {}
+    const revVal   = fin.revenue?.value || 0
+    const laborVal = fin.costs?.labor?.value || 0
+    const otherVal = fin.costs?.other?.value || 0
+    const totalVal = fin.costs?.total?.value || 0
+    const profitVal= fin.profit?.value || 0
+    const margin   = fin.profit?.percentage
+
+    $('anaRevenue').textContent   = fmtMoney(revVal)
+    $('anaLaborCost').textContent = fmtMoney(laborVal)
+    $('anaOtherCost').textContent = fmtMoney(otherVal)
+    $('anaTotalCost').textContent = fmtMoney(totalVal)
+    $('anaProfit').textContent    = fmtMoney(profitVal)
+    $('anaProfitMargin').textContent = `Tỷ suất LN: ${margin ?? 'N/A'}%`
 
     const profitCard = $('anaProfitCard')
     if (profitCard) {
@@ -1810,6 +1841,23 @@ async function loadCostAnalysis() {
         : profitStatus === 'warning'
           ? 'linear-gradient(135deg,#f59e0b,#d97706)'
           : 'linear-gradient(135deg,#ef4444,#dc2626)'
+    }
+
+    // Data sync source indicator
+    const syncBadge = $('anaDataSyncBadge')
+    if (syncBadge) {
+      const src = fin.costs?.labor?.source || 'none'
+      const syncedFrom = fin.costs?.labor?.synced_from || ''
+      const periodLabel = data.period?.label || ''
+      syncBadge.innerHTML = `<div class="flex items-center gap-2 mb-3 p-2 rounded-lg ${src === 'project_labor_costs' ? 'bg-green-50 border border-green-200' : 'bg-yellow-50 border border-yellow-200'}">
+        <i class="fas ${src === 'project_labor_costs' ? 'fa-check-circle text-green-500' : 'fa-exclamation-circle text-yellow-500'} text-sm"></i>
+        <span class="text-xs ${src === 'project_labor_costs' ? 'text-green-700' : 'text-yellow-700'}">
+          Chi phí lương từ: <strong>${syncedFrom || (src === 'project_labor_costs' ? 'project_labor_costs (đã đồng bộ)' : 'Tính real-time từ timesheet')}</strong>
+          ${periodLabel ? ` | Kỳ: <strong>${periodLabel}</strong>` : ''}
+        </span>
+        ${src !== 'project_labor_costs' ? `<button onclick="createLaborForAnalysisProject(${projId})" class="ml-auto text-xs text-yellow-700 underline hover:no-underline">Đồng bộ ngay</button>` : ''}
+      </div>`
+      syncBadge.classList.remove('hidden')
     }
 
     // Show validation warnings
@@ -1836,13 +1884,13 @@ async function loadCostAnalysis() {
       }
     }
 
-    const laborDet = data.costs.labor_cost_details
+    const laborDet = fin.costs?.labor?.details
     if ($('anaLaborDetail') && laborDet) {
       $('anaLaborDetail').textContent = `${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)}/h`
     }
 
-    const breakdown = data.costs.breakdown || []
-    const hasData = breakdown.length > 0 || data.costs.total_costs > 0
+    const breakdown = data.cost_breakdown || []
+    const hasData = breakdown.length > 0 || totalVal > 0
 
     const detailDiv = $('analysisDetail'); const emptyDiv = $('analysisEmpty')
     if (detailDiv) detailDiv.classList.toggle('hidden', !hasData)
@@ -1860,15 +1908,16 @@ async function loadCostAnalysis() {
                 <span>${costTypeIcons[b.type] || '📋'}</span>
                 <span class="font-medium text-gray-700">${b.type}</span>
                 ${b.is_auto ? '<span class="text-xs bg-blue-100 text-blue-600 px-1 rounded ml-1">tự động</span>' : ''}
+                ${b.source ? `<span class="text-xs text-gray-400 ml-1">[${b.source}]</span>` : ''}
               </span>
             </td>
             <td class="py-2 pr-3 text-right font-bold text-gray-800">${fmtMoney(b.amount)}</td>
             <td class="py-2 text-right">
               <span class="inline-flex items-center gap-1">
                 <div class="w-16 bg-gray-100 rounded-full h-1.5 inline-block align-middle">
-                  <div class="h-1.5 rounded-full" style="width:${Math.min(b.pct,100)}%;background:#00A651"></div>
+                  <div class="h-1.5 rounded-full" style="width:${Math.min(b.percentage||0,100)}%;background:#00A651"></div>
                 </div>
-                <span class="text-xs text-gray-500">${b.pct}%</span>
+                <span class="text-xs text-gray-500">${b.percentage||0}%</span>
               </span>
             </td>
           </tr>`).join('')
@@ -1877,7 +1926,7 @@ async function loadCostAnalysis() {
         tbody.innerHTML += `
           <tr class="border-t-2 border-gray-300">
             <td class="py-2 pr-3 font-bold text-gray-800">Tổng chi phí</td>
-            <td class="py-2 pr-3 text-right font-bold text-red-600">${fmtMoney(data.costs.total_costs)}</td>
+            <td class="py-2 pr-3 text-right font-bold text-red-600">${fmtMoney(totalVal)}</td>
             <td class="py-2 text-right font-bold text-gray-600">100%</td>
           </tr>`
       }
@@ -1888,10 +1937,10 @@ async function loadCostAnalysis() {
         laborInfo.classList.remove('hidden')
         const src = $('anaLaborInfoContent')
         if (src) src.innerHTML = `
-          <p>• Giờ làm dự án tháng này: <strong>${laborDet.total_hours}h</strong></p>
-          <p>• Chi phí/giờ công ty: <strong>${fmtMoney(laborDet.cost_per_hour)}/h</strong></p>
-          <p>• Nguồn: <strong>${laborDet.cost_source === 'project_labor_costs' ? 'Bảng project_labor_costs (đã đồng bộ)' : laborDet.cost_source === 'manual' ? 'Nhập thủ công (Chi Phí Lương)' : 'Tổng lương nhân sự (tự động)'}</strong></p>
-          <p>• Chi phí lương dự án = ${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)} = <strong>${fmtMoney(data.costs.labor_cost)}</strong></p>`
+          <p>• Giờ làm dự án kỳ này: <strong>${laborDet.total_hours}h</strong></p>
+          <p>• Chi phí/giờ: <strong>${fmtMoney(laborDet.cost_per_hour)}/h</strong></p>
+          <p>• Nguồn: <strong>${fin.costs?.labor?.source === 'project_labor_costs' ? 'project_labor_costs (đã đồng bộ)' : fin.costs?.labor?.source === 'manual' ? 'Nhập thủ công' : 'Real-time (tự động)'}</strong></p>
+          ${laborDet.formula ? `<p>• Công thức: <strong>${laborDet.formula}</strong></p>` : `<p>• Chi phí = ${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)} = <strong>${fmtMoney(laborVal)}</strong></p>`}`
       }
 
       // Doughnut chart
@@ -1921,6 +1970,18 @@ async function loadCostAnalysis() {
       }
     }
   } catch (e) { toast('Lỗi tải phân tích: ' + e.message, 'error') }
+}
+
+// Quick sync helper called from the analysis page sync badge
+async function createLaborForAnalysisProject(projId) {
+  const month = $('analysisMonthSel')?.value
+  const year  = $('analysisYearSel')?.value
+  if (!month || !year) { toast('Chưa chọn tháng/năm cụ thể để đồng bộ', 'warning'); return }
+  try {
+    const res = await api(`/projects/${projId}/labor-costs/sync`, { method: 'POST', data: { month: parseInt(month), year: parseInt(year), force_recalculate: true } })
+    toast(`Đồng bộ thành công: ${fmtMoney(res.data?.total_labor_cost)} ₫`, 'success')
+    loadCostAnalysis()
+  } catch(e) { toast('Lỗi đồng bộ: ' + e.message, 'error') }
 }
 
 // ── Kiểm tra & xóa trùng lặp ────────────────────────────────────────
@@ -2664,17 +2725,39 @@ async function loadFinanceProjectPage() {
   } catch(e) { console.error(e) }
 }
 
+// Period-type toggle for Finance Project page
+function onFinPeriodTypeChange() {
+  const pt = $('finPeriodType')?.value || 'single'
+  const sc = $('finSingleMonthCtrl'); const mc = $('finMultiMonthCtrl')
+  if (sc) sc.classList.toggle('hidden', pt !== 'single')
+  if (mc) mc.classList.toggle('hidden', pt !== 'multi')
+  // Auto-reload (unless multi which needs checkbox selection)
+  if (pt !== 'multi') loadFinanceProject()
+}
+
 async function loadFinanceProject() {
   const projectId = $('finProjSelect')?.value
   if (!projectId) return
   try {
-    // Build query params with optional month/year filter
-    const mf = $('finMonthFilter')?.value
-    const yf = $('finYearFilter')?.value
+    const yf = $('finYearFilter')?.value || String(new Date().getFullYear())
+    const periodType = $('finPeriodType')?.value || 'single'
+
+    // Build query params
     let query = `/finance/project/${projectId}`
     const params = []
-    if (mf) params.push(`month=${mf}`)
     if (yf) params.push(`year=${yf}`)
+
+    if (periodType === 'all') {
+      params.push('all_months=true')
+    } else if (periodType === 'multi') {
+      const checked = [...document.querySelectorAll('.finMonthCheck:checked')].map(el => el.value)
+      if (checked.length === 0) { toast('Vui lòng chọn ít nhất một tháng', 'warning'); return }
+      params.push(`months=${checked.join(',')}`)
+    } else {
+      const mf = $('finMonthFilter')?.value
+      if (mf) params.push(`month=${mf}`)
+    }
+
     if (params.length) query += '?' + params.join('&')
 
     const data = await api(query)
@@ -2702,9 +2785,16 @@ async function loadFinanceProject() {
     const profitColor = validation?.profit_status === 'ok' ? 'text-purple-600' : validation?.profit_status === 'warning' ? 'text-amber-600' : 'text-red-600'
     const profitBorder = validation?.profit_status === 'ok' ? '#8B5CF6' : validation?.profit_status === 'warning' ? '#F59E0B' : '#EF4444'
 
+    // Period label
+    let periodLabel = ''
+    if (periodType === 'all') periodLabel = `Toàn năm ${yf}`
+    else if (periodType === 'multi') periodLabel = `Nhiều tháng ${yf}`
+    else { const mf = $('finMonthFilter')?.value; periodLabel = mf ? `T${parseInt(mf)}/${yf}` : `Năm ${yf}` }
+
     // KPI cards
     el.innerHTML = `
       ${warningBanner}
+      ${periodLabel ? `<div class="text-xs text-gray-500 mb-3"><i class="fas fa-calendar-alt mr-1 text-blue-400"></i>Kỳ báo cáo: <strong>${periodLabel}</strong></div>` : ''}
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div class="kpi-card" style="border-color:#00A651">
           <p class="text-xs text-gray-500">DOANH THU</p>
@@ -2762,6 +2852,7 @@ async function loadFinanceProject() {
           <i class="fas fa-info-circle mr-1"></i>
           Chi phí lương từ: <strong>${summary.labor_source === 'project_labor_costs' ? 'project_labor_costs (đã đồng bộ)' : 'Tính real-time từ timesheet'}</strong>
           — ${summary.labor_hours}h × ${fmtMoney(summary.labor_per_hour)}/h
+          ${periodLabel ? ` | Kỳ: <strong>${periodLabel}</strong>` : ''}
         </div>` : ''}
       </div>
     `
@@ -2881,7 +2972,7 @@ async function deleteLaborEntry(id, label) {
 }
 
 async function loadLaborCost() {
-  // Init month filter
+  // Init month filter (single mode)
   const mf = $('laborMonthFilter')
   if (mf && mf.options.length === 0) {
     const mNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
@@ -2923,9 +3014,115 @@ async function loadLaborCost() {
     })
   }
 
+  const periodType = $('laborPeriodType')?.value || 'single'
+  const year = $('laborYearFilter')?.value || String(new Date().getFullYear())
+
+  // --- YEARLY / MULTI-MONTH totals via /api/financial-summary/labor-costs-all-projects ---
+  const yearlyCard = $('laborYearlyCard')
+  const isMultiOrAll = (periodType === 'all' || periodType === 'multi')
+  if (yearlyCard) yearlyCard.classList.toggle('hidden', !isMultiOrAll)
+
+  if (isMultiOrAll) {
+    // Build URL for project-level aggregated summary
+    let aggUrl = `/financial-summary/labor-costs-all-projects?year=${year}`
+    if (periodType === 'all') {
+      aggUrl += '&all_months=true'
+    } else {
+      const checked = [...document.querySelectorAll('.laborMonthCheck:checked')].map(el => el.value)
+      if (checked.length === 0) { toast('Vui lòng chọn ít nhất một tháng', 'warning'); return }
+      aggUrl += `&months=${checked.join(',')}`
+    }
+    try {
+      const aggData = await api(aggUrl)
+      // Yearly totals card
+      if ($('laborYearlyTitle')) $('laborYearlyTitle').textContent = periodType === 'all' ? `Tổng hợp cả năm ${year}` : `Tổng hợp các tháng đã chọn (${year})`
+      if ($('laborYearlySubtitle')) $('laborYearlySubtitle').textContent = `${aggData.projects_count} dự án có dữ liệu`
+      if ($('laborYearlyTotalCost')) $('laborYearlyTotalCost').textContent = fmtMoney(aggData.grand_total_labor_cost)
+
+      // For per-project totals calculate aggregate hours & avg rate
+      const projs = aggData.projects || []
+      const totalHrs = projs.reduce((s, p) => s + (p.total_hours || 0), 0)
+      const avgRate = projs.length > 0 ? projs.reduce((s, p) => s + (p.avg_cost_per_hour || 0), 0) / projs.length : 0
+      if ($('laborYearlyTotalHours')) $('laborYearlyTotalHours').textContent = fmt(totalHrs) + 'h'
+      if ($('laborYearlyAvgRate')) $('laborYearlyAvgRate').textContent = fmtMoney(Math.round(avgRate)) + '/h'
+
+      // Month-by-month breakdown — fetch from labor-costs-yearly for first project
+      // Actually show the per-project aggregation as a "monthly" breakdown if we have it
+      // For "all months" we fetch monthly breakdown per project separately
+      // Show project table in the existing labor table
+      const tbody2 = $('laborTable')
+      if (tbody2) {
+        const rateLabel = fmtMoney(Math.round(avgRate))
+        tbody2.innerHTML = projs.length ? projs.map(p => `
+          <tr class="table-row border-b">
+            <td class="py-2 pr-3">
+              <div class="font-medium text-sm">${p.project_name}</div>
+              <div class="text-xs text-gray-400">${p.project_code}</div>
+            </td>
+            <td class="py-2 pr-3 text-right">${fmt(p.total_hours||0)}h</td>
+            <td class="py-2 pr-3 text-right">
+              <span class="badge" style="background:#e0f2fe;color:#0369a1">${totalHrs > 0 ? ((p.total_hours||0)/totalHrs*100).toFixed(1) : 0}%</span>
+            </td>
+            <td class="py-2 pr-3 text-right text-purple-600">${fmtMoney(Math.round(p.avg_cost_per_hour||0))}/h</td>
+            <td class="py-2 text-right font-semibold text-green-700">
+              ${fmtMoney(p.total_labor_cost||0)}
+              <div class="text-xs text-gray-400">${p.months_count} tháng</div>
+            </td>
+          </tr>
+        `).join('') : '<tr><td colspan="5" class="text-center py-6 text-gray-400">Không có dữ liệu trong kỳ này</td></tr>'
+      }
+
+      // Charts — destroy & rebuild bar chart with project totals
+      destroyChart('labor')
+      const ctx1 = $('laborChart')
+      if (ctx1 && projs.length) {
+        charts['labor'] = new Chart(ctx1, {
+          type: 'bar',
+          data: {
+            labels: projs.map(p => p.project_code),
+            datasets: [{ label: 'Chi phí lương (₫)', data: projs.map(p => p.total_labor_cost||0), backgroundColor: '#00A651', borderRadius: 4 }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
+            scales: { y: { beginAtZero: true, ticks: { font: { size: 11 }, callback: v => fmtMoney(v) } } }
+          }
+        })
+      }
+      destroyChart('laborPie')
+      const ctx2 = $('laborPieChart')
+      if (ctx2 && projs.length) {
+        const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
+        charts['laborPie'] = new Chart(ctx2, {
+          type: 'pie',
+          data: {
+            labels: projs.map(p => p.project_code + ' (' + (totalHrs>0 ? ((p.total_hours||0)/totalHrs*100).toFixed(1) : '0.0') + '%)'),
+            datasets: [{ data: projs.map(p => p.total_hours||0), backgroundColor: colors }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 10 } } } } }
+        })
+      }
+
+      // KPI cards
+      if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(aggData.grand_total_labor_cost)
+      if ($('laborKpiSource'))   $('laborKpiSource').textContent   = periodType === 'all' ? `🗓️ Cả năm ${year}` : `📆 Nhiều tháng ${year}`
+      if ($('laborKpiHours'))    $('laborKpiHours').textContent    = fmt(totalHrs) + 'h'
+      if ($('laborKpiRate'))     $('laborKpiRate').textContent     = fmtMoney(Math.round(avgRate)) + '/h'
+      if ($('laborKpiProjects')) $('laborKpiProjects').textContent = aggData.projects_count || 0
+
+      // Monthly breakdown table (for "all months" mode fetch first project's yearly detail)
+      if (periodType === 'all' && projs.length > 0) {
+        $('laborMonthlyTableWrap')?.classList.remove('hidden')
+        // Use the monthly breakdown from project-level API for the first project as reference
+        // Actually, fill the per-project table already handled above
+      }
+      return
+    } catch(e) { toast('Lỗi tải dữ liệu tổng hợp: ' + e.message, 'error'); return }
+  }
+
+  // --- SINGLE MONTH mode (original behavior) ---
   try {
     const month = $('laborMonthFilter')?.value
-    const year  = $('laborYearFilter')?.value
     let url = '/finance/labor-cost?'
     if (month) url += `month=${month}&`
     if (year)  url += `year=${year}`
@@ -3019,6 +3216,117 @@ async function loadLaborCost() {
       `).join('') || '<tr><td colspan="5" class="text-center py-6 text-gray-400">Không có dữ liệu timesheet tháng này</td></tr>'
     }
   } catch(e) { toast('Lỗi tải chi phí lương: ' + e.message, 'error') }
+}
+
+// Period-type toggle for Labor Cost page
+function onLaborPeriodTypeChange() {
+  const pt = $('laborPeriodType')?.value || 'single'
+  const single = $('laborSingleControls')
+  const multi  = $('laborMultiControls')
+  const yCard  = $('laborYearlyCard')
+  if (single) single.classList.toggle('hidden', pt !== 'single')
+  if (multi)  multi.classList.toggle('hidden', pt !== 'multi')
+  if (yCard)  yCard.classList.toggle('hidden', pt === 'single')
+  // Auto-reload on type change
+  if (pt !== 'multi') loadLaborCost() // multi requires checkbox selection first
+}
+
+function toggleLaborMonthlyTable() {
+  const wrap = $('laborMonthlyTableWrap')
+  const btn  = $('btnToggleLaborMonthly')
+  if (!wrap) return
+  const hidden = wrap.classList.toggle('hidden')
+  if (btn) btn.innerHTML = hidden
+    ? '<i class="fas fa-table mr-1"></i>Xem chi tiết theo tháng'
+    : '<i class="fas fa-eye-slash mr-1"></i>Ẩn chi tiết'
+}
+
+// Create / sync project labor cost (Error 3 fix)
+async function createLaborCostForProject() {
+  const panel = $('createLaborCostPanel')
+  if (!panel) return
+  // Populate project selector
+  const sel = $('createLaborProjSel')
+  if (sel && sel.options.length <= 1 && allProjects.length) {
+    allProjects.forEach(p => {
+      const opt = document.createElement('option')
+      opt.value = p.id; opt.textContent = p.code + ' - ' + p.name
+      sel.appendChild(opt)
+    })
+  } else if (sel && sel.options.length <= 1) {
+    try {
+      const projs = await api('/projects')
+      projs.forEach(p => {
+        const opt = document.createElement('option')
+        opt.value = p.id; opt.textContent = p.code + ' - ' + p.name
+        sel.appendChild(opt)
+      })
+    } catch(e) {}
+  }
+  // Set default month/year from filters
+  const m = $('laborMonthFilter')?.value; const y = $('laborYearFilter')?.value
+  if ($('createLaborMonth') && m) $('createLaborMonth').value = parseInt(m)
+  if ($('createLaborYear') && y)  $('createLaborYear').value = y
+  panel.classList.remove('hidden')
+  panel.scrollIntoView({ behavior: 'smooth' })
+}
+
+async function doCreateLaborCost() {
+  const projId = $('createLaborProjSel')?.value
+  if (!projId) { toast('Vui lòng chọn dự án', 'warning'); return }
+  const month = $('createLaborMonth')?.value
+  const year  = $('createLaborYear')?.value
+  const force = $('createLaborForce')?.checked || false
+  const resultDiv = $('createLaborCostResult')
+
+  try {
+    // First check if exists
+    const checkRes = await api(`/projects/${projId}/labor-costs-check?month=${month}&year=${year}`)
+    if (checkRes.exists && !force) {
+      if (!confirm(`Chi phí lương tháng ${month}/${year} cho dự án này đã tồn tại (${fmtMoney(checkRes.data?.total_labor_cost)} ₫).\nBấm OK để tính lại (force), hoặc Hủy để giữ nguyên.`)) {
+        if (resultDiv) {
+          resultDiv.classList.remove('hidden')
+          resultDiv.innerHTML = `<span class="text-blue-700"><i class="fas fa-info-circle mr-1"></i>Giữ nguyên bản ghi hiện có: <strong>${fmtMoney(checkRes.data?.total_labor_cost)} ₫</strong></span>`
+        }
+        return
+      }
+      $('createLaborForce').checked = true
+    }
+
+    const body = { month: parseInt(month), year: parseInt(year), force_recalculate: force || checkRes.exists }
+    const res = await api(`/projects/${projId}/labor-costs/sync`, { method: 'POST', data: body })
+    toast(`${res.action === 'created' ? '✅ Đã tạo' : res.action === 'updated' ? '✅ Đã cập nhật' : '✅'} chi phí lương: ${fmtMoney(res.data?.total_labor_cost)} ₫`, 'success')
+
+    if (resultDiv) {
+      resultDiv.classList.remove('hidden')
+      const actionLabel = res.action === 'created' ? 'Đã tạo mới' : res.action === 'updated' ? 'Đã cập nhật' : 'Đã xử lý'
+      resultDiv.innerHTML = `<span class="text-green-700"><i class="fas fa-check-circle mr-1"></i>${actionLabel}: <strong>${fmtMoney(res.data?.total_labor_cost)} ₫</strong> | ${res.data?.total_hours}h × ${fmtMoney(res.data?.cost_per_hour)}/h</span>`
+    }
+
+    // Reload labor cost view
+    loadLaborCost()
+  } catch(e) {
+    toast('Lỗi: ' + e.message, 'error')
+    if (resultDiv) { resultDiv.classList.remove('hidden'); resultDiv.innerHTML = `<span class="text-red-600">Lỗi: ${e.message}</span>` }
+  }
+}
+
+async function cleanupProjectLaborDuplicates() {
+  const projId = $('createLaborProjSel')?.value || ''
+  const label = projId ? `dự án ID ${projId}` : 'tất cả dự án'
+  if (!confirm(`Xóa bản ghi chi phí lương trùng lặp cho ${label}?\n(Giữ bản ghi MIN id)`)) return
+  try {
+    let url = projId ? `/projects/${projId}/labor-costs/duplicates` : '/data-audit/fix-inconsistency'
+    let result
+    if (projId) {
+      result = await api(url, { method: 'DELETE' })
+      toast(`Đã xóa ${result.deleted_count} bản ghi trùng, còn lại ${result.remaining_records}`, 'success')
+    } else {
+      result = await api(url, { method: 'POST', data: { actions: ['dedup_all'] } })
+      toast(`Đã xóa ${result.rows_deleted} bản ghi trùng lặp`, 'success')
+    }
+    loadLaborCost()
+  } catch(e) { toast('Lỗi dọn trùng: ' + e.message, 'error') }
 }
 
 // ================================================================

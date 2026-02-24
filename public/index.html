@@ -849,6 +849,15 @@
                 </select>
               </div>
               <div>
+                <label class="block text-xs text-gray-500 mb-1 font-medium">Kỳ phân tích</label>
+                <select id="analysisPeriodType" class="select-field" style="width:160px" onchange="onAnalysisPeriodTypeChange()">
+                  <option value="single">📅 Tháng cụ thể</option>
+                  <option value="multi">📆 Nhiều tháng</option>
+                  <option value="all">🗓️ Cả năm</option>
+                </select>
+              </div>
+              <!-- Single month -->
+              <div id="analysisSingleCtrl">
                 <label class="block text-xs text-gray-500 mb-1 font-medium">Tháng</label>
                 <select id="analysisMonthSel" class="select-field" style="width:130px">
                   <option value="01">Tháng 1</option><option value="02">Tháng 2</option>
@@ -858,6 +867,24 @@
                   <option value="09">Tháng 9</option><option value="10">Tháng 10</option>
                   <option value="11">Tháng 11</option><option value="12">Tháng 12</option>
                 </select>
+              </div>
+              <!-- Multi month checkboxes -->
+              <div id="analysisMultiCtrl" class="hidden">
+                <label class="block text-xs text-gray-500 mb-1 font-medium">Chọn các tháng</label>
+                <div class="flex flex-wrap gap-1" style="max-width:340px">
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="1">T1</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="2">T2</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="3">T3</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="4">T4</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="5">T5</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="6">T6</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="7">T7</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="8">T8</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="9">T9</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="10">T10</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="11">T11</label>
+                  <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="analysisMonthCheck" value="12">T12</label>
+                </div>
               </div>
               <div>
                 <label class="block text-xs text-gray-500 mb-1 font-medium">Năm</label>
@@ -873,6 +900,9 @@
                 <i class="fas fa-stethoscope text-amber-500"></i> Kiểm tra dữ liệu
               </button>
             </div>
+
+            <!-- Sync source indicator -->
+            <div id="anaDataSyncBadge" class="hidden mb-3"></div>
 
             <!-- Validation warnings -->
             <div id="anaValidationWarnings" class="hidden"></div>
@@ -1224,13 +1254,37 @@
             <select id="finProjSelect" class="select-field" style="width:220px" onchange="loadFinanceProject()">
               <option value="">-- Chọn dự án --</option>
             </select>
-            <select id="finMonthFilter" class="select-field" style="width:100px" onchange="loadFinanceProject()">
-              <option value="">Tất cả tháng</option>
-              <option value="01">T1</option><option value="02">T2</option><option value="03">T3</option>
-              <option value="04">T4</option><option value="05">T5</option><option value="06">T6</option>
-              <option value="07">T7</option><option value="08">T8</option><option value="09">T9</option>
-              <option value="10">T10</option><option value="11">T11</option><option value="12">T12</option>
+            <!-- Period type selector -->
+            <select id="finPeriodType" class="select-field text-sm" style="width:160px" onchange="onFinPeriodTypeChange()">
+              <option value="single">📅 Tháng cụ thể</option>
+              <option value="multi">📆 Nhiều tháng</option>
+              <option value="all">🗓️ Cả năm</option>
             </select>
+            <!-- Single month filter -->
+            <div id="finSingleMonthCtrl">
+              <select id="finMonthFilter" class="select-field" style="width:100px" onchange="loadFinanceProject()">
+                <option value="">Tất cả tháng</option>
+                <option value="01">T1</option><option value="02">T2</option><option value="03">T3</option>
+                <option value="04">T4</option><option value="05">T5</option><option value="06">T6</option>
+                <option value="07">T7</option><option value="08">T8</option><option value="09">T9</option>
+                <option value="10">T10</option><option value="11">T11</option><option value="12">T12</option>
+              </select>
+            </div>
+            <!-- Multi-month checkboxes (hidden by default) -->
+            <div id="finMultiMonthCtrl" class="hidden flex flex-wrap gap-1" style="max-width:320px">
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="1">T1</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="2">T2</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="3">T3</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="4">T4</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="5">T5</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="6">T6</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="7">T7</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="8">T8</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="9">T9</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="10">T10</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="11">T11</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-1.5 py-1 cursor-pointer hover:bg-blue-50"><input type="checkbox" class="finMonthCheck" value="12">T12</label>
+            </div>
             <select id="finYearFilter" class="select-field" style="width:90px" onchange="loadFinanceProject()">
               <option value="">Tất cả năm</option>
               <option value="2024">2024</option><option value="2025">2025</option>
@@ -1255,14 +1309,85 @@
 
       <!-- ========== LABOR COST PAGE ========== -->
       <div id="page-labor-cost" class="page">
-        <div class="flex justify-between items-center mb-6">
+        <div class="flex flex-wrap justify-between items-center mb-6 gap-3">
           <div>
             <h1 class="text-2xl font-bold text-gray-800">Chi phí Lương tự động</h1>
             <p class="text-gray-500 text-sm">Nhập tổng chi phí lương tháng → hệ thống tự tính per-hour và phân bổ theo dự án</p>
           </div>
-          <div class="flex gap-2">
-            <select id="laborMonthFilter" class="select-field" style="width:120px" onchange="loadLaborCost()"></select>
+          <!-- Period selector controls -->
+          <div class="flex flex-wrap gap-2 items-center">
+            <select id="laborPeriodType" class="select-field text-sm" style="width:170px" onchange="onLaborPeriodTypeChange()">
+              <option value="single">📅 Tháng cụ thể</option>
+              <option value="multi">📆 Nhiều tháng</option>
+              <option value="all">🗓️ Cả năm</option>
+            </select>
+            <!-- Single month mode -->
+            <div id="laborSingleControls" class="flex gap-2">
+              <select id="laborMonthFilter" class="select-field" style="width:120px" onchange="loadLaborCost()"></select>
+            </div>
+            <!-- Multi-month mode (hidden by default) -->
+            <div id="laborMultiControls" class="hidden flex flex-wrap gap-1" style="max-width:380px">
+              <span class="text-xs text-gray-500 self-center mr-1">Chọn tháng:</span>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 1"><input type="checkbox" class="laborMonthCheck" value="1">T1</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 2"><input type="checkbox" class="laborMonthCheck" value="2">T2</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 3"><input type="checkbox" class="laborMonthCheck" value="3">T3</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 4"><input type="checkbox" class="laborMonthCheck" value="4">T4</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 5"><input type="checkbox" class="laborMonthCheck" value="5">T5</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 6"><input type="checkbox" class="laborMonthCheck" value="6">T6</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 7"><input type="checkbox" class="laborMonthCheck" value="7">T7</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 8"><input type="checkbox" class="laborMonthCheck" value="8">T8</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 9"><input type="checkbox" class="laborMonthCheck" value="9">T9</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 10"><input type="checkbox" class="laborMonthCheck" value="10">T10</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 11"><input type="checkbox" class="laborMonthCheck" value="11">T11</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 12"><input type="checkbox" class="laborMonthCheck" value="12">T12</label>
+            </div>
             <select id="laborYearFilter" class="select-field" style="width:100px" onchange="loadLaborCost()"></select>
+            <button onclick="loadLaborCost()" class="btn-primary text-sm flex items-center gap-1"><i class="fas fa-sync-alt"></i>Tải</button>
+          </div>
+        </div>
+
+        <!-- Yearly / multi-period totals card (shown for all/multi mode) -->
+        <div id="laborYearlyCard" class="hidden card mb-5" style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #93c5fd">
+          <div class="flex items-center gap-3 mb-3">
+            <i class="fas fa-calendar-alt text-blue-600 text-lg"></i>
+            <div>
+              <h3 class="font-bold text-blue-800" id="laborYearlyTitle">Tổng hợp cả năm</h3>
+              <p class="text-xs text-blue-600" id="laborYearlySubtitle">-</p>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-4 text-center">
+            <div>
+              <p class="text-xs text-blue-600 font-medium">TỔNG CHI PHÍ LƯƠNG</p>
+              <p class="text-2xl font-bold text-blue-700 mt-1" id="laborYearlyTotalCost">-</p>
+            </div>
+            <div>
+              <p class="text-xs text-blue-600 font-medium">TỔNG GIỜ LÀM</p>
+              <p class="text-2xl font-bold text-blue-700 mt-1" id="laborYearlyTotalHours">-</p>
+            </div>
+            <div>
+              <p class="text-xs text-blue-600 font-medium">CHI PHÍ TRUNG BÌNH/GIỜ</p>
+              <p class="text-2xl font-bold text-blue-700 mt-1" id="laborYearlyAvgRate">-</p>
+            </div>
+          </div>
+          <!-- Month-by-month table for yearly view -->
+          <div id="laborMonthlyTableWrap" class="hidden mt-4 border-t border-blue-200 pt-3">
+            <h4 class="text-xs font-bold text-blue-700 mb-2">Chi tiết theo tháng</h4>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs">
+                <thead><tr class="text-blue-600 border-b border-blue-200">
+                  <th class="pb-2 pr-3 text-left">Tháng</th>
+                  <th class="pb-2 pr-3 text-right">Giờ làm</th>
+                  <th class="pb-2 pr-3 text-right">Chi phí/giờ</th>
+                  <th class="pb-2 text-right">Chi phí lương</th>
+                </tr></thead>
+                <tbody id="laborMonthlyBreakdownTable" class="divide-y divide-blue-100"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="mt-3 text-right">
+            <button onclick="toggleLaborMonthlyTable()" class="text-blue-600 hover:underline text-xs" id="btnToggleLaborMonthly">
+              <i class="fas fa-table mr-1"></i>Xem chi tiết theo tháng
+            </button>
           </div>
         </div>
 
@@ -1375,7 +1500,55 @@
         </div>
 
         <div class="card">
-          <h3 class="font-bold text-gray-800 text-sm mb-4"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết chi phí lương theo dự án (tính tự động, chỉ đọc)</h3>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết chi phí lương theo dự án (tính tự động, chỉ đọc)</h3>
+            <div class="flex gap-2">
+              <button onclick="createLaborCostForProject()" id="btnCreateProjectLaborCost"
+                class="btn-secondary text-xs flex items-center gap-1 border-green-400 text-green-700 hover:bg-green-50">
+                <i class="fas fa-plus-circle"></i>Tạo/Đồng bộ chi phí dự án
+              </button>
+              <button onclick="cleanupProjectLaborDuplicates()"
+                class="btn-secondary text-xs flex items-center gap-1 border-red-300 text-red-600 hover:bg-red-50">
+                <i class="fas fa-broom"></i>Dọn dữ liệu trùng
+              </button>
+            </div>
+          </div>
+          <!-- Create labor cost project selector (hidden by default) -->
+          <div id="createLaborCostPanel" class="hidden mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+            <p class="text-xs font-medium text-green-800 mb-2"><i class="fas fa-info-circle mr-1"></i>Tạo/đồng bộ chi phí lương cho dự án</p>
+            <div class="flex flex-wrap gap-2 items-end">
+              <div>
+                <label class="text-xs text-gray-600 block mb-1">Dự án</label>
+                <select id="createLaborProjSel" class="select-field text-sm" style="width:220px">
+                  <option value="">-- Chọn dự án --</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-gray-600 block mb-1">Tháng</label>
+                <select id="createLaborMonth" class="select-field text-sm" style="width:110px">
+                  <option value="1">Tháng 1</option><option value="2">Tháng 2</option><option value="3">Tháng 3</option>
+                  <option value="4">Tháng 4</option><option value="5">Tháng 5</option><option value="6">Tháng 6</option>
+                  <option value="7">Tháng 7</option><option value="8">Tháng 8</option><option value="9">Tháng 9</option>
+                  <option value="10">Tháng 10</option><option value="11">Tháng 11</option><option value="12">Tháng 12</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-gray-600 block mb-1">Năm</label>
+                <select id="createLaborYear" class="select-field text-sm" style="width:90px">
+                  <option value="2024">2024</option><option value="2025">2025</option>
+                  <option value="2026" selected>2026</option><option value="2027">2027</option>
+                </select>
+              </div>
+              <label class="inline-flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                <input type="checkbox" id="createLaborForce" class="rounded"> Tính lại (force_recalculate)
+              </label>
+              <button onclick="doCreateLaborCost()" class="btn-primary text-xs flex items-center gap-1">
+                <i class="fas fa-check"></i>Thực hiện
+              </button>
+              <button onclick="$('createLaborCostPanel').classList.add('hidden')" class="btn-secondary text-xs">Hủy</button>
+            </div>
+            <div id="createLaborCostResult" class="hidden mt-2 text-xs"></div>
+          </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">

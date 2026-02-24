@@ -1295,62 +1295,481 @@ app.post('/api/revenues', authMiddleware, adminOnly, async (c) => {
 // PROJECT LABOR COSTS — link từ Chi Phí Lương → Chi Phí & Doanh Thu
 // ===================================================
 
-// GET /api/projects/:id/labor-costs?month=MM&year=YYYY
-// Lấy chi phí lương dự án đã tính (từ bảng project_labor_costs hoặc tính real-time từ finance/labor-cost)
+// ===================================================
+// PROJECT LABOR COSTS APIs (FIX 1 + FIX 3)
+// ===================================================
+
+// GET /api/projects/:id/labor-costs
+// Hỗ trợ: ?month=MM&year=YYYY (single), ?months=1,2,3&year=YYYY (multi), ?all_months=true&year=YYYY
 app.get('/api/projects/:id/labor-costs', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const projectId = parseInt(c.req.param('id'))
-    const { month, year } = c.req.query()
-    const m = (month || String(new Date().getMonth() + 1)).padStart(2, '0')
-    const y = year || String(new Date().getFullYear())
-    const mInt = parseInt(m)
-    const yInt = parseInt(y)
+    const { month, months, year, all_months } = c.req.query()
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+    const y = String(yInt)
 
-    // Kiểm tra project tồn tại
     const proj = await db.prepare('SELECT id, code, name, contract_value FROM projects WHERE id = ?').bind(projectId).first() as any
     if (!proj) return c.json({ error: 'Project not found' }, 404)
 
-    // Tính chi phí lương từ labor-cost endpoint logic (tái sử dụng)
-    const manualEntry = await db.prepare(
-      `SELECT * FROM monthly_labor_costs WHERE month = ? AND year = ?`
-    ).bind(mInt, yInt).first() as any
+    let queryType: string
+    let laborCost = 0, totalHours = 0, costPerHourAvg = 0
+    const monthlyBreakdown: any[] = []
 
-    const salaryPool = await db.prepare(
-      `SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'`
-    ).first() as any
+    if (all_months === 'true') {
+      // CASE 1: Tất cả tháng trong năm — aggregate từ project_labor_costs
+      queryType = 'all_months'
+      const rows = await db.prepare(
+        `SELECT month, year, total_labor_cost, total_hours, cost_per_hour
+         FROM project_labor_costs WHERE project_id = ? AND year = ? ORDER BY month`
+      ).bind(projectId, yInt).all()
+      const rArr = rows.results as any[]
 
-    const totalHoursAll = await db.prepare(
-      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
-       WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
-    ).bind(y, m).first() as any
+      if (rArr.length > 0) {
+        laborCost = rArr.reduce((s, r) => s + (r.total_labor_cost || 0), 0)
+        totalHours = rArr.reduce((s, r) => s + (r.total_hours || 0), 0)
+        costPerHourAvg = rArr.reduce((s, r) => s + (r.cost_per_hour || 0), 0) / rArr.length
+        monthlyBreakdown.push(...rArr)
+      } else {
+        // Fallback: tính real-time từng tháng rồi cộng
+        for (let mInt = 1; mInt <= 12; mInt++) {
+          const m = String(mInt).padStart(2, '0')
+          const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+          const projHrs = await db.prepare(
+            `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+             WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+          ).bind(projectId, y, m).first() as any
+          const hrs = projHrs?.total || 0
+          if (hrs > 0) {
+            const mc = Math.round(hrs * costPerHour)
+            laborCost += mc; totalHours += hrs
+            monthlyBreakdown.push({ month: mInt, year: yInt, total_hours: hrs, cost_per_hour: Math.round(costPerHour), total_labor_cost: mc })
+          }
+        }
+        costPerHourAvg = monthlyBreakdown.length > 0
+          ? monthlyBreakdown.reduce((s, r) => s + r.cost_per_hour, 0) / monthlyBreakdown.length : 0
+      }
 
-    const laborCostSource = manualEntry ? manualEntry.total_labor_cost : (salaryPool?.total || 0)
-    const totalHrs = totalHoursAll?.total || 0
-    const costPerHour = totalHrs > 0 ? laborCostSource / totalHrs : 0
+    } else if (months) {
+      // CASE 2: Multiple months
+      queryType = 'multiple_months'
+      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      for (const mInt of monthArr) {
+        const m = String(mInt).padStart(2, '0')
+        // Try cache first
+        const cached = await db.prepare(
+          `SELECT total_labor_cost, total_hours, cost_per_hour FROM project_labor_costs
+           WHERE project_id = ? AND month = ? AND year = ?`
+        ).bind(projectId, mInt, yInt).first() as any
+        if (cached) {
+          laborCost += cached.total_labor_cost; totalHours += cached.total_hours
+          monthlyBreakdown.push({ month: mInt, year: yInt, ...cached })
+        } else {
+          const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+          const projHrs = await db.prepare(
+            `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+             WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+          ).bind(projectId, y, m).first() as any
+          const hrs = projHrs?.total || 0
+          const mc = Math.round(hrs * costPerHour)
+          laborCost += mc; totalHours += hrs
+          monthlyBreakdown.push({ month: mInt, year: yInt, total_hours: hrs, cost_per_hour: Math.round(costPerHour), total_labor_cost: mc })
+        }
+      }
+      costPerHourAvg = monthlyBreakdown.length > 0
+        ? monthlyBreakdown.reduce((s, r) => s + (r.cost_per_hour || 0), 0) / monthlyBreakdown.length : 0
 
-    // Giờ làm của dự án trong tháng
-    const projHours = await db.prepare(
-      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
-       FROM timesheets WHERE project_id = ?
-       AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
-    ).bind(projectId, y, m).first() as any
+    } else {
+      // CASE 3: Single month (default)
+      queryType = 'single_month'
+      const mInt = month ? parseInt(month) : new Date().getMonth() + 1
+      const m = String(mInt).padStart(2, '0')
 
-    const projectHrs = projHours?.total || 0
-    const laborCost = Math.round(projectHrs * costPerHour)
+      // Try cached project_labor_costs first
+      const cached = await db.prepare(
+        `SELECT total_labor_cost, total_hours, cost_per_hour FROM project_labor_costs
+         WHERE project_id = ? AND month = ? AND year = ?`
+      ).bind(projectId, mInt, yInt).first() as any
+
+      if (cached) {
+        laborCost = cached.total_labor_cost; totalHours = cached.total_hours
+        costPerHourAvg = cached.cost_per_hour
+      } else {
+        const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+        const projHrs = await db.prepare(
+          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+           WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+        ).bind(projectId, y, m).first() as any
+        totalHours = projHrs?.total || 0; costPerHourAvg = costPerHour
+        laborCost = Math.round(totalHours * costPerHour)
+      }
+      monthlyBreakdown.push({ month: mInt, year: yInt, total_hours: totalHours, cost_per_hour: Math.round(costPerHourAvg), total_labor_cost: laborCost })
+    }
 
     return c.json({
-      project_id: projectId,
-      project_code: proj.code,
-      project_name: proj.name,
-      month: mInt,
+      project_id: projectId, project_code: proj.code, project_name: proj.name,
+      year: yInt, query_type: queryType,
+      total_hours: totalHours,
+      cost_per_hour: Math.round(costPerHourAvg),
+      total_labor_cost: Math.round(laborCost),
+      monthly_breakdown: monthlyBreakdown,
+      summary: {
+        total_labor_cost: Math.round(laborCost),
+        total_hours: totalHours,
+        avg_cost_per_hour: Math.round(costPerHourAvg),
+        months_with_data: monthlyBreakdown.filter(r => r.total_hours > 0).length
+      }
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/labor-costs-yearly — full year breakdown
+app.get('/api/projects/:id/labor-costs-yearly', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const year = c.req.query('year') || String(new Date().getFullYear())
+    const yInt = parseInt(year)
+
+    const proj = await db.prepare('SELECT id, code, name FROM projects WHERE id = ?').bind(projectId).first() as any
+    if (!proj) return c.json({ error: 'Project not found' }, 404)
+
+    const cached = await db.prepare(
+      `SELECT month, year, total_hours, cost_per_hour, total_labor_cost
+       FROM project_labor_costs WHERE project_id = ? AND year = ? ORDER BY month`
+    ).bind(projectId, yInt).all()
+
+    let monthlyDetails = cached.results as any[]
+
+    // For months not in cache, fill with real-time
+    if (monthlyDetails.length < 12) {
+      const cachedMonths = new Set(monthlyDetails.map((r: any) => r.month))
+      for (let mInt = 1; mInt <= 12; mInt++) {
+        if (!cachedMonths.has(mInt)) {
+          const m = String(mInt).padStart(2, '0')
+          const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+          const projHrs = await db.prepare(
+            `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+             WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+          ).bind(projectId, year, m).first() as any
+          const hrs = projHrs?.total || 0
+          monthlyDetails.push({ month: mInt, year: yInt, total_hours: hrs, cost_per_hour: Math.round(costPerHour), total_labor_cost: Math.round(hrs * costPerHour) })
+        }
+      }
+      monthlyDetails.sort((a: any, b: any) => a.month - b.month)
+    }
+
+    const annualLaborCost = monthlyDetails.reduce((s: number, r: any) => s + (r.total_labor_cost || 0), 0)
+    const annualHours = monthlyDetails.reduce((s: number, r: any) => s + (r.total_hours || 0), 0)
+    const monthsWithData = monthlyDetails.filter((r: any) => r.total_hours > 0).length
+    const avgCostPerHour = monthsWithData > 0
+      ? monthlyDetails.filter((r: any) => r.total_hours > 0).reduce((s: number, r: any) => s + r.cost_per_hour, 0) / monthsWithData : 0
+
+    return c.json({
+      project_id: projectId, project_code: proj.code, project_name: proj.name,
       year: yInt,
-      total_hours: projectHrs,
-      cost_per_hour: Math.round(costPerHour),
-      total_labor_cost: laborCost,
-      cost_source: manualEntry ? 'manual' : 'salary_pool',
-      company_total_hours: totalHrs,
-      company_labor_cost: laborCostSource
+      monthly_breakdown: monthlyDetails,
+      yearly_total: {
+        annual_labor_cost: Math.round(annualLaborCost),
+        annual_hours: annualHours,
+        avg_cost_per_hour: Math.round(avgCostPerHour),
+        months_count: monthsWithData
+      },
+      summary: {
+        total_labor_cost: Math.round(annualLaborCost),
+        total_hours: annualHours,
+        avg_cost_per_hour: Math.round(avgCostPerHour),
+        months_with_data: monthsWithData
+      }
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/labor-costs-check — FIX 3: check existence without creating
+app.get('/api/projects/:id/labor-costs-check', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const { month, year } = c.req.query()
+    const mInt = month ? parseInt(month) : new Date().getMonth() + 1
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+
+    const existing = await db.prepare(
+      `SELECT id, total_labor_cost, total_hours, cost_per_hour, created_at, updated_at
+       FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
+    ).bind(projectId, mInt, yInt).first() as any
+
+    return c.json({
+      exists: !!existing,
+      message: existing ? 'Chi phí lương đã tồn tại' : 'Chưa có dữ liệu chi phí lương',
+      data: existing || null,
+      month: mInt, year: yInt, project_id: projectId
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/projects/:id/labor-costs/sync — FIX 3: manual sync/create, no auto-create on load
+app.post('/api/projects/:id/labor-costs/sync', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const body = await c.req.json().catch(() => ({})) as any
+    const { month, year, force_recalculate = false } = body
+    const mInt = month ? parseInt(month) : new Date().getMonth() + 1
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+    const m = String(mInt).padStart(2, '0')
+    const y = String(yInt)
+
+    // Check existing
+    const existing = await db.prepare(
+      `SELECT id, total_labor_cost FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
+    ).bind(projectId, mInt, yInt).first() as any
+
+    if (existing && !force_recalculate) {
+      return c.json({ success: true, action: 'existing', data: existing, message: 'Chi phí đã tồn tại, dùng force_recalculate=true để tính lại' })
+    }
+
+    // Calculate
+    const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+    if (totalHrs === 0) {
+      return c.json({ success: false, error: `Không có dữ liệu timesheet tháng ${mInt}/${yInt}` }, 400)
+    }
+
+    const projHrs = await db.prepare(
+      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+       WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+    ).bind(projectId, y, m).first() as any
+    const projectHours = projHrs?.total || 0
+    const projectLaborCost = Math.round(projectHours * costPerHour)
+
+    if (existing) {
+      await db.prepare(
+        `UPDATE project_labor_costs SET total_hours = ?, cost_per_hour = ?, total_labor_cost = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE project_id = ? AND month = ? AND year = ?`
+      ).bind(projectHours, Math.round(costPerHour), projectLaborCost, projectId, mInt, yInt).run()
+      return c.json({ success: true, action: 'updated', data: { total_hours: projectHours, cost_per_hour: Math.round(costPerHour), total_labor_cost: projectLaborCost }, message: `Đã cập nhật chi phí lương` })
+    } else {
+      await db.prepare(
+        `INSERT INTO project_labor_costs (project_id, month, year, total_hours, cost_per_hour, total_labor_cost) VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(projectId, mInt, yInt, projectHours, Math.round(costPerHour), projectLaborCost).run()
+      return c.json({ success: true, action: 'created', data: { total_hours: projectHours, cost_per_hour: Math.round(costPerHour), total_labor_cost: projectLaborCost }, message: `Đã tạo chi phí lương` })
+    }
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/projects/:id/labor-costs/duplicates — FIX 3: cleanup duplicates
+app.delete('/api/projects/:id/labor-costs/duplicates', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+
+    const del = await db.prepare(
+      `DELETE FROM project_labor_costs WHERE id NOT IN (
+         SELECT MIN(id) FROM project_labor_costs WHERE project_id = ?
+         GROUP BY project_id, month, year
+       ) AND project_id = ?`
+    ).bind(projectId, projectId).run()
+
+    const remaining = await db.prepare(
+      `SELECT COUNT(*) as cnt FROM project_labor_costs WHERE project_id = ?`
+    ).bind(projectId).first() as any
+
+    return c.json({ success: true, deleted_count: del.meta?.changes || 0, remaining_records: remaining?.cnt || 0, message: `Đã xóa ${del.meta?.changes || 0} bản ghi trùng` })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/financial-summary/labor-costs-all-projects — aggregate across projects
+app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { months, year, all_months } = c.req.query()
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+
+    let whereExtra = ''; const params: any[] = [yInt]
+    if (all_months !== 'true' && months) {
+      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      if (monthArr.length > 0) {
+        whereExtra = ` AND plc.month IN (${monthArr.map(() => '?').join(',')})`
+        params.push(...monthArr)
+      }
+    }
+
+    const rows = await db.prepare(`
+      SELECT p.id as project_id, p.code as project_code, p.name as project_name,
+             SUM(plc.total_labor_cost) as total_labor_cost,
+             SUM(plc.total_hours) as total_hours,
+             AVG(plc.cost_per_hour) as avg_cost_per_hour,
+             COUNT(DISTINCT plc.month) as months_count
+      FROM project_labor_costs plc
+      JOIN projects p ON plc.project_id = p.id
+      WHERE plc.year = ? ${whereExtra}
+      GROUP BY p.id, p.code, p.name
+      ORDER BY total_labor_cost DESC
+    `).bind(...params).all()
+
+    const projectsArr = rows.results as any[]
+    const grandTotal = projectsArr.reduce((s, r) => s + (r.total_labor_cost || 0), 0)
+
+    return c.json({
+      year: yInt, period_type: all_months === 'true' ? 'full_year' : months ? 'selected_months' : 'all',
+      projects: projectsArr,
+      grand_total_labor_cost: Math.round(grandTotal),
+      projects_count: projectsArr.length
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/costs-revenue-summary — FIX 2: synced summary
+// Reads labor from project_labor_costs (synced from Chi Phí Lương module)
+app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const { month, months, year, all_months } = c.req.query()
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+    const y = String(yInt)
+
+    const proj = await db.prepare('SELECT id, code, name, contract_value FROM projects WHERE id = ?').bind(projectId).first() as any
+    if (!proj) return c.json({ error: 'Project not found' }, 404)
+    const contractValue = proj.contract_value || 0
+
+    // --- Build date filter for project_costs ---
+    let costDateFilter = `AND strftime('%Y', pc.cost_date) = '${y}'`
+    let revDateFilter  = `AND strftime('%Y', pr.revenue_date) = '${y}'`
+    let periodLabel = `Năm ${yInt}`
+    let periodType = 'all_months'
+
+    if (all_months === 'true') {
+      periodType = 'all_months'; periodLabel = `Toàn năm ${yInt}`
+    } else if (months) {
+      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      if (monthArr.length > 0) {
+        const inClause = monthArr.map(() => '?').join(',')
+        costDateFilter += ` AND CAST(strftime('%m', pc.cost_date) AS INTEGER) IN (${inClause})`
+        revDateFilter  += ` AND CAST(strftime('%m', pr.revenue_date) AS INTEGER) IN (${inClause})`
+        // Note: SQLite binding params handled below via raw concat for simplicity
+        costDateFilter = `AND strftime('%Y', pc.cost_date) = '${y}' AND CAST(strftime('%m', pc.cost_date) AS INTEGER) IN (${monthArr.join(',')})`
+        revDateFilter  = `AND strftime('%Y', pr.revenue_date) = '${y}' AND CAST(strftime('%m', pr.revenue_date) AS INTEGER) IN (${monthArr.join(',')})`
+        periodType = 'multiple_months'; periodLabel = `T${monthArr.join(',')}/${yInt}`
+      }
+    } else if (month) {
+      const mInt = parseInt(month)
+      const m = String(mInt).padStart(2, '0')
+      costDateFilter = `AND strftime('%Y', pc.cost_date) = '${y}' AND strftime('%m', pc.cost_date) = '${m}'`
+      revDateFilter  = `AND strftime('%Y', pr.revenue_date) = '${y}' AND strftime('%m', pr.revenue_date) = '${m}'`
+      periodType = 'single_month'; periodLabel = `T${mInt}/${yInt}`
+    }
+
+    // --- Step 1: Labor cost from project_labor_costs (synced from Chi Phí Lương) ---
+    let laborWhere = `WHERE plc.project_id = ? AND plc.year = ?`
+    const laborParams: any[] = [projectId, yInt]
+    if (month && !months && all_months !== 'true') {
+      laborWhere += ` AND plc.month = ?`; laborParams.push(parseInt(month))
+    } else if (months && all_months !== 'true') {
+      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      if (monthArr.length > 0) { laborWhere += ` AND plc.month IN (${monthArr.join(',')})`; }
+    }
+
+    const laborRow = await db.prepare(
+      `SELECT SUM(plc.total_labor_cost) as total_lc, SUM(plc.total_hours) as total_hrs,
+              AVG(plc.cost_per_hour) as avg_cph, COUNT(DISTINCT plc.month) as m_cnt
+       FROM project_labor_costs plc ${laborWhere}`
+    ).bind(...laborParams).first() as any
+
+    let laborCost = laborRow?.total_lc || 0
+    const laborHours = laborRow?.total_hrs || 0
+    const laborPerHour = laborRow?.avg_cph || 0
+    const laborMonthsCount = laborRow?.m_cnt || 0
+    let laborSource = laborCost > 0 ? 'project_labor_costs' : 'none'
+
+    // Fallback: real-time if no cached data
+    if (laborCost === 0) {
+      if (month && !months) {
+        const mInt = parseInt(month)
+        const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+        const m = String(mInt).padStart(2, '0')
+        const phRow = await db.prepare(
+          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+           WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+        ).bind(projectId, y, m).first() as any
+        laborCost = Math.round((phRow?.total || 0) * costPerHour)
+        laborSource = 'realtime'
+      }
+    }
+
+    // Validate labor cost cap
+    const validation_warnings: string[] = []
+    if (contractValue > 0 && laborCost > contractValue) {
+      validation_warnings.push(`Chi phí lương (${fmtNum(laborCost)} ₫) vượt giá trị hợp đồng`)
+      laborCost = contractValue
+    }
+
+    // --- Step 2: Other costs (project_costs, exclude salary) ---
+    const otherRows = await db.prepare(`
+      SELECT pc.cost_type, SUM(pc.amount) as total_amount
+      FROM project_costs pc
+      WHERE pc.project_id = ? ${costDateFilter} AND pc.cost_type != 'salary'
+      GROUP BY pc.cost_type ORDER BY total_amount DESC
+    `).bind(projectId).all()
+
+    const otherCostArr = otherRows.results as any[]
+    const totalOtherCosts = otherCostArr.reduce((s, r) => s + (r.total_amount || 0), 0)
+
+    // --- Step 3: Revenue ---
+    const revRow = await db.prepare(`
+      SELECT SUM(pr.amount) as total FROM project_revenues pr
+      WHERE pr.project_id = ? ${revDateFilter}
+    `).bind(projectId).first() as any
+    const revenue = revRow?.total || 0
+
+    const totalCosts = laborCost + totalOtherCosts
+    const profit = revenue > 0 ? revenue - totalCosts : contractValue - totalCosts
+    const revenueBase = revenue > 0 ? revenue : contractValue
+    const profitMargin = revenueBase > 0 ? parseFloat(((profit / revenueBase) * 100).toFixed(1)) : null
+
+    // Validation
+    if (contractValue > 0 && totalCosts > contractValue * 1.2)
+      validation_warnings.push(`Tổng chi phí vượt 120% giá trị hợp đồng`)
+    if (revenueBase > 0 && profit <= 0) validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
+    else if (profitMargin !== null && profitMargin > 0 && profitMargin < 10) validation_warnings.push(`Lợi nhuận thấp: ${profitMargin}% (< 10%)`)
+    if (revenueBase > 0 && laborCost > revenueBase * 0.8) validation_warnings.push(`Chi phí lương chiếm ${((laborCost/revenueBase)*100).toFixed(1)}% doanh thu (> 80%)`)
+
+    const costTypeNames: Record<string, string> = { material:'Vật liệu', equipment:'Thiết bị', transport:'Vận chuyển', other:'Chi phí khác', salary:'Lương nhân sự' }
+
+    const costBreakdown = [
+      { type: 'Lương nhân sự', cost_type: 'salary', amount: laborCost,
+        percentage: totalCosts > 0 ? parseFloat(((laborCost/totalCosts)*100).toFixed(1)) : 0,
+        source: laborSource, is_auto: true,
+        details: { total_hours: laborHours, cost_per_hour: Math.round(laborPerHour), months_count: laborMonthsCount }
+      },
+      ...otherCostArr.map(r => ({
+        type: costTypeNames[r.cost_type] || r.cost_type, cost_type: r.cost_type,
+        amount: r.total_amount, is_auto: false,
+        percentage: totalCosts > 0 ? parseFloat(((r.total_amount/totalCosts)*100).toFixed(1)) : 0,
+        source: 'project_costs'
+      }))
+    ]
+
+    return c.json({
+      project: { id: projectId, code: proj.code, name: proj.name, contract_value: contractValue },
+      period: { type: periodType, label: periodLabel, year: yInt },
+      financial: {
+        revenue: { value: revenue > 0 ? revenue : contractValue, month_revenue: revenue, contract_value: contractValue,
+          label: revenue > 0 ? 'Doanh thu thực thu' : 'Giá trị hợp đồng' },
+        costs: {
+          labor: { value: laborCost, label: 'Chi phí lương', source: laborSource,
+            synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương module' : 'Tính real-time',
+            details: { total_hours: laborHours, cost_per_hour: Math.round(laborPerHour), months_count: laborMonthsCount,
+              formula: `${laborHours}h × ${Math.round(laborPerHour).toLocaleString('vi-VN')} ₫/h` } },
+          other: { value: totalOtherCosts, label: 'Chi phí khác', breakdown: otherCostArr, source: 'project_costs' },
+          total: { value: totalCosts, label: 'Tổng chi phí' }
+        },
+        profit: { value: profit, percentage: profitMargin, label: 'Lợi nhuận' }
+      },
+      cost_breakdown: costBreakdown,
+      data_sync: { labor_synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (project_labor_costs)' : 'Real-time calculation', last_updated: new Date().toISOString() },
+      validation: { warnings: validation_warnings, has_warnings: validation_warnings.length > 0,
+        profit_status: profit > 0 ? (profitMargin !== null && profitMargin < 10 ? 'warning' : 'ok') : 'error' }
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
@@ -2367,9 +2786,10 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const projectId = parseInt(c.req.param('id'))
-    const { month, year } = c.req.query()
+    const { month, months, year, all_months } = c.req.query()
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+    const y = String(yInt)
     const mInt = month ? parseInt(month) : null
-    const yInt = year ? parseInt(year) : null
 
     const project = await db.prepare('SELECT * FROM projects WHERE id = ?').bind(projectId).first() as any
     if (!project) return c.json({ error: 'Not found' }, 404)
@@ -2377,46 +2797,68 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     const contractValue = project.contract_value || 0
     const validation_warnings: string[] = []
 
-    // --- Other costs from project_costs (excluding salary type) ---
-    let dateFilter = ''; const fp: any[] = []
-    if (year) { dateFilter += ` AND strftime('%Y', cost_date) = ?`; fp.push(year) }
-    if (month) { dateFilter += ` AND strftime('%m', cost_date) = ?`; fp.push(month.padStart(2,'0')) }
+    // --- Build date filters based on period type ---
+    let costDateFilter = `AND strftime('%Y', cost_date) = '${y}'`
+    let revDateFilter  = `AND strftime('%Y', revenue_date) = '${y}'`
+    let periodLabel = `Năm ${yInt}`
 
+    if (all_months === 'true') {
+      periodLabel = `Toàn năm ${yInt}`
+    } else if (months) {
+      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      if (monthArr.length > 0) {
+        costDateFilter += ` AND CAST(strftime('%m', cost_date) AS INTEGER) IN (${monthArr.join(',')})`
+        revDateFilter  += ` AND CAST(strftime('%m', revenue_date) AS INTEGER) IN (${monthArr.join(',')})`
+        periodLabel = `T${monthArr.join(',')}/${yInt}`
+      }
+    } else if (month) {
+      const m = String(mInt!).padStart(2, '0')
+      costDateFilter = `AND strftime('%Y', cost_date) = '${y}' AND strftime('%m', cost_date) = '${m}'`
+      revDateFilter  = `AND strftime('%Y', revenue_date) = '${y}' AND strftime('%m', revenue_date) = '${m}'`
+      periodLabel = `T${mInt}/${yInt}`
+    }
+
+    // --- Other costs from project_costs (excluding salary type) ---
     const otherCosts = await db.prepare(
       `SELECT cost_type, SUM(amount) as total FROM project_costs
-       WHERE project_id = ? AND cost_type != 'salary' ${dateFilter} GROUP BY cost_type`
-    ).bind(projectId, ...fp).all()
+       WHERE project_id = ? AND cost_type != 'salary' ${costDateFilter} GROUP BY cost_type`
+    ).bind(projectId).all()
     const totalOtherCost = (otherCosts.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
-    // --- Labor cost: from project_labor_costs if month/year specified, else from timesheet real-time ---
-    let laborCost = 0
-    let laborHours = 0
-    let laborPerHour = 0
-    let laborSource = 'none'
+    // --- Labor cost: aggregate from project_labor_costs for the period ---
+    let laborCost = 0; let laborHours = 0; let laborPerHour = 0; let laborSource = 'none'
 
-    if (mInt && yInt) {
+    let laborWhere = `WHERE project_id = ? AND year = ?`
+    const laborParams: any[] = [projectId, yInt]
+    if (all_months === 'true') {
+      // all months — no extra filter
+    } else if (months) {
+      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      if (monthArr.length > 0) { laborWhere += ` AND month IN (${monthArr.join(',')})`; }
+    } else if (mInt) {
+      laborWhere += ` AND month = ?`; laborParams.push(mInt)
+    }
+
+    const laborRow = await db.prepare(
+      `SELECT SUM(total_labor_cost) as lc, SUM(total_hours) as hrs, AVG(cost_per_hour) as cph
+       FROM project_labor_costs ${laborWhere}`
+    ).bind(...laborParams).first() as any
+
+    if (laborRow?.lc) {
+      laborCost = laborRow.lc; laborHours = laborRow.hrs || 0; laborPerHour = laborRow.cph || 0
+      laborSource = 'project_labor_costs'
+    } else if (mInt) {
+      // Fallback: real-time for single month
       const m = String(mInt).padStart(2, '0')
-      const y = String(yInt)
-      const cached = await db.prepare(
-        `SELECT total_labor_cost, total_hours, cost_per_hour FROM project_labor_costs
-         WHERE project_id = ? AND month = ? AND year = ?`
-      ).bind(projectId, mInt, yInt).first() as any
-      if (cached) {
-        laborCost = cached.total_labor_cost
-        laborHours = cached.total_hours
-        laborPerHour = cached.cost_per_hour
-        laborSource = 'project_labor_costs'
-      } else {
-        const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
-        const projHrs = await db.prepare(
-          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
-           WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
-        ).bind(projectId, y, m).first() as any
-        laborHours = projHrs?.total || 0
-        laborPerHour = costPerHour
-        laborCost = Math.round(laborHours * costPerHour)
-        laborSource = 'realtime'
-      }
+      const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+      const projHrs = await db.prepare(
+        `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+         WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+      ).bind(projectId, y, m).first() as any
+      laborHours = projHrs?.total || 0
+      laborPerHour = costPerHour
+      laborCost = Math.round(laborHours * costPerHour)
+      laborSource = 'realtime'
     }
 
     // Validate labor cost
@@ -2426,14 +2868,10 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     }
 
     // --- Revenue ---
-    let revFilter = ''; const rp: any[] = []
-    if (year) { revFilter += ` AND strftime('%Y', revenue_date) = ?`; rp.push(year) }
-    if (month) { revFilter += ` AND strftime('%m', revenue_date) = ?`; rp.push(month.padStart(2,'0')) }
-
     const revenues = await db.prepare(
-      `SELECT SUM(amount) as total FROM project_revenues WHERE project_id = ? ${revFilter}`
-    ).bind(projectId, ...rp).first() as any
-    const totalRevenue = revenues?.total || ((!month && !year) ? contractValue : 0)
+      `SELECT SUM(amount) as total FROM project_revenues WHERE project_id = ? ${revDateFilter}`
+    ).bind(projectId).first() as any
+    const totalRevenue = revenues?.total || ((!month && !months && all_months !== 'true') ? contractValue : 0)
 
     // --- Timeline ---
     const timeline = await db.prepare(`
@@ -2473,6 +2911,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
 
     return c.json({
       project: { id: project.id, code: project.code, name: project.name, contract_value: contractValue },
+      period: { label: periodLabel, year: yInt },
       summary: {
         total_revenue: totalRevenue, total_cost: totalCost, labor_cost: laborCost,
         other_cost: totalOtherCost, profit, margin,
