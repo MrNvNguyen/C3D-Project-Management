@@ -1619,8 +1619,13 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
-// GET /api/projects/:id/costs-revenue-summary — FIX 2: synced summary
-// Reads labor from project_labor_costs (synced from Chi Phí Lương module)
+// GET /api/projects/:id/costs-revenue-summary
+// Tóm tắt tài chính dự án — hỗ trợ đầy đủ 3 chế độ:
+//   ?month=M&year=Y           → single month
+//   ?months=1,2,3&year=Y      → multiple months (SUM)
+//   ?all_months=true&year=Y   → whole year (SUM tất cả tháng)
+// Chi phí lương = SUM(project_labor_costs) cho kỳ chọn
+// Nếu không có cached data → tính real-time TỪNG THÁNG rồi cộng dồn
 app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
@@ -1633,78 +1638,107 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     if (!proj) return c.json({ error: 'Project not found' }, 404)
     const contractValue = proj.contract_value || 0
 
-    // --- Build date filter for project_costs ---
-    let costDateFilter = `AND strftime('%Y', pc.cost_date) = '${y}'`
-    let revDateFilter  = `AND strftime('%Y', pr.revenue_date) = '${y}'`
-    let periodLabel = `Năm ${yInt}`
+    // ── Determine period type & month list ──────────────────────────
     let periodType = 'all_months'
+    let periodLabel = `Toàn năm ${yInt}`
+    let selectedMonths: number[] | null = null   // null = all 12 months
 
     if (all_months === 'true') {
-      periodType = 'all_months'; periodLabel = `Toàn năm ${yInt}`
+      periodType = 'all_months'
+      periodLabel = `Toàn năm ${yInt}`
+      selectedMonths = null   // will sum all months in DB
     } else if (months) {
-      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
-      if (monthArr.length > 0) {
-        const inClause = monthArr.map(() => '?').join(',')
-        costDateFilter += ` AND CAST(strftime('%m', pc.cost_date) AS INTEGER) IN (${inClause})`
-        revDateFilter  += ` AND CAST(strftime('%m', pr.revenue_date) AS INTEGER) IN (${inClause})`
-        // Note: SQLite binding params handled below via raw concat for simplicity
-        costDateFilter = `AND strftime('%Y', pc.cost_date) = '${y}' AND CAST(strftime('%m', pc.cost_date) AS INTEGER) IN (${monthArr.join(',')})`
-        revDateFilter  = `AND strftime('%Y', pr.revenue_date) = '${y}' AND CAST(strftime('%m', pr.revenue_date) AS INTEGER) IN (${monthArr.join(',')})`
-        periodType = 'multiple_months'; periodLabel = `T${monthArr.join(',')}/${yInt}`
+      const parsed = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      if (parsed.length > 0) {
+        selectedMonths = parsed
+        periodType = 'multiple_months'
+        periodLabel = `T${parsed.join(',')}/${yInt}`
       }
     } else if (month) {
       const mInt = parseInt(month)
-      const m = String(mInt).padStart(2, '0')
-      costDateFilter = `AND strftime('%Y', pc.cost_date) = '${y}' AND strftime('%m', pc.cost_date) = '${m}'`
-      revDateFilter  = `AND strftime('%Y', pr.revenue_date) = '${y}' AND strftime('%m', pr.revenue_date) = '${m}'`
-      periodType = 'single_month'; periodLabel = `T${mInt}/${yInt}`
+      if (mInt >= 1 && mInt <= 12) {
+        selectedMonths = [mInt]
+        periodType = 'single_month'
+        periodLabel = `T${mInt}/${yInt}`
+      }
     }
 
-    // --- Step 1: Labor cost from project_labor_costs (synced from Chi Phí Lương) ---
+    // ── Build SQL date filters for project_costs / project_revenues ──
+    // Always filter by year; additionally filter by month(s) if not all_months
+    let costDateFilter = `AND strftime('%Y', pc.cost_date) = '${y}'`
+    let revDateFilter  = `AND strftime('%Y', pr.revenue_date) = '${y}'`
+
+    if (selectedMonths !== null && all_months !== 'true') {
+      const inList = selectedMonths.join(',')
+      costDateFilter += ` AND CAST(strftime('%m', pc.cost_date) AS INTEGER) IN (${inList})`
+      revDateFilter  += ` AND CAST(strftime('%m', pr.revenue_date) AS INTEGER) IN (${inList})`
+    }
+    // For all_months=true: keep year-only filter (no month restriction)
+
+    // ── Step 1: Labor cost — SUM from project_labor_costs ──────────
+    // Build labor WHERE: always filter by project + year, add month IN clause when not all-months
     let laborWhere = `WHERE plc.project_id = ? AND plc.year = ?`
     const laborParams: any[] = [projectId, yInt]
-    if (month && !months && all_months !== 'true') {
-      laborWhere += ` AND plc.month = ?`; laborParams.push(parseInt(month))
-    } else if (months && all_months !== 'true') {
-      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
-      if (monthArr.length > 0) { laborWhere += ` AND plc.month IN (${monthArr.join(',')})`; }
+    if (selectedMonths !== null && all_months !== 'true') {
+      laborWhere += ` AND plc.month IN (${selectedMonths.join(',')})`
     }
+    // For all_months=true: no month filter → SUM all months in the year
 
     const laborRow = await db.prepare(
-      `SELECT SUM(plc.total_labor_cost) as total_lc, SUM(plc.total_hours) as total_hrs,
-              AVG(plc.cost_per_hour) as avg_cph, COUNT(DISTINCT plc.month) as m_cnt
+      `SELECT SUM(plc.total_labor_cost) as total_lc,
+              SUM(plc.total_hours)      as total_hrs,
+              AVG(plc.cost_per_hour)    as avg_cph,
+              COUNT(DISTINCT plc.month) as m_cnt
        FROM project_labor_costs plc ${laborWhere}`
     ).bind(...laborParams).first() as any
 
-    let laborCost = laborRow?.total_lc || 0
-    const laborHours = laborRow?.total_hrs || 0
-    const laborPerHour = laborRow?.avg_cph || 0
-    const laborMonthsCount = laborRow?.m_cnt || 0
+    let laborCost   = laborRow?.total_lc || 0
+    let laborHours  = laborRow?.total_hrs || 0
+    let laborPerHour = laborRow?.avg_cph || 0
+    let laborMonthsCount = laborRow?.m_cnt || 0
     let laborSource = laborCost > 0 ? 'project_labor_costs' : 'none'
 
-    // Fallback: real-time if no cached data
+    // ── Fallback: real-time calculation when no cached data ─────────
+    // Must loop over EACH month in the selected range and accumulate
     if (laborCost === 0) {
-      if (month && !months) {
-        const mInt = parseInt(month)
-        const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+      const monthsToCalc: number[] = selectedMonths !== null
+        ? selectedMonths                          // single or multi
+        : Array.from({ length: 12 }, (_, i) => i + 1)  // all 12 months for all_months
+
+      let rtLaborCost = 0; let rtHours = 0; let rtCphSum = 0; let rtMonths = 0
+
+      for (const mInt of monthsToCalc) {
         const m = String(mInt).padStart(2, '0')
+        const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
         const phRow = await db.prepare(
-          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
+           FROM timesheets
            WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
         ).bind(projectId, y, m).first() as any
-        laborCost = Math.round((phRow?.total || 0) * costPerHour)
+        const hrs = phRow?.total || 0
+        if (hrs > 0) {
+          const mc = Math.round(hrs * costPerHour)
+          rtLaborCost += mc; rtHours += hrs; rtCphSum += costPerHour; rtMonths++
+        }
+      }
+
+      if (rtLaborCost > 0) {
+        laborCost = rtLaborCost
+        laborHours = rtHours
+        laborPerHour = rtMonths > 0 ? rtCphSum / rtMonths : 0
+        laborMonthsCount = rtMonths
         laborSource = 'realtime'
       }
     }
 
-    // Validate labor cost cap
+    // ── Validate labor cost cap ─────────────────────────────────────
     const validation_warnings: string[] = []
     if (contractValue > 0 && laborCost > contractValue) {
       validation_warnings.push(`Chi phí lương (${fmtNum(laborCost)} ₫) vượt giá trị hợp đồng`)
       laborCost = contractValue
     }
 
-    // --- Step 2: Other costs (project_costs, exclude salary) ---
+    // ── Step 2: Other costs (project_costs, exclude salary) ─────────
     const otherRows = await db.prepare(`
       SELECT pc.cost_type, SUM(pc.amount) as total_amount
       FROM project_costs pc
@@ -1715,19 +1749,20 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     const otherCostArr = otherRows.results as any[]
     const totalOtherCosts = otherCostArr.reduce((s, r) => s + (r.total_amount || 0), 0)
 
-    // --- Step 3: Revenue ---
+    // ── Step 3: Revenue ─────────────────────────────────────────────
     const revRow = await db.prepare(`
       SELECT SUM(pr.amount) as total FROM project_revenues pr
       WHERE pr.project_id = ? ${revDateFilter}
     `).bind(projectId).first() as any
     const revenue = revRow?.total || 0
 
+    // ── Totals & profit ─────────────────────────────────────────────
     const totalCosts = laborCost + totalOtherCosts
-    const profit = revenue > 0 ? revenue - totalCosts : contractValue - totalCosts
     const revenueBase = revenue > 0 ? revenue : contractValue
+    const profit = revenueBase - totalCosts
     const profitMargin = revenueBase > 0 ? parseFloat(((profit / revenueBase) * 100).toFixed(1)) : null
 
-    // Validation
+    // Validation warnings
     if (contractValue > 0 && totalCosts > contractValue * 1.2)
       validation_warnings.push(`Tổng chi phí vượt 120% giá trị hợp đồng`)
     if (revenueBase > 0 && profit <= 0) validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
@@ -1752,22 +1787,30 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
 
     return c.json({
       project: { id: projectId, code: proj.code, name: proj.name, contract_value: contractValue },
-      period: { type: periodType, label: periodLabel, year: yInt },
+      period: { type: periodType, label: periodLabel, year: yInt,
+        selected_months: selectedMonths,
+        months_count: laborMonthsCount },
       financial: {
-        revenue: { value: revenue > 0 ? revenue : contractValue, month_revenue: revenue, contract_value: contractValue,
+        revenue: { value: revenueBase, month_revenue: revenue, contract_value: contractValue,
           label: revenue > 0 ? 'Doanh thu thực thu' : 'Giá trị hợp đồng' },
         costs: {
           labor: { value: laborCost, label: 'Chi phí lương', source: laborSource,
-            synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương module' : 'Tính real-time',
-            details: { total_hours: laborHours, cost_per_hour: Math.round(laborPerHour), months_count: laborMonthsCount,
-              formula: `${laborHours}h × ${Math.round(laborPerHour).toLocaleString('vi-VN')} ₫/h` } },
+            synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (đã đồng bộ)' : 'Tính real-time từ timesheet',
+            details: { total_hours: laborHours, cost_per_hour: Math.round(laborPerHour),
+              months_count: laborMonthsCount,
+              formula: laborHours > 0
+                ? `${laborHours}h × ${Math.round(laborPerHour).toLocaleString('vi-VN')} ₫/h`
+                : `Tổng ${laborMonthsCount} tháng` } },
           other: { value: totalOtherCosts, label: 'Chi phí khác', breakdown: otherCostArr, source: 'project_costs' },
           total: { value: totalCosts, label: 'Tổng chi phí' }
         },
         profit: { value: profit, percentage: profitMargin, label: 'Lợi nhuận' }
       },
       cost_breakdown: costBreakdown,
-      data_sync: { labor_synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (project_labor_costs)' : 'Real-time calculation', last_updated: new Date().toISOString() },
+      data_sync: {
+        labor_synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (project_labor_costs)' : 'Real-time calculation',
+        last_updated: new Date().toISOString()
+      },
       validation: { warnings: validation_warnings, has_warnings: validation_warnings.length > 0,
         profit_status: profit > 0 ? (profitMargin !== null && profitMargin < 10 ? 'warning' : 'ok') : 'error' }
     })
@@ -2708,6 +2751,7 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       GROUP BY p.id ORDER BY total_revenue DESC
     `).bind(currentYear).all()
 
+    // Other costs from project_costs (excluding salary type — covered by project_labor_costs)
     const costByProject = await db.prepare(`
       SELECT p.id, p.code, p.name,
         COALESCE(SUM(pc.amount), 0) as total_cost,
@@ -2715,17 +2759,41 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       FROM projects p
       LEFT JOIN project_costs pc ON pc.project_id = p.id
         AND strftime('%Y', pc.cost_date) = ?
+        AND pc.cost_type != 'salary'
       WHERE p.status != 'cancelled'
       GROUP BY p.id, pc.cost_type
     `).bind(currentYear).all()
 
+    // Labor costs from project_labor_costs — SUM all months for the year per project
+    const laborByProject = await db.prepare(`
+      SELECT p.id, p.code, p.name,
+        COALESCE(SUM(plc.total_labor_cost), 0) as labor_cost,
+        COALESCE(SUM(plc.total_hours), 0) as total_hours,
+        COUNT(DISTINCT plc.month) as months_with_data
+      FROM projects p
+      LEFT JOIN project_labor_costs plc ON plc.project_id = p.id AND plc.year = ?
+      WHERE p.status != 'cancelled'
+      GROUP BY p.id
+    `).bind(parseInt(currentYear)).all()
+
+    // Monthly summary: other costs only (salary excluded — in project_labor_costs)
     const monthlySummary = await db.prepare(`
       SELECT strftime('%Y-%m', cost_date) as month,
         SUM(amount) as total_cost, cost_type
       FROM project_costs
-      WHERE strftime('%Y', cost_date) = ?
+      WHERE strftime('%Y', cost_date) = ? AND cost_type != 'salary'
       GROUP BY month, cost_type ORDER BY month ASC
     `).bind(currentYear).all()
+
+    // Monthly labor costs summary (from project_labor_costs)
+    const monthlyLaborSummary = await db.prepare(`
+      SELECT PRINTF('%d-%02d', year, month) as month,
+        SUM(total_labor_cost) as total_cost,
+        'salary' as cost_type
+      FROM project_labor_costs
+      WHERE year = ?
+      GROUP BY month ORDER BY month ASC
+    `).bind(parseInt(currentYear)).all()
 
     const timesheetCost = await db.prepare(`
       SELECT ts.project_id, p.name as project_name, p.code as project_code,
@@ -2736,10 +2804,17 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       GROUP BY ts.project_id
     `).bind(currentYear).all()
 
+    // Merge monthly labor into monthlySummary for complete picture
+    const allMonthlyCosts = [
+      ...(monthlySummary.results || []),
+      ...(monthlyLaborSummary.results || [])
+    ]
+
     return c.json({
       revenue_by_project: revenueByProject.results,
       cost_by_project: costByProject.results,
-      monthly_summary: monthlySummary.results,
+      labor_by_project: laborByProject.results,
+      monthly_summary: allMonthlyCosts,
       timesheet_cost: timesheetCost.results
     })
   } catch (e: any) {
@@ -2997,39 +3072,59 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     const totalOtherCost = (otherCosts.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
     // --- Labor cost: aggregate from project_labor_costs for the period ---
+    // Determine which months to query
+    let finMonthList: number[] | null = null  // null = all 12
+    if (all_months === 'true') {
+      finMonthList = null
+    } else if (months) {
+      const parsed = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      if (parsed.length > 0) finMonthList = parsed
+    } else if (mInt) {
+      finMonthList = [mInt]
+    }
+
     let laborCost = 0; let laborHours = 0; let laborPerHour = 0; let laborSource = 'none'
+    let laborMonthsCount = 0
 
     let laborWhere = `WHERE project_id = ? AND year = ?`
     const laborParams: any[] = [projectId, yInt]
-    if (all_months === 'true') {
-      // all months — no extra filter
-    } else if (months) {
-      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
-      if (monthArr.length > 0) { laborWhere += ` AND month IN (${monthArr.join(',')})`; }
-    } else if (mInt) {
-      laborWhere += ` AND month = ?`; laborParams.push(mInt)
+    if (finMonthList !== null) {
+      laborWhere += ` AND month IN (${finMonthList.join(',')})`
     }
+    // For null (all_months): no month filter → SUM all months in year
 
     const laborRow = await db.prepare(
-      `SELECT SUM(total_labor_cost) as lc, SUM(total_hours) as hrs, AVG(cost_per_hour) as cph
+      `SELECT SUM(total_labor_cost) as lc, SUM(total_hours) as hrs, AVG(cost_per_hour) as cph,
+              COUNT(DISTINCT month) as m_cnt
        FROM project_labor_costs ${laborWhere}`
     ).bind(...laborParams).first() as any
 
     if (laborRow?.lc) {
       laborCost = laborRow.lc; laborHours = laborRow.hrs || 0; laborPerHour = laborRow.cph || 0
+      laborMonthsCount = laborRow.m_cnt || 0
       laborSource = 'project_labor_costs'
-    } else if (mInt) {
-      // Fallback: real-time for single month
-      const m = String(mInt).padStart(2, '0')
-      const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
-      const projHrs = await db.prepare(
-        `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
-         WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
-      ).bind(projectId, y, m).first() as any
-      laborHours = projHrs?.total || 0
-      laborPerHour = costPerHour
-      laborCost = Math.round(laborHours * costPerHour)
-      laborSource = 'realtime'
+    } else {
+      // Fallback: real-time — loop over each month in range and accumulate
+      const monthsToCalc = finMonthList ?? Array.from({ length: 12 }, (_, i) => i + 1)
+      let rtTotal = 0; let rtHours = 0; let rtCphSum = 0; let rtMonths = 0
+      for (const mi of monthsToCalc) {
+        const m = String(mi).padStart(2, '0')
+        const { costPerHour } = await computeMonthLaborCost(db, mi, yInt)
+        const projHrs = await db.prepare(
+          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+           WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+        ).bind(projectId, y, m).first() as any
+        const hrs = projHrs?.total || 0
+        if (hrs > 0) {
+          rtTotal += Math.round(hrs * costPerHour); rtHours += hrs
+          rtCphSum += costPerHour; rtMonths++
+        }
+      }
+      if (rtTotal > 0) {
+        laborCost = rtTotal; laborHours = rtHours
+        laborPerHour = rtMonths > 0 ? rtCphSum / rtMonths : 0
+        laborMonthsCount = rtMonths; laborSource = 'realtime'
+      }
     }
 
     // Validate labor cost
@@ -3042,7 +3137,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     const revenues = await db.prepare(
       `SELECT SUM(amount) as total FROM project_revenues WHERE project_id = ? ${revDateFilter}`
     ).bind(projectId).first() as any
-    const totalRevenue = revenues?.total || ((!month && !months && all_months !== 'true') ? contractValue : 0)
+    const totalRevenue = revenues?.total || (finMonthList === null && all_months !== 'true' ? contractValue : (revenues?.total || 0))
 
     // --- Timeline ---
     const timeline = await db.prepare(`
@@ -3086,7 +3181,8 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       summary: {
         total_revenue: totalRevenue, total_cost: totalCost, labor_cost: laborCost,
         other_cost: totalOtherCost, profit, margin,
-        labor_hours: laborHours, labor_per_hour: Math.round(laborPerHour), labor_source: laborSource
+        labor_hours: laborHours, labor_per_hour: Math.round(laborPerHour), labor_source: laborSource,
+        labor_months_count: laborMonthsCount
       },
       costs_by_type: costsByType,
       timeline: timeline.results,
@@ -3517,39 +3613,220 @@ app.post('/api/system/init', async (c) => {
       `).run()
     } catch (_) { /* ignore */ }
 
-    // Sample costs & revenues — use existence check to PREVENT DUPLICATES on every re-init
-    // This is the primary fix for the duplicate data issue on Chi Phí & Doanh Thu page
-    const costTypes2 = ['salary', 'equipment', 'material', 'transport']
-    for (let m = 1; m <= 2; m++) {
+    // ============================================================
+    // Sample costs & revenues — PREVENT DUPLICATES on every re-init
+    // PROJECT 1: OneCad Tower — months 1-6 with all cost types
+    // ============================================================
+    const costTypes2 = ['equipment', 'material', 'transport']
+    // Project 1 cost data (fixed amounts for reproducibility)
+    const proj1Costs: Record<string, number[]> = {
+      equipment: [45000000, 38000000, 52000000, 41000000, 48000000, 55000000],
+      material:  [72000000, 68000000, 85000000, 78000000, 92000000, 88000000],
+      transport: [18000000, 15000000, 22000000, 19000000, 25000000, 21000000],
+    }
+    const proj1Revenue = [0, 500000000, 0, 800000000, 0, 1200000000]
+    for (let m = 1; m <= 6; m++) {
       const monthStr = m.toString().padStart(2, '0')
       for (const type of costTypes2) {
         try {
-          // Check if a cost record already exists for this project/type/month before inserting
           const existingCost = await db.prepare(
             `SELECT id FROM project_costs WHERE project_id = 1 AND cost_type = ? AND cost_date = ? LIMIT 1`
           ).bind(type, `2026-${monthStr}-15`).first()
           if (!existingCost) {
+            const amt = proj1Costs[type][m - 1]
             await db.prepare(
-              `INSERT INTO project_costs (project_id, cost_type, description, amount, cost_date, created_by)
-               VALUES (1, ?, ?, ?, ?, 1)`
-            ).bind(type, `Chi phí ${type} tháng ${m}/2026`, Math.floor(Math.random() * 50000000) + 5000000, `2026-${monthStr}-15`).run()
+              `INSERT INTO project_costs (project_id, cost_type, description, amount, cost_date, created_by) VALUES (1, ?, ?, ?, ?, 1)`
+            ).bind(type, `Chi phí ${type} tháng ${m}/2026`, amt, `2026-${monthStr}-15`).run()
           }
         } catch (_) { /* skip */ }
       }
-      if (m % 2 === 0) {
+      if (proj1Revenue[m - 1] > 0) {
         try {
-          // Check if a revenue record already exists for this project/month before inserting
           const existingRev = await db.prepare(
             `SELECT id FROM project_revenues WHERE project_id = 1 AND revenue_date = ? LIMIT 1`
           ).bind(`2026-${monthStr}-20`).first()
           if (!existingRev) {
             await db.prepare(
-              `INSERT INTO project_revenues (project_id, description, amount, revenue_date, payment_status, created_by)
-               VALUES (1, ?, ?, ?, 'paid', 1)`
-            ).bind(`Đợt thanh toán tháng ${m}/2026`, Math.floor(Math.random() * 500000000) + 100000000, `2026-${monthStr}-20`).run()
+              `INSERT INTO project_revenues (project_id, description, amount, revenue_date, payment_status, created_by) VALUES (1, ?, ?, ?, 'paid', 1)`
+            ).bind(`Đợt thanh toán tháng ${m}/2026`, proj1Revenue[m - 1], `2026-${monthStr}-20`).run()
           }
         } catch (_) { /* skip */ }
       }
+    }
+
+    // Seed project_labor_costs for Project 1 (months 1-6)
+    const proj1Labor = [300000000, 371517028, 285000000, 320000000, 355000000, 410000000]
+    const proj1Hours = [85, 300, 260, 290, 320, 380]
+    for (let m = 1; m <= 6; m++) {
+      try {
+        const existing = await db.prepare(
+          `SELECT id FROM project_labor_costs WHERE project_id = 1 AND month = ? AND year = 2026 LIMIT 1`
+        ).bind(m).first()
+        if (!existing) {
+          const lc = proj1Labor[m - 1]; const hrs = proj1Hours[m - 1]
+          await db.prepare(
+            `INSERT INTO project_labor_costs (project_id, month, year, total_labor_cost, total_hours, cost_per_hour) VALUES (1, ?, 2026, ?, ?, ?)`
+          ).bind(m, lc, hrs, Math.round(lc / hrs)).run()
+        }
+      } catch (_) { /* skip */ }
+    }
+
+    // Seed project_members for Project 1
+    const proj1Members = [[2, 'member'], [3, 'leader'], [4, 'admin']]
+    for (const [uid, role] of proj1Members) {
+      try {
+        await db.prepare(`INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES (1, ?, ?)`).bind(uid, role).run()
+      } catch (_) {}
+    }
+
+    // ============================================================
+    // PROJECT 2: Cầu vượt QL1A — months 3-6 (project starts Mar 2026)
+    // ============================================================
+    const proj2NonSalaryCosts: Record<string, number[]> = {
+      equipment: [120000000, 135000000, 148000000, 162000000],
+      material:  [95000000, 108000000, 125000000, 138000000],
+      transport: [32000000, 38000000, 44000000, 51000000],
+    }
+    const proj2Months = [3, 4, 5, 6]
+    const proj2Revenue = [0, 1500000000, 0, 2000000000]
+    for (let i = 0; i < proj2Months.length; i++) {
+      const m = proj2Months[i]; const monthStr = m.toString().padStart(2, '0')
+      for (const type of Object.keys(proj2NonSalaryCosts)) {
+        try {
+          const existingCost = await db.prepare(
+            `SELECT id FROM project_costs WHERE project_id = 2 AND cost_type = ? AND cost_date = ? LIMIT 1`
+          ).bind(type, `2026-${monthStr}-15`).first()
+          if (!existingCost) {
+            const amt = proj2NonSalaryCosts[type][i]
+            await db.prepare(
+              `INSERT INTO project_costs (project_id, cost_type, description, amount, cost_date, created_by) VALUES (2, ?, ?, ?, ?, 1)`
+            ).bind(type, `Chi phí ${type} tháng ${m}/2026 - PRJ002`, amt, `2026-${monthStr}-15`).run()
+          }
+        } catch (_) { /* skip */ }
+      }
+      if (proj2Revenue[i] > 0) {
+        try {
+          const existingRev = await db.prepare(
+            `SELECT id FROM project_revenues WHERE project_id = 2 AND revenue_date = ? LIMIT 1`
+          ).bind(`2026-${monthStr}-25`).first()
+          if (!existingRev) {
+            await db.prepare(
+              `INSERT INTO project_revenues (project_id, description, amount, revenue_date, payment_status, created_by) VALUES (2, ?, ?, ?, 'paid', 1)`
+            ).bind(`Đợt thanh toán tháng ${m}/2026 - PRJ002`, proj2Revenue[i], `2026-${monthStr}-25`).run()
+          }
+        } catch (_) { /* skip */ }
+      }
+    }
+
+    // Seed project_labor_costs for Project 2 (months 3-6)
+    const proj2Labor = [450000000, 520000000, 498000000, 575000000]
+    const proj2HoursArr = [380, 440, 420, 490]
+    for (let i = 0; i < proj2Months.length; i++) {
+      const m = proj2Months[i]
+      try {
+        const existing = await db.prepare(
+          `SELECT id FROM project_labor_costs WHERE project_id = 2 AND month = ? AND year = 2026 LIMIT 1`
+        ).bind(m).first()
+        if (!existing) {
+          const lc = proj2Labor[i]; const hrs = proj2HoursArr[i]
+          await db.prepare(
+            `INSERT INTO project_labor_costs (project_id, month, year, total_labor_cost, total_hours, cost_per_hour) VALUES (2, ?, 2026, ?, ?, ?)`
+          ).bind(m, lc, hrs, Math.round(lc / hrs)).run()
+        }
+      } catch (_) { /* skip */ }
+    }
+
+    // Project 2 members
+    const proj2Members = [[2, 'member'], [3, 'leader'], [4, 'admin']]
+    for (const [uid, role] of proj2Members) {
+      try {
+        await db.prepare(`INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES (2, ?, ?)`).bind(uid, role).run()
+      } catch (_) {}
+    }
+
+    // Timesheets for Project 2 — users 2 & 3 for the past 30 days (weekdays, half-day)
+    const today2 = new Date()
+    for (let i = 30; i >= 0; i--) {
+      const d = new Date(today2); d.setDate(d.getDate() - i)
+      const dateStr = d.toISOString().split('T')[0]
+      if (d.getDay() !== 0 && d.getDay() !== 6) {
+        try {
+          await db.prepare(
+            `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status) VALUES (?, ?, ?, ?, ?, ?, 'approved')`
+          ).bind(2, 2, dateStr, 4, 0, 'Cong viec du an cau').run()
+          await db.prepare(
+            `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status) VALUES (?, ?, ?, ?, ?, ?, 'approved')`
+          ).bind(3, 2, dateStr, 4, i % 5 === 0 ? 2 : 0, 'Cong viec du an cau').run()
+        } catch (_) {}
+      }
+    }
+
+    // ============================================================
+    // PROJECT 3: Khu đô thị Eco City — month 6 (planning phase)
+    // ============================================================
+    const proj3Costs: Record<string, number> = { equipment: 85000000, material: 62000000, transport: 28000000 }
+    for (const [type, amt] of Object.entries(proj3Costs)) {
+      try {
+        const existingCost = await db.prepare(
+          `SELECT id FROM project_costs WHERE project_id = 3 AND cost_type = ? AND cost_date = ? LIMIT 1`
+        ).bind(type, `2026-06-15`).first()
+        if (!existingCost) {
+          await db.prepare(
+            `INSERT INTO project_costs (project_id, cost_type, description, amount, cost_date, created_by) VALUES (3, ?, ?, ?, '2026-06-15', 1)`
+          ).bind(type, `Chi phí ${type} tháng 6/2026 - PRJ003`, amt).run()
+        }
+      } catch (_) { /* skip */ }
+    }
+    try {
+      const existingRev3 = await db.prepare(
+        `SELECT id FROM project_revenues WHERE project_id = 3 AND revenue_date = ? LIMIT 1`
+      ).bind('2026-06-30').first()
+      if (!existingRev3) {
+        await db.prepare(
+          `INSERT INTO project_revenues (project_id, description, amount, revenue_date, payment_status, created_by) VALUES (3, ?, ?, '2026-06-30', 'pending', 1)`
+        ).bind('Tạm ứng khởi động dự án Eco City', 1200000000).run()
+      }
+    } catch (_) { /* skip */ }
+
+    // Seed project_labor_costs for Project 3 (month 6 only)
+    try {
+      const existing3 = await db.prepare(
+        `SELECT id FROM project_labor_costs WHERE project_id = 3 AND month = 6 AND year = 2026 LIMIT 1`
+      ).first()
+      if (!existing3) {
+        await db.prepare(
+          `INSERT INTO project_labor_costs (project_id, month, year, total_labor_cost, total_hours, cost_per_hour) VALUES (3, 6, 2026, 320000000, 280, ?)`
+        ).bind(Math.round(320000000 / 280)).run()
+      }
+    } catch (_) { /* skip */ }
+
+    // Project 3 members
+    const proj3Members = [[3, 'leader'], [4, 'admin']]
+    for (const [uid, role] of proj3Members) {
+      try {
+        await db.prepare(`INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES (3, ?, ?)`).bind(uid, role).run()
+      } catch (_) {}
+    }
+
+    // Additional tasks for projects 2 and 3
+    const additionalTasks = [
+      [2, 'Thiết kế mố cầu A1', 'ES', 'high', 'in_progress', 3, '2026-03-10', '2026-07-30', 60, 45],
+      [2, 'Bản vẽ thiết kế dầm cầu', 'ES', 'urgent', 'in_progress', 2, '2026-04-01', '2026-08-15', 48, 30],
+      [2, 'Hệ thống thoát nước mặt cầu', 'CD', 'medium', 'todo', 2, '2026-05-01', '2026-09-30', 32, 0],
+      [3, 'Quy hoạch tổng thể 50ha', 'AA', 'high', 'in_progress', 2, '2026-06-15', '2026-10-30', 80, 20],
+      [3, 'Thiết kế hạ tầng kỹ thuật', 'CL', 'medium', 'todo', 3, '2026-07-01', '2026-11-30', 64, 0],
+    ]
+    for (const [pid, title, disc, priority, status, assigned, start, due, est, prog] of additionalTasks) {
+      try {
+        const existing = await db.prepare(
+          `SELECT id FROM tasks WHERE title = ? AND project_id = ? LIMIT 1`
+        ).bind(title, pid).first()
+        if (!existing) {
+          await db.prepare(
+            `INSERT INTO tasks (project_id, title, discipline_code, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, progress) VALUES (?, ?, ?, ?, ?, ?, 4, ?, ?, ?, ?)`
+          ).bind(pid, title, disc, priority, status, assigned, start, due, est, prog).run()
+        }
+      } catch (_) { /* skip */ }
     }
 
     // Sample assets

@@ -1671,11 +1671,17 @@ async function loadCostDashboard() {
     let totalRevenue = 0, totalCost = 0
     summary.revenue_by_project?.forEach(p => totalRevenue += p.total_revenue || 0)
 
-    // Aggregate cost by project
+    // Aggregate OTHER costs (non-salary) by project from project_costs
     const costByProject = {}
     summary.cost_by_project?.forEach(item => {
-      if (!costByProject[item.id]) costByProject[item.id] = { id: item.id, code: item.code, name: item.name, total_cost: 0 }
+      if (!costByProject[item.id]) costByProject[item.id] = { id: item.id, code: item.code, name: item.name, total_cost: 0, labor_cost: 0 }
       costByProject[item.id].total_cost += item.total_cost || 0
+    })
+    // Add labor costs from project_labor_costs (SUM all months for year)
+    summary.labor_by_project?.forEach(item => {
+      if (!costByProject[item.id]) costByProject[item.id] = { id: item.id, code: item.code, name: item.name, total_cost: 0, labor_cost: 0 }
+      costByProject[item.id].labor_cost = item.labor_cost || 0
+      costByProject[item.id].total_cost += item.labor_cost || 0
     })
     Object.values(costByProject).forEach(p => totalCost += p.total_cost)
     const profit = totalRevenue - totalCost
@@ -1887,13 +1893,23 @@ async function loadCostAnalysis() {
       const src = fin.costs?.labor?.source || 'none'
       const syncedFrom = fin.costs?.labor?.synced_from || ''
       const periodLabel = data.period?.label || ''
-      syncBadge.innerHTML = `<div class="flex items-center gap-2 mb-3 p-2 rounded-lg ${src === 'project_labor_costs' ? 'bg-green-50 border border-green-200' : 'bg-yellow-50 border border-yellow-200'}">
-        <i class="fas ${src === 'project_labor_costs' ? 'fa-check-circle text-green-500' : 'fa-exclamation-circle text-yellow-500'} text-sm"></i>
-        <span class="text-xs ${src === 'project_labor_costs' ? 'text-green-700' : 'text-yellow-700'}">
-          Chi phí lương từ: <strong>${syncedFrom || (src === 'project_labor_costs' ? 'project_labor_costs (đã đồng bộ)' : 'Tính real-time từ timesheet')}</strong>
-          ${periodLabel ? ` | Kỳ: <strong>${periodLabel}</strong>` : ''}
+      const laborMonths = fin.costs?.labor?.details?.months_count || 0
+      const periodType2 = data.period?.type || 'single_month'
+      const isMultiPeriod = periodType2 === 'all_months' || periodType2 === 'multiple_months'
+      const colorClass = src === 'project_labor_costs' ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'
+      const iconClass  = src === 'project_labor_costs' ? 'fa-check-circle text-green-500' : 'fa-exclamation-circle text-yellow-500'
+      const textClass  = src === 'project_labor_costs' ? 'text-green-700' : 'text-yellow-700'
+      syncBadge.innerHTML = `<div class="flex items-center gap-2 mb-3 p-2 rounded-lg ${colorClass} border">
+        <i class="fas ${iconClass} text-sm flex-shrink-0"></i>
+        <span class="text-xs ${textClass} flex-1">
+          Chi phí lương: <strong>${syncedFrom || (src === 'project_labor_costs' ? 'Đã đồng bộ từ Chi Phí Lương' : 'Real-time từ timesheet')}</strong>
+          ${periodLabel ? ` &nbsp;|&nbsp; Kỳ: <strong>${periodLabel}</strong>` : ''}
+          ${isMultiPeriod && laborMonths > 0 ? ` &nbsp;|&nbsp; <strong>${laborMonths} tháng</strong> có dữ liệu` : ''}
+          ${isMultiPeriod ? ` &nbsp;|&nbsp; Tổng = SUM(${periodType2 === 'all_months' ? 'T1→T12' : 'các tháng chọn'})` : ''}
         </span>
-        ${src !== 'project_labor_costs' ? `<button onclick="createLaborForAnalysisProject(${projId})" class="ml-auto text-xs text-yellow-700 underline hover:no-underline">Đồng bộ ngay</button>` : ''}
+        ${src !== 'project_labor_costs' && periodType2 === 'single_month'
+          ? `<button onclick="createLaborForAnalysisProject(${projId})" class="ml-auto text-xs text-yellow-700 underline hover:no-underline flex-shrink-0">Đồng bộ ngay</button>`
+          : ''}
       </div>`
       syncBadge.classList.remove('hidden')
     }
@@ -1923,8 +1939,12 @@ async function loadCostAnalysis() {
     }
 
     const laborDet = fin.costs?.labor?.details
+    const laborPeriodType3 = data.period?.type || 'single_month'
     if ($('anaLaborDetail') && laborDet) {
-      $('anaLaborDetail').textContent = `${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)}/h`
+      const isMultiP = laborPeriodType3 === 'all_months' || laborPeriodType3 === 'multiple_months'
+      $('anaLaborDetail').textContent = isMultiP
+        ? `SUM ${laborDet.months_count || 0} tháng = ${fmtMoney(laborVal)}`
+        : `${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)}/h`
     }
 
     const breakdown = data.cost_breakdown || []
@@ -1973,12 +1993,20 @@ async function loadCostAnalysis() {
       const laborInfo = $('anaLaborInfo')
       if (laborInfo && laborDet) {
         laborInfo.classList.remove('hidden')
-        const src = $('anaLaborInfoContent')
-        if (src) src.innerHTML = `
-          <p>• Giờ làm dự án kỳ này: <strong>${laborDet.total_hours}h</strong></p>
-          <p>• Chi phí/giờ: <strong>${fmtMoney(laborDet.cost_per_hour)}/h</strong></p>
-          <p>• Nguồn: <strong>${fin.costs?.labor?.source === 'project_labor_costs' ? 'project_labor_costs (đã đồng bộ)' : fin.costs?.labor?.source === 'manual' ? 'Nhập thủ công' : 'Real-time (tự động)'}</strong></p>
-          ${laborDet.formula ? `<p>• Công thức: <strong>${laborDet.formula}</strong></p>` : `<p>• Chi phí = ${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)} = <strong>${fmtMoney(laborVal)}</strong></p>`}`
+        const laborSrc = $('anaLaborInfoContent')
+        const laborSrcStr = fin.costs?.labor?.source === 'project_labor_costs' ? 'project_labor_costs (đã đồng bộ)' : fin.costs?.labor?.source === 'manual' ? 'Nhập thủ công' : 'Real-time (tự động)'
+        const laborPeriodType = data.period?.type || 'single_month'
+        const isLaborMulti = laborPeriodType === 'all_months' || laborPeriodType === 'multiple_months'
+        if (laborSrc) laborSrc.innerHTML = `
+          ${isLaborMulti
+            ? `<p>• Kỳ báo cáo: <strong>${data.period?.label || ''}</strong> (${laborDet.months_count || 0} tháng có dữ liệu)</p>
+               <p>• Tổng giờ làm: <strong>${laborDet.total_hours}h</strong> (cộng dồn tất cả tháng)</p>
+               <p>• Chi phí/giờ TB: <strong>${fmtMoney(laborDet.cost_per_hour)}/h</strong></p>
+               <p>• Tổng chi phí lương = SUM(từng tháng) = <strong>${fmtMoney(laborVal)}</strong></p>`
+            : `<p>• Giờ làm dự án kỳ này: <strong>${laborDet.total_hours}h</strong></p>
+               <p>• Chi phí/giờ: <strong>${fmtMoney(laborDet.cost_per_hour)}/h</strong></p>
+               ${laborDet.formula ? `<p>• Công thức: <strong>${laborDet.formula}</strong></p>` : `<p>• Chi phí = ${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)} = <strong>${fmtMoney(laborVal)}</strong></p>`}`}
+          <p>• Nguồn: <strong>${laborSrcStr}</strong></p>`
       }
 
       // Doughnut chart
@@ -2860,6 +2888,8 @@ function onFinPeriodTypeChange() {
 async function loadFinanceProject() {
   const projectId = $('finProjSelect')?.value
   if (!projectId) return
+  const el = $('financeProjectContent')
+  if (el) el.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i><p class="mt-2 text-sm">Đang tải...</p></div>'
   try {
     const yf = $('finYearFilter')?.value || String(new Date().getFullYear())
     const periodType = $('finPeriodType')?.value || 'single'
@@ -2882,10 +2912,14 @@ async function loadFinanceProject() {
 
     if (params.length) query += '?' + params.join('&')
 
-    const data = await api(query)
-    const el = $('financeProjectContent')
+    // Fetch project financial data and members in parallel
+    const [data, projDetail] = await Promise.all([
+      api(query),
+      api(`/projects/${projectId}`).catch(() => null)
+    ])
     if (!el) return
     const { project, summary, costs_by_type, timeline, validation } = data
+    const members = projDetail?.members || []
 
     // Validation warnings banner
     const warningBanner = validation?.has_warnings
@@ -2913,69 +2947,168 @@ async function loadFinanceProject() {
     else if (periodType === 'multi') periodLabel = `Nhiều tháng ${yf}`
     else { const mf = $('finMonthFilter')?.value; periodLabel = mf ? `T${parseInt(mf)}/${yf}` : `Năm ${yf}` }
 
+    // Revenue progress vs contract
+    const revenueProgress = project.contract_value > 0 ? Math.min(100, Math.round(summary.total_revenue / project.contract_value * 100)) : 0
+    const costProgress = project.contract_value > 0 ? Math.min(100, Math.round(summary.total_cost / project.contract_value * 100)) : 0
+
+    // Labor source badge
+    const laborSourceBadge = summary.labor_source === 'project_labor_costs'
+      ? `<span class="inline-flex items-center gap-1 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full"><i class="fas fa-database"></i> project_labor_costs</span>`
+      : summary.labor_source === 'realtime'
+        ? `<span class="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full"><i class="fas fa-clock"></i> Real-time</span>`
+        : `<span class="inline-flex items-center gap-1 text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Chưa có dữ liệu</span>`
+
+    // Monthly breakdown from timeline (aggregate by month)
+    const timelineByMonth = {}
+    ;(timeline || []).forEach(t => {
+      if (!timelineByMonth[t.month]) timelineByMonth[t.month] = { other: 0, types: {} }
+      timelineByMonth[t.month].other += t.total || 0
+      timelineByMonth[t.month].types[t.cost_type] = (timelineByMonth[t.month].types[t.cost_type] || 0) + (t.total || 0)
+    })
+    const monthlyRows = Object.entries(timelineByMonth).sort(([a],[b]) => a.localeCompare(b)).map(([month, info]) => {
+      const [yr, mo] = month.split('-')
+      return `<tr class="border-b hover:bg-gray-50 text-xs">
+        <td class="py-1.5 pr-2 font-medium">T${parseInt(mo)}/${yr}</td>
+        <td class="py-1.5 pr-2 text-right text-blue-600">—</td>
+        <td class="py-1.5 pr-2 text-right text-red-600">${fmt(info.other)}</td>
+        <td class="py-1.5 text-right text-gray-600">${fmt(info.other)}</td>
+      </tr>`
+    }).join('')
+
+    // Members list
+    const membersHtml = members && members.length
+      ? members.map(m => `<span class="inline-flex items-center gap-1 text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">
+          <i class="fas fa-user text-gray-400"></i>${m.full_name || m.username}
+          <span class="text-gray-400">(${m.role === 'leader' ? 'Trưởng nhóm' : m.role === 'admin' ? 'Quản lý' : 'Thành viên'})</span>
+        </span>`).join('')
+      : '<span class="text-xs text-gray-400">Chưa có thành viên</span>'
+
     // KPI cards
     el.innerHTML = `
       ${warningBanner}
-      ${periodLabel ? `<div class="text-xs text-gray-500 mb-3"><i class="fas fa-calendar-alt mr-1 text-blue-400"></i>Kỳ báo cáo: <strong>${periodLabel}</strong></div>` : ''}
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <div class="kpi-card" style="border-color:#00A651">
-          <p class="text-xs text-gray-500">DOANH THU</p>
-          <p class="text-lg font-bold text-green-600 mt-1">${fmtMoney(summary.total_revenue)}</p>
-          <p class="text-xs text-gray-400 mt-0.5">Giá trị HĐ: ${fmtMoney(project.contract_value)}</p>
-        </div>
-        <div class="kpi-card" style="border-color:#2196F3">
-          <p class="text-xs text-gray-500">CHI PHÍ LƯƠNG</p>
-          <p class="text-lg font-bold text-blue-600 mt-1">${fmtMoney(summary.labor_cost)}</p>
-          <p class="text-xs text-gray-400 mt-0.5">${summary.labor_hours}h × ${fmtMoney(summary.labor_per_hour)}/h</p>
-        </div>
-        <div class="kpi-card" style="border-color:#EF4444">
-          <p class="text-xs text-gray-500">TỔNG CHI PHÍ</p>
-          <p class="text-lg font-bold text-red-600 mt-1">${fmtMoney(summary.total_cost)}</p>
-          <p class="text-xs text-gray-400 mt-0.5">Khác: ${fmtMoney(summary.other_cost)}</p>
-        </div>
-        <div class="kpi-card" style="border-color:${profitBorder}">
-          <p class="text-xs text-gray-500">LỢI NHUẬN</p>
-          <p class="text-lg font-bold ${profitColor} mt-1">${fmtMoney(summary.profit)}</p>
-          <p class="text-xs text-gray-400 mt-0.5">Tỷ suất: ${summary.margin}%</p>
+      <!-- Project header info -->
+      <div class="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="font-bold text-lg text-gray-800">${project.code} — ${project.name || ''}</h2>
+            <div class="flex flex-wrap gap-2 mt-2">${membersHtml}</div>
+          </div>
+          <div class="text-right text-xs text-gray-500">
+            <div><i class="fas fa-calendar-alt mr-1 text-blue-400"></i>Kỳ báo cáo: <strong class="text-gray-700">${periodLabel}</strong></div>
+            <div class="mt-1"><i class="fas fa-file-contract mr-1 text-green-500"></i>Giá trị HĐ: <strong class="text-green-700">${fmtMoney(project.contract_value)}</strong></div>
+          </div>
         </div>
       </div>
+
+      <!-- KPI cards -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+        <div class="kpi-card" style="border-color:#00A651">
+          <p class="text-xs text-gray-500 uppercase tracking-wide">Doanh thu</p>
+          <p class="text-xl font-bold text-green-600 mt-1">${fmtMoney(summary.total_revenue)}</p>
+          <div class="mt-2">
+            <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>Tiến độ HĐ</span><span>${revenueProgress}%</span></div>
+            <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="bg-green-500 h-1.5 rounded-full" style="width:${revenueProgress}%"></div></div>
+          </div>
+        </div>
+        <div class="kpi-card" style="border-color:#2196F3">
+          <p class="text-xs text-gray-500 uppercase tracking-wide">Chi phí lương</p>
+          <p class="text-xl font-bold text-blue-600 mt-1">${fmtMoney(summary.labor_cost)}</p>
+          <p class="text-xs text-gray-400 mt-1">${summary.labor_hours > 0 ? summary.labor_hours + 'h × ' + fmtMoney(summary.labor_per_hour) + '/h' : 'Chưa có dữ liệu'}</p>
+          <div class="mt-1">${laborSourceBadge}</div>
+        </div>
+        <div class="kpi-card" style="border-color:#EF4444">
+          <p class="text-xs text-gray-500 uppercase tracking-wide">Tổng chi phí</p>
+          <p class="text-xl font-bold text-red-600 mt-1">${fmtMoney(summary.total_cost)}</p>
+          <div class="mt-2">
+            <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>% HĐ</span><span>${costProgress}%</span></div>
+            <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="${costProgress > 100 ? 'bg-red-600' : costProgress > 80 ? 'bg-amber-500' : 'bg-red-400'} h-1.5 rounded-full" style="width:${Math.min(costProgress,100)}%"></div></div>
+          </div>
+        </div>
+        <div class="kpi-card" style="border-color:${profitBorder}">
+          <p class="text-xs text-gray-500 uppercase tracking-wide">Lợi nhuận</p>
+          <p class="text-xl font-bold ${profitColor} mt-1">${fmtMoney(summary.profit)}</p>
+          <p class="text-xs mt-1"><span class="font-semibold ${profitColor}">${summary.margin}%</span> <span class="text-gray-400">tỷ suất LN</span></p>
+          <div class="mt-1"><span class="text-xs px-1.5 py-0.5 rounded-full ${validation?.profit_status === 'ok' ? 'bg-purple-100 text-purple-700' : validation?.profit_status === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}">${validation?.profit_status === 'ok' ? 'Tốt' : validation?.profit_status === 'warning' ? 'Cần chú ý' : 'Âm'}</span></div>
+        </div>
+      </div>
+
+      <!-- Charts row -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         <div class="card">
-          <h3 class="font-bold text-sm mb-3"><i class="fas fa-chart-pie text-primary mr-2"></i>Chi phí theo loại</h3>
+          <h3 class="font-bold text-sm mb-3"><i class="fas fa-chart-pie text-primary mr-2"></i>Cơ cấu chi phí</h3>
           <canvas id="finCostPie" height="260"></canvas>
         </div>
         <div class="card">
-          <h3 class="font-bold text-sm mb-3"><i class="fas fa-chart-line text-accent mr-2"></i>Chi phí theo thời gian</h3>
+          <h3 class="font-bold text-sm mb-3"><i class="fas fa-chart-bar text-accent mr-2"></i>Chi phí + Doanh thu theo tháng</h3>
           <canvas id="finTimeline" height="260"></canvas>
         </div>
       </div>
-      <div class="card">
+
+      <!-- Cost breakdown table -->
+      <div class="card mb-4">
         <h3 class="font-bold text-sm mb-3"><i class="fas fa-table text-primary mr-2"></i>Chi tiết chi phí theo loại</h3>
-        <table class="w-full text-sm">
-          <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
-            <th class="pb-2 pr-3">Loại chi phí</th>
-            <th class="pb-2 pr-3 text-right">Số tiền</th>
-            <th class="pb-2 pr-3 text-right">% Tổng</th>
-            <th class="pb-2 text-center">Nguồn</th>
-          </tr></thead>
-          <tbody>
-            ${costs_by_type.map(c => `
-              <tr class="table-row border-b">
-                <td class="py-2 pr-3">${c.label || getCostTypeName(c.cost_type)}</td>
-                <td class="py-2 pr-3 text-right font-medium text-red-600">${fmt(c.total)} VNĐ</td>
-                <td class="py-2 pr-3 text-right text-gray-500">${summary.total_cost > 0 ? Math.round(c.total/summary.total_cost*100) : 0}%</td>
-                <td class="py-2 text-center">${c.is_auto ? '<span class="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">tự động</span>' : '<span class="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">thủ công</span>'}</td>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
+              <th class="py-2 px-3">Loại chi phí</th>
+              <th class="py-2 px-3 text-right">Số tiền</th>
+              <th class="py-2 px-3 text-right">% Tổng</th>
+              <th class="py-2 px-3 text-center">Nguồn</th>
+            </tr></thead>
+            <tbody>
+              ${costs_by_type.map(c => {
+                const pct = summary.total_cost > 0 ? Math.round(c.total / summary.total_cost * 100) : 0
+                const ctIcon = c.cost_type === 'salary' ? '👤' : c.cost_type === 'material' ? '🧱' : c.cost_type === 'equipment' ? '⚙️' : c.cost_type === 'transport' ? '🚛' : '📦'
+                return `<tr class="table-row border-b hover:bg-gray-50">
+                  <td class="py-2 px-3">${ctIcon} ${c.label || getCostTypeName(c.cost_type)}</td>
+                  <td class="py-2 px-3 text-right font-medium text-red-600">${fmt(c.total)} VNĐ</td>
+                  <td class="py-2 px-3 text-right">
+                    <div class="flex items-center justify-end gap-2">
+                      <div class="w-16 bg-gray-100 rounded-full h-1.5 hidden sm:block"><div class="bg-red-400 h-1.5 rounded-full" style="width:${pct}%"></div></div>
+                      <span class="text-gray-500 text-xs">${pct}%</span>
+                    </div>
+                  </td>
+                  <td class="py-2 px-3 text-center">${c.is_auto ? '<span class="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">🤖 tự động</span>' : '<span class="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full">✏️ thủ công</span>'}</td>
+                </tr>`
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr class="bg-gray-50 font-semibold">
+                <td class="py-2 px-3 text-gray-700">TỔNG CHI PHÍ</td>
+                <td class="py-2 px-3 text-right text-red-700">${fmt(summary.total_cost)} VNĐ</td>
+                <td class="py-2 px-3 text-right text-gray-500">100%</td>
+                <td></td>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
+            </tfoot>
+          </table>
+        </div>
         ${summary.labor_source !== 'none' ? `
-        <div class="mt-3 bg-blue-50 border border-blue-100 rounded p-2 text-xs text-blue-700">
-          <i class="fas fa-info-circle mr-1"></i>
-          Chi phí lương từ: <strong>${summary.labor_source === 'project_labor_costs' ? 'project_labor_costs (đã đồng bộ)' : 'Tính real-time từ timesheet'}</strong>
-          — ${summary.labor_hours}h × ${fmtMoney(summary.labor_per_hour)}/h
-          ${periodLabel ? ` | Kỳ: <strong>${periodLabel}</strong>` : ''}
+        <div class="mt-3 bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-800 flex flex-wrap gap-3 items-center">
+          <div><i class="fas fa-info-circle mr-1"></i>Nguồn lương: ${laborSourceBadge}</div>
+          ${summary.labor_hours > 0 ? `<div><i class="fas fa-clock mr-1"></i>${summary.labor_hours}h × ${fmtMoney(summary.labor_per_hour)}/h</div>` : ''}
+          <div><i class="fas fa-calendar mr-1"></i>Kỳ: <strong>${periodLabel}</strong></div>
+          ${summary.labor_months_count > 0 ? `<div><i class="fas fa-layer-group mr-1"></i>${summary.labor_months_count} tháng có dữ liệu lương</div>` : ''}
+          ${summary.labor_source !== 'project_labor_costs' ? `<button onclick="syncLaborForFinProject(${projectId}, '${yf}')" class="ml-auto btn-secondary text-xs py-1 px-2"><i class="fas fa-sync mr-1"></i>Đồng bộ ngay</button>` : ''}
         </div>` : ''}
+      </div>
+
+      <!-- Revenue detail -->
+      <div class="card mb-4">
+        <h3 class="font-bold text-sm mb-3"><i class="fas fa-money-bill-wave text-green-600 mr-2"></i>Thông tin doanh thu</h3>
+        <div class="grid grid-cols-3 gap-4 text-center">
+          <div class="bg-green-50 rounded-lg p-3">
+            <p class="text-xs text-gray-500">Doanh thu thực tế</p>
+            <p class="font-bold text-green-700 text-base mt-1">${fmtMoney(summary.total_revenue)}</p>
+          </div>
+          <div class="bg-blue-50 rounded-lg p-3">
+            <p class="text-xs text-gray-500">Giá trị hợp đồng</p>
+            <p class="font-bold text-blue-700 text-base mt-1">${fmtMoney(project.contract_value)}</p>
+          </div>
+          <div class="bg-${summary.total_revenue >= project.contract_value * 0.5 ? 'green' : 'amber'}-50 rounded-lg p-3">
+            <p class="text-xs text-gray-500">Tỷ lệ thực hiện</p>
+            <p class="font-bold text-${summary.total_revenue >= project.contract_value * 0.5 ? 'green' : 'amber'}-700 text-base mt-1">${revenueProgress}%</p>
+          </div>
+        </div>
       </div>
     `
 
@@ -2984,32 +3117,66 @@ async function loadFinanceProject() {
       destroyChart('finCostPie')
       const ctx1 = $('finCostPie')
       if (ctx1 && costs_by_type.length) {
-        const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444']
+        const colors = ['#00A651','#2196F3','#FF6B00','#8B5CF6','#F59E0B','#EF4444']
         charts['finCostPie'] = new Chart(ctx1, {
           type: 'doughnut',
           data: {
-            labels: costs_by_type.map(c => getCostTypeName(c.cost_type)),
-            datasets: [{ data: costs_by_type.map(c => c.total), backgroundColor: colors }]
+            labels: costs_by_type.map(c => c.label || getCostTypeName(c.cost_type)),
+            datasets: [{ data: costs_by_type.map(c => c.total), backgroundColor: colors, borderWidth: 2 }]
           },
-          options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } }
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { position: 'bottom', labels: { font: { size: 11 }, padding: 12 } },
+              tooltip: { callbacks: { label: (ctx) => ` ${fmtMoney(ctx.parsed)}` } }
+            }
+          }
         })
       }
+
+      // Timeline chart: combined cost + revenue by month
       destroyChart('finTimeline')
       const ctx2 = $('finTimeline')
-      if (ctx2 && timeline.length) {
-        const months = [...new Set(timeline.map(t => t.month))].sort()
-        charts['finTimeline'] = new Chart(ctx2, {
-          type: 'bar',
-          data: {
-            labels: months,
-            datasets: [{ label: 'Chi phí', data: months.map(m => timeline.filter(t=>t.month===m).reduce((s,t)=>s+t.total,0)), backgroundColor: '#EF4444', borderRadius: 4 }]
-          },
-          options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } } }
-        })
+      if (ctx2) {
+        const months = [...new Set((timeline || []).map(t => t.month))].sort()
+        // If no timeline months, use current month range
+        const displayMonths = months.length ? months : []
+        if (displayMonths.length) {
+          const costData = displayMonths.map(m => (timeline || []).filter(t => t.month === m).reduce((s, t) => s + t.total, 0))
+          charts['finTimeline'] = new Chart(ctx2, {
+            type: 'bar',
+            data: {
+              labels: displayMonths.map(m => { const [y,mo] = m.split('-'); return `T${parseInt(mo)}/${y}` }),
+              datasets: [
+                { label: 'Chi phí khác', data: costData, backgroundColor: 'rgba(239,68,68,0.7)', borderRadius: 4 }
+              ]
+            },
+            options: {
+              responsive: true,
+              plugins: { legend: { position: 'top' }, tooltip: { callbacks: { label: (ctx) => ` ${fmtMoney(ctx.parsed.y)}` } } },
+              scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } }
+            }
+          })
+        } else {
+          ctx2.closest('.card').innerHTML += '<p class="text-xs text-gray-400 text-center py-4">Chưa có dữ liệu theo tháng</p>'
+        }
       }
     }, 100)
 
   } catch(e) { toast('Lỗi tải tài chính dự án: ' + e.message, 'error') }
+}
+
+// Sync labor cost for finance project page
+async function syncLaborForFinProject(projectId, year) {
+  try {
+    const month = new Date().getMonth() + 1
+    const result = await api(`/projects/${projectId}/labor-costs/sync`, {
+      method: 'POST',
+      data: { month, year: parseInt(year), force_recalculate: true }
+    })
+    toast(`Đã đồng bộ chi phí lương: ${fmtMoney(result.total_labor_cost)}`, 'success')
+    loadFinanceProject()
+  } catch(e) { toast('Lỗi đồng bộ: ' + e.message, 'error') }
 }
 
 // ================================================================
