@@ -3775,6 +3775,54 @@ app.post('/api/system/init', async (c) => {
     await db.prepare(`UPDATE tasks SET actual_end_date = REPLACE(actual_end_date, '2024-', '2026-') WHERE actual_end_date LIKE '2024-%'`).run()
     await db.prepare(`UPDATE projects SET start_date = REPLACE(start_date, '2024-', '2026-'), end_date = REPLACE(end_date, '2024-', '2026-') WHERE start_date LIKE '2024-%'`).run()
     await db.prepare(`UPDATE projects SET end_date = REPLACE(end_date, '2025-', '2027-') WHERE end_date LIKE '2025-%'`).run()
+
+    // -------------------------------------------------------
+    // FIX DEMO DATA: Assign realistic actual_end_date values
+    // to completed tasks so the <= deadline logic works correctly.
+    //
+    // Rules for demo data:
+    //   - ĐÚNG HẠN (on-time)  : actual_end_date <= due_date
+    //   - TRỄ HẠN  (late)     : actual_end_date >  due_date
+    //
+    // We use specific task IDs and only update if actual_end_date
+    // is NULL or was set to the same generic "today" value, so that
+    // real user-entered dates are never overwritten.
+    // -------------------------------------------------------
+    // Task 1 – "Vẽ mặt bằng tầng điển hình"
+    //   due_date=2026-02-05 → completed 2026-02-03 (ONTIME, 2 days early)
+    await db.prepare(`
+      UPDATE tasks SET actual_end_date = '2026-02-03'
+      WHERE title = 'Vẽ mặt bằng tầng điển hình'
+        AND project_id = 1 AND status = 'completed'
+        AND (actual_end_date IS NULL OR actual_end_date = date('now'))
+    `).run()
+    // Task 2 – "Thiết kế mặt đứng công trình"
+    //   due_date=2026-02-12 → completed 2026-02-10 (ONTIME, 2 days early)
+    await db.prepare(`
+      UPDATE tasks SET actual_end_date = '2026-02-10'
+      WHERE title = 'Thiết kế mặt đứng công trình'
+        AND project_id = 1 AND status = 'completed'
+        AND (actual_end_date IS NULL OR actual_end_date = date('now'))
+    `).run()
+    // Task 3 – "Tính toán móng cọc"
+    //   due_date=2026-02-20 → completed 2026-02-28 (LATE, 8 days overdue)
+    await db.prepare(`
+      UPDATE tasks SET actual_end_date = '2026-02-28'
+      WHERE title = 'Tính toán móng cọc'
+        AND project_id = 1 AND status = 'completed'
+        AND (actual_end_date IS NULL OR actual_end_date = date('now'))
+    `).run()
+    // Task 5 – "Khảo sát địa chất" (id 5 from earlier user sessions)
+    //   due_date=2026-02-25 → completed 2026-02-25 (ONTIME, exactly on deadline)
+    await db.prepare(`
+      UPDATE tasks SET actual_end_date = '2026-02-25'
+      WHERE title = 'Khảo sát địa chất'
+        AND status = 'completed'
+        AND actual_end_date IS NULL
+    `).run()
+    // "Khảo sát địa chất cầu" – no actual_end_date yet (still in future)
+    // leave as NULL so it doesn't count as on-time/late until user completes it
+
     // Reset overdue flags for tasks that are no longer past due
     await db.prepare(`UPDATE tasks SET is_overdue = 0 WHERE due_date >= date('now') AND status NOT IN ('completed','cancelled')`).run()
     await db.prepare(`UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status NOT IN ('completed','cancelled')`).run()
@@ -3863,18 +3911,24 @@ app.post('/api/system/init', async (c) => {
     }
 
     // Insert sample tasks — skip if the title already exists in that project to prevent duplicates on re-init
-    const sampleTasks = [
-      [1, 'Vẽ mặt bằng tầng điển hình', 'AA', 'high', 'in_progress', 2, '2026-01-20', '2026-04-28', 40, 65],
-      [1, 'Thiết kế mặt đứng công trình', 'AA', 'high', 'in_progress', 2, '2026-02-01', '2026-05-15', 30, 40],
-      [1, 'Tính toán móng cọc', 'ES', 'urgent', 'review', 3, '2026-02-01', '2026-03-30', 24, 90],
-      [1, 'Thiết kế khung thép tầng 1', 'ES', 'medium', 'todo', 3, '2026-03-01', '2026-06-30', 20, 0],
-      [2, 'Khảo sát địa chất cầu', 'CT', 'urgent', 'completed', 2, '2026-03-01', '2026-04-20', 16, 100],
-      [1, 'Hệ thống PCCC tầng hầm', 'EF', 'high', 'todo', 4, '2026-04-01', '2026-07-30', 32, 0],
-      [2, 'Thiết kế móng trụ cầu', 'ES', 'high', 'in_progress', 3, '2026-04-01', '2026-07-15', 48, 30],
-      [1, 'Thiết kế hệ thống điện tầng 1-5', 'EE', 'medium', 'todo', 4, '2026-05-01', '2026-08-30', 24, 0],
+    // Format: [project_id, title, discipline, priority, status, assigned_to, start_date, due_date, est_hours, progress, actual_end_date|null]
+    // actual_end_date rules:
+    //   ĐÚNG HẠN (on-time): actual_end_date <= due_date  ✓ hoàn thành trước hoặc đúng deadline
+    //   TRỄ HẠN  (late)   : actual_end_date > due_date   ✗ hoàn thành sau deadline
+    const sampleTasks: [number,string,string,string,string,number,string,string,number,number,string|null][] = [
+      // Project 1 – tasks with variety: ontime, late, and null (no date yet)
+      [1, 'Vẽ mặt bằng tầng điển hình',       'AA', 'high',   'completed', 2, '2026-01-10', '2026-02-05', 40,  100, '2026-02-03'], // ONTIME (2 days early)
+      [1, 'Thiết kế mặt đứng công trình',      'AA', 'high',   'completed', 2, '2026-01-20', '2026-02-12', 30,  100, '2026-02-10'], // ONTIME (2 days early)
+      [1, 'Tính toán móng cọc',                'ES', 'urgent', 'completed', 3, '2026-02-01', '2026-02-20', 24,  100, '2026-02-28'], // LATE   (8 days overdue)
+      [1, 'Thiết kế khung thép tầng 1',        'ES', 'medium', 'in_progress', 3, '2026-03-01', '2026-06-30', 20, 45, null],         // in progress
+      [1, 'Hệ thống PCCC tầng hầm',            'EF', 'high',   'todo',      4, '2026-04-01', '2026-07-30', 32,   0, null],
+      [1, 'Thiết kế hệ thống điện tầng 1-5',  'EE', 'medium', 'todo',      4, '2026-05-01', '2026-08-30', 24,   0, null],
+      // Project 2 – mix of statuses
+      [2, 'Khảo sát địa chất cầu',             'CT', 'urgent', 'completed', 2, '2026-01-15', '2026-02-28', 16,  100, '2026-02-15'], // ONTIME (13 days early)
+      [2, 'Thiết kế móng trụ cầu',             'ES', 'high',   'in_progress', 3, '2026-04-01', '2026-07-15', 48, 30, null],
     ]
 
-    for (const [pid, title, disc, priority, status, assigned, start, due, est, prog] of sampleTasks) {
+    for (const [pid, title, disc, priority, status, assigned, start, due, est, prog, actualEnd] of sampleTasks) {
       try {
         // Use INSERT OR IGNORE with a unique constraint check via WHERE NOT EXISTS
         const existing = await db.prepare(
@@ -3882,9 +3936,9 @@ app.post('/api/system/init', async (c) => {
         ).bind(title, pid, assigned).first()
         if (!existing) {
           await db.prepare(
-            `INSERT INTO tasks (project_id, title, discipline_code, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, progress)
-             VALUES (?, ?, ?, ?, ?, ?, 4, ?, ?, ?, ?)`
-          ).bind(pid, title, disc, priority, status, assigned, start, due, est, prog).run()
+            `INSERT INTO tasks (project_id, title, discipline_code, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, progress, actual_end_date)
+             VALUES (?, ?, ?, ?, ?, ?, 4, ?, ?, ?, ?, ?)`
+          ).bind(pid, title, disc, priority, status, assigned, start, due, est, prog, actualEnd).run()
         }
       } catch (_) { /* skip on error */ }
     }
