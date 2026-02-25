@@ -7,3 +7,6 @@ dist/
 *.tar.gz
 *.zip
 .pm2/
+
+# Database backups (binary)
+backups/*.sqlite

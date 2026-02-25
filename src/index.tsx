@@ -4284,6 +4284,163 @@ app.post('/api/system/init', async (c) => {
 })
 
 // ===================================================
+// PRODUCTION CLEANUP ENDPOINT
+// POST /api/system/cleanup-production
+// Removes all test/demo data; keeps official data intact.
+// Requires system_admin role + confirmation token.
+// ===================================================
+app.post('/api/system/cleanup-production', authMiddleware, async (c) => {
+  const user = (c as any).get('user')
+  if (!user || user.role !== 'system_admin') {
+    return c.json({ error: 'Forbidden: system_admin role required' }, 403)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as any
+  // Safety gate: caller must pass { confirm: "CLEANUP_PRODUCTION_DATA" }
+  if (body?.confirm !== 'CLEANUP_PRODUCTION_DATA') {
+    return c.json({
+      error: 'Safety check failed',
+      hint: 'Send { "confirm": "CLEANUP_PRODUCTION_DATA" } in request body',
+    }, 400)
+  }
+
+  const db = c.env.DB
+
+  // --- Before counts ---
+  const beforeCounts = await db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM users)           as users,
+      (SELECT COUNT(*) FROM projects)        as projects,
+      (SELECT COUNT(*) FROM tasks)           as tasks,
+      (SELECT COUNT(*) FROM timesheets)      as timesheets,
+      (SELECT COUNT(*) FROM notifications)   as notifications,
+      (SELECT COUNT(*) FROM task_history)    as task_history,
+      (SELECT COUNT(*) FROM project_costs)   as project_costs,
+      (SELECT COUNT(*) FROM project_revenues) as project_revenues,
+      (SELECT COUNT(*) FROM categories)      as categories,
+      (SELECT COUNT(*) FROM project_members) as project_members
+  `).first() as any
+
+  const steps: string[] = []
+
+  try {
+    // STEP 1 — Delete test/junk tasks (title='123', 'qqqq', or test project tasks)
+    const testTaskIds = (await db.prepare(`
+      SELECT id FROM tasks 
+      WHERE title IN ('123', 'qqqq')
+         OR (title LIKE '%123%' AND project_id IN (SELECT id FROM projects WHERE code IN ('C08','111') OR name LIKE '%123%' OR length(name) < 6))
+    `).all()).results.map((r: any) => r.id)
+
+    if (testTaskIds.length > 0) {
+      await db.prepare(`DELETE FROM task_history WHERE task_id IN (${testTaskIds.map(() => '?').join(',')})`).bind(...testTaskIds).run()
+      await db.prepare(`DELETE FROM tasks WHERE id IN (${testTaskIds.map(() => '?').join(',')})`).bind(...testTaskIds).run()
+      steps.push(`Deleted ${testTaskIds.length} junk tasks and their history`)
+    }
+
+    // STEP 2 — Identify test projects
+    const testProjects = (await db.prepare(`
+      SELECT id FROM projects 
+      WHERE code IN ('C08','111') 
+         OR name LIKE '%123%' 
+         OR name LIKE '%test%' 
+         OR name LIKE '%demo%' 
+         OR (length(name) < 6 AND id NOT IN (1,2,3))
+    `).all()).results
+    const testProjectIds = testProjects.map((r: any) => r.id)
+
+    if (testProjectIds.length > 0) {
+      const placeholder = testProjectIds.map(() => '?').join(',')
+      // Cascade-delete everything related to test projects
+      const orphanTasks = (await db.prepare(`SELECT id FROM tasks WHERE project_id IN (${placeholder})`).bind(...testProjectIds).all()).results.map((r: any) => r.id)
+      if (orphanTasks.length > 0) {
+        await db.prepare(`DELETE FROM task_history WHERE task_id IN (${orphanTasks.map(() => '?').join(',')})`).bind(...orphanTasks).run()
+        await db.prepare(`DELETE FROM tasks WHERE id IN (${orphanTasks.map(() => '?').join(',')})`).bind(...orphanTasks).run()
+      }
+      await db.prepare(`DELETE FROM timesheets WHERE project_id IN (${placeholder})`).bind(...testProjectIds).run()
+      await db.prepare(`DELETE FROM project_costs WHERE project_id IN (${placeholder})`).bind(...testProjectIds).run()
+      await db.prepare(`DELETE FROM project_revenues WHERE project_id IN (${placeholder})`).bind(...testProjectIds).run()
+      await db.prepare(`DELETE FROM project_members WHERE project_id IN (${placeholder})`).bind(...testProjectIds).run()
+      await db.prepare(`DELETE FROM categories WHERE project_id IN (${placeholder})`).bind(...testProjectIds).run()
+      await db.prepare(`DELETE FROM project_labor_costs WHERE project_id IN (${placeholder})`).bind(...testProjectIds).run()
+      await db.prepare(`DELETE FROM projects WHERE id IN (${placeholder})`).bind(...testProjectIds).run()
+      steps.push(`Deleted ${testProjectIds.length} test projects and all related data`)
+    }
+
+    // STEP 3 — Orphan cleanup
+    await db.prepare(`DELETE FROM task_history WHERE task_id NOT IN (SELECT id FROM tasks)`).run()
+    await db.prepare(`DELETE FROM timesheets WHERE user_id NOT IN (SELECT id FROM users) OR project_id NOT IN (SELECT id FROM projects)`).run()
+    await db.prepare(`DELETE FROM project_costs WHERE project_id NOT IN (SELECT id FROM projects)`).run()
+    await db.prepare(`DELETE FROM project_revenues WHERE project_id NOT IN (SELECT id FROM projects)`).run()
+    await db.prepare(`DELETE FROM project_members WHERE project_id NOT IN (SELECT id FROM projects) OR user_id NOT IN (SELECT id FROM users)`).run()
+    await db.prepare(`DELETE FROM categories WHERE project_id NOT IN (SELECT id FROM projects)`).run()
+    await db.prepare(`DELETE FROM notifications WHERE user_id NOT IN (SELECT id FROM users)`).run()
+    await db.prepare(`UPDATE assets SET assigned_to = NULL WHERE assigned_to IS NOT NULL AND assigned_to NOT IN (SELECT id FROM users)`).run()
+    steps.push('Removed all orphan records (tasks, timesheets, costs, revenues, members, categories, notifications)')
+
+    // STEP 4 — Clear all stale notifications (they're demo data)
+    await db.prepare(`DELETE FROM notifications`).run()
+    steps.push('Cleared all notifications (stale demo data)')
+
+    // STEP 5 — Ensure default cost_types exist (5 types)
+    const defaultCostTypes = [
+      ['salary', 'Lương nhân sự', 'Chi phí lương và phúc lợi nhân sự', '#00A651', 1],
+      ['material', 'Chi phí vật liệu', 'Vật tư, nguyên liệu thi công', '#0066CC', 2],
+      ['equipment', 'Chi phí thiết bị', 'Thuê hoặc khấu hao thiết bị', '#8B5CF6', 3],
+      ['transport', 'Chi phí vận chuyển', 'Di chuyển, vận chuyển hàng hóa', '#FF6B00', 4],
+      ['other', 'Chi phí khác', 'Các chi phí phát sinh khác', '#6B7280', 5],
+    ]
+    for (const [code, name, desc, color, sort] of defaultCostTypes) {
+      await db.prepare(`INSERT OR IGNORE INTO cost_types (code, name, description, color, sort_order) VALUES (?,?,?,?,?)`).bind(code, name, desc, color, sort).run()
+    }
+    steps.push('Verified 5 default cost types')
+
+    // STEP 6 — Verify system admin
+    const adminCheck = await db.prepare(`SELECT id FROM users WHERE username='admin' AND role='system_admin'`).first()
+    if (!adminCheck) {
+      return c.json({ error: 'CRITICAL: admin user missing! Rollback recommended.' }, 500)
+    }
+    steps.push('Verified system admin account intact')
+
+    // --- After counts ---
+    const afterCounts = await db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM users)           as users,
+        (SELECT COUNT(*) FROM projects)        as projects,
+        (SELECT COUNT(*) FROM tasks)           as tasks,
+        (SELECT COUNT(*) FROM timesheets)      as timesheets,
+        (SELECT COUNT(*) FROM notifications)   as notifications,
+        (SELECT COUNT(*) FROM task_history)    as task_history,
+        (SELECT COUNT(*) FROM project_costs)   as project_costs,
+        (SELECT COUNT(*) FROM project_revenues) as project_revenues,
+        (SELECT COUNT(*) FROM categories)      as categories,
+        (SELECT COUNT(*) FROM project_members) as project_members
+    `).first() as any
+
+    return c.json({
+      success: true,
+      message: 'Production cleanup completed successfully',
+      steps,
+      before: beforeCounts,
+      after: afterCounts,
+      diff: {
+        users:            (beforeCounts?.users           || 0) - (afterCounts?.users           || 0),
+        projects:         (beforeCounts?.projects        || 0) - (afterCounts?.projects        || 0),
+        tasks:            (beforeCounts?.tasks           || 0) - (afterCounts?.tasks           || 0),
+        timesheets:       (beforeCounts?.timesheets      || 0) - (afterCounts?.timesheets      || 0),
+        notifications:    (beforeCounts?.notifications   || 0) - (afterCounts?.notifications   || 0),
+        task_history:     (beforeCounts?.task_history    || 0) - (afterCounts?.task_history    || 0),
+        project_costs:    (beforeCounts?.project_costs   || 0) - (afterCounts?.project_costs   || 0),
+        project_revenues: (beforeCounts?.project_revenues|| 0) - (afterCounts?.project_revenues|| 0),
+        categories:       (beforeCounts?.categories      || 0) - (afterCounts?.categories      || 0),
+        project_members:  (beforeCounts?.project_members || 0) - (afterCounts?.project_members || 0),
+      },
+    })
+  } catch (e: any) {
+    return c.json({ error: `Cleanup failed: ${e.message}` }, 500)
+  }
+})
+
+// ===================================================
 // STATIC FILES & SPA
 // ===================================================
 app.use('/static/*', serveStatic({ root: './' }))
