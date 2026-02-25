@@ -326,22 +326,24 @@ function renderProductivityChart(data) {
   const ctx = $('productivityChart')
   if (!ctx || !data?.length) return
   const top10 = data.slice(0, 8)
+  // Dashboard passes simpler data (total_tasks, completed_tasks, total_hours)
+  // Compute completion_rate on the fly if not present
+  const getRate = u => u.completion_rate != null ? u.completion_rate
+    : (u.total_tasks > 0 ? Math.round((u.completed_tasks || 0) / u.total_tasks * 100) : 0)
   charts['productivity'] = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: top10.map(u => u.full_name?.split(' ').slice(-1)[0] || u.full_name),
+      labels: top10.map(u => u.full_name?.split(' ').pop() || u.full_name),
       datasets: [
-        { label: 'Task hoàn thành', data: top10.map(u => u.completed_tasks || 0), backgroundColor: '#00A651', borderRadius: 4 },
-        { label: 'Tổng giờ (30d)', data: top10.map(u => u.total_hours || 0), backgroundColor: '#dbeafe', borderRadius: 4, yAxisID: 'y1' }
+        { label: '% Hoàn thành', data: top10.map(getRate), backgroundColor: '#00A651', borderRadius: 4 },
+        { label: 'Chính xác (%)', data: top10.map(u => u.ontime_rate || 0), backgroundColor: '#0066CC', borderRadius: 4 },
+        { label: 'Điểm', data: top10.map(u => u.score || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
-      scales: {
-        y: { beginAtZero: true, title: { display: true, text: 'Tasks' } },
-        y1: { beginAtZero: true, position: 'right', title: { display: true, text: 'Giờ' }, grid: { drawOnChartArea: false } }
-      }
+      scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } }
     }
   })
 }
@@ -2942,12 +2944,27 @@ async function loadProductivity() {
 
 function sortProductivity(key) {
   prodSortKey = key
-  const sorted = [...allProductivityData].sort((a, b) => (b[key] || 0) - (a[key] || 0))
+  // Map display sort keys to actual data keys
+  const fieldMap = { score: 'score', completed_tasks: 'completed_tasks',
+                     productivity: 'productivity', completion_rate: 'completion_rate' }
+  const dataKey = fieldMap[key] || key
+  const sorted = [...allProductivityData].sort((a, b) => (b[dataKey] || 0) - (a[dataKey] || 0))
   renderProductivityPage(sorted)
 }
 
 function renderProductivityPage(data) {
-  // Bar chart: scores
+  // ----------------------------------------------------------------
+  // Column mapping (per spec):
+  //   % TB  (col-5) = completion_rate  = da_xong/task_giao × 100
+  //   Năng suất (col-8) = productivity = (completion_rate + ontime_rate) / 2
+  //   Chính xác (col-9) = ontime_rate  = dung_han/da_xong  × 100
+  //   Điểm    (col-10) = score         = productivity
+  // Score color: green ≥75, yellow 50-74, red <50
+  // ----------------------------------------------------------------
+  const getScoreColor = s => s >= 75 ? 'text-green-600' : s >= 50 ? 'text-yellow-600' : 'text-red-600'
+  const getBadgeClass = s => s >= 75 ? 'badge-completed' : s >= 50 ? 'badge-review' : 'badge-overdue'
+
+  // ---- Bar chart: 3 datasets ----
   destroyChart('prodBar')
   const ctx1 = $('prodBarChart')
   if (ctx1 && data.length) {
@@ -2955,77 +2972,105 @@ function renderProductivityPage(data) {
     charts['prodBar'] = new Chart(ctx1, {
       type: 'bar',
       data: {
-        labels: top.map(u => u.full_name?.split(' ').slice(-1)[0] || u.full_name),
+        labels: top.map(u => u.full_name?.split(' ').pop() || u.full_name),
         datasets: [
-          { label: 'Năng suất (%)', data: top.map(u => u.productivity || 0), backgroundColor: '#00A651', borderRadius: 4 },
-          { label: 'Chính xác (%)', data: top.map(u => u.ontime_rate || 0), backgroundColor: '#0066CC', borderRadius: 4 },
-          { label: 'Điểm TB', data: top.map(u => u.score || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
+          {
+            label: '% TL Hoàn thành',
+            data: top.map(u => u.completion_rate || 0),
+            backgroundColor: '#00A651', borderRadius: 4
+          },
+          {
+            label: 'Chính xác (%)',
+            data: top.map(u => u.ontime_rate || 0),
+            backgroundColor: '#0066CC', borderRadius: 4
+          },
+          {
+            label: 'Điểm Năng suất',
+            data: top.map(u => u.score || 0),
+            backgroundColor: '#8B5CF6', borderRadius: 4
+          }
         ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
-        scales: { y: { beginAtZero: true, max: 100 } }
+        scales: { y: { beginAtZero: true, max: 100,
+          ticks: { callback: v => v + '%' } } }
       }
     })
   }
 
-  // Pie chart: completed tasks distribution
+  // ---- Pie chart: completed tasks distribution ----
   destroyChart('prodPie')
   const ctx2 = $('prodPieChart')
   if (ctx2 && data.length) {
     const topP = data.filter(u => u.completed_tasks > 0).slice(0, 8)
     const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
-    charts['prodPie'] = new Chart(ctx2, {
-      type: 'pie',
-      data: {
-        labels: topP.map(u => u.full_name?.split(' ').slice(-1)[0]),
-        datasets: [{ data: topP.map(u => u.completed_tasks), backgroundColor: colors }]
-      },
-      options: {
-        responsive: true,
-        plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } }
-      }
-    })
+    if (topP.length) {
+      charts['prodPie'] = new Chart(ctx2, {
+        type: 'pie',
+        data: {
+          labels: topP.map(u => u.full_name?.split(' ').pop()),
+          datasets: [{ data: topP.map(u => u.completed_tasks), backgroundColor: colors }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } }
+        }
+      })
+    }
   }
 
-  // Table
+  // ---- Table ----
   const tbody = $('productivityTable')
   if (!tbody) return
-  const getScoreColor = (s) => s >= 80 ? 'text-green-600' : s >= 60 ? 'text-yellow-600' : 'text-red-600'
-  tbody.innerHTML = data.map((u, i) => `
+
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400"><i class="fas fa-inbox text-2xl mb-2 block"></i>Không có dữ liệu</td></tr>'
+    return
+  }
+
+  tbody.innerHTML = data.map((u, i) => {
+    const completionRate = u.completion_rate || 0   // % TL Hoàn thành
+    const ontimeRate     = u.ontime_rate     || 0   // Chính xác
+    const productivity   = u.productivity   || 0    // Năng suất = (hoàn + chính xác)/2
+    const score          = u.score          || 0    // Điểm = productivity
+
+    return `
     <tr class="table-row">
       <td class="py-2 pr-3">
         <div class="flex items-center gap-2">
           <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(u.full_name||'?').split(' ').pop()?.charAt(0)}</div>
           <div>
-            <div class="font-medium text-gray-800 text-sm">${u.full_name}</div>
+            <div class="font-medium text-gray-800 text-sm">${u.full_name || '—'}</div>
           </div>
         </div>
       </td>
-      <td class="py-2 pr-3 text-xs text-gray-500">${u.department || '-'}</td>
-      <td class="py-2 pr-3 text-center font-medium">${u.total_tasks || 0}</td>
-      <td class="py-2 pr-3 text-center font-medium text-green-600">${u.completed_tasks || 0}</td>
-      <td class="py-2 pr-3 text-center">${Math.round(u.avg_progress || 0)}%</td>
-      <td class="py-2 pr-3 text-center text-green-600">${u.ontime_tasks || 0}</td>
-      <td class="py-2 pr-3 text-center text-red-500">${u.late_completed || 0}</td>
+      <td class="py-2 pr-3 text-xs text-gray-500">${u.department || '—'}</td>
+      <td class="py-2 pr-3 text-center font-medium">${u.total_tasks}</td>
+      <td class="py-2 pr-3 text-center font-medium text-green-600">${u.completed_tasks}</td>
+      <td class="py-2 pr-3 text-center">
+        <span class="${getScoreColor(completionRate)} font-medium">${completionRate}%</span>
+      </td>
+      <td class="py-2 pr-3 text-center text-green-600">${u.ontime_tasks}</td>
+      <td class="py-2 pr-3 text-center text-red-500">${u.late_completed}</td>
       <td class="py-2 pr-3 text-center">
         <div class="flex items-center gap-1 justify-center">
-          <div class="progress-bar w-12"><div class="progress-fill" style="width:${u.productivity||0}%"></div></div>
-          <span class="text-xs ${getScoreColor(u.productivity||0)}">${u.productivity||0}%</span>
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${productivity}%;background:#8B5CF6"></div></div>
+          <span class="text-xs ${getScoreColor(productivity)}">${productivity}%</span>
         </div>
       </td>
       <td class="py-2 pr-3 text-center">
         <div class="flex items-center gap-1 justify-center">
-          <div class="progress-bar w-12"><div class="progress-fill" style="width:${u.ontime_rate||0}%;background:#0066CC"></div></div>
-          <span class="text-xs text-blue-600">${u.ontime_rate||0}%</span>
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${ontimeRate}%;background:#0066CC"></div></div>
+          <span class="text-xs text-blue-600">${ontimeRate}%</span>
         </div>
       </td>
       <td class="py-2 text-center">
-        <span class="badge font-bold text-sm px-3 ${u.score>=80?'badge-completed':u.score>=60?'badge-review':'badge-overdue'}">${u.score||0}</span>
+        <span class="badge font-bold text-sm px-3 ${getBadgeClass(score)}">${score}</span>
       </td>
-    </tr>
-  `).join('') || '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có dữ liệu</td></tr>'
+    </tr>`
+  }).join('')
 }
 
 // ================================================================

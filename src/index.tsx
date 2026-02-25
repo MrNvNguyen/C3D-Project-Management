@@ -3094,10 +3094,9 @@ app.get('/api/productivity', authMiddleware, async (c) => {
     const { project_id, days } = c.req.query()
     const daysBack = parseInt(days || '30')
 
-    let baseWhere = `WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')`
+    const baseWhere = `WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')`
 
-    // Use subqueries so tasks and timesheets are aggregated independently
-    // — avoids the Cartesian product that inflated completed_tasks counts
+    // Use subqueries (no JOIN on tasks×timesheets) to prevent Cartesian duplicates
     const taskFilter = project_id ? `AND project_id = ${parseInt(project_id)}` : ''
     const rows = await db.prepare(`
       SELECT u.id, u.full_name, u.department,
@@ -3106,65 +3105,146 @@ app.get('/api/productivity', authMiddleware, async (c) => {
         COALESCE(tsk.ontime_tasks,    0) AS ontime_tasks,
         COALESCE(tsk.late_completed,  0) AS late_completed,
         COALESCE(tsk.overdue_tasks,   0) AS overdue_tasks,
-        COALESCE(tsk.avg_progress,    0) AS avg_progress,
-        COALESCE(ts.total_hours,      0) AS total_hours_30d
+        COALESCE(ts.total_hours,      0) AS total_hours_period
       FROM users u
       LEFT JOIN (
         SELECT assigned_to,
-          COUNT(DISTINCT id)  AS total_tasks,
-          COUNT(DISTINCT CASE WHEN status = 'completed' THEN id END)  AS completed_tasks,
+          COUNT(DISTINCT id) AS total_tasks,
+          COUNT(DISTINCT CASE WHEN status = 'completed' THEN id END) AS completed_tasks,
           COUNT(DISTINCT CASE WHEN status = 'completed'
-            AND (actual_end_date IS NULL OR actual_end_date <= due_date) THEN id END) AS ontime_tasks,
+            AND actual_end_date IS NOT NULL
+            AND actual_end_date <= due_date THEN id END)             AS ontime_tasks,
           COUNT(DISTINCT CASE WHEN status = 'completed'
-            AND actual_end_date > due_date THEN id END)               AS late_completed,
+            AND actual_end_date IS NOT NULL
+            AND actual_end_date > due_date THEN id END)              AS late_completed,
           COUNT(DISTINCT CASE WHEN due_date < date('now')
-            AND status != 'completed' THEN id END)                    AS overdue_tasks,
-          AVG(CASE WHEN status = 'completed' THEN progress END)       AS avg_progress
+            AND status NOT IN ('completed') THEN id END)             AS overdue_tasks
         FROM tasks
         WHERE 1=1 ${taskFilter}
         GROUP BY assigned_to
       ) tsk ON tsk.assigned_to = u.id
       LEFT JOIN (
         SELECT user_id,
-          SUM(regular_hours + overtime_hours) AS total_hours
+          SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours
         FROM timesheets
         WHERE work_date >= date('now', '-${daysBack} days')
         GROUP BY user_id
       ) ts ON ts.user_id = u.id
       ${baseWhere}
-      ORDER BY completed_tasks DESC, total_hours_30d DESC
+      ORDER BY completed_tasks DESC, total_hours_period DESC
     `).all()
 
     const data = (rows.results as any[]).map(r => {
-      // Clamp values to prevent impossible numbers from bad data
-      const total     = Math.max(0, r.total_tasks)
-      const completed = Math.min(total, Math.max(0, r.completed_tasks))   // completed ≤ assigned
-      const ontime    = Math.min(completed, Math.max(0, r.ontime_tasks))  // ontime ≤ completed
-      const late      = Math.max(0, r.late_completed)
-      const overdue   = Math.max(0, r.overdue_tasks)
-      const avgProg   = Math.min(100, Math.max(0, Math.round(r.avg_progress || 0)))
+      // Safe clamped counts
+      const task_giao  = Math.max(0, r.total_tasks)
+      const da_xong    = Math.min(task_giao, Math.max(0, r.completed_tasks))
+      const dung_han   = Math.min(da_xong, Math.max(0, r.ontime_tasks))
+      const late       = Math.max(0, r.late_completed)
+      const overdue    = Math.max(0, r.overdue_tasks)
 
-      const productivity = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0
-      const ontime_rate  = completed > 0 ? Math.min(100, Math.round((ontime / completed) * 100)) : (total === 0 ? 0 : 100)
-      const score        = Math.round((productivity + ontime_rate) / 2)
+      // -------------------------------------------------------
+      // Core formulas (per spec):
+      //   % TL Hoàn thành  = da_xong / task_giao * 100
+      //   Chính xác        = dung_han / da_xong  * 100  (0 if da_xong=0)
+      //   Năng suất        = (% hoàn + chính xác) / 2
+      //   Điểm             = Năng suất  (0-100 integer)
+      // -------------------------------------------------------
+      const completion_rate = task_giao > 0
+        ? Math.min(100, Math.round((da_xong / task_giao) * 100))
+        : 0
+
+      // ontime_rate is STRICTLY 0 when da_xong = 0
+      const ontime_rate = da_xong > 0
+        ? Math.min(100, Math.round((dung_han / da_xong) * 100))
+        : 0
+
+      const productivity = Math.round((completion_rate + ontime_rate) / 2)
+      const score        = productivity   // Điểm = Năng suất
 
       return {
-        ...r,
-        total_tasks:     total,
-        completed_tasks: completed,
-        ontime_tasks:    ontime,
-        late_completed:  late,
-        overdue_tasks:   overdue,
-        avg_progress:    avgProg,
-        productivity,
-        ontime_rate,
-        score
+        id:               r.id,
+        full_name:        r.full_name,
+        department:       r.department,
+        total_tasks:      task_giao,
+        completed_tasks:  da_xong,
+        ontime_tasks:     dung_han,
+        late_completed:   late,
+        overdue_tasks:    overdue,
+        total_hours_period: r.total_hours_period,
+        // computed metrics
+        completion_rate,   // % TL Hoàn thành  (da_xong/task_giao)
+        ontime_rate,       // Chính xác         (dung_han/da_xong)
+        productivity,      // Năng suất          (completion+ontime)/2
+        score              // Điểm               = productivity
       }
     })
     return c.json(data)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
+})
+
+// Alias for /api/productivity — same logic, same response shape
+app.get('/api/productivity-report', authMiddleware, async (c) => {
+  // Forward to /api/productivity handler by re-using same logic
+  const db = c.env.DB
+  try {
+    const { project_id, days } = c.req.query()
+    const daysBack = parseInt(days || '30')
+    const baseWhere = `WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')`
+    const taskFilter = project_id ? `AND project_id = ${parseInt(project_id)}` : ''
+    const rows = await db.prepare(`
+      SELECT u.id, u.full_name, u.department,
+        COALESCE(tsk.total_tasks,     0) AS total_tasks,
+        COALESCE(tsk.completed_tasks, 0) AS completed_tasks,
+        COALESCE(tsk.ontime_tasks,    0) AS ontime_tasks,
+        COALESCE(tsk.late_completed,  0) AS late_completed,
+        COALESCE(tsk.overdue_tasks,   0) AS overdue_tasks,
+        COALESCE(ts.total_hours,      0) AS total_hours_period
+      FROM users u
+      LEFT JOIN (
+        SELECT assigned_to,
+          COUNT(DISTINCT id) AS total_tasks,
+          COUNT(DISTINCT CASE WHEN status = 'completed' THEN id END) AS completed_tasks,
+          COUNT(DISTINCT CASE WHEN status = 'completed'
+            AND actual_end_date IS NOT NULL
+            AND actual_end_date <= due_date THEN id END)             AS ontime_tasks,
+          COUNT(DISTINCT CASE WHEN status = 'completed'
+            AND actual_end_date IS NOT NULL
+            AND actual_end_date > due_date THEN id END)              AS late_completed,
+          COUNT(DISTINCT CASE WHEN due_date < date('now')
+            AND status NOT IN ('completed') THEN id END)             AS overdue_tasks
+        FROM tasks
+        WHERE 1=1 ${taskFilter}
+        GROUP BY assigned_to
+      ) tsk ON tsk.assigned_to = u.id
+      LEFT JOIN (
+        SELECT user_id,
+          SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours
+        FROM timesheets
+        WHERE work_date >= date('now', '-${daysBack} days')
+        GROUP BY user_id
+      ) ts ON ts.user_id = u.id
+      ${baseWhere}
+      ORDER BY completed_tasks DESC, total_hours_period DESC
+    `).all()
+    const data = (rows.results as any[]).map(r => {
+      const task_giao  = Math.max(0, r.total_tasks)
+      const da_xong    = Math.min(task_giao, Math.max(0, r.completed_tasks))
+      const dung_han   = Math.min(da_xong, Math.max(0, r.ontime_tasks))
+      const late       = Math.max(0, r.late_completed)
+      const overdue    = Math.max(0, r.overdue_tasks)
+      const completion_rate = task_giao > 0 ? Math.min(100, Math.round((da_xong / task_giao) * 100)) : 0
+      const ontime_rate     = da_xong > 0   ? Math.min(100, Math.round((dung_han / da_xong)  * 100)) : 0
+      const productivity    = Math.round((completion_rate + ontime_rate) / 2)
+      const score           = productivity
+      return { id: r.id, full_name: r.full_name, department: r.department,
+        total_tasks: task_giao, completed_tasks: da_xong, ontime_tasks: dung_han,
+        late_completed: late, overdue_tasks: overdue, total_hours_period: r.total_hours_period,
+        completion_rate, ontime_rate, productivity, score }
+    })
+    return c.json(data)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
 // ===================================================

@@ -1306,14 +1306,14 @@
               <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
                 <th class="pb-3 pr-3">Nhân viên</th>
                 <th class="pb-3 pr-3">Phòng ban/Bộ môn</th>
-                <th class="pb-3 pr-3 text-center">Task giao</th>
-                <th class="pb-3 pr-3 text-center">Đã xong</th>
-                <th class="pb-3 pr-3 text-center">% TB</th>
-                <th class="pb-3 pr-3 text-center">Đúng hạn</th>
-                <th class="pb-3 pr-3 text-center">Trễ hạn</th>
-                <th class="pb-3 pr-3 text-center">Năng suất</th>
-                <th class="pb-3 pr-3 text-center">Chính xác</th>
-                <th class="pb-3 text-center">Điểm</th>
+                <th class="pb-3 pr-3 text-center" title="Tổng số task được giao">Task giao</th>
+                <th class="pb-3 pr-3 text-center" title="Số task đã hoàn thành">Đã xong</th>
+                <th class="pb-3 pr-3 text-center" title="% Tỉ lệ Hoàn thành = Đã xong / Task giao × 100">% TL Hoàn</th>
+                <th class="pb-3 pr-3 text-center" title="Task hoàn thành đúng hạn">Đúng hạn</th>
+                <th class="pb-3 pr-3 text-center" title="Task hoàn thành trễ hạn">Trễ hạn</th>
+                <th class="pb-3 pr-3 text-center" title="Năng suất = (% Hoàn thành + Chính xác) / 2">Năng suất</th>
+                <th class="pb-3 pr-3 text-center" title="Chính xác = Đúng hạn / Đã xong × 100">Chính xác</th>
+                <th class="pb-3 text-center" title="Điểm = Năng suất (0-100). Xanh ≥75, Vàng 50-74, Đỏ &lt;50">Điểm</th>
               </tr></thead>
               <tbody id="productivityTable" class="divide-y"></tbody>
             </table>
@@ -2227,8 +2227,6 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
-
 <!-- Cost Type Modal -->
 <div id="costTypeModal" class="modal-overlay" style="display:none">
   <div class="modal p-6">
@@ -2294,6 +2292,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
+<script src="/static/app.js"></script>
 <script>
   // Prevent Ctrl+Scroll zoom from breaking layout
   document.addEventListener('wheel', (e) => {
