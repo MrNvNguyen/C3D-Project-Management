@@ -370,8 +370,9 @@ app.post('/api/projects', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    if (!['system_admin', 'project_admin'].includes(user.role)) {
-      return c.json({ error: 'Access denied' }, 403)
+    // Chỉ system_admin mới có quyền tạo dự án mới
+    if (user.role !== 'system_admin') {
+      return c.json({ error: 'Chỉ System Admin mới có thể tạo dự án mới.' }, 403)
     }
 
     const data = await c.req.json()
@@ -2910,8 +2911,13 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     const db = c.env.DB
     const user = c.get('user') as any
 
-    const totalProjects = await db.prepare('SELECT COUNT(*) as count FROM projects WHERE status != "cancelled"').first() as any
-    const activeProjects = await db.prepare('SELECT COUNT(*) as count FROM projects WHERE status = "active"').first() as any
+    // Tổng dự án = tất cả trừ cancelled và completed (dự án đang tồn tại/hoạt động)
+    const totalProjects = await db.prepare(
+      'SELECT COUNT(*) as count FROM projects WHERE status NOT IN ("cancelled", "completed")'
+    ).first() as any
+    const activeProjects = await db.prepare(
+      'SELECT COUNT(*) as count FROM projects WHERE status = "active"'
+    ).first() as any
     const totalTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE status != "cancelled"').first() as any
     const completedTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE status = "completed"').first() as any
     const overdueTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE due_date < date("now") AND status != "completed" AND status != "cancelled"').first() as any
@@ -2936,7 +2942,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         SUM(CASE WHEN t.due_date < date('now') AND t.status != 'completed' THEN 1 ELSE 0 END) as overdue_tasks
       FROM projects p
       LEFT JOIN tasks t ON t.project_id = p.id
-      WHERE p.status != 'cancelled'
+      WHERE p.status NOT IN ('cancelled', 'completed')
       GROUP BY p.id
       ORDER BY p.start_date DESC
       LIMIT 10

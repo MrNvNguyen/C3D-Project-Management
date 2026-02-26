@@ -251,13 +251,12 @@ async function initApp() {
   $('topbarName').textContent = currentUser.full_name
   $('topbarRole').textContent = getRoleLabel(currentUser.role)
 
-  // Show admin nav and new project button
+  // Chỉ system_admin mới được tạo dự án mới
   if (currentUser.role === 'system_admin') {
     $('adminNav').style.display = 'block'
     $('btnNewProject').classList.remove('hidden')
   } else if (currentUser.role === 'project_admin') {
-    // project_admin can create projects but no access to financial/asset/user admin
-    $('btnNewProject').classList.remove('hidden')
+    // project_admin: không tạo được dự án, chỉ quản lý dự án được phân công
   }
 
   // Initialize DB
@@ -286,6 +285,7 @@ async function loadDashboard() {
     const data = await api('/dashboard/stats')
     const { stats, monthly_hours, project_progress, discipline_breakdown, member_productivity } = data
 
+    // Tổng dự án = planning + active + on_hold (không tính cancelled, completed, đã xóa)
     $('kpiProjects').textContent = stats.total_projects
     $('kpiActiveProjects').textContent = stats.active_projects
     $('kpiTasks').textContent = stats.total_tasks
@@ -725,6 +725,11 @@ function confirmDeleteProject(id, name) {
 }
 
 function openProjectModal(project = null) {
+  // Chỉ system_admin mới được tạo dự án mới
+  if (!project && currentUser?.role !== 'system_admin') {
+    toast('Chỉ System Admin mới có quyền tạo dự án mới.', 'error')
+    return
+  }
   $('projectModalTitle').textContent = project ? 'Chỉnh sửa dự án' : 'Tạo dự án mới'
   $('projectId').value = project?.id || ''
   $('projectCode').value = project?.code || ''
