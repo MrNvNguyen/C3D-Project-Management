@@ -3669,9 +3669,9 @@ async function loadLaborCost() {
     const data = await api(url)
 
     // KPI cards
-    const laborUsed = data.manual_labor_cost ?? data.salary_pool
+    const laborUsed = data.manual_labor_cost ?? (data.total_hours > 0 ? data.salary_pool : 0)
     if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(laborUsed)
-    if ($('laborKpiSource'))   $('laborKpiSource').textContent   = data.cost_source === 'manual' ? '✏️ Đã nhập thủ công' : '⚙️ Tự động từ bảng lương'
+    if ($('laborKpiSource'))   $('laborKpiSource').textContent   = data.cost_source === 'manual' ? '✏️ Đã nhập thủ công' : (data.total_hours > 0 ? '⚙️ Tự động từ bảng lương' : '— Không có timesheet tháng này')
     if ($('laborKpiHours'))    $('laborKpiHours').textContent    = fmt(data.total_hours) + 'h'
     if ($('laborKpiRate'))     $('laborKpiRate').textContent     = fmtMoney(data.cost_per_hour) + '/h'
     if ($('laborKpiProjects')) $('laborKpiProjects').textContent = data.projects?.length || 0
@@ -3679,9 +3679,13 @@ async function loadLaborCost() {
     // Source badge
     const badge = $('laborCostSourceBadge')
     if (badge) {
-      badge.innerHTML = data.cost_source === 'manual'
-        ? `<span class="badge" style="background:#dcfce7;color:#166534;font-size:11px">✏️ Chi phí đã nhập tháng ${data.month_int}/${data.year_int}</span>`
-        : `<span class="badge" style="background:#fef9c3;color:#713f12;font-size:11px">⚠️ Chưa nhập — đang dùng quỹ lương từ bảng lương</span>`
+      if (data.total_hours === 0) {
+        badge.innerHTML = `<span class="badge" style="background:#f3f4f6;color:#6b7280;font-size:11px">ℹ️ Không có timesheet tháng ${data.month_int}/${data.year_int} — Chi phí lương = 0</span>`
+      } else if (data.cost_source === 'manual') {
+        badge.innerHTML = `<span class="badge" style="background:#dcfce7;color:#166534;font-size:11px">✏️ Chi phí đã nhập tháng ${data.month_int}/${data.year_int}</span>`
+      } else {
+        badge.innerHTML = `<span class="badge" style="background:#fef9c3;color:#713f12;font-size:11px">⚠️ Chưa nhập — đang dùng quỹ lương từ bảng lương</span>`
+      }
     }
 
     // Pre-fill the input form with current month's value if exists
@@ -3696,8 +3700,12 @@ async function loadLaborCost() {
     // Formula detail
     const fd = $('laborFormulaDetail')
     if (fd) {
-      fd.textContent = `${fmtMoney(laborUsed)} ÷ ${fmt(data.total_hours)}h = ${fmtMoney(data.cost_per_hour)}/h`
-        + (data.cost_source === 'manual' ? ` (nguồn: nhập thủ công tháng ${data.month_int}/${data.year_int})` : ' (nguồn: tổng lương nhân sự)')
+      if (data.total_hours === 0) {
+        fd.textContent = `Không có dữ liệu timesheet tháng ${data.month_int}/${data.year_int} → Chi phí lương = 0 ₫`
+      } else {
+        fd.textContent = `${fmtMoney(laborUsed)} ÷ ${fmt(data.total_hours)}h = ${fmtMoney(data.cost_per_hour)}/h`
+          + (data.cost_source === 'manual' ? ` (nguồn: nhập thủ công tháng ${data.month_int}/${data.year_int})` : ' (nguồn: tổng lương nhân sự)')
+      }
     }
 
     // Charts

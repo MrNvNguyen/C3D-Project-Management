@@ -2508,7 +2508,7 @@ async function computeMonthLaborCost(db: any, mInt: number, yInt: number) {
     `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
   ).bind(y, m).first() as any
-  const laborCostSource = manualEntry ? manualEntry.total_labor_cost : (salaryPool?.total || 0)
+  const laborCostSource = manualEntry ? manualEntry.total_labor_cost : (totalHrs > 0 ? (salaryPool?.total || 0) : 0)
   const totalHrs = totalHoursRow?.total || 0
   const costPerHour = totalHrs > 0 ? laborCostSource / totalHrs : 0
   return { laborCostSource, totalHrs, costPerHour, isManual: !!manualEntry, notes: manualEntry?.notes || '' }
@@ -3028,7 +3028,7 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
     `).bind(currentYear).all()
 
     // Labor costs from project_labor_costs — SUM all months for the year per project
-    const laborByProject = await db.prepare(`
+    const laborByProjectRaw = await db.prepare(`
       SELECT p.id, p.code, p.name,
         COALESCE(SUM(plc.total_labor_cost), 0) as labor_cost,
         COALESCE(SUM(plc.total_hours), 0) as total_hours,
@@ -3038,6 +3038,37 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       WHERE p.status != 'cancelled'
       GROUP BY p.id
     `).bind(parseInt(currentYear)).all()
+
+    // FIX 2: Với các dự án chưa có project_labor_costs (labor_cost=0),
+    // tính real-time từ timesheets × cost_per_hour (salary_pool / total_hours)
+    // Chỉ fallback khi có giờ thực tế trong năm
+    const totalHoursYear = await db.prepare(`
+      SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
+      FROM timesheets WHERE strftime('%Y', work_date) = ?
+    `).bind(currentYear).first() as any
+    const salaryPoolYear = await db.prepare(`
+      SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'
+    `).first() as any
+    const manualLaborYear = await db.prepare(`
+      SELECT SUM(total_labor_cost) as total FROM monthly_labor_costs
+      WHERE year = ?
+    `).bind(parseInt(currentYear)).first() as any
+    const totalYearHours = totalHoursYear?.total || 0
+    // Ước tính quỹ lương cả năm = 12 tháng × salary_pool (chỉ dùng khi có giờ)
+    const annualPoolFallback = totalYearHours > 0 ? (manualLaborYear?.total || ((salaryPoolYear?.total || 0) * 12)) : 0
+    const annualCostPerHour = totalYearHours > 0 ? annualPoolFallback / totalYearHours : 0
+
+    const laborByProject = await Promise.all((laborByProjectRaw.results as any[]).map(async (p) => {
+      if ((p.labor_cost || 0) > 0) return p  // đã có dữ liệu sync → dùng luôn
+      // Fallback: tính real-time từ timesheet năm
+      if (annualCostPerHour === 0) return p
+      const projHrs = await db.prepare(`
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
+        FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ?
+      `).bind(p.id, currentYear).first() as any
+      const hrs = projHrs?.total || 0
+      return { ...p, labor_cost: Math.round(hrs * annualCostPerHour), total_hours: hrs, labor_source: 'realtime' }
+    }))
 
     // Monthly summary: other costs only (salary excluded — in project_labor_costs)
     const monthlySummary = await db.prepare(`
@@ -3076,7 +3107,7 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
     return c.json({
       revenue_by_project: revenueByProject.results,
       cost_by_project: costByProject.results,
-      labor_by_project: laborByProject.results,
+      labor_by_project: laborByProject,
       monthly_summary: allMonthlyCosts,
       timesheet_cost: timesheetCost.results
     })
@@ -3644,9 +3675,13 @@ app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
     ).bind(y, m).first() as any
 
     const salaryPoolTotal = salaryPool?.total || 0
-    // Use manual entry if available, else fallback to salary pool
-    const laborCostSource = manualEntry ? manualEntry.total_labor_cost : salaryPoolTotal
     const totalHoursAll = totalHours?.total || 0
+
+    // FIX 1: Chỉ dùng salary_pool khi có giờ làm thực tế trong tháng
+    // Nếu không có timesheet nào → cost = 0, không hiển thị quỹ lương ảo
+    const laborCostSource = manualEntry
+      ? manualEntry.total_labor_cost
+      : (totalHoursAll > 0 ? salaryPoolTotal : 0)
     const costPerHour = totalHoursAll > 0 ? laborCostSource / totalHoursAll : 0
 
     // Per-project labor cost
