@@ -3194,8 +3194,8 @@ async function loadFinanceProject() {
            </div>`
         : ''
 
-    const profitColor = validation?.profit_status === 'ok' ? 'text-purple-600' : validation?.profit_status === 'warning' ? 'text-amber-600' : 'text-red-600'
-    const profitBorder = validation?.profit_status === 'ok' ? '#8B5CF6' : validation?.profit_status === 'warning' ? '#F59E0B' : '#EF4444'
+    const profitColor = validation?.profit_status === 'ok' ? 'text-purple-600' : validation?.profit_status === 'warning' ? 'text-amber-600' : validation?.profit_status === 'no_revenue' ? 'text-gray-400' : 'text-red-600'
+    const profitBorder = validation?.profit_status === 'ok' ? '#8B5CF6' : validation?.profit_status === 'warning' ? '#F59E0B' : validation?.profit_status === 'no_revenue' ? '#9CA3AF' : '#EF4444'
 
     // Period label
     let periodLabel = ''
@@ -3260,11 +3260,15 @@ async function loadFinanceProject() {
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
         <div class="kpi-card" style="border-color:#00A651">
           <p class="text-xs text-gray-500 uppercase tracking-wide">Doanh thu</p>
-          <p class="text-xl font-bold text-green-600 mt-1">${fmtMoney(summary.total_revenue)}</p>
-          <div class="mt-2">
-            <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>Tiến độ HĐ</span><span>${revenueProgress}%</span></div>
-            <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="bg-green-500 h-1.5 rounded-full" style="width:${revenueProgress}%"></div></div>
-          </div>
+          ${summary.total_revenue > 0
+            ? `<p class="text-xl font-bold text-green-600 mt-1">${fmtMoney(summary.total_revenue)}</p>
+               <div class="mt-2">
+                 <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>Tiến độ HĐ</span><span>${revenueProgress}%</span></div>
+                 <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="bg-green-500 h-1.5 rounded-full" style="width:${revenueProgress}%"></div></div>
+               </div>`
+            : `<p class="text-xl font-bold text-gray-400 mt-1">— 0 ₫</p>
+               <p class="text-xs text-orange-500 mt-1">⚠️ Chưa khai báo doanh thu</p>`
+          }
         </div>
         <div class="kpi-card" style="border-color:#2196F3">
           <p class="text-xs text-gray-500 uppercase tracking-wide">Chi phí lương</p>
@@ -3282,9 +3286,13 @@ async function loadFinanceProject() {
         </div>
         <div class="kpi-card" style="border-color:${profitBorder}">
           <p class="text-xs text-gray-500 uppercase tracking-wide">Lợi nhuận</p>
-          <p class="text-xl font-bold ${profitColor} mt-1">${fmtMoney(summary.profit)}</p>
-          <p class="text-xs mt-1"><span class="font-semibold ${profitColor}">${summary.margin}%</span> <span class="text-gray-400">tỷ suất LN</span></p>
-          <div class="mt-1"><span class="text-xs px-1.5 py-0.5 rounded-full ${validation?.profit_status === 'ok' ? 'bg-purple-100 text-purple-700' : validation?.profit_status === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}">${validation?.profit_status === 'ok' ? 'Tốt' : validation?.profit_status === 'warning' ? 'Cần chú ý' : 'Âm'}</span></div>
+          ${summary.profit !== null && summary.profit !== undefined
+            ? `<p class="text-xl font-bold ${profitColor} mt-1">${fmtMoney(summary.profit)}</p>
+               <p class="text-xs mt-1"><span class="font-semibold ${profitColor}">${summary.margin ?? 0}%</span> <span class="text-gray-400">tỷ suất LN</span></p>
+               <div class="mt-1"><span class="text-xs px-1.5 py-0.5 rounded-full ${validation?.profit_status === 'ok' ? 'bg-purple-100 text-purple-700' : validation?.profit_status === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}">${validation?.profit_status === 'ok' ? 'Tốt' : validation?.profit_status === 'warning' ? 'Cần chú ý' : 'Âm'}</span></div>`
+            : `<p class="text-xl font-bold text-gray-400 mt-1">—</p>
+               <p class="text-xs text-gray-400 mt-1">Chưa có doanh thu</p>`
+          }
         </div>
       </div>
 
@@ -3352,17 +3360,24 @@ async function loadFinanceProject() {
       <div class="card mb-4">
         <h3 class="font-bold text-sm mb-3"><i class="fas fa-money-bill-wave text-green-600 mr-2"></i>Thông tin doanh thu</h3>
         <div class="grid grid-cols-3 gap-4 text-center">
-          <div class="bg-green-50 rounded-lg p-3">
+          <div class="${summary.total_revenue > 0 ? 'bg-green-50' : 'bg-orange-50'} rounded-lg p-3">
             <p class="text-xs text-gray-500">Doanh thu thực tế</p>
-            <p class="font-bold text-green-700 text-base mt-1">${fmtMoney(summary.total_revenue)}</p>
+            ${summary.total_revenue > 0
+              ? `<p class="font-bold text-green-700 text-base mt-1">${fmtMoney(summary.total_revenue)}</p>`
+              : `<p class="font-bold text-orange-500 text-base mt-1">— 0 ₫</p>
+                 <p class="text-xs text-orange-400">⚠️ Chưa khai báo</p>`
+            }
           </div>
           <div class="bg-blue-50 rounded-lg p-3">
             <p class="text-xs text-gray-500">Giá trị hợp đồng</p>
             <p class="font-bold text-blue-700 text-base mt-1">${fmtMoney(project.contract_value)}</p>
           </div>
-          <div class="bg-${summary.total_revenue >= project.contract_value * 0.5 ? 'green' : 'amber'}-50 rounded-lg p-3">
+          <div class="${summary.total_revenue > 0 ? 'bg-' + (summary.total_revenue >= project.contract_value * 0.5 ? 'green' : 'amber') + '-50' : 'bg-gray-50'} rounded-lg p-3">
             <p class="text-xs text-gray-500">Tỷ lệ thực hiện</p>
-            <p class="font-bold text-${summary.total_revenue >= project.contract_value * 0.5 ? 'green' : 'amber'}-700 text-base mt-1">${revenueProgress}%</p>
+            ${summary.total_revenue > 0
+              ? `<p class="font-bold text-${summary.total_revenue >= project.contract_value * 0.5 ? 'green' : 'amber'}-700 text-base mt-1">${revenueProgress}%</p>`
+              : `<p class="font-bold text-gray-400 text-base mt-1">—</p>`
+            }
           </div>
         </div>
       </div>

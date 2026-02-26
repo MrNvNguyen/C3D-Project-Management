@@ -2022,14 +2022,16 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
 
     // ── Totals & profit ─────────────────────────────────────────────
     const totalCosts = laborCost + totalOtherCosts
-    const revenueBase = revenue > 0 ? revenue : contractValue
-    const profit = revenueBase - totalCosts
-    const profitMargin = revenueBase > 0 ? parseFloat(((profit / revenueBase) * 100).toFixed(1)) : null
+    // FIX: Doanh thu thực tế = CHỈ từ project_revenues đã khai báo
+    // KHÔNG fallback sang contract_value — chưa khai báo = 0
+    const revenueBase = revenue  // actual entered revenue only
+    const profit = revenueBase > 0 ? revenueBase - totalCosts : null
+    const profitMargin = revenueBase > 0 && profit !== null ? parseFloat(((profit / revenueBase) * 100).toFixed(1)) : null
 
     // Validation warnings
     if (contractValue > 0 && totalCosts > contractValue * 1.2)
       validation_warnings.push(`Tổng chi phí vượt 120% giá trị hợp đồng`)
-    if (revenueBase > 0 && profit <= 0) validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
+    if (revenueBase > 0 && profit !== null && profit <= 0) validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
     else if (profitMargin !== null && profitMargin > 0 && profitMargin < 10) validation_warnings.push(`Lợi nhuận thấp: ${profitMargin}% (< 10%)`)
     if (revenueBase > 0 && laborCost > revenueBase * 0.8) validation_warnings.push(`Chi phí lương chiếm ${((laborCost/revenueBase)*100).toFixed(1)}% doanh thu (> 80%)`)
 
@@ -2055,8 +2057,8 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
         selected_months: selectedMonths,
         months_count: laborMonthsCount },
       financial: {
-        revenue: { value: revenueBase, month_revenue: revenue, contract_value: contractValue,
-          label: revenue > 0 ? 'Doanh thu thực thu' : 'Giá trị hợp đồng' },
+        revenue: { value: revenueBase, actual_revenue: revenue, contract_value: contractValue,
+          label: revenue > 0 ? 'Doanh thu thực thu' : 'Chưa khai báo doanh thu' },
         costs: {
           labor: { value: laborCost, label: 'Chi phí lương', source: laborSource,
             synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (đã đồng bộ)' : 'Tính real-time từ timesheet',
@@ -3512,10 +3514,12 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     }
 
     // --- Revenue ---
+    // FIX: Doanh thu thực tế CHỈ từ project_revenues đã khai báo
+    // KHÔNG dùng contract_value làm fallback — chưa khai báo = 0
     const revenues = await db.prepare(
       `SELECT SUM(amount) as total FROM project_revenues WHERE project_id = ? ${revDateFilter}`
     ).bind(projectId).first() as any
-    const totalRevenue = revenues?.total || (finMonthList === null && all_months !== 'true' ? contractValue : (revenues?.total || 0))
+    const totalRevenue = revenues?.total || 0
 
     // --- Timeline ---
     const timeline = await db.prepare(`
@@ -3525,16 +3529,17 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     `).bind(projectId).all()
 
     const totalCost = laborCost + totalOtherCost
-    const profit = totalRevenue - totalCost
-    const margin = totalRevenue > 0 ? parseFloat(((profit / totalRevenue) * 100).toFixed(1)) : 0
+    // Lợi nhuận chỉ tính khi đã có doanh thu thực tế
+    const profit = totalRevenue > 0 ? totalRevenue - totalCost : null
+    const margin = totalRevenue > 0 && profit !== null ? parseFloat(((profit / totalRevenue) * 100).toFixed(1)) : null
 
     // Validation rules
     if (contractValue > 0 && totalCost > contractValue * 1.2) {
       validation_warnings.push(`Tổng chi phí (${fmtNum(totalCost)} ₫) vượt 120% giá trị HĐ`)
     }
-    if (totalRevenue > 0 && profit <= 0) {
+    if (totalRevenue > 0 && profit !== null && profit <= 0) {
       validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
-    } else if (totalRevenue > 0 && margin < 10 && margin > 0) {
+    } else if (totalRevenue > 0 && margin !== null && margin < 10 && margin > 0) {
       validation_warnings.push(`Lợi nhuận thấp: ${margin}% (< 10%)`)
     }
     if (totalRevenue > 0 && laborCost > totalRevenue * 0.8) {
@@ -3557,8 +3562,12 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       project: { id: project.id, code: project.code, name: project.name, contract_value: contractValue },
       period: { label: periodLabel, year: yInt },
       summary: {
-        total_revenue: totalRevenue, total_cost: totalCost, labor_cost: laborCost,
-        other_cost: totalOtherCost, profit, margin,
+        total_revenue: totalRevenue,       // doanh thu thực tế đã khai báo (0 nếu chưa có)
+        contract_value: contractValue,     // giá trị hợp đồng (chỉ tham khảo)
+        total_cost: totalCost, labor_cost: laborCost,
+        other_cost: totalOtherCost,
+        profit: profit ?? null,            // null nếu chưa có doanh thu
+        margin: margin ?? null,
         labor_hours: laborHours, labor_per_hour: Math.round(laborPerHour), labor_source: laborSource,
         labor_months_count: laborMonthsCount
       },
@@ -3567,7 +3576,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       validation: {
         warnings: validation_warnings,
         has_warnings: validation_warnings.length > 0,
-        profit_status: profit > 0 ? (margin < 10 ? 'warning' : 'ok') : 'error'
+        profit_status: profit === null ? 'no_revenue' : (profit > 0 ? (margin !== null && margin < 10 ? 'warning' : 'ok') : 'error')
       }
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
