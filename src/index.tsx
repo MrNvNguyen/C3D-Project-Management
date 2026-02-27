@@ -1922,39 +1922,101 @@ app.delete('/api/projects/:id/labor-costs/duplicates', authMiddleware, adminOnly
 })
 
 // GET /api/financial-summary/labor-costs-all-projects — aggregate across projects
+// Ưu tiên project_labor_costs (synced). Fallback real-time nếu rỗng (overtime x1.5).
 app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const { months, year, all_months } = c.req.query()
     const yInt = year ? parseInt(year) : new Date().getFullYear()
+    const y    = String(yInt)
 
-    let whereExtra = ''; const params: any[] = [yInt]
+    // Xác định danh sách tháng cần tính
+    let monthList: number[] | null = null   // null = tất cả 12 tháng
     if (all_months !== 'true' && months) {
-      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
-      if (monthArr.length > 0) {
-        whereExtra = ` AND plc.month IN (${monthArr.map(() => '?').join(',')})`
-        params.push(...monthArr)
-      }
+      const parsed = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
+      if (parsed.length > 0) monthList = parsed
     }
+    const monthsToUse: number[] = monthList ?? Array.from({ length: 12 }, (_, i) => i + 1)
+    const inClause = monthsToUse.join(',')
 
-    const rows = await db.prepare(`
+    // ── Bước 1: Lấy từ project_labor_costs (cached/synced) ──────────
+    const syncedRows = await db.prepare(`
       SELECT p.id as project_id, p.code as project_code, p.name as project_name,
              SUM(plc.total_labor_cost) as total_labor_cost,
-             SUM(plc.total_hours) as total_hours,
-             AVG(plc.cost_per_hour) as avg_cost_per_hour,
+             SUM(plc.total_hours)      as total_hours,
+             AVG(plc.cost_per_hour)   as avg_cost_per_hour,
              COUNT(DISTINCT plc.month) as months_count
       FROM project_labor_costs plc
       JOIN projects p ON plc.project_id = p.id
-      WHERE plc.year = ? ${whereExtra}
+      WHERE plc.year = ? AND plc.month IN (${inClause})
       GROUP BY p.id, p.code, p.name
       ORDER BY total_labor_cost DESC
-    `).bind(...params).all()
+    `).bind(yInt).all()
 
-    const projectsArr = rows.results as any[]
-    const grandTotal = projectsArr.reduce((s, r) => s + (r.total_labor_cost || 0), 0)
+    let projectsArr = syncedRows.results as any[]
+    let dataSource = 'synced'
+
+    // ── Bước 2: Real-time fallback nếu không có cached data ─────────
+    // Dùng SQL JOIN một lần (tránh D1 concurrent bug & sequential loop)
+    // Overtime x1.5: proj_eff = regular + overtime*1.5 (tính nội bộ)
+    // cost_per_hour = monthly_budget / comp_eff_hours
+    // project_labor = proj_eff × cost_per_hour
+    if (projectsArr.length === 0) {
+      const rtRows = await db.prepare(`
+        SELECT p.id as project_id, p.code as project_code, p.name as project_name,
+          SUM(ROUND(
+            CASE WHEN comp_ts.comp_eff > 0
+              THEN proj_ts.proj_eff * 1.0 / comp_ts.comp_eff * mlc.total_labor_cost
+              ELSE 0
+            END
+          )) as total_labor_cost,
+          SUM(COALESCE(proj_ts.proj_raw, 0)) as total_hours,
+          COUNT(DISTINCT proj_ts.ts_month)  as months_count
+        FROM projects p
+        JOIN (
+          SELECT project_id,
+                 CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
+                 SUM(regular_hours + IFNULL(overtime_hours,0))       as proj_raw,
+                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as proj_eff
+          FROM timesheets
+          WHERE strftime('%Y', work_date) = ?
+            AND CAST(strftime('%m', work_date) AS INTEGER) IN (${inClause})
+          GROUP BY project_id, ts_month
+        ) proj_ts ON proj_ts.project_id = p.id
+        JOIN (
+          SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
+                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as comp_eff
+          FROM timesheets
+          WHERE strftime('%Y', work_date) = ?
+            AND CAST(strftime('%m', work_date) AS INTEGER) IN (${inClause})
+          GROUP BY ts_month
+        ) comp_ts ON comp_ts.ts_month = proj_ts.ts_month
+        JOIN monthly_labor_costs mlc
+          ON mlc.month = proj_ts.ts_month AND mlc.year = ?
+        WHERE p.status NOT IN ('cancelled','completed') AND comp_ts.comp_eff > 0
+        GROUP BY p.id, p.code, p.name
+        HAVING total_labor_cost > 0
+        ORDER BY total_labor_cost DESC
+      `).bind(OVERTIME_FACTOR, y, OVERTIME_FACTOR, y, yInt).all()
+
+      if ((rtRows.results as any[]).length > 0) {
+        // Tính avg_cost_per_hour từ tổng budget / tổng eff hours của từng dự án
+        // (proxy: dùng total_labor_cost / total_hours để hiển thị tham khảo)
+        projectsArr = (rtRows.results as any[]).map((r: any) => ({
+          ...r,
+          total_labor_cost: Math.round(r.total_labor_cost || 0),
+          avg_cost_per_hour: r.total_hours > 0 ? Math.round((r.total_labor_cost || 0) / r.total_hours) : 0
+        }))
+        dataSource = 'realtime'
+      }
+    }
+
+    const grandTotal = projectsArr.reduce((s: number, r: any) => s + (r.total_labor_cost || 0), 0)
 
     return c.json({
-      year: yInt, period_type: all_months === 'true' ? 'full_year' : months ? 'selected_months' : 'all',
+      year: yInt,
+      period_type: all_months === 'true' ? 'full_year' : months ? 'selected_months' : 'all',
+      data_source: dataSource,
       projects: projectsArr,
       grand_total_labor_cost: Math.round(grandTotal),
       projects_count: projectsArr.length
