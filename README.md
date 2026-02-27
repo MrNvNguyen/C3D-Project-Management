@@ -23,8 +23,15 @@
 - ✅ **Thông báo**: Real-time notifications cho task, dự án
 
 #### 💰 Công cụ 2: Quản lý Chi phí (System Admin)
-- ✅ **Doanh thu & Chi phí**: Theo dõi tài chính từng dự án
-- ✅ **Dashboard tài chính**: Biểu đồ doanh thu/chi phí/lợi nhuận
+- ✅ **Chi phí riêng dự án**: Theo dõi chi phí riêng từng dự án (vật liệu, thiết bị, đi lại...)
+- ✅ **Chi phí chung (Shared Costs)**: Khai báo chi phí áp dụng nhiều dự án (điện, nước, văn phòng...)
+  - **Phân bổ theo % GTHĐ**: Tự động tính % theo giá trị hợp đồng mỗi dự án
+  - **Chia đều (Equal split)**: Chia đều cho tất cả dự án được chọn
+  - **Thủ công (Manual %)**: Nhập tay % phân bổ từng dự án (tổng = 100%)
+  - **Preview real-time**: Xem trước số tiền phân bổ trước khi lưu
+- ✅ **Doanh thu**: Theo dõi doanh thu từng đợt thanh toán
+- ✅ **Dashboard tài chính**: Biểu đồ doanh thu/chi phí/lợi nhuận (bao gồm chi phí chung)
+- ✅ **Phân tích chi tiết**: Phân tích theo dự án/tháng/năm với breakdown chi tiết
 - ✅ **Tổng hợp từ Timesheet**: Liên kết với module quản lý dự án
 
 #### 📦 Công cụ 3: Quản lý Tài sản (System Admin)
@@ -76,8 +83,13 @@ PUT  /api/tasks/:id           - Cập nhật task
 GET  /api/timesheets          - Danh sách timesheet
 POST /api/timesheets          - Thêm timesheet
 
-GET  /api/costs               - Chi phí (Admin)
+GET  /api/costs               - Chi phí riêng (Admin)
 GET  /api/revenues            - Doanh thu (Admin)
+GET  /api/shared-costs        - Chi phí chung (Admin)
+POST /api/shared-costs        - Tạo chi phí chung + phân bổ tự động
+PUT  /api/shared-costs/:id    - Cập nhật + tái phân bổ
+DELETE /api/shared-costs/:id  - Xóa chi phí chung
+GET  /api/shared-costs/summary?year=YYYY - Tổng hợp phân bổ theo dự án
 GET  /api/assets              - Tài sản (Admin)
 GET  /api/users               - Nhân sự (Admin)
 
@@ -126,8 +138,10 @@ webapp/
 | `tasks` | Nhiệm vụ cụ thể |
 | `task_history` | Lịch sử thay đổi task |
 | `timesheets` | Bảng chấm công |
-| `project_costs` | Chi phí dự án |
+| `project_costs` | Chi phí riêng từng dự án |
 | `project_revenues` | Doanh thu dự án |
+| `shared_costs` | Chi phí chung (áp dụng nhiều dự án) |
+| `shared_cost_allocations` | Phân bổ chi phí chung về từng dự án |
 | `assets` | Tài sản thiết bị |
 | `notifications` | Thông báo |
 
