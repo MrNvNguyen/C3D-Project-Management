@@ -101,7 +101,7 @@ function getCostTypeName(t) {
 }
 
 function isOverdue(task) {
-  return task.due_date && task.due_date < today() && task.status !== 'completed' && task.status !== 'cancelled'
+  return task.due_date && task.due_date < today() && !['completed','review','cancelled'].includes(task.status)
 }
 
 function getProjectTypeName(t) {
@@ -594,7 +594,7 @@ async function openProjectDetail(id) {
     `
 
     const total = tasks.length
-    const done = tasks.filter(t => t.status === 'completed').length
+    const done = tasks.filter(t => t.status === 'completed' || t.status === 'review').length
     const overdue = tasks.filter(t => isOverdue(t)).length
     const pct = total > 0 ? Math.round((done / total) * 100) : 0
 
@@ -1772,7 +1772,7 @@ async function renderGantt() {
       const startPct = Math.max(0, ((taskStart - startDate) / (1000 * 60 * 60 * 24)) / totalDays * 100)
       const widthPct = Math.max(1, ((taskEnd - taskStart) / (1000 * 60 * 60 * 24)) / totalDays * 100)
       const overdue = isOverdue(t)
-      const barColor = t.status === 'completed' ? '#00A651' : overdue ? '#EF4444' : t.status === 'in_progress' ? '#0066CC' : '#9CA3AF'
+      const barColor = (t.status === 'completed') ? '#00A651' : (t.status === 'review') ? '#10B981' : overdue ? '#EF4444' : t.status === 'in_progress' ? '#0066CC' : '#9CA3AF'
 
       return `<div class="flex items-center gap-3 py-1.5 border-b border-gray-100 hover:bg-gray-50">
         <div class="w-56 flex-shrink-0 text-xs truncate">
@@ -1782,7 +1782,7 @@ async function renderGantt() {
         <div class="flex-1 relative h-7" style="min-width:200px">
           <div class="gantt-today" style="left:${todayPct}%"></div>
           <div class="gantt-bar absolute top-1 flex items-center" 
-               style="left:${startPct}%;width:${widthPct}%;background:${barColor};opacity:${t.status==='completed'?1:0.8}"
+               style="left:${startPct}%;width:${widthPct}%;background:${barColor};opacity:${(t.status==='completed'||t.status==='review')?1:0.8}"
                title="${t.title}: ${fmtDate(t.start_date)} → ${fmtDate(t.due_date)} (${t.progress}%)">
             <div class="absolute left-0 top-0 bottom-0 rounded-l" style="width:${t.progress||0}%;background:rgba(255,255,255,0.3)"></div>
             <span class="text-white text-xs font-bold px-1 truncate relative z-10">${t.progress||0}%</span>

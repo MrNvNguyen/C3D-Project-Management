@@ -590,7 +590,7 @@ app.get('/api/tasks', authMiddleware, async (c) => {
     if (project_id) { query += ` AND t.project_id = ?`; params.push(parseInt(project_id)) }
     if (status) { query += ` AND t.status = ?`; params.push(status) }
     if (assigned_to) { query += ` AND t.assigned_to = ?`; params.push(parseInt(assigned_to)) }
-    if (overdue === '1') { query += ` AND t.due_date < date('now') AND t.status != 'completed'` }
+    if (overdue === '1') { query += ` AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')` }
 
     query += ` ORDER BY t.due_date ASC, t.priority DESC`
 
@@ -598,7 +598,7 @@ app.get('/api/tasks', authMiddleware, async (c) => {
 
     // Update overdue flag
     await db.prepare(
-      `UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status != 'completed' AND status != 'cancelled'`
+      `UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status NOT IN ('completed','review','cancelled')`
     ).run()
 
     return c.json(result.results)
@@ -701,8 +701,10 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
 
-    // Auto-set overdue
-    if (data.status === 'completed') {
+    // Auto-set actual_end_date và xóa overdue khi chuyển sang review hoặc completed
+    // Lý do: 'review' nghĩa là member đã hoàn thành phần công việc, đang chờ QA/PM duyệt
+    // → cần ghi nhận ngày hoàn thành thực tế để tính đúng ontime_rate
+    if (data.status === 'completed' || data.status === 'review') {
       updates.push('is_overdue = ?')
       values.push(0)
       if (!data.actual_end_date) {
@@ -3156,8 +3158,10 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       'SELECT COUNT(*) as count FROM projects WHERE status = "active"'
     ).first() as any
     const totalTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE status != "cancelled"').first() as any
-    const completedTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE status = "completed"').first() as any
-    const overdueTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE due_date < date("now") AND status != "completed" AND status != "cancelled"').first() as any
+    // Hoàn thành = completed + review (đang duyệt cũng đã xử lý xong phần việc)
+    const completedTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE status IN ("completed","review")').first() as any
+    // Quá hạn: loại trừ cả review + completed + cancelled
+    const overdueTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE due_date < date("now") AND status NOT IN ("completed","review","cancelled")').first() as any
     const totalUsers = await db.prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1').first() as any
     const totalAssets = await db.prepare('SELECT COUNT(*) as count FROM assets WHERE status = "active"').first() as any
 
@@ -3175,8 +3179,8 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     const projectProgress = await db.prepare(`
       SELECT p.id, p.code, p.name, p.status, p.start_date, p.end_date,
         COUNT(t.id) as total_tasks,
-        SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) as completed_tasks,
-        SUM(CASE WHEN t.due_date < date('now') AND t.status != 'completed' THEN 1 ELSE 0 END) as overdue_tasks
+        SUM(CASE WHEN t.status IN ('completed','review') THEN 1 ELSE 0 END) as completed_tasks,
+        SUM(CASE WHEN t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks
       FROM projects p
       LEFT JOIN tasks t ON t.project_id = p.id
       WHERE p.status NOT IN ('cancelled', 'completed')
@@ -3188,7 +3192,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     // Discipline breakdown
     const disciplineBreakdown = await db.prepare(`
       SELECT discipline_code, COUNT(*) as count,
-        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed
+        SUM(CASE WHEN status IN ('completed','review') THEN 1 ELSE 0 END) as completed
       FROM tasks
       WHERE discipline_code IS NOT NULL
       GROUP BY discipline_code
@@ -3204,8 +3208,8 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       FROM users u
       LEFT JOIN (
         SELECT assigned_to,
-          COUNT(DISTINCT id)                                              AS total_tasks,
-          COUNT(DISTINCT CASE WHEN status = 'completed' THEN id END)     AS completed_tasks
+          COUNT(DISTINCT id)                                                          AS total_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review') THEN id END)     AS completed_tasks
         FROM tasks
         GROUP BY assigned_to
       ) tsk ON tsk.assigned_to = u.id
@@ -3396,6 +3400,7 @@ app.get('/api/productivity', authMiddleware, async (c) => {
     const baseWhere = `WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')`
 
     // Use subqueries (no JOIN on tasks×timesheets) to prevent Cartesian duplicates
+    // Hoàn thành = completed + review (đang duyệt = đã hoàn thành phần việc, chờ QA)
     const taskFilter = project_id ? `AND project_id = ${parseInt(project_id)}` : ''
     const rows = await db.prepare(`
       SELECT u.id, u.full_name, u.department,
@@ -3409,15 +3414,15 @@ app.get('/api/productivity', authMiddleware, async (c) => {
       LEFT JOIN (
         SELECT assigned_to,
           COUNT(DISTINCT id) AS total_tasks,
-          COUNT(DISTINCT CASE WHEN status = 'completed' THEN id END) AS completed_tasks,
-          COUNT(DISTINCT CASE WHEN status = 'completed'
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review') THEN id END) AS completed_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review')
             AND actual_end_date IS NOT NULL
             AND actual_end_date <= due_date THEN id END)             AS ontime_tasks,
-          COUNT(DISTINCT CASE WHEN status = 'completed'
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review')
             AND actual_end_date IS NOT NULL
             AND actual_end_date > due_date THEN id END)              AS late_completed,
           COUNT(DISTINCT CASE WHEN due_date < date('now')
-            AND status NOT IN ('completed') THEN id END)             AS overdue_tasks
+            AND status NOT IN ('completed','review','cancelled') THEN id END) AS overdue_tasks
         FROM tasks
         WHERE 1=1 ${taskFilter}
         GROUP BY assigned_to
@@ -3517,15 +3522,15 @@ app.get('/api/productivity-report', authMiddleware, async (c) => {
       LEFT JOIN (
         SELECT assigned_to,
           COUNT(DISTINCT id) AS total_tasks,
-          COUNT(DISTINCT CASE WHEN status = 'completed' THEN id END) AS completed_tasks,
-          COUNT(DISTINCT CASE WHEN status = 'completed'
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review') THEN id END) AS completed_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review')
             AND actual_end_date IS NOT NULL
             AND actual_end_date <= due_date THEN id END)             AS ontime_tasks,
-          COUNT(DISTINCT CASE WHEN status = 'completed'
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review')
             AND actual_end_date IS NOT NULL
             AND actual_end_date > due_date THEN id END)              AS late_completed,
           COUNT(DISTINCT CASE WHEN due_date < date('now')
-            AND status NOT IN ('completed') THEN id END)             AS overdue_tasks
+            AND status NOT IN ('completed','review','cancelled') THEN id END) AS overdue_tasks
         FROM tasks
         WHERE 1=1 ${taskFilter}
         GROUP BY assigned_to
@@ -3615,7 +3620,7 @@ app.post('/api/admin/dedup-tasks', authMiddleware, adminOnly, async (c) => {
     await db.prepare(`
       UPDATE tasks
       SET is_overdue = CASE
-        WHEN due_date IS NOT NULL AND due_date < date('now') AND status != 'completed' THEN 1
+        WHEN due_date IS NOT NULL AND due_date < date('now') AND status NOT IN ('completed','review','cancelled') THEN 1
         ELSE 0
       END
     `).run()
@@ -4139,8 +4144,8 @@ app.post('/api/system/init', async (c) => {
     const seedFlag = await db.prepare(`SELECT value FROM system_settings WHERE key = 'seed_data_initialized'`).first() as any
     if (seedFlag && seedFlag.value === '1') {
       // Already initialized — only run safe maintenance tasks, skip re-seeding
-      await db.prepare(`UPDATE tasks SET is_overdue = 0 WHERE due_date >= date('now') AND status NOT IN ('completed','cancelled')`).run()
-      await db.prepare(`UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status NOT IN ('completed','cancelled')`).run()
+      await db.prepare(`UPDATE tasks SET is_overdue = 0 WHERE due_date >= date('now') AND status NOT IN ('completed','review','cancelled')`).run()
+      await db.prepare(`UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status NOT IN ('completed','review','cancelled')`).run()
       return c.json({ success: true, message: 'System already initialized — skipped demo data re-seed' })
     }
 
@@ -4199,8 +4204,8 @@ app.post('/api/system/init', async (c) => {
     // leave as NULL so it doesn't count as on-time/late until user completes it
 
     // Reset overdue flags for tasks that are no longer past due
-    await db.prepare(`UPDATE tasks SET is_overdue = 0 WHERE due_date >= date('now') AND status NOT IN ('completed','cancelled')`).run()
-    await db.prepare(`UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status NOT IN ('completed','cancelled')`).run()
+    await db.prepare(`UPDATE tasks SET is_overdue = 0 WHERE due_date >= date('now') AND status NOT IN ('completed','review','cancelled')`).run()
+    await db.prepare(`UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status NOT IN ('completed','review','cancelled')`).run()
 
     // Reset and re-insert disciplines (clean slate to avoid duplicates)
     await db.prepare('DELETE FROM disciplines').run()
