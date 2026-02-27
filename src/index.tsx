@@ -1576,6 +1576,7 @@ app.post('/api/revenues', authMiddleware, adminOnly, async (c) => {
 app.get('/api/projects/:id/labor-costs', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const projectId = parseInt(c.req.param('id'))
     const { month, months, year, all_months } = c.req.query()
     const yInt = year ? parseInt(year) : new Date().getFullYear()
@@ -1741,6 +1742,7 @@ app.get('/api/projects/:id/labor-costs', authMiddleware, adminOnly, async (c) =>
 app.get('/api/projects/:id/labor-costs-yearly', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const projectId = parseInt(c.req.param('id'))
     const year = c.req.query('year') || String(new Date().getFullYear())
     const yInt = parseInt(year)
@@ -1928,6 +1930,7 @@ app.delete('/api/projects/:id/labor-costs/duplicates', authMiddleware, adminOnly
 app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const { months, year, all_months } = c.req.query()
     const yInt = year ? parseInt(year) : new Date().getFullYear()
     const y    = String(yInt)
@@ -2067,6 +2070,7 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
 app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const projectId = parseInt(c.req.param('id'))
     const { month, months, year, all_months } = c.req.query()
     const yInt = year ? parseInt(year) : new Date().getFullYear()
@@ -2711,10 +2715,21 @@ app.get('/api/data-cleanup/project-costs-duplicates', authMiddleware, adminOnly,
 // → effective_hours = regular_hours + overtime_hours × 1.5
 // → cost_per_hour  = monthly_labor_cost / SUM(effective_hours toàn công ty)
 // → project_labor  = proj_effective_hours × cost_per_hour
-// Hệ số x1.5 chỉ dùng trong tính toán nội bộ, KHÔNG hiển thị ra ngoài
-const OVERTIME_FACTOR = 1.5
+// Hệ số tăng ca: đọc từ system_settings, mặc định 1.5
+// Lưu trữ trong DB để admin có thể cấu hình qua UI
+async function getOvertimeFactor(db: any): Promise<number> {
+  const row = await db.prepare(
+    `SELECT value FROM system_settings WHERE key = 'overtime_factor'`
+  ).first() as any
+  if (row?.value) {
+    const v = parseFloat(row.value)
+    if (!isNaN(v) && v > 0) return v
+  }
+  return 1.5 // default
+}
 
-async function computeMonthLaborCost(db: any, mInt: number, yInt: number) {
+async function computeMonthLaborCost(db: any, mInt: number, yInt: number, otFactor?: number) {
+  const OVERTIME_FACTOR = otFactor !== undefined ? otFactor : await getOvertimeFactor(db)
   const m = String(mInt).padStart(2, '0')
   const y = String(yInt)
   const manualEntry = await db.prepare(
@@ -2743,11 +2758,70 @@ async function computeMonthLaborCost(db: any, mInt: number, yInt: number) {
   }
 }
 
+// ===================================================
+// SYSTEM CONFIG APIs — Cấu hình hệ thống (admin only)
+// ===================================================
+
+// GET /api/system/config — Đọc tất cả cấu hình
+app.get('/api/system/config', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const rows = await db.prepare(`SELECT key, value, updated_at FROM system_settings`).all()
+    const config: Record<string, any> = {}
+    for (const row of (rows.results as any[])) {
+      config[row.key] = row.value
+    }
+    // Trả về cấu hình với giá trị mặc định nếu chưa set
+    return c.json({
+      overtime_factor: parseFloat(config['overtime_factor'] || '1.5'),
+      seed_data_initialized: config['seed_data_initialized'] === '1',
+      raw: config
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PUT /api/system/config — Cập nhật cấu hình
+app.put('/api/system/config', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const body = await c.req.json() as any
+
+    const updated: string[] = []
+
+    // overtime_factor: hệ số quy đổi giờ tăng ca (ví dụ: 1.5 = 1h OT = 1.5h thường)
+    if (body.overtime_factor !== undefined) {
+      const v = parseFloat(body.overtime_factor)
+      if (isNaN(v) || v <= 0 || v > 10) {
+        return c.json({ error: 'overtime_factor phải là số dương, tối đa 10' }, 400)
+      }
+      await db.prepare(
+        `INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('overtime_factor', ?, CURRENT_TIMESTAMP)`
+      ).bind(String(v)).run()
+      updated.push(`overtime_factor = ${v}`)
+    }
+
+    if (updated.length === 0) {
+      return c.json({ error: 'Không có cấu hình nào được cập nhật' }, 400)
+    }
+
+    // Đọc lại sau khi update
+    const newFactor = await getOvertimeFactor(db)
+    return c.json({
+      success: true,
+      message: `Đã cập nhật: ${updated.join(', ')}`,
+      current_config: {
+        overtime_factor: newFactor
+      }
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // GET /api/data-audit/consistency-check
 // Full diagnostic: duplicates, labor cost > contract, missing records
 app.get('/api/data-audit/consistency-check', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const { month, year } = c.req.query()
     const mInt = month ? parseInt(month) : new Date().getMonth() + 1
     const yInt = year ? parseInt(year) : new Date().getFullYear()
@@ -2789,7 +2863,7 @@ app.get('/api/data-audit/consistency-check', authMiddleware, adminOnly, async (c
       `SELECT id, code, name, contract_value, status FROM projects WHERE status != 'cancelled'`
     ).all()
 
-    const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+    const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt, OVERTIME_FACTOR)
 
     for (const proj of projects.results as any[]) {
       const contractVal = proj.contract_value || 0
@@ -2905,6 +2979,7 @@ function fmtNum(n: number): string {
 app.post('/api/data-audit/fix-inconsistency', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const body = await c.req.json().catch(() => ({})) as any
     const { month, year, actions = ['dedup_all', 'fix_labor', 'create_missing'] } = body
     const mInt = month ? parseInt(month) : new Date().getMonth() + 1
@@ -2942,7 +3017,7 @@ app.post('/api/data-audit/fix-inconsistency', authMiddleware, adminOnly, async (
     // Action 2: Fix excessive labor costs in project_labor_costs
     // Overtime x1.5: costPerHour = budget/comp_eff_hours; project_cost = proj_eff_hours × costPerHour
     if (actions.includes('fix_labor')) {
-      const { laborCostSource, totalEffectHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+      const { laborCostSource, totalEffectHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt, OVERTIME_FACTOR)
       const m = String(mInt).padStart(2, '0')
       const y = String(yInt)
       const projects = await db.prepare(`SELECT id, contract_value FROM projects WHERE status != 'cancelled'`).all()
@@ -3248,6 +3323,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
 app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const { year } = c.req.query()
     const currentYear = year || new Date().getFullYear().toString()
 
@@ -3696,6 +3772,7 @@ app.delete('/api/cost-types/:id', authMiddleware, adminOnly, async (c) => {
 app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const projectId = parseInt(c.req.param('id'))
     const { month, months, year, all_months } = c.req.query()
     const yInt = year ? parseInt(year) : new Date().getFullYear()
@@ -3966,6 +4043,7 @@ app.delete('/api/monthly-labor-costs/:id', authMiddleware, adminOnly, async (c) 
 app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
     const { month, year } = c.req.query()
     const m = (month || String(new Date().getMonth() + 1)).padStart(2, '0')
     const y = year || String(new Date().getFullYear())

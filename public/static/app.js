@@ -180,7 +180,8 @@ function navigate(page) {
     tasks: 'Công việc', timesheet: 'Timesheet', gantt: 'Tiến độ Gantt',
     costs: 'Chi phí & Doanh thu', assets: 'Tài sản', users: 'Nhân sự', profile: 'Hồ sơ',
     productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
-    'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí'
+    'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí',
+    'system-config': 'Cấu hình hệ thống'
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
@@ -197,6 +198,7 @@ function navigate(page) {
   else if (page === 'finance-project') { loadFinanceProjectPage() }
   else if (page === 'labor-cost') loadLaborCost()
   else if (page === 'cost-types') loadCostTypes()
+  else if (page === 'system-config') loadSystemConfig()
 
   closeAllDropdowns()
 }
@@ -4240,3 +4242,63 @@ async function fixDataInconsistency(month, year) {
   }
 }
 
+
+// =============================================
+// SYSTEM CONFIG — Cấu hình hệ thống
+// =============================================
+
+async function loadSystemConfig() {
+  try {
+    const config = await api('/system/config')
+    const factor = config.overtime_factor || 1.5
+    const input = $('overtimeFactorInput')
+    if (input) input.value = factor
+    updateOvertimeExample(factor)
+  } catch(e) {
+    console.warn('Không tải được cấu hình hệ thống:', e.message)
+  }
+}
+
+function updateOvertimeExample(factor) {
+  const el = $('overtimeExample')
+  if (!el) return
+  const f = parseFloat(factor) || 1.5
+  el.innerHTML = `
+    <div class="flex justify-between border-b pb-1 mb-1">
+      <span>8h thường + 2h tăng ca</span>
+      <span class="font-semibold text-blue-700">= ${(8 + 2 * f).toFixed(1)} giờ quy đổi</span>
+    </div>
+    <div class="flex justify-between border-b pb-1 mb-1">
+      <span>8h thường + 4h tăng ca</span>
+      <span class="font-semibold text-blue-700">= ${(8 + 4 * f).toFixed(1)} giờ quy đổi</span>
+    </div>
+    <div class="flex justify-between">
+      <span>Nếu CPH = 600,000 ₫/h:</span>
+      <span class="font-semibold text-green-700">1h tăng ca = ${fmtMoney(Math.round(f * 600000))}</span>
+    </div>
+  `
+}
+
+async function saveOvertimeFactor() {
+  const input = $('overtimeFactorInput')
+  const val = parseFloat(input?.value)
+  if (isNaN(val) || val < 1 || val > 5) {
+    toast('Hệ số phải từ 1.0 đến 5.0', 'error')
+    return
+  }
+  try {
+    const result = await api('/system/config', { method: 'PUT', data: { overtime_factor: val } })
+    toast(`✅ ${result.message} — Hệ số mới: ×${result.current_config.overtime_factor}`, 'success')
+    updateOvertimeExample(val)
+  } catch(e) {
+    toast('Lỗi lưu cấu hình: ' + e.message, 'error')
+  }
+}
+
+// Real-time preview as user types
+document.addEventListener('DOMContentLoaded', () => {
+  const input = $('overtimeFactorInput')
+  if (input) {
+    input.addEventListener('input', () => updateOvertimeExample(input.value))
+  }
+})
