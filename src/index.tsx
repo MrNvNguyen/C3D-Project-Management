@@ -2225,7 +2225,23 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     const pendingRevenue = revRow?.pending_total || 0
 
     // ── Totals & profit ─────────────────────────────────────────────
-    const totalCosts = laborCost + totalOtherCosts
+    // Chi phí chung phân bổ về dự án này (theo năm + tháng được chọn)
+    let sharedWhere = `WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ?`
+    const sharedParams: any[] = [projectId, yInt]
+    if (selectedMonths !== null) {
+      sharedWhere += ` AND (sc.month IS NULL OR sc.month IN (${selectedMonths.join(',')}))`
+    }
+    const sharedRow = await db.prepare(`
+      SELECT COALESCE(SUM(sca.allocated_amount), 0) as total,
+             COUNT(DISTINCT sca.shared_cost_id) as cnt
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      ${sharedWhere}
+    `).bind(...sharedParams).first() as any
+    const sharedCostAllocated = sharedRow?.total || 0
+    const sharedCostCount = sharedRow?.cnt || 0
+
+    const totalCosts = laborCost + totalOtherCosts + sharedCostAllocated
     // FIX: Doanh thu thực tế = CHỈ từ project_revenues đã khai báo
     // KHÔNG fallback sang contract_value — chưa khai báo = 0
     const revenueBase = revenue  // chỉ tính paid + partial
@@ -2254,7 +2270,13 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
         amount: r.total_amount, is_auto: false,
         percentage: totalCosts > 0 ? parseFloat(((r.total_amount/totalCosts)*100).toFixed(1)) : 0,
         source: 'project_costs'
-      }))
+      })),
+      ...(sharedCostAllocated > 0 ? [{
+        type: 'Chi phí chung (phân bổ)', cost_type: 'shared',
+        amount: sharedCostAllocated, is_auto: true, shared_count: sharedCostCount,
+        percentage: totalCosts > 0 ? parseFloat(((sharedCostAllocated/totalCosts)*100).toFixed(1)) : 0,
+        source: 'shared_costs'
+      }] : [])
     ]
 
     return c.json({
@@ -2274,6 +2296,7 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
                 ? `${laborHours}h × ${Math.round(laborPerHour).toLocaleString('vi-VN')} ₫/h`
                 : `Tổng ${laborMonthsCount} tháng` } },
           other: { value: totalOtherCosts, label: 'Chi phí khác', breakdown: otherCostArr, source: 'project_costs' },
+          shared: { value: sharedCostAllocated, label: 'Chi phí chung (phân bổ)', count: sharedCostCount, source: 'shared_costs' },
           total: { value: totalCosts, label: 'Tổng chi phí' }
         },
         profit: { value: profit, percentage: profitMargin, label: 'Lợi nhuận' }
@@ -2373,9 +2396,22 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
     const monthRevenue = revenueMonth?.total || 0
     const monthPendingRevenue = revenueMonth?.pending_total || 0
 
+    // ── Chi phí chung được phân bổ về dự án này (tháng/năm) ──────────
+    const sharedAllocRow = await db.prepare(`
+      SELECT COALESCE(SUM(sca.allocated_amount), 0) as shared_total,
+             COUNT(DISTINCT sca.shared_cost_id) as shared_count
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      WHERE sca.project_id = ? AND sc.status != 'deleted'
+        AND sc.year = ? AND (sc.month = ? OR sc.month IS NULL)
+    `).bind(projectId, yInt, mInt).first() as any
+    const sharedCostAllocated = sharedAllocRow?.shared_total || 0
+    const sharedCostCount = sharedAllocRow?.shared_count || 0
+    const totalCostsWithShared = totalCosts + sharedCostAllocated
+
     // FIX Bug3: Luôn tính profit kể cả khi chưa có doanh thu
     // null chỉ khi không có cả doanh thu lẫn chi phí
-    const profit = (monthRevenue > 0 || totalCosts > 0) ? monthRevenue - totalCosts : null
+    const profit = (monthRevenue > 0 || totalCostsWithShared > 0) ? monthRevenue - totalCostsWithShared : null
     const profitMargin = monthRevenue > 0 && profit !== null ? parseFloat(((profit / monthRevenue) * 100).toFixed(1)) : null
 
     // Validation rules on profit
@@ -2397,14 +2433,19 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
     const breakdown = [
       { type: 'Lương nhân sự', cost_type: 'salary', amount: laborCost,
         hours: projectHrs, cost_per_hour: Math.round(costPerHourFinal), is_auto: true,
-        pct: totalCosts > 0 ? parseFloat(((laborCost / totalCosts) * 100).toFixed(1)) : 0 },
+        pct: totalCostsWithShared > 0 ? parseFloat(((laborCost / totalCostsWithShared) * 100).toFixed(1)) : 0 },
       ...otherCostRows.map(r => ({
         type: costTypeNames[r.cost_type] || r.cost_type,
         cost_type: r.cost_type,
         amount: r.total_amount,
         is_auto: false,
-        pct: totalCosts > 0 ? parseFloat(((r.total_amount / totalCosts) * 100).toFixed(1)) : 0
-      }))
+        pct: totalCostsWithShared > 0 ? parseFloat(((r.total_amount / totalCostsWithShared) * 100).toFixed(1)) : 0
+      })),
+      ...(sharedCostAllocated > 0 ? [{
+        type: 'Chi phí chung (phân bổ)', cost_type: 'shared',
+        amount: sharedCostAllocated, is_auto: true, shared_count: sharedCostCount,
+        pct: totalCostsWithShared > 0 ? parseFloat(((sharedCostAllocated / totalCostsWithShared) * 100).toFixed(1)) : 0
+      }] : [])
     ]
 
     return c.json({
@@ -2429,7 +2470,9 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
         },
         other_costs: otherCostRows,
         total_other_costs: totalOtherCosts,
-        total_costs: totalCosts,
+        shared_cost_allocated: sharedCostAllocated,  // chi phí chung phân bổ
+        shared_cost_count: sharedCostCount,
+        total_costs: totalCostsWithShared,
         breakdown
       },
       profit: {
@@ -2816,6 +2859,280 @@ app.put('/api/system/config', authMiddleware, adminOnly, async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
+// ===================================================
+// SHARED COSTS APIs — Chi phí chung phân bổ nhiều dự án
+// ===================================================
+
+// Helper: tính phân bổ chi phí chung cho danh sách dự án
+async function computeAllocations(db: any, sharedCostId: number, totalAmount: number, basis: string, projectIds: number[], manualPcts?: Record<number, number>) {
+  if (projectIds.length === 0) return []
+
+  let pcts: Record<number, number> = {}
+
+  if (basis === 'equal') {
+    const each = 100 / projectIds.length
+    projectIds.forEach(pid => { pcts[pid] = each })
+
+  } else if (basis === 'contract_value') {
+    // Lấy contract_value của từng dự án
+    const inClause = projectIds.join(',')
+    const rows = await db.prepare(
+      `SELECT id, COALESCE(contract_value, 0) as cv FROM projects WHERE id IN (${inClause})`
+    ).all()
+    const totalCV = (rows.results as any[]).reduce((s: number, r: any) => s + (r.cv || 0), 0)
+    if (totalCV > 0) {
+      ;(rows.results as any[]).forEach((r: any) => { pcts[r.id] = (r.cv / totalCV) * 100 })
+    } else {
+      // Fallback to equal if no contract values
+      const each = 100 / projectIds.length
+      projectIds.forEach(pid => { pcts[pid] = each })
+    }
+
+  } else if (basis === 'manual') {
+    // manualPcts: { projectId: percentage }
+    if (manualPcts) pcts = { ...manualPcts }
+    else {
+      const each = 100 / projectIds.length
+      projectIds.forEach(pid => { pcts[pid] = each })
+    }
+  }
+
+  // Xây dựng allocation records
+  return projectIds.map(pid => ({
+    shared_cost_id: sharedCostId,
+    project_id: pid,
+    allocation_pct: parseFloat((pcts[pid] || 0).toFixed(4)),
+    allocated_amount: Math.round(totalAmount * (pcts[pid] || 0) / 100)
+  }))
+}
+
+// GET /api/shared-costs — Lấy danh sách chi phí chung
+app.get('/api/shared-costs', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { year, month } = c.req.query()
+
+    let where = `WHERE sc.status != 'deleted'`
+    const params: any[] = []
+    if (year) { where += ` AND sc.year = ?`; params.push(parseInt(year)) }
+    if (month) { where += ` AND sc.month = ?`; params.push(parseInt(month)) }
+
+    const rows = await db.prepare(`
+      SELECT sc.*,
+        u.full_name as created_by_name,
+        COUNT(DISTINCT sca.project_id) as project_count,
+        SUM(sca.allocated_amount) as total_allocated
+      FROM shared_costs sc
+      LEFT JOIN users u ON sc.created_by = u.id
+      LEFT JOIN shared_cost_allocations sca ON sca.shared_cost_id = sc.id
+      ${where}
+      GROUP BY sc.id
+      ORDER BY sc.cost_date DESC, sc.created_at DESC
+    `).bind(...params).all()
+
+    // Lấy thêm chi tiết phân bổ từng dự án
+    const list = rows.results as any[]
+    for (const sc of list) {
+      const allocs = await db.prepare(`
+        SELECT sca.*, p.code as project_code, p.name as project_name, p.contract_value
+        FROM shared_cost_allocations sca
+        JOIN projects p ON p.id = sca.project_id
+        WHERE sca.shared_cost_id = ?
+        ORDER BY sca.allocated_amount DESC
+      `).bind(sc.id).all()
+      sc.allocations = allocs.results
+    }
+
+    return c.json(list)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/shared-costs — Tạo chi phí chung mới + tự động phân bổ
+app.post('/api/shared-costs', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const body = await c.req.json() as any
+
+    const { description, cost_type, amount, currency, cost_date, invoice_number, vendor, notes,
+            allocation_basis, year, month, project_ids, manual_pcts } = body
+
+    if (!description || !amount || !project_ids || project_ids.length === 0) {
+      return c.json({ error: 'Thiếu thông tin: description, amount, project_ids là bắt buộc' }, 400)
+    }
+    if (!['contract_value', 'equal', 'manual'].includes(allocation_basis || 'contract_value')) {
+      return c.json({ error: 'allocation_basis phải là: contract_value | equal | manual' }, 400)
+    }
+
+    const basis = allocation_basis || 'contract_value'
+    const yInt = year ? parseInt(year) : null
+    const mInt = month ? parseInt(month) : null
+
+    // Insert shared cost
+    const ins = await db.prepare(`
+      INSERT INTO shared_costs (description, cost_type, amount, currency, cost_date, invoice_number, vendor, notes, allocation_basis, year, month, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(description, cost_type || 'other', parseFloat(amount), currency || 'VND',
+        cost_date || null, invoice_number || null, vendor || null, notes || null,
+        basis, yInt, mInt, user.id).run()
+
+    const scId = ins.meta.last_row_id as number
+
+    // Tính và insert allocations
+    const allocations = await computeAllocations(db, scId, parseFloat(amount), basis, project_ids.map(Number), manual_pcts)
+    for (const alloc of allocations) {
+      await db.prepare(`
+        INSERT OR REPLACE INTO shared_cost_allocations (shared_cost_id, project_id, allocation_pct, allocated_amount)
+        VALUES (?, ?, ?, ?)
+      `).bind(alloc.shared_cost_id, alloc.project_id, alloc.allocation_pct, alloc.allocated_amount).run()
+    }
+
+    return c.json({ success: true, id: scId, allocations_created: allocations.length }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PUT /api/shared-costs/:id — Cập nhật chi phí chung + tái phân bổ
+app.put('/api/shared-costs/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const body = await c.req.json() as any
+
+    const existing = await db.prepare(`SELECT * FROM shared_costs WHERE id = ?`).bind(id).first() as any
+    if (!existing) return c.json({ error: 'Không tìm thấy chi phí chung' }, 404)
+
+    const { description, cost_type, amount, currency, cost_date, invoice_number, vendor, notes,
+            allocation_basis, year, month, project_ids, manual_pcts } = body
+
+    const newAmount = amount !== undefined ? parseFloat(amount) : existing.amount
+    const newBasis = allocation_basis || existing.allocation_basis
+
+    const fields: string[] = []
+    const vals: any[] = []
+    if (description !== undefined) { fields.push('description = ?'); vals.push(description) }
+    if (cost_type !== undefined) { fields.push('cost_type = ?'); vals.push(cost_type) }
+    if (amount !== undefined) { fields.push('amount = ?'); vals.push(newAmount) }
+    if (currency !== undefined) { fields.push('currency = ?'); vals.push(currency) }
+    if (cost_date !== undefined) { fields.push('cost_date = ?'); vals.push(cost_date) }
+    if (invoice_number !== undefined) { fields.push('invoice_number = ?'); vals.push(invoice_number) }
+    if (vendor !== undefined) { fields.push('vendor = ?'); vals.push(vendor) }
+    if (notes !== undefined) { fields.push('notes = ?'); vals.push(notes) }
+    if (allocation_basis !== undefined) { fields.push('allocation_basis = ?'); vals.push(newBasis) }
+    if (year !== undefined) { fields.push('year = ?'); vals.push(parseInt(year)) }
+    if (month !== undefined) { fields.push('month = ?'); vals.push(parseInt(month)) }
+    fields.push('updated_at = CURRENT_TIMESTAMP')
+    vals.push(id)
+
+    if (fields.length > 1) {
+      await db.prepare(`UPDATE shared_costs SET ${fields.join(', ')} WHERE id = ?`).bind(...vals).run()
+    }
+
+    // Tái phân bổ nếu có thay đổi amount, basis hoặc project_ids
+    if (project_ids || amount !== undefined || allocation_basis !== undefined) {
+      // Lấy danh sách project_ids hiện tại nếu không truyền mới
+      let pIds: number[]
+      if (project_ids) {
+        pIds = project_ids.map(Number)
+      } else {
+        const curAllocs = await db.prepare(`SELECT project_id FROM shared_cost_allocations WHERE shared_cost_id = ?`).bind(id).all()
+        pIds = (curAllocs.results as any[]).map((r: any) => r.project_id)
+      }
+
+      // Xóa allocation cũ và tạo mới
+      await db.prepare(`DELETE FROM shared_cost_allocations WHERE shared_cost_id = ?`).bind(id).run()
+      const allocations = await computeAllocations(db, id, newAmount, newBasis, pIds, manual_pcts)
+      for (const alloc of allocations) {
+        await db.prepare(`
+          INSERT INTO shared_cost_allocations (shared_cost_id, project_id, allocation_pct, allocated_amount)
+          VALUES (?, ?, ?, ?)
+        `).bind(alloc.shared_cost_id, alloc.project_id, alloc.allocation_pct, alloc.allocated_amount).run()
+      }
+    }
+
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/shared-costs/:id
+app.delete('/api/shared-costs/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    await db.prepare(`DELETE FROM shared_cost_allocations WHERE shared_cost_id = ?`).bind(id).run()
+    await db.prepare(`DELETE FROM shared_costs WHERE id = ?`).bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/shared-costs/summary — Tổng hợp chi phí chung theo năm
+app.get('/api/shared-costs/summary', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { year } = c.req.query()
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+
+    // Tổng chi phí chung theo năm
+    const totalRow = await db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as total_shared_cost,
+             COUNT(*) as count
+      FROM shared_costs WHERE year = ? AND status != 'deleted'
+    `).bind(yInt).first() as any
+
+    // Phân bổ theo từng dự án
+    const byProject = await db.prepare(`
+      SELECT p.id, p.code, p.name,
+        COALESCE(SUM(sca.allocated_amount), 0) as allocated_cost,
+        COUNT(DISTINCT sca.shared_cost_id) as shared_cost_count
+      FROM projects p
+      JOIN shared_cost_allocations sca ON sca.project_id = p.id
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id AND sc.year = ? AND sc.status != 'deleted'
+      WHERE p.status != 'cancelled'
+      GROUP BY p.id ORDER BY allocated_cost DESC
+    `).bind(yInt).all()
+
+    return c.json({
+      year: yInt,
+      total_shared_cost: totalRow?.total_shared_cost || 0,
+      shared_cost_count: totalRow?.count || 0,
+      by_project: byProject.results
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/shared-cost-allocations — chi phí chung được phân bổ về dự án
+app.get('/api/projects/:id/shared-cost-allocations', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const { year, month } = c.req.query()
+
+    let where = `WHERE sca.project_id = ? AND sc.status != 'deleted'`
+    const params: any[] = [projectId]
+    if (year) { where += ` AND sc.year = ?`; params.push(parseInt(year)) }
+    if (month) { where += ` AND sc.month = ?`; params.push(parseInt(month)) }
+
+    const rows = await db.prepare(`
+      SELECT sca.*, sc.description, sc.cost_type, sc.amount as total_amount,
+             sc.cost_date, sc.vendor, sc.allocation_basis, sc.year, sc.month
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      ${where}
+      ORDER BY sc.cost_date DESC
+    `).bind(...params).all()
+
+    const list = rows.results as any[]
+    const totalAllocated = list.reduce((s: number, r: any) => s + (r.allocated_amount || 0), 0)
+
+    return c.json({
+      project_id: projectId,
+      year: year ? parseInt(year) : null,
+      month: month ? parseInt(month) : null,
+      total_allocated: totalAllocated,
+      items: list
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // GET /api/data-audit/consistency-check
 // Full diagnostic: duplicates, labor cost > contract, missing records
 app.get('/api/data-audit/consistency-check', authMiddleware, adminOnly, async (c) => {
@@ -2883,7 +3200,18 @@ app.get('/api/data-audit/consistency-check', authMiddleware, adminOnly, async (c
          AND strftime('%Y', cost_date) = ? AND strftime('%m', cost_date) = ?`
       ).bind(proj.id, y, m).first() as any
       const otherCosts = otherRow?.total || 0
-      const totalCosts = laborCost + otherCosts
+
+      // Chi phí chung được phân bổ về dự án này tháng đó
+      const sharedRow2 = await db.prepare(
+        `SELECT COALESCE(SUM(sca.allocated_amount), 0) as total
+         FROM shared_cost_allocations sca
+         JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+         WHERE sca.project_id = ? AND sc.status != 'deleted'
+           AND sc.year = ? AND (sc.month = ? OR sc.month IS NULL)`
+      ).bind(proj.id, yInt, mInt).first() as any
+      const sharedCost = sharedRow2?.total || 0
+
+      const totalCosts = laborCost + otherCosts + sharedCost
 
       // Revenue for the month (chỉ paid + partial)
       const revRow = await db.prepare(
@@ -3922,7 +4250,23 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       GROUP BY month, cost_type ORDER BY month
     `).bind(projectId).all()
 
-    const totalCost = laborCost + totalOtherCost
+    // --- Shared cost allocated to this project ---
+    let sharedWhereFin = `WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ?`
+    const sharedParamsFin: any[] = [projectId, yInt]
+    if (finMonthList !== null && finMonthList.length > 0) {
+      sharedWhereFin += ` AND (sc.month IS NULL OR sc.month IN (${finMonthList.join(',')}))`
+    }
+    const sharedRowFin = await db.prepare(`
+      SELECT COALESCE(SUM(sca.allocated_amount), 0) as total,
+             COUNT(DISTINCT sca.shared_cost_id) as cnt
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      ${sharedWhereFin}
+    `).bind(...sharedParamsFin).first() as any
+    const sharedCostTotal = sharedRowFin?.total || 0
+    const sharedCostCount = sharedRowFin?.cnt || 0
+
+    const totalCost = laborCost + totalOtherCost + sharedCostTotal
     // FIX Bug3: Luôn tính profit khi có doanh thu hoặc chi phí
     // Chỉ null khi dự án chưa có cả doanh thu lẫn chi phí (chưa hoạt động tài chính)
     const profit = (totalRevenue > 0 || totalCost > 0) ? totalRevenue - totalCost : null
@@ -3941,7 +4285,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       validation_warnings.push(`Chi phí lương chiếm ${((laborCost/totalRevenue)*100).toFixed(1)}% doanh thu (> 80%)`)
     }
 
-    // Build costs_by_type with labor included
+    // Build costs_by_type with labor + shared included
     const costTypeNames: Record<string, string> = {
       material: 'Vật liệu', equipment: 'Thiết bị', transport: 'Vận chuyển',
       other: 'Chi phí khác', salary: 'Lương nhân sự'
@@ -3950,7 +4294,11 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       ...(laborCost > 0 ? [{ cost_type: 'salary', total: laborCost, label: 'Lương nhân sự', is_auto: true }] : []),
       ...(otherCosts.results as any[]).map((c: any) => ({
         ...c, label: costTypeNames[c.cost_type] || c.cost_type, is_auto: false
-      }))
+      })),
+      ...(sharedCostTotal > 0 ? [{
+        cost_type: 'shared', total: sharedCostTotal,
+        label: 'Chi phí chung (phân bổ)', is_auto: true, shared_count: sharedCostCount
+      }] : [])
     ]
 
     return c.json({
@@ -3962,6 +4310,8 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
         contract_value: contractValue,     // giá trị hợp đồng (chỉ tham khảo)
         total_cost: totalCost, labor_cost: laborCost,
         other_cost: totalOtherCost,
+        shared_cost: sharedCostTotal,      // chi phí chung phân bổ
+        shared_cost_count: sharedCostCount,
         profit: profit ?? null,            // null nếu chưa có doanh thu
         margin: margin ?? null,
         labor_hours: laborHours, labor_per_hour: Math.round(laborPerHour), labor_source: laborSource,
@@ -4194,6 +4544,8 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS monthly_labor_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, month INTEGER NOT NULL, year INTEGER NOT NULL, total_labor_cost REAL NOT NULL, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(month, year))`,
       `CREATE TABLE IF NOT EXISTS project_labor_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL, total_labor_cost REAL NOT NULL DEFAULT 0, total_hours REAL NOT NULL DEFAULT 0, cost_per_hour REAL NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(project_id, month, year), FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE)`,
       `CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE TABLE IF NOT EXISTS shared_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, cost_type TEXT NOT NULL DEFAULT 'other', amount REAL NOT NULL, currency TEXT DEFAULT 'VND', cost_date DATE, invoice_number TEXT, vendor TEXT, notes TEXT, allocation_basis TEXT NOT NULL DEFAULT 'contract_value', year INTEGER, month INTEGER, status TEXT DEFAULT 'active', created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE TABLE IF NOT EXISTS shared_cost_allocations (id INTEGER PRIMARY KEY AUTOINCREMENT, shared_cost_id INTEGER NOT NULL, project_id INTEGER NOT NULL, allocated_amount REAL NOT NULL DEFAULT 0, allocation_pct REAL NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(shared_cost_id, project_id), FOREIGN KEY (shared_cost_id) REFERENCES shared_costs(id) ON DELETE CASCADE, FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE)`,
     ]
 
     for (const stmt of tables) {

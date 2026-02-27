@@ -874,11 +874,15 @@
 
         <!-- Tabs -->
         <div class="card">
-          <div class="flex gap-2 mb-4 flex-wrap">
-            <button onclick="switchCostTab('costs')" id="tabCosts" class="tab-btn active">Chi phí</button>
-            <button onclick="switchCostTab('revenues')" id="tabRevenues" class="tab-btn">Doanh thu</button>
-            <button onclick="switchCostTab('analysis')" id="tabAnalysis" class="tab-btn">Phân tích chi tiết</button>
-            <button onclick="switchCostTab('duplicates')" id="tabDuplicates" class="tab-btn">Kiểm tra trùng lặp</button>
+          <div class="flex gap-2 mb-4 flex-wrap items-center justify-between">
+            <div class="flex gap-2 flex-wrap">
+              <button onclick="switchCostTab('costs')" id="tabCosts" class="tab-btn active">Chi phí riêng</button>
+              <button onclick="switchCostTab('revenues')" id="tabRevenues" class="tab-btn">Doanh thu</button>
+              <button onclick="switchCostTab('shared')" id="tabShared" class="tab-btn"><i class="fas fa-share-alt mr-1"></i>Chi phí chung</button>
+              <button onclick="switchCostTab('analysis')" id="tabAnalysis" class="tab-btn">Phân tích chi tiết</button>
+              <button onclick="switchCostTab('duplicates')" id="tabDuplicates" class="tab-btn">Kiểm tra trùng lặp</button>
+            </div>
+            <button id="btnAddSharedCost" onclick="openSharedCostModal()" class="hidden btn-warning flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Thêm chi phí chung</button>
           </div>
           <div id="costFilter" class="flex gap-3 mb-4 flex-wrap">
             <select id="costProjectFilter" class="select-field" style="width:180px" onchange="loadCosts()">
@@ -898,6 +902,56 @@
               <table class="w-full text-sm" id="costTable">
                 <thead id="costTableHead"></thead>
                 <tbody id="costTableBody" class="divide-y"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Tab: Chi phí chung -->
+          <div id="tabPanelShared" class="hidden">
+            <!-- Summary cards -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+              <div class="kpi-card" style="border-color:#F59E0B">
+                <p class="text-xs text-gray-500">TỔNG CHI PHÍ CHUNG</p>
+                <p class="text-xl font-bold text-yellow-600 mt-1" id="sharedKpiTotal">-</p>
+              </div>
+              <div class="kpi-card" style="border-color:#3B82F6">
+                <p class="text-xs text-gray-500">SỐ KHOẢN</p>
+                <p class="text-xl font-bold text-blue-600 mt-1" id="sharedKpiCount">-</p>
+              </div>
+              <div class="kpi-card" style="border-color:#10B981">
+                <p class="text-xs text-gray-500">DỰ ÁN ÁP DỤNG</p>
+                <p class="text-xl font-bold text-green-600 mt-1" id="sharedKpiProjects">-</p>
+              </div>
+              <div class="kpi-card" style="border-color:#6366F1">
+                <p class="text-xs text-gray-500">PHÂN BỔ / DỰ ÁN</p>
+                <p class="text-xl font-bold text-indigo-600 mt-1" id="sharedKpiAvg">-</p>
+              </div>
+            </div>
+
+            <!-- Phân bổ theo dự án -->
+            <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <h4 class="font-semibold text-blue-800 mb-2 text-sm"><i class="fas fa-info-circle mr-1"></i>Chi phí chung được phân bổ về từng dự án</h4>
+              <div id="sharedAllocationByProject" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
+            </div>
+
+            <!-- Danh sách chi phí chung -->
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="bg-gray-50">
+                    <th class="text-left px-3 py-2 font-medium text-gray-600">Mô tả</th>
+                    <th class="text-left px-3 py-2 font-medium text-gray-600">Loại</th>
+                    <th class="text-right px-3 py-2 font-medium text-gray-600">Số tiền</th>
+                    <th class="text-center px-3 py-2 font-medium text-gray-600">Cơ sở phân bổ</th>
+                    <th class="text-center px-3 py-2 font-medium text-gray-600">Dự án áp dụng</th>
+                    <th class="text-center px-3 py-2 font-medium text-gray-600">Tháng/Năm</th>
+                    <th class="text-left px-3 py-2 font-medium text-gray-600">Nhà cung cấp</th>
+                    <th class="text-center px-3 py-2 font-medium text-gray-600">Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody id="sharedCostTableBody" class="divide-y">
+                  <tr><td colspan="8" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</td></tr>
+                </tbody>
               </table>
             </div>
           </div>
@@ -972,7 +1026,7 @@
             <div id="anaValidationWarnings" class="hidden"></div>
 
             <!-- 5 KPI Cards -->
-            <div id="analysisCards" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5 hidden">
+            <div id="analysisCards" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-5 hidden">
               <div class="rounded-xl p-4 text-white" style="background:linear-gradient(135deg,#00A651,#45a049)">
                 <p class="text-xs font-medium opacity-90 uppercase tracking-wide">Doanh thu tháng</p>
                 <p class="text-xl font-bold mt-1" id="anaRevenue">-</p>
@@ -984,14 +1038,19 @@
                 <p class="text-xs opacity-75 mt-1" id="anaLaborDetail">Tự động từ timesheet</p>
               </div>
               <div class="rounded-xl p-4 text-white" style="background:linear-gradient(135deg,#ff9800,#f57c00)">
-                <p class="text-xs font-medium opacity-90 uppercase tracking-wide">Chi phí khác</p>
+                <p class="text-xs font-medium opacity-90 uppercase tracking-wide">Chi phí riêng</p>
                 <p class="text-xl font-bold mt-1" id="anaOtherCost">-</p>
                 <p class="text-xs opacity-75 mt-1">Vật liệu, thiết bị...</p>
+              </div>
+              <div class="rounded-xl p-4 text-white" style="background:linear-gradient(135deg,#f59e0b,#d97706)">
+                <p class="text-xs font-medium opacity-90 uppercase tracking-wide">Chi phí chung (PB)</p>
+                <p class="text-xl font-bold mt-1" id="anaSharedCost">-</p>
+                <p class="text-xs opacity-75 mt-1" id="anaSharedDetail">Phân bổ về dự án</p>
               </div>
               <div class="rounded-xl p-4 text-white" style="background:linear-gradient(135deg,#f44336,#e53935)">
                 <p class="text-xs font-medium opacity-90 uppercase tracking-wide">Tổng chi phí</p>
                 <p class="text-xl font-bold mt-1" id="anaTotalCost">-</p>
-                <p class="text-xs opacity-75 mt-1">Lương + Chi phí khác</p>
+                <p class="text-xs opacity-75 mt-1">Lương + Riêng + Chung</p>
               </div>
               <div class="rounded-xl p-4 text-white" id="anaProfitCard" style="background:linear-gradient(135deg,#9c27b0,#7b1fa2)">
                 <p class="text-xs font-medium opacity-90 uppercase tracking-wide">Lợi nhuận</p>
@@ -2073,6 +2132,113 @@
       <div class="flex justify-end gap-3 pt-2">
         <button type="button" onclick="closeModal('costModal')" class="btn-secondary">Hủy</button>
         <button type="submit" class="btn-primary" id="costSaveBtn">Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Shared Cost Modal -->
+<div id="sharedCostModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:640px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="sharedCostModalTitle">Thêm chi phí chung</h3>
+      <button onclick="closeModal('sharedCostModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+      <i class="fas fa-info-circle mr-1"></i>
+      <strong>Chi phí chung</strong> là các khoản chi phí áp dụng cho nhiều dự án cùng lúc (điện, nước, thuê văn phòng, phần mềm...). Hệ thống sẽ tự động phân bổ về từng dự án theo cơ sở bạn chọn.
+    </div>
+    <form id="sharedCostForm" class="space-y-4">
+      <input type="hidden" id="sharedCostId">
+      <div>
+        <label class="label">Mô tả *</label>
+        <input type="text" id="scDescription" class="input-field" placeholder="VD: Tiền điện tháng 3, Thuê văn phòng Q1..." required>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Loại chi phí</label>
+          <select id="scCostType" class="select-field">
+            <option value="office">Văn phòng</option>
+            <option value="equipment">Thiết bị</option>
+            <option value="material">Vật liệu</option>
+            <option value="travel">Đi lại</option>
+            <option value="other">Khác</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Số tiền (VNĐ) *</label>
+          <input type="number" id="scAmount" class="input-field" placeholder="0" required min="1" oninput="updateSharedCostPreview()">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ngày</label>
+          <input type="date" id="scCostDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Tháng/Năm áp dụng</label>
+          <div class="flex gap-2">
+            <select id="scMonth" class="select-field">
+              <option value="">-- Cả năm --</option>
+              <option value="1">Tháng 1</option><option value="2">Tháng 2</option>
+              <option value="3">Tháng 3</option><option value="4">Tháng 4</option>
+              <option value="5">Tháng 5</option><option value="6">Tháng 6</option>
+              <option value="7">Tháng 7</option><option value="8">Tháng 8</option>
+              <option value="9">Tháng 9</option><option value="10">Tháng 10</option>
+              <option value="11">Tháng 11</option><option value="12">Tháng 12</option>
+            </select>
+            <select id="scYear" class="select-field" style="width:90px">
+              <option value="2024">2024</option>
+              <option value="2025">2025</option>
+              <option value="2026" selected>2026</option>
+              <option value="2027">2027</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Số hóa đơn</label>
+          <input type="text" id="scInvoice" class="input-field" placeholder="Số hóa đơn">
+        </div>
+        <div>
+          <label class="label">Nhà cung cấp</label>
+          <input type="text" id="scVendor" class="input-field" placeholder="Tên nhà cung cấp">
+        </div>
+      </div>
+
+      <!-- Cơ sở phân bổ -->
+      <div>
+        <label class="label">Cơ sở phân bổ *</label>
+        <select id="scAllocationBasis" class="select-field" onchange="onAllocationBasisChange()">
+          <option value="contract_value">📊 Theo % GTHĐ (Giá trị hợp đồng)</option>
+          <option value="equal">⚖️ Chia đều (Equal split)</option>
+          <option value="manual">✏️ Nhập tay % từng dự án</option>
+        </select>
+        <p class="text-xs text-gray-500 mt-1" id="scBasisHint">Phân bổ theo tỷ lệ giá trị hợp đồng của mỗi dự án so với tổng.</p>
+      </div>
+
+      <!-- Chọn dự án -->
+      <div>
+        <label class="label">Dự án áp dụng * <span class="text-xs text-gray-400">(chọn nhiều)</span></label>
+        <div id="scProjectList" class="border rounded-lg p-3 space-y-2 max-h-48 overflow-y-auto bg-gray-50">
+          <p class="text-gray-400 text-xs">Đang tải dự án...</p>
+        </div>
+      </div>
+
+      <!-- Preview phân bổ -->
+      <div id="scPreviewPanel" class="hidden">
+        <label class="label">Xem trước phân bổ</label>
+        <div id="scPreviewTable" class="border rounded-lg overflow-hidden text-xs"></div>
+      </div>
+
+      <div>
+        <label class="label">Ghi chú</label>
+        <textarea id="scNotes" class="input-field" rows="2"></textarea>
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeModal('sharedCostModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-warning" id="scSaveBtn"><i class="fas fa-save mr-1"></i>Lưu chi phí chung</button>
       </div>
     </form>
   </div>

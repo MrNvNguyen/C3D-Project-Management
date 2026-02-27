@@ -1846,7 +1846,10 @@ async function loadCostDashboard() {
     }
 
     const year = $('costYearFilter')?.value || new Date().getFullYear().toString()
-    const summary = await api(`/dashboard/cost-summary?year=${year}`)
+    const [summary, sharedSummary] = await Promise.all([
+      api(`/dashboard/cost-summary?year=${year}`),
+      api(`/shared-costs/summary?year=${year}`).catch(() => ({ total_shared_cost: 0, by_project: [] }))
+    ])
 
     let totalRevenue = 0, totalCost = 0
     summary.revenue_by_project?.forEach(p => totalRevenue += p.total_revenue || 0)
@@ -1854,21 +1857,29 @@ async function loadCostDashboard() {
     // Aggregate OTHER costs (non-salary) by project from project_costs
     const costByProject = {}
     summary.cost_by_project?.forEach(item => {
-      if (!costByProject[item.id]) costByProject[item.id] = { id: item.id, code: item.code, name: item.name, total_cost: 0, labor_cost: 0 }
+      if (!costByProject[item.id]) costByProject[item.id] = { id: item.id, code: item.code, name: item.name, total_cost: 0, labor_cost: 0, shared_cost: 0 }
       costByProject[item.id].total_cost += item.total_cost || 0
     })
     // Add labor costs from project_labor_costs (SUM all months for year)
     summary.labor_by_project?.forEach(item => {
-      if (!costByProject[item.id]) costByProject[item.id] = { id: item.id, code: item.code, name: item.name, total_cost: 0, labor_cost: 0 }
+      if (!costByProject[item.id]) costByProject[item.id] = { id: item.id, code: item.code, name: item.name, total_cost: 0, labor_cost: 0, shared_cost: 0 }
       costByProject[item.id].labor_cost = item.labor_cost || 0
       costByProject[item.id].total_cost += item.labor_cost || 0
+    })
+    // Add shared cost allocations per project
+    const sharedByProj = sharedSummary?.by_project || []
+    sharedByProj.forEach(item => {
+      if (!costByProject[item.id]) costByProject[item.id] = { id: item.id, code: item.code, name: item.name, total_cost: 0, labor_cost: 0, shared_cost: 0 }
+      costByProject[item.id].shared_cost = item.allocated_cost || 0
+      costByProject[item.id].total_cost += item.allocated_cost || 0
     })
     Object.values(costByProject).forEach(p => totalCost += p.total_cost)
     const profit = totalRevenue - totalCost
     const margin = totalRevenue > 0 ? (profit / totalRevenue * 100).toFixed(1) : 0
+    const totalShared = sharedSummary?.total_shared_cost || 0
 
     $('costKpiRevenue').textContent = fmtMoney(totalRevenue)
-    $('costKpiCost').textContent = fmtMoney(totalCost)
+    $('costKpiCost').textContent = fmtMoney(totalCost) + (totalShared > 0 ? ` <span class="text-xs font-normal text-yellow-600">(+${fmtMoney(totalShared)} chung)</span>` : '')
     $('costKpiProfit').textContent = fmtMoney(profit)
     $('costKpiMargin').textContent = margin + '%'
 
@@ -1945,14 +1956,14 @@ async function loadCosts() {
 function switchCostTab(tab) {
   currentCostTab = tab
   // Tab buttons
-  const tabs = ['costs', 'revenues', 'analysis', 'duplicates']
+  const tabs = ['costs', 'revenues', 'analysis', 'duplicates', 'shared']
   tabs.forEach(t => {
     const btn = $(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`)
     if (btn) btn.className = 'tab-btn ' + (t === tab ? 'active' : '')
   })
   // Tab panels
-  const panels = { costs: 'tabPanelTable', revenues: 'tabPanelTable', analysis: 'tabPanelAnalysis', duplicates: 'tabPanelDuplicates' }
-  ;['tabPanelTable','tabPanelAnalysis','tabPanelDuplicates'].forEach(id => {
+  const panels = { costs: 'tabPanelTable', revenues: 'tabPanelTable', analysis: 'tabPanelAnalysis', duplicates: 'tabPanelDuplicates', shared: 'tabPanelShared' }
+  ;['tabPanelTable','tabPanelAnalysis','tabPanelDuplicates','tabPanelShared'].forEach(id => {
     const el = $(id); if (el) el.classList.add('hidden')
   })
   const activePanel = panels[tab]
@@ -1960,7 +1971,16 @@ function switchCostTab(tab) {
 
   // Cost filter row: only show for costs/revenues
   const costFilter = $('costFilter')
-  if (costFilter) costFilter.classList.toggle('hidden', tab === 'analysis' || tab === 'duplicates')
+  if (costFilter) costFilter.classList.toggle('hidden', tab === 'analysis' || tab === 'duplicates' || tab === 'shared')
+
+  // "Thêm chi phí chung" button — only visible on shared tab
+  const btnAdd = $('btnAddSharedCost')
+  if (btnAdd) btnAdd.classList.toggle('hidden', tab !== 'shared')
+
+  if (tab === 'shared') {
+    loadSharedCosts()
+    return
+  }
 
   renderCostTable()
 
@@ -2047,6 +2067,7 @@ async function loadCostAnalysis() {
     const pendingRev  = fin.revenue?.pending_revenue || 0
     const laborVal = fin.costs?.labor?.value || 0
     const otherVal = fin.costs?.other?.value || 0
+    const sharedVal = fin.costs?.shared?.value || 0
     const totalVal = fin.costs?.total?.value || 0
     const profitVal = fin.profit?.value ?? 0
     const margin   = fin.profit?.percentage
@@ -2054,6 +2075,13 @@ async function loadCostAnalysis() {
     $('anaRevenue').textContent   = fmtMoney(revVal)
     $('anaLaborCost').textContent = fmtMoney(laborVal)
     $('anaOtherCost').textContent = fmtMoney(otherVal)
+    if ($('anaSharedCost')) {
+      $('anaSharedCost').textContent = fmtMoney(sharedVal)
+      if ($('anaSharedDetail')) {
+        const sc = fin.costs?.shared
+        $('anaSharedDetail').textContent = sc?.count > 0 ? `${sc.count} khoản phân bổ` : 'Không có phân bổ'
+      }
+    }
     $('anaTotalCost').textContent = fmtMoney(totalVal)
     $('anaProfit').textContent    = fmtMoney(profitVal)
     // Hiển thị tỷ suất LN và cảnh báo pending revenue
@@ -2148,22 +2176,23 @@ async function loadCostAnalysis() {
       // Breakdown table
       const tbody = $('anaBreakdownTbody')
       if (tbody) {
-        const costTypeIcons = { 'Lương nhân sự':'👥', 'Vật liệu':'🔩', 'Thiết bị':'🔧', 'Vận chuyển':'🚛' }
+        const costTypeIcons = { 'Lương nhân sự':'👥', 'Vật liệu':'🔩', 'Thiết bị':'🔧', 'Vận chuyển':'🚛', 'Chi phí chung (phân bổ)':'🤝' }
         tbody.innerHTML = breakdown.map(b => `
-          <tr class="border-b border-gray-50 hover:bg-gray-50">
+          <tr class="border-b border-gray-50 hover:bg-gray-50 ${b.cost_type === 'shared' ? 'bg-yellow-50' : ''}">
             <td class="py-2 pr-3">
               <span class="flex items-center gap-1.5">
                 <span>${costTypeIcons[b.type] || '📋'}</span>
                 <span class="font-medium text-gray-700">${b.type}</span>
                 ${b.is_auto ? '<span class="text-xs bg-blue-100 text-blue-600 px-1 rounded ml-1">tự động</span>' : ''}
-                ${b.source ? `<span class="text-xs text-gray-400 ml-1">[${b.source}]</span>` : ''}
+                ${b.cost_type === 'shared' ? `<span class="text-xs bg-yellow-100 text-yellow-700 px-1 rounded ml-1">chung (${b.shared_count || '?'} khoản)</span>` : ''}
+                ${b.source && b.cost_type !== 'shared' ? `<span class="text-xs text-gray-400 ml-1">[${b.source}]</span>` : ''}
               </span>
             </td>
             <td class="py-2 pr-3 text-right font-bold text-gray-800">${fmtMoney(b.amount)}</td>
             <td class="py-2 text-right">
               <span class="inline-flex items-center gap-1">
                 <div class="w-16 bg-gray-100 rounded-full h-1.5 inline-block align-middle">
-                  <div class="h-1.5 rounded-full" style="width:${Math.min(b.percentage||0,100)}%;background:#00A651"></div>
+                  <div class="h-1.5 rounded-full" style="width:${Math.min(b.percentage||0,100)}%;background:${b.cost_type==='shared'?'#f59e0b':'#00A651'}"></div>
                 </div>
                 <span class="text-xs text-gray-500">${b.percentage||0}%</span>
               </span>
@@ -3308,6 +3337,7 @@ async function loadFinanceProject() {
         <div class="kpi-card" style="border-color:#EF4444">
           <p class="text-xs text-gray-500 uppercase tracking-wide">Tổng chi phí</p>
           <p class="text-xl font-bold text-red-600 mt-1">${fmtMoney(summary.total_cost)}</p>
+          ${summary.shared_cost > 0 ? `<p class="text-xs text-yellow-600 mt-0.5"><i class="fas fa-share-alt mr-1"></i>Gồm ${fmtMoney(summary.shared_cost)} chi phí chung</p>` : ''}
           <div class="mt-2">
             <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>% HĐ</span><span>${costProgress}%</span></div>
             <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="${costProgress > 100 ? 'bg-red-600' : costProgress > 80 ? 'bg-amber-500' : 'bg-red-400'} h-1.5 rounded-full" style="width:${Math.min(costProgress,100)}%"></div></div>
@@ -3359,13 +3389,16 @@ async function loadFinanceProject() {
             <tbody>
               ${costs_by_type.map(c => {
                 const pct = summary.total_cost > 0 ? Math.round(c.total / summary.total_cost * 100) : 0
-                const ctIcon = c.cost_type === 'salary' ? '👤' : c.cost_type === 'material' ? '🧱' : c.cost_type === 'equipment' ? '⚙️' : c.cost_type === 'transport' ? '🚛' : '📦'
-                return `<tr class="table-row border-b hover:bg-gray-50">
-                  <td class="py-2 px-3">${ctIcon} ${c.label || getCostTypeName(c.cost_type)}</td>
-                  <td class="py-2 px-3 text-right font-medium text-red-600">${fmt(c.total)} VNĐ</td>
+                const ctIcon = c.cost_type === 'salary' ? '👤' : c.cost_type === 'shared' ? '🤝' : c.cost_type === 'material' ? '🧱' : c.cost_type === 'equipment' ? '⚙️' : c.cost_type === 'transport' ? '🚛' : '📦'
+                const rowBg = c.cost_type === 'shared' ? 'bg-yellow-50' : ''
+                return `<tr class="table-row border-b hover:bg-gray-50 ${rowBg}">
+                  <td class="py-2 px-3">${ctIcon} ${c.label || getCostTypeName(c.cost_type)}
+                    ${c.cost_type === 'shared' ? `<span class="ml-1 text-xs bg-yellow-100 text-yellow-700 px-1.5 rounded-full">${c.shared_count || '?'} khoản</span>` : ''}
+                  </td>
+                  <td class="py-2 px-3 text-right font-medium ${c.cost_type === 'shared' ? 'text-yellow-700' : 'text-red-600'}">${fmt(c.total)} VNĐ</td>
                   <td class="py-2 px-3 text-right">
                     <div class="flex items-center justify-end gap-2">
-                      <div class="w-16 bg-gray-100 rounded-full h-1.5 hidden sm:block"><div class="bg-red-400 h-1.5 rounded-full" style="width:${pct}%"></div></div>
+                      <div class="w-16 bg-gray-100 rounded-full h-1.5 hidden sm:block"><div class="${c.cost_type === 'shared' ? 'bg-yellow-400' : 'bg-red-400'} h-1.5 rounded-full" style="width:${pct}%"></div></div>
                       <span class="text-gray-500 text-xs">${pct}%</span>
                     </div>
                   </td>
@@ -3378,7 +3411,7 @@ async function loadFinanceProject() {
                 <td class="py-2 px-3 text-gray-700">TỔNG CHI PHÍ</td>
                 <td class="py-2 px-3 text-right text-red-700">${fmt(summary.total_cost)} VNĐ</td>
                 <td class="py-2 px-3 text-right text-gray-500">100%</td>
-                <td></td>
+                <td class="py-2 px-3 text-center text-xs text-gray-400">Lương + Riêng + Chung</td>
               </tr>
             </tfoot>
           </table>
@@ -3390,6 +3423,12 @@ async function loadFinanceProject() {
           <div><i class="fas fa-calendar mr-1"></i>Kỳ: <strong>${periodLabel}</strong></div>
           ${summary.labor_months_count > 0 ? `<div><i class="fas fa-layer-group mr-1"></i>${summary.labor_months_count} tháng có dữ liệu lương</div>` : ''}
           ${summary.labor_source !== 'project_labor_costs' ? `<button onclick="syncLaborForFinProject(${projectId}, '${yf}')" class="ml-auto btn-secondary text-xs py-1 px-2"><i class="fas fa-sync mr-1"></i>Đồng bộ ngay</button>` : ''}
+        </div>` : ''}
+        ${summary.shared_cost > 0 ? `
+        <div class="mt-3 bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 flex flex-wrap gap-3 items-center">
+          <i class="fas fa-share-alt text-yellow-600"></i>
+          <div><strong>Chi phí chung phân bổ:</strong> ${fmtMoney(summary.shared_cost)} từ ${summary.shared_cost_count || '?'} khoản chi phí chung</div>
+          <button onclick="navigate('costs'); setTimeout(()=>switchCostTab('shared'),200)" class="ml-auto text-xs text-yellow-700 underline hover:no-underline">Quản lý chi phí chung →</button>
         </div>` : ''}
       </div>
 
@@ -4302,3 +4341,336 @@ document.addEventListener('DOMContentLoaded', () => {
     input.addEventListener('input', () => updateOvertimeExample(input.value))
   }
 })
+
+// ============================================================
+// SHARED COSTS (Chi phí chung)
+// ============================================================
+
+let _sharedCosts = []
+let _sharedCostSummary = null
+
+// Mở tab chi phí chung và load dữ liệu
+async function loadSharedCosts() {
+  const year = $('costYearFilter')?.value || new Date().getFullYear().toString()
+  try {
+    const [list, summary] = await Promise.all([
+      api(`/shared-costs?year=${year}`),
+      api(`/shared-costs/summary?year=${year}`)
+    ])
+    _sharedCosts = Array.isArray(list) ? list : []
+    _sharedCostSummary = summary
+
+    // KPI cards
+    const total = summary.total_shared_cost || 0
+    const count = summary.shared_cost_count || 0
+    const byProject = summary.by_project || []
+    const projectCount = byProject.length
+    const avg = projectCount > 0 ? total / projectCount : 0
+
+    if ($('sharedKpiTotal')) $('sharedKpiTotal').textContent = fmtMoney(total)
+    if ($('sharedKpiCount')) $('sharedKpiCount').textContent = count + ' khoản'
+    if ($('sharedKpiProjects')) $('sharedKpiProjects').textContent = projectCount + ' dự án'
+    if ($('sharedKpiAvg')) $('sharedKpiAvg').textContent = fmtMoney(avg)
+
+    // Phân bổ theo dự án
+    const allocDiv = $('sharedAllocationByProject')
+    if (allocDiv) {
+      if (byProject.length === 0) {
+        allocDiv.innerHTML = '<p class="text-xs text-gray-400 col-span-4">Chưa có phân bổ nào</p>'
+      } else {
+        allocDiv.innerHTML = byProject.map(p => `
+          <div class="bg-white border rounded p-2 text-xs">
+            <div class="font-semibold text-gray-700">${p.code}</div>
+            <div class="text-gray-500 truncate" title="${p.name}">${p.name}</div>
+            <div class="font-bold text-indigo-600 mt-1">${fmtMoney(p.allocated_cost)}</div>
+            <div class="text-gray-400">${p.shared_cost_count} khoản</div>
+          </div>
+        `).join('')
+      }
+    }
+
+    // Bảng danh sách
+    renderSharedCostTable()
+  } catch (e) {
+    toast('Lỗi tải chi phí chung: ' + e.message, 'error')
+  }
+}
+
+function renderSharedCostTable() {
+  const tbody = $('sharedCostTableBody')
+  if (!tbody) return
+  if (_sharedCosts.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="text-center py-8 text-gray-400">
+      <i class="fas fa-folder-open text-2xl mb-2 block"></i>
+      Chưa có chi phí chung. <button onclick="openSharedCostModal()" class="text-blue-600 hover:underline">Thêm ngay</button>
+    </td></tr>`
+    return
+  }
+
+  const basisLabel = { contract_value: '% GTHĐ', equal: 'Chia đều', manual: 'Thủ công' }
+  const costTypeLabel = { office: 'Văn phòng', equipment: 'Thiết bị', material: 'Vật liệu', travel: 'Đi lại', other: 'Khác' }
+
+  tbody.innerHTML = _sharedCosts.map(sc => {
+    const allocInfo = (sc.allocations || []).map(a =>
+      `<span class="inline-block bg-indigo-100 text-indigo-700 rounded px-1 py-0.5 mr-1 mb-1 text-xs" title="${a.project_name}: ${fmtMoney(a.allocated_amount)} (${a.allocation_pct.toFixed(1)}%)">${a.project_code}: ${fmtMoney(a.allocated_amount)}</span>`
+    ).join('')
+    const period = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `Năm ${sc.year}` : '-')
+    return `<tr class="hover:bg-gray-50">
+      <td class="px-3 py-2">
+        <div class="font-medium text-gray-800">${sc.description}</div>
+        ${sc.notes ? `<div class="text-xs text-gray-400">${sc.notes}</div>` : ''}
+        <div class="mt-1">${allocInfo}</div>
+      </td>
+      <td class="px-3 py-2 text-xs"><span class="badge badge-info">${costTypeLabel[sc.cost_type] || sc.cost_type}</span></td>
+      <td class="px-3 py-2 text-right font-semibold text-yellow-700">${fmtMoney(sc.amount)}</td>
+      <td class="px-3 py-2 text-center text-xs">${basisLabel[sc.allocation_basis] || sc.allocation_basis}</td>
+      <td class="px-3 py-2 text-center text-xs">${sc.project_count || 0} dự án</td>
+      <td class="px-3 py-2 text-center text-xs">${period}</td>
+      <td class="px-3 py-2 text-xs text-gray-500">${sc.vendor || '-'}</td>
+      <td class="px-3 py-2 text-center">
+        <button onclick="openSharedCostModal(${sc.id})" class="text-blue-600 hover:text-blue-800 mr-2 text-xs"><i class="fas fa-edit"></i></button>
+        <button onclick="deleteSharedCost(${sc.id})" class="text-red-500 hover:text-red-700 text-xs"><i class="fas fa-trash"></i></button>
+      </td>
+    </tr>`
+  }).join('')
+}
+
+async function openSharedCostModal(id = null) {
+  if (!allProjects.length) allProjects = await api('/projects')
+
+  // Reset form
+  $('sharedCostId').value = ''
+  $('sharedCostForm').reset()
+  $('scYear').value = $('costYearFilter')?.value || new Date().getFullYear().toString()
+  $('scCostDate').value = new Date().toISOString().split('T')[0]
+  $('scPreviewPanel').classList.add('hidden')
+
+  // Render project checkboxes
+  const activeProjects = allProjects.filter(p => p.status !== 'cancelled')
+  $('scProjectList').innerHTML = activeProjects.map(p => `
+    <label class="flex items-center gap-2 p-2 hover:bg-white rounded cursor-pointer border border-transparent hover:border-gray-200 transition-colors">
+      <input type="checkbox" class="scProjectCheck" value="${p.id}" data-contract="${p.contract_value || 0}"
+        onchange="updateSharedCostPreview()">
+      <div class="flex-1 min-w-0">
+        <span class="font-medium text-sm text-gray-800">${p.code}</span>
+        <span class="text-xs text-gray-500 ml-2 truncate">${p.name}</span>
+      </div>
+      <span class="text-xs text-gray-400">${fmtMoney(p.contract_value || 0)}</span>
+      <span class="scManualPctWrap hidden ml-2">
+        <input type="number" class="scManualPct border rounded px-1 py-0.5 w-16 text-xs text-right"
+          placeholder="%" min="0" max="100" step="0.1"
+          data-project-id="${p.id}" oninput="updateSharedCostPreview()">
+        <span class="text-xs text-gray-400">%</span>
+      </span>
+    </label>
+  `).join('')
+
+  if (id) {
+    // Edit mode
+    $('sharedCostModalTitle').textContent = 'Chỉnh sửa chi phí chung'
+    const sc = _sharedCosts.find(s => s.id === id)
+    if (sc) {
+      $('sharedCostId').value = sc.id
+      $('scDescription').value = sc.description
+      $('scCostType').value = sc.cost_type || 'other'
+      $('scAmount').value = sc.amount
+      if (sc.cost_date) $('scCostDate').value = sc.cost_date
+      if (sc.month) $('scMonth').value = sc.month
+      if (sc.year) $('scYear').value = sc.year
+      if (sc.invoice_number) $('scInvoice').value = sc.invoice_number
+      if (sc.vendor) $('scVendor').value = sc.vendor
+      if (sc.notes) $('scNotes').value = sc.notes
+      $('scAllocationBasis').value = sc.allocation_basis || 'contract_value'
+
+      // Pre-check allocated projects
+      const allocatedIds = (sc.allocations || []).map(a => a.project_id)
+      const manualPcts = {}
+      ;(sc.allocations || []).forEach(a => { manualPcts[a.project_id] = a.allocation_pct })
+
+      document.querySelectorAll('.scProjectCheck').forEach(chk => {
+        if (allocatedIds.includes(parseInt(chk.value))) {
+          chk.checked = true
+          const manualInput = chk.closest('label').querySelector('.scManualPct')
+          if (manualInput) manualInput.value = (manualPcts[parseInt(chk.value)] || '').toFixed(1)
+        }
+      })
+
+      onAllocationBasisChange()
+      updateSharedCostPreview()
+    }
+  } else {
+    $('sharedCostModalTitle').textContent = 'Thêm chi phí chung'
+    onAllocationBasisChange()
+  }
+
+  $('sharedCostModal').style.display = 'flex'
+
+  // Form submit
+  $('sharedCostForm').onsubmit = async (e) => {
+    e.preventDefault()
+    await saveSharedCost()
+  }
+}
+
+function onAllocationBasisChange() {
+  const basis = $('scAllocationBasis')?.value || 'contract_value'
+  const hints = {
+    contract_value: 'Phân bổ theo tỷ lệ % giá trị hợp đồng (GTHĐ) của mỗi dự án so với tổng GTHĐ các dự án được chọn.',
+    equal: 'Chia đều chi phí cho tất cả dự án được chọn (mỗi dự án nhận cùng số tiền).',
+    manual: 'Nhập tay % phân bổ cho từng dự án. Tổng % phải = 100%.'
+  }
+  if ($('scBasisHint')) $('scBasisHint').textContent = hints[basis] || ''
+
+  // Show/hide manual % inputs
+  const isManual = basis === 'manual'
+  document.querySelectorAll('.scManualPctWrap').forEach(wrap => {
+    wrap.classList.toggle('hidden', !isManual)
+  })
+  updateSharedCostPreview()
+}
+
+function updateSharedCostPreview() {
+  const amount = parseFloat($('scAmount')?.value) || 0
+  const basis = $('scAllocationBasis')?.value || 'contract_value'
+  const checkedBoxes = [...document.querySelectorAll('.scProjectCheck:checked')]
+
+  if (amount <= 0 || checkedBoxes.length === 0) {
+    $('scPreviewPanel').classList.add('hidden')
+    return
+  }
+
+  $('scPreviewPanel').classList.remove('hidden')
+
+  const projects = checkedBoxes.map(chk => ({
+    id: parseInt(chk.value),
+    contract: parseFloat(chk.dataset.contract) || 0,
+    label: chk.closest('label').querySelector('.font-medium')?.textContent || '',
+    manualPct: parseFloat(chk.closest('label').querySelector('.scManualPct')?.value) || 0
+  }))
+
+  let rows = []
+  if (basis === 'contract_value') {
+    const totalContract = projects.reduce((s, p) => s + p.contract, 0)
+    rows = projects.map(p => {
+      const pct = totalContract > 0 ? (p.contract / totalContract * 100) : (100 / projects.length)
+      const allocated = Math.round(amount * pct / 100)
+      return { label: p.label, pct: pct.toFixed(1), allocated }
+    })
+  } else if (basis === 'equal') {
+    const pct = 100 / projects.length
+    const allocated = Math.round(amount / projects.length)
+    rows = projects.map(p => ({ label: p.label, pct: pct.toFixed(1), allocated }))
+  } else {
+    const totalPct = projects.reduce((s, p) => s + p.manualPct, 0)
+    rows = projects.map(p => ({
+      label: p.label,
+      pct: p.manualPct.toFixed(1),
+      allocated: Math.round(amount * p.manualPct / 100),
+      warn: totalPct !== 100
+    }))
+    if (Math.abs(totalPct - 100) > 0.1) {
+      $('scPreviewTable').innerHTML = `<div class="p-2 bg-red-50 text-red-700 text-xs">⚠️ Tổng % = ${totalPct.toFixed(1)}% (phải = 100%)</div>`
+      return
+    }
+  }
+
+  $('scPreviewTable').innerHTML = `
+    <table class="w-full">
+      <thead><tr class="bg-gray-100">
+        <th class="text-left px-3 py-1 font-medium">Dự án</th>
+        <th class="text-right px-3 py-1 font-medium">%</th>
+        <th class="text-right px-3 py-1 font-medium">Số tiền phân bổ</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r => `<tr class="border-t">
+          <td class="px-3 py-1">${r.label}</td>
+          <td class="px-3 py-1 text-right text-gray-600">${r.pct}%</td>
+          <td class="px-3 py-1 text-right font-semibold text-indigo-700">${fmtMoney(r.allocated)}</td>
+        </tr>`).join('')}
+        <tr class="border-t bg-yellow-50 font-semibold">
+          <td class="px-3 py-1">Tổng</td>
+          <td class="px-3 py-1 text-right">100%</td>
+          <td class="px-3 py-1 text-right text-yellow-700">${fmtMoney(amount)}</td>
+        </tr>
+      </tbody>
+    </table>
+  `
+}
+
+async function saveSharedCost() {
+  const id = $('sharedCostId')?.value
+  const description = $('scDescription').value.trim()
+  const amount = parseFloat($('scAmount').value)
+  const basis = $('scAllocationBasis').value
+
+  if (!description || !amount || amount <= 0) {
+    toast('Vui lòng nhập mô tả và số tiền hợp lệ', 'error'); return
+  }
+
+  const checkedBoxes = [...document.querySelectorAll('.scProjectCheck:checked')]
+  if (checkedBoxes.length === 0) {
+    toast('Vui lòng chọn ít nhất một dự án', 'error'); return
+  }
+
+  const project_ids = checkedBoxes.map(chk => parseInt(chk.value))
+  let manual_pcts = null
+  if (basis === 'manual') {
+    const totalPct = checkedBoxes.reduce((s, chk) => {
+      return s + (parseFloat(chk.closest('label').querySelector('.scManualPct')?.value) || 0)
+    }, 0)
+    if (Math.abs(totalPct - 100) > 0.1) {
+      toast(`Tổng % phân bổ = ${totalPct.toFixed(1)}% (phải = 100%)`, 'error'); return
+    }
+    manual_pcts = {}
+    checkedBoxes.forEach(chk => {
+      manual_pcts[parseInt(chk.value)] = parseFloat(chk.closest('label').querySelector('.scManualPct')?.value) || 0
+    })
+  }
+
+  const payload = {
+    description,
+    cost_type: $('scCostType').value,
+    amount,
+    cost_date: $('scCostDate').value || null,
+    invoice_number: $('scInvoice').value || null,
+    vendor: $('scVendor').value || null,
+    notes: $('scNotes').value || null,
+    allocation_basis: basis,
+    year: parseInt($('scYear').value),
+    month: $('scMonth').value ? parseInt($('scMonth').value) : null,
+    project_ids,
+    manual_pcts
+  }
+
+  const btn = $('scSaveBtn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang lưu...'
+
+  try {
+    if (id) {
+      await api(`/shared-costs/${id}`, { method: 'PUT', data: payload })
+      toast('Đã cập nhật chi phí chung', 'success')
+    } else {
+      const res = await api('/shared-costs', { method: 'POST', data: payload })
+      toast(`Đã tạo chi phí chung, phân bổ ${res.allocations_created} dự án`, 'success')
+    }
+    closeModal('sharedCostModal')
+    await loadSharedCosts()
+  } catch (e) {
+    toast('Lỗi lưu: ' + e.message, 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-save mr-1"></i>Lưu chi phí chung'
+  }
+}
+
+async function deleteSharedCost(id) {
+  if (!confirm('Xóa chi phí chung này? Tất cả phân bổ về dự án cũng sẽ bị xóa.')) return
+  try {
+    await api(`/shared-costs/${id}`, { method: 'DELETE' })
+    toast('Đã xóa chi phí chung', 'success')
+    await loadSharedCosts()
+  } catch (e) {
+    toast('Lỗi xóa: ' + e.message, 'error')
+  }
+}
