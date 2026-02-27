@@ -1491,6 +1491,9 @@ app.put('/api/revenues/:id', authMiddleware, adminOnly, async (c) => {
     const db = c.env.DB
     const id = parseInt(c.req.param('id'))
     const data = await c.req.json()
+    // Accept cost_date as fallback for revenue_date (frontend uses shared form field)
+    if (!data.revenue_date && data.cost_date) data.revenue_date = data.cost_date
+    if (data.revenue_date === 'null' || data.revenue_date === '') data.revenue_date = null
     const fields = ['description', 'amount', 'currency', 'revenue_date', 'invoice_number', 'payment_status', 'notes']
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
@@ -1541,13 +1544,15 @@ app.post('/api/revenues', authMiddleware, adminOnly, async (c) => {
     const db = c.env.DB
     const user = c.get('user') as any
     const data = await c.req.json()
-    const { project_id, description, amount, currency, revenue_date, invoice_number, payment_status, notes } = data
+    const { project_id, description, amount, currency, revenue_date, cost_date, invoice_number, payment_status, notes } = data
+    // Accept cost_date as fallback for revenue_date (frontend shared form)
+    const finalRevenueDate = (revenue_date && revenue_date !== 'null') ? revenue_date : (cost_date && cost_date !== 'null' ? cost_date : null)
 
     const result = await db.prepare(
       `INSERT INTO project_revenues (project_id, description, amount, currency, revenue_date, invoice_number, payment_status, notes, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(project_id, description, amount, currency || 'VND',
-      revenue_date || null, invoice_number || null, payment_status || 'pending', notes || null, user.id).run()
+      finalRevenueDate, invoice_number || null, payment_status || 'pending', notes || null, user.id).run()
 
     return c.json({ success: true, id: result.meta.last_row_id }, 201)
   } catch (e: any) {
@@ -2025,13 +2030,15 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     // FIX: Doanh thu thực tế = CHỈ từ project_revenues đã khai báo
     // KHÔNG fallback sang contract_value — chưa khai báo = 0
     const revenueBase = revenue  // actual entered revenue only
-    const profit = revenueBase > 0 ? revenueBase - totalCosts : null
+    // FIX Bug3: Luôn tính profit = revenue - cost (âm khi chưa có doanh thu nhưng đã có chi phí)
+    // Chỉ để null khi KHÔNG có cả doanh thu lẫn chi phí (dự án chưa hoạt động)
+    const profit = (revenueBase > 0 || totalCosts > 0) ? revenueBase - totalCosts : null
     const profitMargin = revenueBase > 0 && profit !== null ? parseFloat(((profit / revenueBase) * 100).toFixed(1)) : null
 
     // Validation warnings
     if (contractValue > 0 && totalCosts > contractValue * 1.2)
       validation_warnings.push(`Tổng chi phí vượt 120% giá trị hợp đồng`)
-    if (revenueBase > 0 && profit !== null && profit <= 0) validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
+    if (profit !== null && profit <= 0) validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
     else if (profitMargin !== null && profitMargin > 0 && profitMargin < 10) validation_warnings.push(`Lợi nhuận thấp: ${profitMargin}% (< 10%)`)
     if (revenueBase > 0 && laborCost > revenueBase * 0.8) validation_warnings.push(`Chi phí lương chiếm ${((laborCost/revenueBase)*100).toFixed(1)}% doanh thu (> 80%)`)
 
@@ -2078,7 +2085,7 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
         last_updated: new Date().toISOString()
       },
       validation: { warnings: validation_warnings, has_warnings: validation_warnings.length > 0,
-        profit_status: profit > 0 ? (profitMargin !== null && profitMargin < 10 ? 'warning' : 'ok') : 'error' }
+        profit_status: profit === null ? 'no_data' : (profit > 0 ? (profitMargin !== null && profitMargin < 10 ? 'warning' : 'ok') : 'error') }
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
@@ -2163,11 +2170,13 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
     ).bind(projectId, y, m).first() as any
     const monthRevenue = revenueMonth?.total || 0
 
-    const profit = monthRevenue - totalCosts
-    const profitMargin = monthRevenue > 0 ? parseFloat(((profit / monthRevenue) * 100).toFixed(1)) : null
+    // FIX Bug3: Luôn tính profit kể cả khi chưa có doanh thu
+    // null chỉ khi không có cả doanh thu lẫn chi phí
+    const profit = (monthRevenue > 0 || totalCosts > 0) ? monthRevenue - totalCosts : null
+    const profitMargin = monthRevenue > 0 && profit !== null ? parseFloat(((profit / monthRevenue) * 100).toFixed(1)) : null
 
     // Validation rules on profit
-    if (monthRevenue > 0 && profit <= 0) {
+    if (profit !== null && profit <= 0) {
       validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
     } else if (profitMargin !== null && profitMargin > 0 && profitMargin < 10) {
       validation_warnings.push(`Lợi nhuận thấp: ${profitMargin}% (ngưỡng cảnh báo < 10%)`)
@@ -2226,7 +2235,7 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
       validation: {
         warnings: validation_warnings,
         has_warnings: validation_warnings.length > 0,
-        profit_status: profit > 0 ? (profitMargin !== null && profitMargin < 10 ? 'warning' : 'ok') : 'error'
+        profit_status: profit === null ? 'no_data' : (profit > 0 ? (profitMargin !== null && profitMargin < 10 ? 'warning' : 'ok') : 'error')
       }
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -3037,28 +3046,82 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       GROUP BY p.id, pc.cost_type
     `).bind(currentYear).all()
 
-    // Labor costs from project_labor_costs — SUM all months for the year per project
-    const laborByProjectRaw = await db.prepare(`
+    // Labor costs: ưu tiên project_labor_costs (đã sync), fallback tính real-time từ monthly_labor_costs
+    // Dùng một SQL query lớn thay vì Promise.all nested (tránh lỗi D1 concurrent)
+    const laborByProjectSynced = await db.prepare(`
       SELECT p.id, p.code, p.name,
         COALESCE(SUM(plc.total_labor_cost), 0) as labor_cost,
         COALESCE(SUM(plc.total_hours), 0) as total_hours,
         COUNT(DISTINCT plc.month) as months_with_data
       FROM projects p
       LEFT JOIN project_labor_costs plc ON plc.project_id = p.id AND plc.year = ?
-      WHERE p.status != 'cancelled'
+      WHERE p.status NOT IN ('cancelled','completed')
       GROUP BY p.id
     `).bind(parseInt(currentYear)).all()
 
-    // FIX: Chỉ dùng chi phí lương đã nhập thủ công (monthly_labor_costs)
-    // KHÔNG fallback sang salary_pool × 12 — tránh hiển thị chi phí ảo
-    // Nếu chưa nhập → labor_cost = 0 cho dự án đó
-    const laborByProject = (laborByProjectRaw.results as any[]).map(p => ({
-      ...p,
-      labor_cost: p.labor_cost || 0,  // chỉ từ project_labor_costs đã sync
-      labor_source: p.labor_cost > 0 ? 'synced' : 'none'
-    }))
+    // Real-time fallback via SQL: join monthly_labor_costs + timesheets per project per month
+    // Tính: cost_per_hour = mlc.total_labor_cost / company_hours_that_month
+    //       project_labor = project_hours × cost_per_hour
+    const laborRealtimeRaw = await db.prepare(`
+      SELECT p.id, p.code, p.name,
+        SUM(ROUND(proj_ts.proj_hours * 1.0 / comp_ts.comp_hours * mlc.total_labor_cost)) as rt_labor_cost,
+        SUM(proj_ts.proj_hours) as rt_hours
+      FROM projects p
+      JOIN (
+        SELECT project_id,
+               CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
+               strftime('%Y', work_date) as ts_year,
+               SUM(regular_hours + IFNULL(overtime_hours,0)) as proj_hours
+        FROM timesheets
+        WHERE strftime('%Y', work_date) = ?
+        GROUP BY project_id, ts_month, ts_year
+      ) proj_ts ON proj_ts.project_id = p.id
+      JOIN (
+        SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
+               strftime('%Y', work_date) as ts_year,
+               SUM(regular_hours + IFNULL(overtime_hours,0)) as comp_hours
+        FROM timesheets
+        WHERE strftime('%Y', work_date) = ?
+        GROUP BY ts_month, ts_year
+      ) comp_ts ON comp_ts.ts_month = proj_ts.ts_month AND comp_ts.ts_year = proj_ts.ts_year
+      JOIN monthly_labor_costs mlc ON mlc.month = proj_ts.ts_month AND mlc.year = ?
+      WHERE p.status NOT IN ('cancelled','completed') AND comp_ts.comp_hours > 0
+      GROUP BY p.id
+    `).bind(currentYear, currentYear, parseInt(currentYear)).all()
 
-    // Monthly summary: other costs only (salary excluded — in project_labor_costs)
+    // Merge: dùng synced nếu có, fallback realtime
+    const realtimeMap: Record<number, any> = {}
+    ;(laborRealtimeRaw.results as any[]).forEach((r: any) => { realtimeMap[r.id] = r })
+
+    const laborByProject = (laborByProjectSynced.results as any[]).map((p: any) => {
+      if ((p.labor_cost || 0) > 0) return { ...p, labor_source: 'synced' }
+      const rt = realtimeMap[p.id]
+      if (rt && (rt.rt_labor_cost || 0) > 0) {
+        return { ...p, labor_cost: Math.round(rt.rt_labor_cost), total_hours: rt.rt_hours || 0, labor_source: 'realtime' }
+      }
+      return { ...p, labor_source: 'none' }
+    })
+
+    // Monthly labor costs summary — ưu tiên project_labor_costs, fallback monthly_labor_costs
+    const plcMonthly = await db.prepare(`
+      SELECT PRINTF('%d-%02d', year, month) as month,
+        SUM(total_labor_cost) as total_cost, 'salary' as cost_type
+      FROM project_labor_costs WHERE year = ?
+      GROUP BY month ORDER BY month ASC
+    `).bind(parseInt(currentYear)).all()
+
+    // Nếu project_labor_costs trống, lấy từ monthly_labor_costs (tổng công ty)
+    let monthlyLaborSummary = plcMonthly
+    if (!plcMonthly.results?.length) {
+      monthlyLaborSummary = await db.prepare(`
+        SELECT PRINTF('%d-%02d', year, month) as month,
+          total_labor_cost as total_cost, 'salary' as cost_type
+        FROM monthly_labor_costs WHERE year = ?
+        ORDER BY month ASC
+      `).bind(parseInt(currentYear)).all()
+    }
+
+    // Monthly summary: other non-salary costs from project_costs
     const monthlySummary = await db.prepare(`
       SELECT strftime('%Y-%m', cost_date) as month,
         SUM(amount) as total_cost, cost_type
@@ -3066,16 +3129,6 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       WHERE strftime('%Y', cost_date) = ? AND cost_type != 'salary'
       GROUP BY month, cost_type ORDER BY month ASC
     `).bind(currentYear).all()
-
-    // Monthly labor costs summary (from project_labor_costs)
-    const monthlyLaborSummary = await db.prepare(`
-      SELECT PRINTF('%d-%02d', year, month) as month,
-        SUM(total_labor_cost) as total_cost,
-        'salary' as cost_type
-      FROM project_labor_costs
-      WHERE year = ?
-      GROUP BY month ORDER BY month ASC
-    `).bind(parseInt(currentYear)).all()
 
     const timesheetCost = await db.prepare(`
       SELECT ts.project_id, p.name as project_name, p.code as project_code,
@@ -3529,17 +3582,18 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     `).bind(projectId).all()
 
     const totalCost = laborCost + totalOtherCost
-    // Lợi nhuận chỉ tính khi đã có doanh thu thực tế
-    const profit = totalRevenue > 0 ? totalRevenue - totalCost : null
+    // FIX Bug3: Luôn tính profit khi có doanh thu hoặc chi phí
+    // Chỉ null khi dự án chưa có cả doanh thu lẫn chi phí (chưa hoạt động tài chính)
+    const profit = (totalRevenue > 0 || totalCost > 0) ? totalRevenue - totalCost : null
     const margin = totalRevenue > 0 && profit !== null ? parseFloat(((profit / totalRevenue) * 100).toFixed(1)) : null
 
     // Validation rules
     if (contractValue > 0 && totalCost > contractValue * 1.2) {
       validation_warnings.push(`Tổng chi phí (${fmtNum(totalCost)} ₫) vượt 120% giá trị HĐ`)
     }
-    if (totalRevenue > 0 && profit !== null && profit <= 0) {
+    if (profit !== null && profit <= 0) {
       validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
-    } else if (totalRevenue > 0 && margin !== null && margin < 10 && margin > 0) {
+    } else if (profit !== null && margin !== null && margin < 10 && margin > 0) {
       validation_warnings.push(`Lợi nhuận thấp: ${margin}% (< 10%)`)
     }
     if (totalRevenue > 0 && laborCost > totalRevenue * 0.8) {
@@ -3576,7 +3630,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       validation: {
         warnings: validation_warnings,
         has_warnings: validation_warnings.length > 0,
-        profit_status: profit === null ? 'no_revenue' : (profit > 0 ? (margin !== null && margin < 10 ? 'warning' : 'ok') : 'error')
+        profit_status: profit === null ? 'no_data' : (profit > 0 ? (margin !== null && margin < 10 ? 'warning' : 'ok') : 'error')
       }
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }

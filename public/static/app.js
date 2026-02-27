@@ -2045,7 +2045,7 @@ async function loadCostAnalysis() {
     const laborVal = fin.costs?.labor?.value || 0
     const otherVal = fin.costs?.other?.value || 0
     const totalVal = fin.costs?.total?.value || 0
-    const profitVal= fin.profit?.value || 0
+    const profitVal = fin.profit?.value ?? 0
     const margin   = fin.profit?.percentage
 
     $('anaRevenue').textContent   = fmtMoney(revVal)
@@ -2053,7 +2053,8 @@ async function loadCostAnalysis() {
     $('anaOtherCost').textContent = fmtMoney(otherVal)
     $('anaTotalCost').textContent = fmtMoney(totalVal)
     $('anaProfit').textContent    = fmtMoney(profitVal)
-    $('anaProfitMargin').textContent = `Tỷ suất LN: ${margin ?? 'N/A'}%`
+    // Hiển thị tỷ suất LN: chỉ tính được khi có doanh thu
+    $('anaProfitMargin').textContent = revVal > 0 ? `Tỷ suất LN: ${margin ?? 'N/A'}%` : '⚠️ Chưa có doanh thu'
 
     const profitCard = $('anaProfitCard')
     if (profitCard) {
@@ -2062,7 +2063,9 @@ async function loadCostAnalysis() {
         ? 'linear-gradient(135deg,#9c27b0,#7b1fa2)'
         : profitStatus === 'warning'
           ? 'linear-gradient(135deg,#f59e0b,#d97706)'
-          : 'linear-gradient(135deg,#ef4444,#dc2626)'
+          : (profitStatus === 'no_data' || profitStatus === 'no_revenue')
+            ? 'linear-gradient(135deg,#9ca3af,#6b7280)'
+            : 'linear-gradient(135deg,#ef4444,#dc2626)'
     }
 
     // Data sync source indicator
@@ -2479,7 +2482,8 @@ $('costForm').addEventListener('submit', async (e) => {
     project_id: parseInt($('costProject').value),
     description: $('costDescription').value,
     amount: parseFloat($('costAmount').value),
-    cost_date: $('costDate').value,
+    cost_date: $('costDate').value,        // for costs
+    revenue_date: $('costDate').value,     // for revenues (same field, different key)
     invoice_number: $('costInvoice').value,
     notes: $('costNotes').value
   }
@@ -3194,8 +3198,8 @@ async function loadFinanceProject() {
            </div>`
         : ''
 
-    const profitColor = validation?.profit_status === 'ok' ? 'text-purple-600' : validation?.profit_status === 'warning' ? 'text-amber-600' : validation?.profit_status === 'no_revenue' ? 'text-gray-400' : 'text-red-600'
-    const profitBorder = validation?.profit_status === 'ok' ? '#8B5CF6' : validation?.profit_status === 'warning' ? '#F59E0B' : validation?.profit_status === 'no_revenue' ? '#9CA3AF' : '#EF4444'
+    const profitColor = validation?.profit_status === 'ok' ? 'text-purple-600' : validation?.profit_status === 'warning' ? 'text-amber-600' : (validation?.profit_status === 'no_revenue' || validation?.profit_status === 'no_data') ? 'text-gray-400' : 'text-red-600'
+    const profitBorder = validation?.profit_status === 'ok' ? '#8B5CF6' : validation?.profit_status === 'warning' ? '#F59E0B' : (validation?.profit_status === 'no_revenue' || validation?.profit_status === 'no_data') ? '#9CA3AF' : '#EF4444'
 
     // Period label
     let periodLabel = ''
@@ -3287,11 +3291,19 @@ async function loadFinanceProject() {
         <div class="kpi-card" style="border-color:${profitBorder}">
           <p class="text-xs text-gray-500 uppercase tracking-wide">Lợi nhuận</p>
           ${summary.profit !== null && summary.profit !== undefined
-            ? `<p class="text-xl font-bold ${profitColor} mt-1">${fmtMoney(summary.profit)}</p>
-               <p class="text-xs mt-1"><span class="font-semibold ${profitColor}">${summary.margin ?? 0}%</span> <span class="text-gray-400">tỷ suất LN</span></p>
-               <div class="mt-1"><span class="text-xs px-1.5 py-0.5 rounded-full ${validation?.profit_status === 'ok' ? 'bg-purple-100 text-purple-700' : validation?.profit_status === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}">${validation?.profit_status === 'ok' ? 'Tốt' : validation?.profit_status === 'warning' ? 'Cần chú ý' : 'Âm'}</span></div>`
+            ? (() => {
+                const hasRevenue = (summary.total_revenue || 0) > 0
+                const profitLabel = validation?.profit_status === 'ok' ? 'Tốt' : validation?.profit_status === 'warning' ? 'Cần chú ý' : 'Lỗ'
+                const badgeClass = validation?.profit_status === 'ok' ? 'bg-purple-100 text-purple-700' : validation?.profit_status === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
+                return `<p class="text-xl font-bold ${profitColor} mt-1">${fmtMoney(summary.profit)}</p>
+               ${hasRevenue
+                 ? `<p class="text-xs mt-1"><span class="font-semibold ${profitColor}">${summary.margin ?? 0}%</span> <span class="text-gray-400">tỷ suất LN</span></p>`
+                 : `<p class="text-xs text-orange-500 mt-1">⚠️ Chưa khai báo doanh thu</p>`
+               }
+               <div class="mt-1"><span class="text-xs px-1.5 py-0.5 rounded-full ${badgeClass}">${profitLabel}</span></div>`
+              })()
             : `<p class="text-xl font-bold text-gray-400 mt-1">—</p>
-               <p class="text-xs text-gray-400 mt-1">Chưa có doanh thu</p>`
+               <p class="text-xs text-gray-400 mt-1">Chưa có hoạt động tài chính</p>`
           }
         </div>
       </div>
