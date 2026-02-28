@@ -1891,6 +1891,18 @@ async function loadCostDashboard() {
     const marginEl = $('costKpiMargin')
     if (marginEl) marginEl.className = `text-2xl font-bold mt-1 ${Number(margin) < 0 ? 'text-red-600' : Number(margin) < 10 ? 'text-orange-500' : 'text-yellow-600'}`
 
+    // Hiển thị nhãn NTC
+    const fyLabelEl = $('fyPeriodLabel')
+    if (fyLabelEl) {
+      if (summary.fiscal_year_label) {
+        fyLabelEl.textContent = summary.fiscal_year_label
+        fyLabelEl.title = `${summary.fiscal_year_start || ''} → ${summary.fiscal_year_end || ''}`
+      } else {
+        // Fallback: hiển thị NTC mặc định
+        fyLabelEl.textContent = `NTC ${year}: ${year}-02-01 → ${parseInt(year)+1}-01-31`
+      }
+    }
+
     renderCostProjectChart(summary.revenue_by_project, Object.values(costByProject))
     renderCostMonthlyChart(summary.monthly_summary, sharedSummary?.by_project || [])
 
@@ -4320,6 +4332,12 @@ async function loadSystemConfig() {
     const input = $('overtimeFactorInput')
     if (input) input.value = factor
     updateOvertimeExample(factor)
+
+    // Fiscal year settings
+    const fyMonth = config.fiscal_year_start_month || 2
+    const fySelect = $('fyStartMonthInput')
+    if (fySelect) fySelect.value = fyMonth
+    updateFyExample(config.fiscal_year_example)
   } catch(e) {
     console.warn('Không tải được cấu hình hệ thống:', e.message)
   }
@@ -4361,11 +4379,75 @@ async function saveOvertimeFactor() {
   }
 }
 
+// ============================================================
+// FISCAL YEAR CONFIG (Cấu hình Năm tài chính)
+// ============================================================
+
+function updateFyExample(fyExample) {
+  const el = $('fyExample')
+  if (!el) return
+  if (!fyExample) {
+    el.innerHTML = '<span class="text-gray-400">Chưa tải được thông tin</span>'
+    return
+  }
+  const currentYear = new Date().getFullYear()
+  el.innerHTML = `
+    <div class="flex justify-between border-b pb-1 mb-1">
+      <span>NTC ${fyExample.year || currentYear}:</span>
+      <span class="font-semibold text-green-700">${fyExample.start || '?'} → ${fyExample.end || '?'}</span>
+    </div>
+    <div class="flex justify-between border-b pb-1 mb-1">
+      <span>NTC ${(fyExample.year || currentYear) + 1}:</span>
+      <span class="font-semibold text-green-700">${fyExample.start ? fyExample.start.replace(/^\d{4}/, (fyExample.year||currentYear)+1) : '?'} → ${fyExample.end ? fyExample.end.replace(/^\d{4}/, (fyExample.year||currentYear)+2) : '?'}</span>
+    </div>
+    <div class="mt-2 text-xs text-green-600 font-medium">
+      <i class="fas fa-info-circle mr-1"></i>${fyExample.label || ''}
+    </div>
+  `
+}
+
+async function saveFiscalYearConfig() {
+  const monthSelect = $('fyStartMonthInput')
+  const monthVal = parseInt(monthSelect?.value)
+  if (isNaN(monthVal) || monthVal < 1 || monthVal > 12) {
+    toast('Tháng bắt đầu NTC phải từ 1 đến 12', 'error')
+    return
+  }
+  try {
+    const result = await api('/system/config', { method: 'PUT', data: {
+      fiscal_year_start_month: monthVal,
+      fiscal_year_start_day: 1
+    }})
+    toast(`✅ ${result.message}`, 'success')
+    updateFyExample(result.current_config?.fiscal_year_example)
+  } catch(e) {
+    toast('Lỗi lưu cấu hình NTC: ' + e.message, 'error')
+  }
+}
+
 // Real-time preview as user types
 document.addEventListener('DOMContentLoaded', () => {
   const input = $('overtimeFactorInput')
   if (input) {
     input.addEventListener('input', () => updateOvertimeExample(input.value))
+  }
+  const fySelect = $('fyStartMonthInput')
+  if (fySelect) {
+    fySelect.addEventListener('change', async () => {
+      // Preview: fetch config example for selected month
+      const m = parseInt(fySelect.value)
+      const currentYear = new Date().getFullYear()
+      const pad = n => String(n).padStart(2, '0')
+      const endMonth = m === 1 ? 12 : m - 1
+      const endYear  = m === 1 ? currentYear : currentYear + 1
+      const endDay   = new Date(endYear, endMonth, 0).getDate()
+      updateFyExample({
+        year: currentYear,
+        start: `${currentYear}-${pad(m)}-01`,
+        end: `${endYear}-${pad(endMonth)}-${pad(endDay)}`,
+        label: `NTC ${currentYear}: ${pad(1)}/${pad(m)}/${currentYear} – ${pad(endDay)}/${pad(endMonth)}/${endYear}`
+      })
+    })
   }
 })
 

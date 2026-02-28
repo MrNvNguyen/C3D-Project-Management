@@ -2129,15 +2129,16 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
 
 // GET /api/projects/:id/costs-revenue-summary
 // Tóm tắt tài chính dự án — hỗ trợ đầy đủ 3 chế độ:
-//   ?month=M&year=Y           → single month
+//   ?month=M&year=Y           → single month (M là tháng lịch, Y là NTC)
 //   ?months=1,2,3&year=Y      → multiple months (SUM)
-//   ?all_months=true&year=Y   → whole year (SUM tất cả tháng)
+//   ?all_months=true&year=Y   → whole fiscal year (SUM tất cả tháng)
 // Chi phí lương = SUM(project_labor_costs) cho kỳ chọn
 // Nếu không có cached data → tính real-time TỪNG THÁNG rồi cộng dồn
 app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const OVERTIME_FACTOR = await getOvertimeFactor(db)
+    const fySettings = await getFiscalYearSettings(db)
     const projectId = parseInt(c.req.param('id'))
     const { month, months, year, all_months } = c.req.query()
     const yInt = year ? parseInt(year) : new Date().getFullYear()
@@ -2147,51 +2148,77 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     if (!proj) return c.json({ error: 'Project not found' }, 404)
     const contractValue = proj.contract_value || 0
 
+    // ── Fiscal year date range ──────────────────────────────────────
+    const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(yInt, fySettings)
+
     // ── Determine period type & month list ──────────────────────────
     let periodType = 'all_months'
-    let periodLabel = `Toàn năm ${yInt}`
-    let selectedMonths: number[] | null = null   // null = all 12 months
+    let periodLabel = `Toàn NTC ${yInt}`
+    let selectedMonths: number[] | null = null   // null = all months in fiscal year
 
     if (all_months === 'true') {
       periodType = 'all_months'
-      periodLabel = `Toàn năm ${yInt}`
+      periodLabel = `Toàn NTC ${yInt}`
       selectedMonths = null   // will sum all months in DB
     } else if (months) {
       const parsed = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
       if (parsed.length > 0) {
         selectedMonths = parsed
         periodType = 'multiple_months'
-        periodLabel = `T${parsed.join(',')}/${yInt}`
+        periodLabel = `T${parsed.join(',')} NTC${yInt}`
       }
     } else if (month) {
       const mInt = parseInt(month)
       if (mInt >= 1 && mInt <= 12) {
         selectedMonths = [mInt]
         periodType = 'single_month'
-        periodLabel = `T${mInt}/${yInt}`
+        periodLabel = `T${mInt} NTC${yInt}`
       }
     }
 
     // ── Build SQL date filters for project_costs / project_revenues ──
-    // Always filter by year; additionally filter by month(s) if not all_months
-    let costDateFilter = `AND strftime('%Y', pc.cost_date) = '${y}'`
-    let revDateFilter  = `AND strftime('%Y', pr.revenue_date) = '${y}'`
+    // Dùng fiscal year date range thay vì chỉ lọc theo năm dương lịch
+    let costDateFilter: string
+    let revDateFilter: string
 
     if (selectedMonths !== null && all_months !== 'true') {
-      const inList = selectedMonths.join(',')
-      costDateFilter += ` AND CAST(strftime('%m', pc.cost_date) AS INTEGER) IN (${inList})`
-      revDateFilter  += ` AND CAST(strftime('%m', pr.revenue_date) AS INTEGER) IN (${inList})`
+      // Lọc theo tháng cụ thể trong NTC — dùng calendar year+month mapping
+      const costMonthConds = fiscalMonthsSQLFilter(selectedMonths, yInt, fySettings, 'pc.cost_date')
+      const revMonthConds  = fiscalMonthsSQLFilter(selectedMonths, yInt, fySettings, 'pr.revenue_date')
+      costDateFilter = `AND ${costMonthConds}`
+      revDateFilter  = `AND ${revMonthConds}`
+    } else {
+      // Toàn NTC: dùng date range
+      costDateFilter = `AND pc.cost_date >= '${fyStart}' AND pc.cost_date <= '${fyEnd}'`
+      revDateFilter  = `AND pr.revenue_date >= '${fyStart}' AND pr.revenue_date <= '${fyEnd}'`
     }
-    // For all_months=true: keep year-only filter (no month restriction)
 
     // ── Step 1: Labor cost — SUM from project_labor_costs ──────────
-    // Build labor WHERE: always filter by project + year, add month IN clause when not all-months
-    let laborWhere = `WHERE plc.project_id = ? AND plc.year = ?`
-    const laborParams: any[] = [projectId, yInt]
+    // project_labor_costs dùng (month, year) theo dương lịch — cần map tháng NTC → lịch
+    // Với NTC bắt đầu tháng 2: tháng 2-12 thuộc năm yInt, tháng 1 thuộc năm yInt+1
+    let laborWhere = `WHERE plc.project_id = ?`
+    const laborParams: any[] = [projectId]
     if (selectedMonths !== null && all_months !== 'true') {
-      laborWhere += ` AND plc.month IN (${selectedMonths.join(',')})`
+      // Map tháng NTC → (year, month) lịch
+      const calConds = selectedMonths.map(lm => {
+        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
+        return `(plc.year = ${calYear} AND plc.month = ${calMonth})`
+      })
+      laborWhere += ` AND (${calConds.join(' OR ')})`
+    } else {
+      // Toàn NTC: tháng 2-12 năm yInt và tháng 1 năm (yInt+1)
+      const fyEnd1Year = fySettings.start_month === 1 ? yInt : yInt + 1
+      if (fySettings.start_month === 1) {
+        // NTC = năm dương lịch bình thường
+        laborWhere += ` AND plc.year = ?`
+        laborParams.push(yInt)
+      } else {
+        // NTC bắc qua 2 năm lịch
+        laborWhere += ` AND ((plc.year = ? AND plc.month >= ?) OR (plc.year = ? AND plc.month < ?))`
+        laborParams.push(yInt, fySettings.start_month, fyEnd1Year, fySettings.start_month)
+      }
     }
-    // For all_months=true: no month filter → SUM all months in the year
+    // For all_months=true: no month filter → SUM all months in the fiscal year
 
     const laborRow = await db.prepare(
       `SELECT SUM(plc.total_labor_cost) as total_lc,
@@ -2211,47 +2238,54 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     // Dùng SQL JOIN thay vì vòng lặp để tránh D1 concurrent bug
     // Overtime x1.5: effective_hours = regular + overtime*1.5 (nội bộ)
     if (laborCost === 0) {
+      // Danh sách tháng NTC cần tính (dạng logic 1-12 trong NTC)
       const monthsToCalc: number[] = selectedMonths !== null
         ? selectedMonths
-        : Array.from({ length: 12 }, (_, i) => i + 1)
-      const inClause = monthsToCalc.join(',')
+        : (() => {
+            // Tất cả tháng trong NTC theo thứ tự: từ start_month đến end_month
+            const sm = fySettings.start_month
+            const result: number[] = []
+            for (let i = 0; i < 12; i++) {
+              result.push(((sm - 1 + i) % 12) + 1)
+            }
+            return result
+          })()
 
-      const rtRows = await db.prepare(`
-        SELECT
-          mlc.month,
-          COALESCE(proj_ts.proj_raw , 0) as proj_raw,
-          COALESCE(proj_ts.proj_eff , 0) as proj_eff,
-          COALESCE(comp_ts.comp_eff , 0) as comp_eff,
-          mlc.total_labor_cost as monthly_budget
-        FROM monthly_labor_costs mlc
-        LEFT JOIN (
-          SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
-                 SUM(regular_hours + IFNULL(overtime_hours,0))       as proj_raw,
-                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as proj_eff
-          FROM timesheets
-          WHERE project_id = ? AND strftime('%Y', work_date) = ?
-            AND CAST(strftime('%m', work_date) AS INTEGER) IN (${inClause})
-          GROUP BY ts_month
-        ) proj_ts ON proj_ts.ts_month = mlc.month
-        LEFT JOIN (
-          SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
-                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as comp_eff
-          FROM timesheets
-          WHERE strftime('%Y', work_date) = ?
-            AND CAST(strftime('%m', work_date) AS INTEGER) IN (${inClause})
-          GROUP BY ts_month
-        ) comp_ts ON comp_ts.ts_month = mlc.month
-        WHERE mlc.year = ? AND mlc.month IN (${inClause}) AND comp_eff > 0
-      `).bind(OVERTIME_FACTOR, projectId, y, OVERTIME_FACTOR, y, yInt).all()
-
+      // Tính từng tháng vì mỗi tháng có thể thuộc calendar year khác nhau
       let rtLaborCost = 0; let rtHours = 0; let rtCphSum = 0; let rtMonths = 0
-      ;(rtRows.results as any[]).forEach((r: any) => {
-        const cph = r.comp_eff > 0 ? r.monthly_budget / r.comp_eff : 0
-        const mc  = Math.round((r.proj_eff || 0) * cph)
-        if (r.proj_raw > 0) {
-          rtLaborCost += mc; rtHours += r.proj_raw; rtCphSum += cph; rtMonths++
-        }
-      })
+
+      for (const lm of monthsToCalc) {
+        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
+        const calY = String(calYear)
+        const calM = String(calMonth).padStart(2, '0')
+
+        const mlcRow = await db.prepare(
+          `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+        ).bind(calMonth, calYear).first() as any
+        if (!mlcRow?.total_labor_cost) continue
+
+        const projHrsRow = await db.prepare(`
+          SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
+                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+          FROM timesheets
+          WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+        `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
+
+        const compHrsRow = await db.prepare(`
+          SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+          FROM timesheets
+          WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+        `).bind(OVERTIME_FACTOR, calY, calM).first() as any
+
+        const projRaw = projHrsRow?.proj_raw || 0
+        const projEff = projHrsRow?.proj_eff || 0
+        const compEff = compHrsRow?.comp_eff || 0
+        if (projRaw <= 0 || compEff <= 0) continue
+
+        const cph = mlcRow.total_labor_cost / compEff
+        const mc  = Math.round(projEff * cph)
+        rtLaborCost += mc; rtHours += projRaw; rtCphSum += cph; rtMonths++
+      }
 
       if (rtLaborCost > 0) {
         laborCost = rtLaborCost; laborHours = rtHours
@@ -2844,6 +2878,103 @@ async function getOvertimeFactor(db: any): Promise<number> {
   return 1.5 // default
 }
 
+// ===================================================
+// FISCAL YEAR HELPERS
+// ===================================================
+// Năm tài chính (NTC) bắt đầu từ ngày fiscal_year_start_month/fiscal_year_start_day
+// Mặc định: 01/02 năm N → 31/01 năm N+1 (tháng bắt đầu = 2, ngày = 1)
+// NTC YYYY = từ YYYY-02-01 đến (YYYY+1)-01-31
+//
+// Ví dụ: NTC 2026 = 2026-02-01 → 2027-01-31
+//   - Tháng 2,3,...,12 thuộc lịch năm 2026
+//   - Tháng 1 thuộc lịch năm 2027
+
+interface FiscalYearSettings {
+  start_month: number  // 1–12, mặc định 2
+  start_day: number    // 1–28, mặc định 1
+}
+
+async function getFiscalYearSettings(db: any): Promise<FiscalYearSettings> {
+  const rows = await db.prepare(
+    `SELECT key, value FROM system_settings WHERE key IN ('fiscal_year_start_month','fiscal_year_start_day')`
+  ).all()
+  const cfg: Record<string, string> = {}
+  for (const r of (rows.results as any[])) cfg[r.key] = r.value
+
+  const startMonth = parseInt(cfg['fiscal_year_start_month'] || '2')
+  const startDay   = parseInt(cfg['fiscal_year_start_day']   || '1')
+  return {
+    start_month: (startMonth >= 1 && startMonth <= 12) ? startMonth : 2,
+    start_day:   (startDay   >= 1 && startDay   <= 28) ? startDay   : 1
+  }
+}
+
+// Trả về {startDate, endDate} dạng 'YYYY-MM-DD' cho NTC fyYear
+// Nếu start_month = 2, start_day = 1:
+//   startDate = fyYear-02-01, endDate = (fyYear+1)-01-31
+function getFiscalYearDateRange(fyYear: number, settings: FiscalYearSettings): { startDate: string; endDate: string } {
+  const sm = settings.start_month
+  const sd = settings.start_day
+
+  // Tháng kết thúc = tháng trước tháng bắt đầu
+  const endMonth = sm === 1 ? 12 : sm - 1
+  const endYear  = sm === 1 ? fyYear : fyYear + 1
+
+  // Ngày cuối tháng kết thúc
+  const endDay = new Date(endYear, endMonth, 0).getDate()  // day=0 → last day of prev month
+
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return {
+    startDate: `${fyYear}-${pad(sm)}-${pad(sd)}`,
+    endDate:   `${endYear}-${pad(endMonth)}-${pad(endDay)}`
+  }
+}
+
+// Trả về label hiển thị cho NTC
+function getFiscalYearLabel(fyYear: number, settings: FiscalYearSettings): string {
+  const { startDate, endDate } = getFiscalYearDateRange(fyYear, settings)
+  if (settings.start_month === 1) {
+    return `NTC ${fyYear} (01/01–31/12/${fyYear})`
+  }
+  return `NTC ${fyYear} (${startDate.slice(8)}/${startDate.slice(5,7)}/${fyYear}–${endDate.slice(8)}/${endDate.slice(5,7)}/${fyYear+1})`
+}
+
+// Trả về SQL WHERE condition thay thế cho strftime('%Y', col) = ?
+// Dùng: colDateFilter(col, fyYear, settings) → "col >= 'YYYY-MM-DD' AND col <= 'YYYY-MM-DD'"
+function fiscalYearDateFilter(col: string, fyYear: number, settings: FiscalYearSettings): string {
+  const { startDate, endDate } = getFiscalYearDateRange(fyYear, settings)
+  return `${col} >= '${startDate}' AND ${col} <= '${endDate}'`
+}
+
+// Map số tháng logic (2..12 = tháng trong năm bắt đầu, 1 = tháng trong năm tiếp)
+// sang {calYear, calMonth} dựa vào NTC settings
+// Với start_month=2: tháng logic 2→{fyYear,2}, 12→{fyYear,12}, 1→{fyYear+1,1}
+// Với start_month=3: tháng logic 3→{fyYear,3}, ..., 2→{fyYear+1,2}
+function fiscalMonthToCalendar(logicalMonth: number, fyYear: number, settings: FiscalYearSettings): { calYear: number; calMonth: number } {
+  const sm = settings.start_month
+  // Logical months: sm, sm+1, ..., 12, 1, 2, ..., sm-1
+  // Months >= sm → same calendar year
+  // Months < sm  → next calendar year
+  if (logicalMonth >= sm) {
+    return { calYear: fyYear, calMonth: logicalMonth }
+  } else {
+    return { calYear: fyYear + 1, calMonth: logicalMonth }
+  }
+}
+
+// Build SQL month filter cho danh sách tháng logic trong NTC
+// Returns SQL fragment: "(year_col = Y1 AND month_col = M1) OR (year_col = Y2 AND month_col = M2) ..."
+// dùng cho timesheets: strftime('%Y')=calYear AND strftime('%m')=calMonth
+function fiscalMonthsSQLFilter(logicalMonths: number[], fyYear: number, settings: FiscalYearSettings, dateCol: string): string {
+  const conditions = logicalMonths.map(lm => {
+    const { calYear, calMonth } = fiscalMonthToCalendar(lm, fyYear, settings)
+    const y = String(calYear)
+    const m = String(calMonth).padStart(2, '0')
+    return `(strftime('%Y', ${dateCol}) = '${y}' AND strftime('%m', ${dateCol}) = '${m}')`
+  })
+  return conditions.length === 1 ? conditions[0] : `(${conditions.join(' OR ')})`
+}
+
 async function computeMonthLaborCost(db: any, mInt: number, yInt: number, otFactor?: number) {
   const OVERTIME_FACTOR = otFactor !== undefined ? otFactor : await getOvertimeFactor(db)
   const m = String(mInt).padStart(2, '0')
@@ -2887,9 +3018,20 @@ app.get('/api/system/config', authMiddleware, adminOnly, async (c) => {
     for (const row of (rows.results as any[])) {
       config[row.key] = row.value
     }
+    const fySettings = await getFiscalYearSettings(db)
+    const currentFyYear = new Date().getFullYear()
+    const fyRange = getFiscalYearDateRange(currentFyYear, fySettings)
     // Trả về cấu hình với giá trị mặc định nếu chưa set
     return c.json({
       overtime_factor: parseFloat(config['overtime_factor'] || '1.5'),
+      fiscal_year_start_month: fySettings.start_month,
+      fiscal_year_start_day: fySettings.start_day,
+      fiscal_year_example: {
+        year: currentFyYear,
+        start: fyRange.startDate,
+        end: fyRange.endDate,
+        label: getFiscalYearLabel(currentFyYear, fySettings)
+      },
       seed_data_initialized: config['seed_data_initialized'] === '1',
       raw: config
     })
@@ -2916,17 +3058,52 @@ app.put('/api/system/config', authMiddleware, adminOnly, async (c) => {
       updated.push(`overtime_factor = ${v}`)
     }
 
+    // fiscal_year_start_month: tháng bắt đầu năm tài chính (1-12, mặc định 2)
+    if (body.fiscal_year_start_month !== undefined) {
+      const v = parseInt(body.fiscal_year_start_month)
+      if (isNaN(v) || v < 1 || v > 12) {
+        return c.json({ error: 'fiscal_year_start_month phải từ 1 đến 12' }, 400)
+      }
+      await db.prepare(
+        `INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('fiscal_year_start_month', ?, CURRENT_TIMESTAMP)`
+      ).bind(String(v)).run()
+      updated.push(`fiscal_year_start_month = ${v}`)
+    }
+
+    // fiscal_year_start_day: ngày bắt đầu năm tài chính (1-28, mặc định 1)
+    if (body.fiscal_year_start_day !== undefined) {
+      const v = parseInt(body.fiscal_year_start_day)
+      if (isNaN(v) || v < 1 || v > 28) {
+        return c.json({ error: 'fiscal_year_start_day phải từ 1 đến 28' }, 400)
+      }
+      await db.prepare(
+        `INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('fiscal_year_start_day', ?, CURRENT_TIMESTAMP)`
+      ).bind(String(v)).run()
+      updated.push(`fiscal_year_start_day = ${v}`)
+    }
+
     if (updated.length === 0) {
       return c.json({ error: 'Không có cấu hình nào được cập nhật' }, 400)
     }
 
     // Đọc lại sau khi update
     const newFactor = await getOvertimeFactor(db)
+    const newFySettings = await getFiscalYearSettings(db)
+    const fyYear = new Date().getFullYear()
+    const fyRange = getFiscalYearDateRange(fyYear, newFySettings)
     return c.json({
       success: true,
       message: `Đã cập nhật: ${updated.join(', ')}`,
       current_config: {
-        overtime_factor: newFactor
+        overtime_factor: newFactor,
+        fiscal_year_start_month: newFySettings.start_month,
+        fiscal_year_start_day: newFySettings.start_day,
+        fiscal_year_example: {
+          year: fyYear,
+          start: fyRange.startDate,
+          end: fyRange.endDate,
+          label: getFiscalYearLabel(fyYear, newFySettings)
+        }
       }
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -3726,82 +3903,113 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const OVERTIME_FACTOR = await getOvertimeFactor(db)
+    const fySettings = await getFiscalYearSettings(db)
     const { year } = c.req.query()
-    const currentYear = year || new Date().getFullYear().toString()
+    const fyYear = year ? parseInt(year) : new Date().getFullYear()
+    const currentYear = String(fyYear)
+    const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(fyYear, fySettings)
 
+    // Revenue by project trong NTC — dùng date range
     const revenueByProject = await db.prepare(`
       SELECT p.id, p.code, p.name, p.contract_value,
         COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0) as total_revenue,
         COALESCE(SUM(CASE WHEN pr.payment_status = 'pending' THEN pr.amount ELSE 0 END), 0) as pending_revenue
       FROM projects p
       LEFT JOIN project_revenues pr ON pr.project_id = p.id
-        AND strftime('%Y', pr.revenue_date) = ?
+        AND pr.revenue_date >= ? AND pr.revenue_date <= ?
       WHERE p.status != 'cancelled'
       GROUP BY p.id ORDER BY total_revenue DESC
-    `).bind(currentYear).all()
+    `).bind(fyStart, fyEnd).all()
 
-    // Other costs from project_costs (excluding salary type — covered by project_labor_costs)
+    // Other costs from project_costs trong NTC
     const costByProject = await db.prepare(`
       SELECT p.id, p.code, p.name,
         COALESCE(SUM(pc.amount), 0) as total_cost,
         pc.cost_type
       FROM projects p
       LEFT JOIN project_costs pc ON pc.project_id = p.id
-        AND strftime('%Y', pc.cost_date) = ?
+        AND pc.cost_date >= ? AND pc.cost_date <= ?
         AND pc.cost_type != 'salary'
       WHERE p.status != 'cancelled'
       GROUP BY p.id, pc.cost_type
-    `).bind(currentYear).all()
+    `).bind(fyStart, fyEnd).all()
 
-    // Labor costs: ưu tiên project_labor_costs (đã sync), fallback tính real-time từ monthly_labor_costs
-    // Dùng một SQL query lớn thay vì Promise.all nested (tránh lỗi D1 concurrent)
+    // Labor costs: ưu tiên project_labor_costs (đã sync)
+    // NTC bắc qua 2 năm lịch → cần lấy cả 2 năm
+    const fyEnd1Year = fySettings.start_month === 1 ? fyYear : fyYear + 1
+    let laborWhereSynced: string       // dùng trong JOIN ON ... (có alias plc.)
+    let laborWhereSimple: string       // dùng trong WHERE standalone (không có alias)
+    let laborParamsSynced: any[]
+    if (fySettings.start_month === 1) {
+      laborWhereSynced = `plc.year = ?`
+      laborWhereSimple = `year = ?`
+      laborParamsSynced = [fyYear]
+    } else {
+      laborWhereSynced = `((plc.year = ? AND plc.month >= ?) OR (plc.year = ? AND plc.month < ?))`
+      laborWhereSimple = `((year = ? AND month >= ?) OR (year = ? AND month < ?))`
+      laborParamsSynced = [fyYear, fySettings.start_month, fyEnd1Year, fySettings.start_month]
+    }
+
     const laborByProjectSynced = await db.prepare(`
       SELECT p.id, p.code, p.name,
         COALESCE(SUM(plc.total_labor_cost), 0) as labor_cost,
         COALESCE(SUM(plc.total_hours), 0) as total_hours,
         COUNT(DISTINCT plc.month) as months_with_data
       FROM projects p
-      LEFT JOIN project_labor_costs plc ON plc.project_id = p.id AND plc.year = ?
+      LEFT JOIN project_labor_costs plc ON plc.project_id = p.id AND ${laborWhereSynced}
       WHERE p.status NOT IN ('cancelled','completed')
       GROUP BY p.id
-    `).bind(parseInt(currentYear)).all()
+    `).bind(...laborParamsSynced).all()
 
-    // Real-time fallback via SQL: join monthly_labor_costs + timesheets per project per month
-    // Overtime x1.5: effective_hours = regular + overtime*1.5 (chỉ tính toán nội bộ)
-    // cost_per_hour = mlc.total_labor_cost / comp_eff_hours
-    // project_labor = proj_eff_hours × cost_per_hour
-    const laborRealtimeRaw = await db.prepare(`
-      SELECT p.id, p.code, p.name,
-        SUM(ROUND(proj_ts.proj_eff * 1.0 / comp_ts.comp_eff * mlc.total_labor_cost)) as rt_labor_cost,
-        SUM(proj_ts.proj_raw) as rt_hours
-      FROM projects p
-      JOIN (
-        SELECT project_id,
-               CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
-               strftime('%Y', work_date) as ts_year,
-               SUM(regular_hours + IFNULL(overtime_hours,0))       as proj_raw,
-               SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as proj_eff
-        FROM timesheets
-        WHERE strftime('%Y', work_date) = ?
-        GROUP BY project_id, ts_month, ts_year
-      ) proj_ts ON proj_ts.project_id = p.id
-      JOIN (
-        SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
-               strftime('%Y', work_date) as ts_year,
-               SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as comp_eff
-        FROM timesheets
-        WHERE strftime('%Y', work_date) = ?
-        GROUP BY ts_month, ts_year
-      ) comp_ts ON comp_ts.ts_month = proj_ts.ts_month AND comp_ts.ts_year = proj_ts.ts_year
-      JOIN monthly_labor_costs mlc ON mlc.month = proj_ts.ts_month AND mlc.year = ?
-      WHERE p.status NOT IN ('cancelled','completed') AND comp_ts.comp_eff > 0
-      GROUP BY p.id
-    `).bind(OVERTIME_FACTOR, currentYear, OVERTIME_FACTOR, currentYear, parseInt(currentYear)).all()
+    // Real-time fallback: tính từng tháng NTC (có thể bắc qua 2 năm lịch)
+    const realtimeMap: Record<number, { rt_labor_cost: number; rt_hours: number }> = {}
+    {
+      const sm = fySettings.start_month
+      const monthsInFY: Array<{ calYear: number; calMonth: number }> = []
+      for (let i = 0; i < 12; i++) {
+        const lm = ((sm - 1 + i) % 12) + 1
+        const { calYear, calMonth } = fiscalMonthToCalendar(lm, fyYear, fySettings)
+        monthsInFY.push({ calYear, calMonth })
+      }
+
+      for (const { calYear, calMonth } of monthsInFY) {
+        const calY = String(calYear)
+        const calM = String(calMonth).padStart(2, '0')
+
+        const mlcRow = await db.prepare(
+          `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+        ).bind(calMonth, calYear).first() as any
+        if (!mlcRow?.total_labor_cost) continue
+
+        const compHrsRow = await db.prepare(`
+          SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+          FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+        `).bind(OVERTIME_FACTOR, calY, calM).first() as any
+        const compEff = compHrsRow?.comp_eff || 0
+        if (compEff <= 0) continue
+
+        const cph = mlcRow.total_labor_cost / compEff
+
+        const projRows = await db.prepare(`
+          SELECT project_id,
+                 SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
+                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+          FROM timesheets
+          WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+          GROUP BY project_id
+        `).bind(OVERTIME_FACTOR, calY, calM).all()
+
+        for (const pr of (projRows.results as any[])) {
+          if ((pr.proj_raw || 0) <= 0) continue
+          const mc = Math.round((pr.proj_eff || 0) * cph)
+          if (!realtimeMap[pr.project_id]) realtimeMap[pr.project_id] = { rt_labor_cost: 0, rt_hours: 0 }
+          realtimeMap[pr.project_id].rt_labor_cost += mc
+          realtimeMap[pr.project_id].rt_hours += pr.proj_raw || 0
+        }
+      }
+    }
 
     // Merge: dùng synced nếu có, fallback realtime
-    const realtimeMap: Record<number, any> = {}
-    ;(laborRealtimeRaw.results as any[]).forEach((r: any) => { realtimeMap[r.id] = r })
-
     const laborByProject = (laborByProjectSynced.results as any[]).map((p: any) => {
       if ((p.labor_cost || 0) > 0) return { ...p, labor_source: 'synced' }
       const rt = realtimeMap[p.id]
@@ -3812,41 +4020,51 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
     })
 
     // Monthly labor costs summary — ưu tiên project_labor_costs, fallback monthly_labor_costs
+    // Bao gồm cả 2 năm lịch nếu NTC bắc qua 2 năm
     const plcMonthly = await db.prepare(`
       SELECT PRINTF('%d-%02d', year, month) as month,
         SUM(total_labor_cost) as total_cost, 'salary' as cost_type
-      FROM project_labor_costs WHERE year = ?
+      FROM project_labor_costs WHERE ${laborWhereSimple}
       GROUP BY month ORDER BY month ASC
-    `).bind(parseInt(currentYear)).all()
+    `).bind(...laborParamsSynced).all()
 
     // Nếu project_labor_costs trống, lấy từ monthly_labor_costs (tổng công ty)
     let monthlyLaborSummary = plcMonthly
     if (!plcMonthly.results?.length) {
-      monthlyLaborSummary = await db.prepare(`
-        SELECT PRINTF('%d-%02d', year, month) as month,
-          total_labor_cost as total_cost, 'salary' as cost_type
-        FROM monthly_labor_costs WHERE year = ?
-        ORDER BY month ASC
-      `).bind(parseInt(currentYear)).all()
+      if (fySettings.start_month === 1) {
+        monthlyLaborSummary = await db.prepare(`
+          SELECT PRINTF('%d-%02d', year, month) as month,
+            total_labor_cost as total_cost, 'salary' as cost_type
+          FROM monthly_labor_costs WHERE year = ?
+          ORDER BY month ASC
+        `).bind(fyYear).all()
+      } else {
+        monthlyLaborSummary = await db.prepare(`
+          SELECT PRINTF('%d-%02d', year, month) as month,
+            total_labor_cost as total_cost, 'salary' as cost_type
+          FROM monthly_labor_costs WHERE ${laborWhereSimple}
+          ORDER BY month ASC
+        `).bind(...laborParamsSynced).all()
+      }
     }
 
-    // Monthly summary: other non-salary costs from project_costs
+    // Monthly summary: other non-salary costs from project_costs trong NTC
     const monthlySummary = await db.prepare(`
       SELECT strftime('%Y-%m', cost_date) as month,
         SUM(amount) as total_cost, cost_type
       FROM project_costs
-      WHERE strftime('%Y', cost_date) = ? AND cost_type != 'salary'
+      WHERE cost_date >= ? AND cost_date <= ? AND cost_type != 'salary'
       GROUP BY month, cost_type ORDER BY month ASC
-    `).bind(currentYear).all()
+    `).bind(fyStart, fyEnd).all()
 
     const timesheetCost = await db.prepare(`
       SELECT ts.project_id, p.name as project_name, p.code as project_code,
         SUM(ts.regular_hours + ts.overtime_hours) as total_hours
       FROM timesheets ts
       JOIN projects p ON ts.project_id = p.id
-      WHERE strftime('%Y', ts.work_date) = ?
+      WHERE ts.work_date >= ? AND ts.work_date <= ?
       GROUP BY ts.project_id
-    `).bind(currentYear).all()
+    `).bind(fyStart, fyEnd).all()
 
     // Merge monthly labor into monthlySummary for complete picture
     const allMonthlyCosts = [
@@ -3855,6 +4073,10 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
     ]
 
     return c.json({
+      fiscal_year: fyYear,
+      fiscal_year_label: getFiscalYearLabel(fyYear, fySettings),
+      fiscal_year_start: fyStart,
+      fiscal_year_end: fyEnd,
       revenue_by_project: revenueByProject.results,
       cost_by_project: costByProject.results,
       labor_by_project: laborByProject,
@@ -4175,6 +4397,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const OVERTIME_FACTOR = await getOvertimeFactor(db)
+    const fySettings = await getFiscalYearSettings(db)
     const projectId = parseInt(c.req.param('id'))
     const { month, months, year, all_months } = c.req.query()
     const yInt = year ? parseInt(year) : new Date().getFullYear()
@@ -4187,25 +4410,40 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     const contractValue = project.contract_value || 0
     const validation_warnings: string[] = []
 
-    // --- Build date filters based on period type ---
-    let costDateFilter = `AND strftime('%Y', cost_date) = '${y}'`
-    let revDateFilter  = `AND strftime('%Y', revenue_date) = '${y}'`
-    let periodLabel = `Năm ${yInt}`
+    // --- Fiscal year date range ---
+    const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(yInt, fySettings)
 
+    // --- Build date filters based on period type ---
+    let costDateFilter: string
+    let revDateFilter: string
+    let periodLabel = `NTC ${yInt}`
+
+    // Determine finMonthList (logical months in NTC, 1-12)
+    let finMonthList: number[] | null = null  // null = all months in fiscal year
     if (all_months === 'true') {
-      periodLabel = `Toàn năm ${yInt}`
+      finMonthList = null
+      periodLabel = `Toàn NTC ${yInt}`
     } else if (months) {
       const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
       if (monthArr.length > 0) {
-        costDateFilter += ` AND CAST(strftime('%m', cost_date) AS INTEGER) IN (${monthArr.join(',')})`
-        revDateFilter  += ` AND CAST(strftime('%m', revenue_date) AS INTEGER) IN (${monthArr.join(',')})`
-        periodLabel = `T${monthArr.join(',')}/${yInt}`
+        finMonthList = monthArr
+        periodLabel = `T${monthArr.join(',')} NTC${yInt}`
       }
-    } else if (month) {
-      const m = String(mInt!).padStart(2, '0')
-      costDateFilter = `AND strftime('%Y', cost_date) = '${y}' AND strftime('%m', cost_date) = '${m}'`
-      revDateFilter  = `AND strftime('%Y', revenue_date) = '${y}' AND strftime('%m', revenue_date) = '${m}'`
-      periodLabel = `T${mInt}/${yInt}`
+    } else if (mInt) {
+      finMonthList = [mInt]
+      periodLabel = `T${mInt} NTC${yInt}`
+    }
+
+    if (finMonthList !== null) {
+      // Map tháng NTC → calendar date filter
+      const costMonthConds = fiscalMonthsSQLFilter(finMonthList, yInt, fySettings, 'cost_date')
+      const revMonthConds  = fiscalMonthsSQLFilter(finMonthList, yInt, fySettings, 'revenue_date')
+      costDateFilter = `AND ${costMonthConds}`
+      revDateFilter  = `AND ${revMonthConds}`
+    } else {
+      // Toàn NTC: dùng date range
+      costDateFilter = `AND cost_date >= '${fyStart}' AND cost_date <= '${fyEnd}'`
+      revDateFilter  = `AND revenue_date >= '${fyStart}' AND revenue_date <= '${fyEnd}'`
     }
 
     // --- Other costs from project_costs (excluding salary type) ---
@@ -4216,26 +4454,29 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     const totalOtherCost = (otherCosts.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
     // --- Labor cost: aggregate from project_labor_costs for the period ---
-    // Determine which months to query
-    let finMonthList: number[] | null = null  // null = all 12
-    if (all_months === 'true') {
-      finMonthList = null
-    } else if (months) {
-      const parsed = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
-      if (parsed.length > 0) finMonthList = parsed
-    } else if (mInt) {
-      finMonthList = [mInt]
-    }
-
     let laborCost = 0; let laborHours = 0; let laborPerHour = 0; let laborSource = 'none'
     let laborMonthsCount = 0
 
-    let laborWhere = `WHERE project_id = ? AND year = ?`
-    const laborParams: any[] = [projectId, yInt]
-    if (finMonthList !== null) {
-      laborWhere += ` AND month IN (${finMonthList.join(',')})`
+    // Build labor WHERE using calendar year/month mapping
+    let laborWhere = `WHERE project_id = ?`
+    const laborParams: any[] = [projectId]
+    if (finMonthList !== null && finMonthList.length > 0) {
+      const calConds = finMonthList.map(lm => {
+        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
+        return `(year = ${calYear} AND month = ${calMonth})`
+      })
+      laborWhere += ` AND (${calConds.join(' OR ')})`
+    } else {
+      // Toàn NTC: bao gồm cả 2 năm lịch nếu NTC bắc qua 2 năm
+      const fyEnd1Year = fySettings.start_month === 1 ? yInt : yInt + 1
+      if (fySettings.start_month === 1) {
+        laborWhere += ` AND year = ?`
+        laborParams.push(yInt)
+      } else {
+        laborWhere += ` AND ((year = ? AND month >= ?) OR (year = ? AND month < ?))`
+        laborParams.push(yInt, fySettings.start_month, fyEnd1Year, fySettings.start_month)
+      }
     }
-    // For null (all_months): no month filter → SUM all months in year
 
     const laborRow = await db.prepare(
       `SELECT SUM(total_labor_cost) as lc, SUM(total_hours) as hrs, AVG(cost_per_hour) as cph,
@@ -4248,49 +4489,46 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       laborMonthsCount = laborRow.m_cnt || 0
       laborSource = 'project_labor_costs'
     } else {
-      // Fallback: real-time — dùng SQL JOIN để tránh D1 concurrent bug
-      // Overtime x1.5: effective_hours = regular + overtime*1.5 (tính toán nội bộ)
-      // costPerHour từ computeMonthLaborCost = laborCostSource / comp_eff_hours
-      // project_labor = proj_eff_hours × costPerHour (KHÔNG dùng proj_raw_hours)
-      const monthsToCalc = finMonthList ?? Array.from({ length: 12 }, (_, i) => i + 1)
-      const inClause = monthsToCalc.join(',')
-
-      const rtRows = await db.prepare(`
-        SELECT
-          mlc.month,
-          COALESCE(proj_ts.proj_raw, 0) as proj_raw,
-          COALESCE(proj_ts.proj_eff, 0) as proj_eff,
-          COALESCE(comp_ts.comp_eff, 0) as comp_eff,
-          mlc.total_labor_cost          as monthly_budget
-        FROM monthly_labor_costs mlc
-        LEFT JOIN (
-          SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
-                 SUM(regular_hours + IFNULL(overtime_hours,0))       as proj_raw,
-                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as proj_eff
-          FROM timesheets
-          WHERE project_id = ? AND strftime('%Y', work_date) = ?
-            AND CAST(strftime('%m', work_date) AS INTEGER) IN (${inClause})
-          GROUP BY ts_month
-        ) proj_ts ON proj_ts.ts_month = mlc.month
-        LEFT JOIN (
-          SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
-                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as comp_eff
-          FROM timesheets
-          WHERE strftime('%Y', work_date) = ?
-            AND CAST(strftime('%m', work_date) AS INTEGER) IN (${inClause})
-          GROUP BY ts_month
-        ) comp_ts ON comp_ts.ts_month = mlc.month
-        WHERE mlc.year = ? AND mlc.month IN (${inClause}) AND comp_eff > 0
-      `).bind(OVERTIME_FACTOR, projectId, y, OVERTIME_FACTOR, y, yInt).all()
+      // Fallback: real-time — tính từng tháng vì có thể bắc qua 2 năm lịch
+      const monthsToCalc = finMonthList ?? (() => {
+        const sm = fySettings.start_month
+        return Array.from({ length: 12 }, (_, i) => ((sm - 1 + i) % 12) + 1)
+      })()
 
       let rtTotal = 0; let rtHours = 0; let rtCphSum = 0; let rtMonths = 0
-      ;(rtRows.results as any[]).forEach((r: any) => {
-        const cph = r.comp_eff > 0 ? r.monthly_budget / r.comp_eff : 0
-        const mc  = Math.round((r.proj_eff || 0) * cph)
-        if (r.proj_raw > 0) {
-          rtTotal += mc; rtHours += r.proj_raw; rtCphSum += cph; rtMonths++
-        }
-      })
+
+      for (const lm of monthsToCalc) {
+        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
+        const calY = String(calYear)
+        const calM = String(calMonth).padStart(2, '0')
+
+        const mlcRow = await db.prepare(
+          `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+        ).bind(calMonth, calYear).first() as any
+        if (!mlcRow?.total_labor_cost) continue
+
+        const projHrsRow = await db.prepare(`
+          SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
+                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+          FROM timesheets
+          WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+        `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
+
+        const compHrsRow = await db.prepare(`
+          SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+          FROM timesheets
+          WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+        `).bind(OVERTIME_FACTOR, calY, calM).first() as any
+
+        const projRaw = projHrsRow?.proj_raw || 0
+        const projEff = projHrsRow?.proj_eff || 0
+        const compEff = compHrsRow?.comp_eff || 0
+        if (projRaw <= 0 || compEff <= 0) continue
+
+        const cph = mlcRow.total_labor_cost / compEff
+        const mc  = Math.round(projEff * cph)
+        rtTotal += mc; rtHours += projRaw; rtCphSum += cph; rtMonths++
+      }
 
       if (rtTotal > 0) {
         laborCost = rtTotal; laborHours = rtHours
@@ -4306,8 +4544,6 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     }
 
     // --- Revenue (chỉ paid + partial) ---
-    // FIX: Doanh thu thực tế CHỈ từ project_revenues đã thanh toán
-    // Chờ TT (pending) chưa về tài khoản → không tính là doanh thu
     const revenues = await db.prepare(
       `SELECT
          SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total,

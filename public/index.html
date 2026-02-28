@@ -888,16 +888,19 @@
             </div>
             <button id="btnAddSharedCost" onclick="openSharedCostModal()" class="hidden btn-warning flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Thêm chi phí chung</button>
           </div>
-          <div id="costFilter" class="flex gap-3 mb-4 flex-wrap">
+          <div id="costFilter" class="flex gap-3 mb-4 flex-wrap items-center">
             <select id="costProjectFilter" class="select-field" style="width:180px" onchange="loadCosts()">
               <option value="">Tất cả dự án</option>
             </select>
-            <select id="costYearFilter" class="select-field" style="width:100px" onchange="loadCostDashboard()">
-              <option value="2024">2024</option>
-              <option value="2025">2025</option>
-              <option value="2026" selected>2026</option>
-              <option value="2027">2027</option>
-            </select>
+            <div class="flex items-center gap-2">
+              <select id="costYearFilter" class="select-field" style="width:100px" onchange="loadCostDashboard()">
+                <option value="2024">NTC 2024</option>
+                <option value="2025">NTC 2025</option>
+                <option value="2026" selected>NTC 2026</option>
+                <option value="2027">NTC 2027</option>
+              </select>
+              <span id="fyPeriodLabel" class="text-xs text-gray-500 bg-green-50 border border-green-200 rounded px-2 py-1 whitespace-nowrap"></span>
+            </div>
           </div>
 
           <!-- Tab: Chi phí / Doanh thu (existing table) -->
@@ -1811,6 +1814,58 @@
           </div>
         </div>
 
+        <!-- Fiscal Year Config -->
+        <div class="card mb-6">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center">
+              <i class="fas fa-calendar-alt text-green-600 text-lg"></i>
+            </div>
+            <div>
+              <h2 class="font-semibold text-gray-800">Cấu hình Năm tài chính (NTC)</h2>
+              <p class="text-sm text-gray-500">Xác định ngày bắt đầu và kết thúc của năm tài chính. Mặc định: 01/02 – 31/01 năm sau.</p>
+            </div>
+          </div>
+
+          <div class="bg-green-50 rounded-lg p-4 mb-4 text-sm text-green-800">
+            <i class="fas fa-info-circle mr-2"></i>
+            <strong>Ví dụ:</strong> NTC bắt đầu tháng 2 → NTC 2026 = <strong>01/02/2026 – 31/01/2027</strong><br>
+            <span class="ml-5">NTC 2026 gồm: T2, T3, ..., T12/2026 và T1/2027</span>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Tháng bắt đầu NTC</label>
+              <div class="flex items-center gap-3">
+                <select id="fyStartMonthInput" class="input-field flex-1">
+                  <option value="1">Tháng 1 (Năm dương lịch)</option>
+                  <option value="2" selected>Tháng 2 (Mặc định)</option>
+                  <option value="3">Tháng 3</option>
+                  <option value="4">Tháng 4</option>
+                  <option value="5">Tháng 5</option>
+                  <option value="6">Tháng 6</option>
+                  <option value="7">Tháng 7</option>
+                  <option value="8">Tháng 8</option>
+                  <option value="9">Tháng 9</option>
+                  <option value="10">Tháng 10</option>
+                  <option value="11">Tháng 11</option>
+                  <option value="12">Tháng 12</option>
+                </select>
+                <button onclick="saveFiscalYearConfig()" class="btn-primary flex items-center gap-2 whitespace-nowrap">
+                  <i class="fas fa-save"></i>Lưu
+                </button>
+              </div>
+              <p class="text-xs text-gray-400 mt-1">Chọn tháng bắt đầu năm tài chính (1–12)</p>
+            </div>
+
+            <div class="bg-gray-50 rounded-lg p-4">
+              <p class="text-sm font-medium text-gray-700 mb-3">NTC hiện tại:</p>
+              <div id="fyExample" class="text-sm text-gray-600 space-y-1">
+                <!-- Filled by JS -->
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Config History / Notes -->
         <div class="card">
           <h3 class="font-semibold text-gray-800 mb-3">
@@ -1822,12 +1877,16 @@
               <span>Thay đổi hệ số tăng ca sẽ ảnh hưởng đến tất cả <strong>tính toán real-time</strong> (chưa sync). Dữ liệu đã sync trong bảng <code>project_labor_costs</code> sẽ không thay đổi tự động.</span>
             </div>
             <div class="flex items-start gap-2">
+              <i class="fas fa-calendar-alt text-green-500 mt-0.5 flex-shrink-0"></i>
+              <span>Thay đổi <strong>Năm tài chính</strong> sẽ ảnh hưởng đến cách lọc dữ liệu trên toàn hệ thống. Dữ liệu cũ trong DB không thay đổi, chỉ thay đổi cách query.</span>
+            </div>
+            <div class="flex items-start gap-2">
               <i class="fas fa-sync text-blue-500 mt-0.5 flex-shrink-0"></i>
-              <span>Sau khi thay đổi, hãy vào <strong>Chi phí lương</strong> và nhấn <strong>Sync dữ liệu</strong> để tính lại chi phí lương cho tất cả dự án.</span>
+              <span>Sau khi thay đổi NTC, hãy vào <strong>Chi phí lương</strong> và nhấn <strong>Sync dữ liệu</strong> để tính lại chi phí lương cho tất cả dự án.</span>
             </div>
             <div class="flex items-start gap-2">
               <i class="fas fa-check-circle text-green-500 mt-0.5 flex-shrink-0"></i>
-              <span>Hệ số được lưu trong database và có hiệu lực ngay lập tức với mọi yêu cầu tính toán mới.</span>
+              <span>Cấu hình được lưu trong database và có hiệu lực ngay lập tức với mọi yêu cầu tính toán mới.</span>
             </div>
           </div>
         </div>
