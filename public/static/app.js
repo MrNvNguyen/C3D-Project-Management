@@ -2092,6 +2092,13 @@ async function loadCostAnalysis() {
     const totalVal = fin.costs?.total?.value || 0
     const profitVal = fin.profit?.value ?? 0
     const margin   = fin.profit?.percentage
+    const anaPeriodLabel = data.period?.label || ''
+    const anaPeriodType2 = data.period?.type || 'single_month'
+    const isMultiPeriod0 = anaPeriodType2 === 'all_months' || anaPeriodType2 === 'multiple_months'
+
+    // Update dynamic labels to reflect period type
+    if ($('anaRevenueLabel')) $('anaRevenueLabel').textContent = isMultiPeriod0 ? `Doanh thu (${anaPeriodLabel})` : 'Doanh thu tháng'
+    if ($('anaRevenueSubLabel')) $('anaRevenueSubLabel').textContent = isMultiPeriod0 ? 'Tổng thực thu các tháng' : 'Thực thu trong tháng'
 
     $('anaRevenue').textContent   = fmtMoney(revVal)
     $('anaLaborCost').textContent = fmtMoney(laborVal)
@@ -3211,8 +3218,22 @@ function onFinPeriodTypeChange() {
   const sc = $('finSingleMonthCtrl'); const mc = $('finMultiMonthCtrl')
   if (sc) sc.classList.toggle('hidden', pt !== 'single')
   if (mc) mc.classList.toggle('hidden', pt !== 'multi')
-  // Auto-reload (unless multi which needs checkbox selection)
+  // Reset checkboxes & hide Apply button when switching to multi
+  if (pt === 'multi') {
+    document.querySelectorAll('.finMonthCheck').forEach(cb => cb.checked = false)
+    const btn = $('finMultiApplyBtn'); if (btn) btn.classList.add('hidden')
+  }
+  // Auto-reload (unless multi which needs checkbox selection first)
   if (pt !== 'multi') loadFinanceProject()
+}
+
+// Called whenever a finMonthCheck checkbox changes
+function onFinMonthCheckChange() {
+  const checked = [...document.querySelectorAll('.finMonthCheck:checked')]
+  const btn = $('finMultiApplyBtn')
+  if (btn) btn.classList.toggle('hidden', checked.length === 0)
+  // Auto-load if at least 1 month selected
+  if (checked.length > 0) loadFinanceProject()
 }
 
 async function loadFinanceProject() {
@@ -3271,11 +3292,15 @@ async function loadFinanceProject() {
     const profitColor = validation?.profit_status === 'ok' ? 'text-purple-600' : validation?.profit_status === 'warning' ? 'text-amber-600' : (validation?.profit_status === 'no_revenue' || validation?.profit_status === 'no_data') ? 'text-gray-400' : 'text-red-600'
     const profitBorder = validation?.profit_status === 'ok' ? '#8B5CF6' : validation?.profit_status === 'warning' ? '#F59E0B' : (validation?.profit_status === 'no_revenue' || validation?.profit_status === 'no_data') ? '#9CA3AF' : '#EF4444'
 
-    // Period label
-    let periodLabel = ''
-    if (periodType === 'all') periodLabel = `Toàn năm ${yf}`
-    else if (periodType === 'multi') periodLabel = `Nhiều tháng ${yf}`
-    else { const mf = $('finMonthFilter')?.value; periodLabel = mf ? `T${parseInt(mf)}/${yf}` : `Năm ${yf}` }
+    // Period label — use server-returned label for accuracy
+    let periodLabel = data.period?.label || ''
+    if (!periodLabel) {
+      if (periodType === 'all') periodLabel = `Toàn NTC ${yf}`
+      else if (periodType === 'multi') {
+        const checked = [...document.querySelectorAll('.finMonthCheck:checked')].map(el => el.value)
+        periodLabel = `T${checked.join(',')} NTC${yf}`
+      } else { const mf = $('finMonthFilter')?.value; periodLabel = mf ? `T${parseInt(mf)} NTC${yf}` : `NTC ${yf}` }
+    }
 
     // Revenue progress vs contract
     const revenueProgress = project.contract_value > 0 ? Math.min(100, Math.round(summary.total_revenue / project.contract_value * 100)) : 0
