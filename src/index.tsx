@@ -1993,7 +1993,8 @@ app.delete('/api/projects/:id/labor-costs/duplicates', authMiddleware, adminOnly
 })
 
 // GET /api/financial-summary/labor-costs-all-projects — aggregate across projects
-// Ưu tiên project_labor_costs (synced). Fallback real-time nếu rỗng (overtime x1.5).
+// Logic HYBRID từng tháng: ưu tiên project_labor_costs (synced), fallback real-time.
+// Cộng dồn từng tháng → đúng kể cả khi chỉ sync 1 phần tháng.
 app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
@@ -2002,110 +2003,123 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
     const yInt = year ? parseInt(year) : new Date().getFullYear()
     const y    = String(yInt)
 
-    // Xác định danh sách tháng cần tính
+    // Xác định danh sách tháng dương lịch cần tính (1-12)
     let monthList: number[] | null = null   // null = tất cả 12 tháng
     if (all_months !== 'true' && months) {
       const parsed = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
       if (parsed.length > 0) monthList = parsed
     }
     const monthsToUse: number[] = monthList ?? Array.from({ length: 12 }, (_, i) => i + 1)
-    const inClause = monthsToUse.join(',')
 
-    // ── Bước 1: Lấy từ project_labor_costs (cached/synced) ──────────
-    // avg_cost_per_hour = total_labor_cost / SUM(eff_hours) để nhất quán với real-time
-    // project_labor_costs lưu cost_per_hour = budget / comp_eff_hours, ko phải lc/proj_eff
-    // Do đó: avg_cph đúng = SUM(total_labor_cost) / SUM(total_hours) khi total_hours là eff_hours
-    // (computeMonthLaborCost lưu total_hours là raw hours — ta tính lại từ cost_per_hour)
-    const syncedRows = await db.prepare(`
-      SELECT p.id as project_id, p.code as project_code, p.name as project_name,
-             SUM(plc.total_labor_cost) as total_labor_cost,
-             SUM(plc.total_hours)      as total_hours,
-             SUM(plc.total_labor_cost) * 1.0 / NULLIF(SUM(plc.total_labor_cost / NULLIF(plc.cost_per_hour, 0)), 0) as avg_cost_per_hour,
-             COUNT(DISTINCT plc.month) as months_count
-      FROM project_labor_costs plc
-      JOIN projects p ON plc.project_id = p.id
-      WHERE plc.year = ? AND plc.month IN (${inClause})
-      GROUP BY p.id, p.code, p.name
-      ORDER BY total_labor_cost DESC
-    `).bind(yInt).all()
+    // ── Tổng ngân sách đã nhập (monthly_labor_costs) cho kỳ này ─────
+    const poolInClause = monthsToUse.join(',')
+    const poolRow = await db.prepare(
+      `SELECT COALESCE(SUM(total_labor_cost), 0) as pool_total
+       FROM monthly_labor_costs
+       WHERE year = ? AND month IN (${poolInClause})`
+    ).bind(yInt).first() as any
+    const poolTotal: number = poolRow?.pool_total || 0
 
-    let projectsArr = syncedRows.results as any[]
-    let dataSource = 'synced'
+    // ── HYBRID: tính từng tháng, mỗi tháng ưu tiên synced rồi fallback real-time ──
+    // projectMap: { project_id → { ..., total_labor_cost, total_hours, _eff_hours, months_count } }
+    const projectMap: Record<number, any> = {}
+    let hasSynced = false, hasRealtime = false
+    let grandEffHours = 0
 
-    // ── Bước 2: Real-time fallback nếu không có cached data ─────────
-    // Dùng SQL JOIN một lần (tránh D1 concurrent bug & sequential loop)
-    // Overtime x1.5: proj_eff = regular + overtime*1.5 (tính nội bộ)
-    // cost_per_hour = monthly_budget / comp_eff_hours  (KHÔNG chia raw_hours)
-    // project_labor = proj_eff × cost_per_hour
-    // avg_cost_per_hour = total_labor_cost / total_eff_hours  (KHÔNG chia raw_hours)
-    if (projectsArr.length === 0) {
-      const rtRows = await db.prepare(`
+    for (const calMonth of monthsToUse) {
+      const calM = String(calMonth).padStart(2, '0')
+
+      // 1. Kiểm tra project_labor_costs (synced) cho tháng này
+      const syncedRows = await db.prepare(`
         SELECT p.id as project_id, p.code as project_code, p.name as project_name,
-          SUM(ROUND(
-            CASE WHEN comp_ts.comp_eff > 0
-              THEN proj_ts.proj_eff * 1.0 / comp_ts.comp_eff * mlc.total_labor_cost
-              ELSE 0
-            END
-          ))                                  as total_labor_cost,
-          SUM(COALESCE(proj_ts.proj_raw, 0))  as total_hours,
-          SUM(COALESCE(proj_ts.proj_eff, 0))  as total_eff_hours,
-          COUNT(DISTINCT proj_ts.ts_month)    as months_count
-        FROM projects p
-        JOIN (
-          SELECT project_id,
-                 CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
-                 SUM(regular_hours + IFNULL(overtime_hours,0))       as proj_raw,
-                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as proj_eff
-          FROM timesheets
-          WHERE strftime('%Y', work_date) = ?
-            AND CAST(strftime('%m', work_date) AS INTEGER) IN (${inClause})
-          GROUP BY project_id, ts_month
-        ) proj_ts ON proj_ts.project_id = p.id
-        JOIN (
-          SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
-                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?)   as comp_eff
-          FROM timesheets
-          WHERE strftime('%Y', work_date) = ?
-            AND CAST(strftime('%m', work_date) AS INTEGER) IN (${inClause})
-          GROUP BY ts_month
-        ) comp_ts ON comp_ts.ts_month = proj_ts.ts_month
-        JOIN monthly_labor_costs mlc
-          ON mlc.month = proj_ts.ts_month AND mlc.year = ?
-        WHERE p.status NOT IN ('cancelled','completed') AND comp_ts.comp_eff > 0
-        GROUP BY p.id, p.code, p.name
-        HAVING total_labor_cost > 0
-        ORDER BY total_labor_cost DESC
-      `).bind(OVERTIME_FACTOR, y, OVERTIME_FACTOR, y, yInt).all()
+               plc.total_labor_cost, plc.total_hours, plc.cost_per_hour
+        FROM project_labor_costs plc
+        JOIN projects p ON plc.project_id = p.id
+        WHERE plc.year = ? AND plc.month = ?
+      `).bind(yInt, calMonth).all()
 
-      if ((rtRows.results as any[]).length > 0) {
-        projectsArr = (rtRows.results as any[]).map((r: any) => {
-          const lc      = Math.round(r.total_labor_cost || 0)
-          const effHrs  = r.total_eff_hours  || 0   // giờ quy đổi (OT×1.5) — mẫu chia
-          const rawHrs  = r.total_hours      || 0   // giờ thực — để hiển thị
-          // Lưu lại eff_hours để tính grand_avg_cost_per_hour chính xác
-          return { ...r, total_labor_cost: lc, total_hours: rawHrs, _eff_hours: effHrs }
-        })
-        dataSource = 'realtime'
+      if ((syncedRows.results as any[]).length > 0) {
+        hasSynced = true
+        for (const row of syncedRows.results as any[]) {
+          const pid = row.project_id
+          if (!projectMap[pid]) projectMap[pid] = { project_id: pid, project_code: row.project_code, project_name: row.project_name, total_labor_cost: 0, total_hours: 0, _eff_hours: 0, months_count: 0 }
+          projectMap[pid].total_labor_cost += row.total_labor_cost || 0
+          projectMap[pid].total_hours      += row.total_hours      || 0
+          // eff_hours ≈ total_labor_cost / cost_per_hour (synced lưu raw hours nên tính lại)
+          const effH = row.cost_per_hour > 0 ? (row.total_labor_cost / row.cost_per_hour) : (row.total_hours || 0)
+          projectMap[pid]._eff_hours += effH
+          grandEffHours += effH
+          projectMap[pid].months_count++
+        }
+        continue
+      }
+
+      // 2. Fallback real-time: monthly_labor_costs + timesheets
+      const mlcRow = await db.prepare(
+        `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+      ).bind(calMonth, yInt).first() as any
+      if (!mlcRow?.total_labor_cost) continue
+
+      // Lấy eff-hours của toàn công ty tháng này
+      const compHrsRow = await db.prepare(`
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+        FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+      `).bind(OVERTIME_FACTOR, y, calM).first() as any
+      const compEff = compHrsRow?.comp_eff || 0
+      if (compEff <= 0) continue
+
+      const cph = mlcRow.total_labor_cost / compEff
+
+      // Lấy hours từng dự án tháng này
+      const projRows = await db.prepare(`
+        SELECT project_id,
+               SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
+               SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+        FROM timesheets
+        WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+        GROUP BY project_id
+        HAVING proj_raw > 0
+      `).bind(OVERTIME_FACTOR, y, calM).all()
+
+      if ((projRows.results as any[]).length === 0) continue
+      hasRealtime = true
+
+      // Lấy thông tin project
+      const projIds = (projRows.results as any[]).map((r: any) => r.project_id)
+      const projInfoRows = await db.prepare(
+        `SELECT id, code, name FROM projects WHERE id IN (${projIds.join(',')})`
+      ).all()
+      const projInfoMap: Record<number, any> = {}
+      for (const p of projInfoRows.results as any[]) projInfoMap[p.id] = p
+
+      for (const row of projRows.results as any[]) {
+        const pid = row.project_id
+        const projRaw = row.proj_raw || 0
+        const projEff = row.proj_eff || 0
+        if (projRaw <= 0) continue
+        const mc = Math.round(projEff * cph)
+        if (!projectMap[pid]) {
+          const pi = projInfoMap[pid]
+          if (!pi) continue
+          projectMap[pid] = { project_id: pid, project_code: pi.code, project_name: pi.name, total_labor_cost: 0, total_hours: 0, _eff_hours: 0, months_count: 0 }
+        }
+        projectMap[pid].total_labor_cost += mc
+        projectMap[pid].total_hours      += projRaw
+        projectMap[pid]._eff_hours       += projEff
+        grandEffHours += projEff
+        projectMap[pid].months_count++
       }
     }
 
-    const grandTotal     = projectsArr.reduce((s: number, r: any) => s + (r.total_labor_cost || 0), 0)
-    const grandRawHours  = projectsArr.reduce((s: number, r: any) => s + (r.total_hours || 0), 0)
-    const grandEffHours  = projectsArr.reduce((s: number, r: any) => s + (r._eff_hours || 0), 0)
+    const projectsArr = Object.values(projectMap)
+      .filter((r: any) => r.total_labor_cost > 0)
+      .sort((a: any, b: any) => b.total_labor_cost - a.total_labor_cost)
 
-    // grand_avg_cost_per_hour = grand_total_labor_cost / grand_total_eff_hours
-    // Cách này cho kết quả nhất quán với single-month (budget / comp_eff_hours)
-    // khi tất cả dự án trong cùng tháng dùng cùng costPerHour
-    // Với nhiều tháng: đây là chi phí bình quân gia quyền (weighted average)
-    let grandAvgCph = 0
-    if (grandEffHours > 0) {
-      grandAvgCph = grandTotal / grandEffHours
-    } else if (projectsArr.length > 0) {
-      // Fallback: synced data không có _eff_hours → tính từ avg_cost_per_hour weighted
-      const totalLc = projectsArr.reduce((s: number, r: any) => s + (r.total_labor_cost || 0), 0)
-      // Với synced: avg_cost_per_hour đã = SUM(lc)/SUM(lc/cph) nên chỉ cần lấy của row đầu tiên
-      grandAvgCph = projectsArr[0].avg_cost_per_hour || 0
-    }
+    const grandTotal    = projectsArr.reduce((s: number, r: any) => s + (r.total_labor_cost || 0), 0)
+    const grandRawHours = projectsArr.reduce((s: number, r: any) => s + (r.total_hours || 0), 0)
+    const grandAvgCph   = grandEffHours > 0 ? grandTotal / grandEffHours : 0
+
+    const dataSource = hasSynced && hasRealtime ? 'mixed' : hasSynced ? 'synced' : hasRealtime ? 'realtime' : 'none'
 
     // Xóa field nội bộ _eff_hours trước khi trả về
     const projectsOut = projectsArr.map((r: any) => {
@@ -2122,7 +2136,10 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       grand_total_hours: grandRawHours,
       grand_total_eff_hours: Math.round(grandEffHours),
       grand_avg_cost_per_hour: Math.round(grandAvgCph),
-      projects_count: projectsArr.length
+      projects_count: projectsArr.length,
+      // Tổng ngân sách lương đã nhập (monthly_labor_costs pool)
+      pool_total: Math.round(poolTotal),
+      months_included: monthsToUse
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })

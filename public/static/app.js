@@ -3745,8 +3745,28 @@ async function loadLaborCost() {
       const aggData = await api(aggUrl)
       // Yearly totals card
       if ($('laborYearlyTitle')) $('laborYearlyTitle').textContent = periodType === 'all' ? `Tổng hợp cả năm ${year}` : `Tổng hợp các tháng đã chọn (${year})`
+      // Hiển thị số tháng có dữ liệu
+      const monthsWithData = (aggData.months_included || []).filter(m => {
+        // Kiểm tra tháng nào có trong monthly_labor_costs pool
+        return true // pool_total đã tính tất cả
+      })
       if ($('laborYearlySubtitle')) $('laborYearlySubtitle').textContent = `${aggData.projects_count} dự án có dữ liệu`
-      if ($('laborYearlyTotalCost')) $('laborYearlyTotalCost').textContent = fmtMoney(aggData.grand_total_labor_cost)
+      // Ưu tiên pool_total (tổng đã nhập) làm tổng hiển thị, fallback grand_total
+      const displayTotal = aggData.pool_total > 0 ? aggData.pool_total : aggData.grand_total_labor_cost
+      if ($('laborYearlyTotalCost')) {
+        $('laborYearlyTotalCost').textContent = fmtMoney(displayTotal)
+        // Nếu pool_total khác grand_total → hiển thị ghi chú
+        const diff = displayTotal - aggData.grand_total_labor_cost
+        const diffEl = $('laborYearlyPoolDiff')
+        if (diffEl) {
+          if (aggData.pool_total > 0 && Math.abs(diff) > 0) {
+            diffEl.textContent = `Đã phân bổ: ${fmtMoney(aggData.grand_total_labor_cost)}`
+            diffEl.classList.remove('hidden')
+          } else {
+            diffEl.classList.add('hidden')
+          }
+        }
+      }
 
       // For per-project totals calculate aggregate hours & avg rate
       const projs = aggData.projects || []
@@ -3812,18 +3832,40 @@ async function loadLaborCost() {
         })
       }
 
-      // KPI cards
-      if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(aggData.grand_total_labor_cost)
+      // KPI cards — dùng pool_total (tổng lương đã nhập) làm KPI chính
+      const kpiTotal = aggData.pool_total > 0 ? aggData.pool_total : aggData.grand_total_labor_cost
+      if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(kpiTotal)
       if ($('laborKpiSource'))   $('laborKpiSource').textContent   = periodType === 'all' ? `🗓️ Cả năm ${year}` : `📆 Nhiều tháng ${year}`
       if ($('laborKpiHours'))    $('laborKpiHours').textContent    = fmt(totalHrs) + 'h'
       if ($('laborKpiRate'))     $('laborKpiRate').textContent     = fmtMoney(Math.round(avgRate)) + '/h'
       if ($('laborKpiProjects')) $('laborKpiProjects').textContent = aggData.projects_count || 0
 
-      // Monthly breakdown table (for "all months" mode fetch first project's yearly detail)
-      if (periodType === 'all' && projs.length > 0) {
-        $('laborMonthlyTableWrap')?.classList.remove('hidden')
-        // Use the monthly breakdown from project-level API for the first project as reference
-        // Actually, fill the per-project table already handled above
+      // Monthly breakdown table — fetch monthly_labor_costs cho kỳ này
+      const monthlyBreakTbody = $('laborMonthlyBreakdownTable')
+      if (monthlyBreakTbody && aggData.months_included?.length > 0) {
+        try {
+          const monthsParam = aggData.months_included.join(',')
+          const mlcList = await api(`/monthly-labor-costs`)
+          const mlcMap = {}
+          for (const r of mlcList) mlcMap[`${r.month}-${r.year}`] = r
+
+          const rows = aggData.months_included.map(m => {
+            const key = `${m}-${year}`
+            const entry = mlcMap[key]
+            const monthName = ['','T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12'][m]
+            if (!entry) return `<tr class="border-b border-blue-100"><td class="py-1 pr-3 text-blue-700">${monthName}/${year}</td><td colspan="3" class="py-1 text-xs text-gray-400 text-center">Chưa nhập</td></tr>`
+            // Tìm proj phân bổ tháng này từ synced hoặc realtime
+            const cph = aggData.grand_avg_cost_per_hour || 0
+            return `<tr class="border-b border-blue-100">
+              <td class="py-1 pr-3 font-medium text-blue-700">${monthName}/${year}</td>
+              <td class="py-1 pr-3 text-right">—</td>
+              <td class="py-1 pr-3 text-right text-purple-600">${cph > 0 ? fmtMoney(Math.round(cph)) + '/h' : '—'}</td>
+              <td class="py-1 text-right font-semibold text-green-700">${fmtMoney(entry.total_labor_cost)}</td>
+            </tr>`
+          }).join('')
+          monthlyBreakTbody.innerHTML = rows
+          $('laborMonthlyTableWrap')?.classList.remove('hidden')
+        } catch(e2) { /* ignore monthly breakdown errors */ }
       }
       return
     } catch(e) { toast('Lỗi tải dữ liệu tổng hợp: ' + e.message, 'error'); return }
