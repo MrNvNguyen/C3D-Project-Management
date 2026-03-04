@@ -3744,12 +3744,20 @@ async function loadLaborCost() {
     try {
       const aggData = await api(aggUrl)
       // Yearly totals card
-      if ($('laborYearlyTitle')) $('laborYearlyTitle').textContent = periodType === 'all' ? `Tổng hợp cả năm ${year}` : `Tổng hợp các tháng đã chọn (${year})`
-      // Hiển thị số tháng có dữ liệu
-      const monthsWithData = (aggData.months_included || []).filter(m => {
-        // Kiểm tra tháng nào có trong monthly_labor_costs pool
-        return true // pool_total đã tính tất cả
-      })
+      const fyStartM = aggData.fiscal_year_start_month || 2
+      // NTC {year}: T1 (tháng fyStartM/{year}) đến T12 (tháng trước fyStartM/{year+1})
+      const fyEndM = fyStartM === 1 ? 12 : fyStartM - 1
+      const fyEndY = fyStartM === 1 ? parseInt(year) : parseInt(year) + 1
+      const calPairsForLabel = aggData.cal_pairs || []
+      let fyLabel
+      if (periodType === 'all') {
+        fyLabel = `Tổng hợp NTC ${year} (T1=${fyStartM}/${year} → T12=${fyEndM}/${fyEndY})`
+      } else {
+        // Hiển thị các tháng dương lịch đã chọn
+        const mLabels = calPairsForLabel.map(p => `${p.calMonth}/${p.calYear}`).join(', ')
+        fyLabel = `Tổng hợp tháng: ${mLabels}`
+      }
+      if ($('laborYearlyTitle')) $('laborYearlyTitle').textContent = fyLabel
       if ($('laborYearlySubtitle')) $('laborYearlySubtitle').textContent = `${aggData.projects_count} dự án có dữ liệu`
       // Ưu tiên pool_total (tổng đã nhập) làm tổng hiển thị, fallback grand_total
       const displayTotal = aggData.pool_total > 0 ? aggData.pool_total : aggData.grand_total_labor_cost
@@ -3835,29 +3843,39 @@ async function loadLaborCost() {
       // KPI cards — dùng pool_total (tổng lương đã nhập) làm KPI chính
       const kpiTotal = aggData.pool_total > 0 ? aggData.pool_total : aggData.grand_total_labor_cost
       if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(kpiTotal)
-      if ($('laborKpiSource'))   $('laborKpiSource').textContent   = periodType === 'all' ? `🗓️ Cả năm ${year}` : `📆 Nhiều tháng ${year}`
+      if ($('laborKpiSource'))   $('laborKpiSource').textContent   = periodType === 'all' ? `🗓️ NTC ${year}` : `📆 Nhiều tháng NTC ${year}`
       if ($('laborKpiHours'))    $('laborKpiHours').textContent    = fmt(totalHrs) + 'h'
       if ($('laborKpiRate'))     $('laborKpiRate').textContent     = fmtMoney(Math.round(avgRate)) + '/h'
       if ($('laborKpiProjects')) $('laborKpiProjects').textContent = aggData.projects_count || 0
 
-      // Monthly breakdown table — fetch monthly_labor_costs cho kỳ này
+      // Monthly breakdown table — dùng cal_pairs từ API (đã convert fiscal→calendar)
       const monthlyBreakTbody = $('laborMonthlyBreakdownTable')
-      if (monthlyBreakTbody && aggData.months_included?.length > 0) {
+      const calPairsData = aggData.cal_pairs || []
+      if (monthlyBreakTbody && calPairsData.length > 0) {
         try {
-          const monthsParam = aggData.months_included.join(',')
           const mlcList = await api(`/monthly-labor-costs`)
           const mlcMap = {}
           for (const r of mlcList) mlcMap[`${r.month}-${r.year}`] = r
 
-          const rows = aggData.months_included.map(m => {
-            const key = `${m}-${year}`
+          const rows = calPairsData.map(p => {
+            const key = `${p.calMonth}-${p.calYear}`
             const entry = mlcMap[key]
-            const monthName = ['','T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12'][m]
-            if (!entry) return `<tr class="border-b border-blue-100"><td class="py-1 pr-3 text-blue-700">${monthName}/${year}</td><td colspan="3" class="py-1 text-xs text-gray-400 text-center">Chưa nhập</td></tr>`
-            // Tìm proj phân bổ tháng này từ synced hoặc realtime
+            // Dùng fiscalIdx (T1..T12) làm nhãn NTC, kèm tháng dương lịch để rõ ràng
+            const ntcLabel = `T${p.fiscalIdx}`
+            const calLabel = `(${p.calMonth}/${p.calYear})`
             const cph = aggData.grand_avg_cost_per_hour || 0
+            if (!entry) return `<tr class="border-b border-blue-100">
+              <td class="py-1 pr-3">
+                <span class="font-medium text-blue-700">${ntcLabel}</span>
+                <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
+              </td>
+              <td colspan="3" class="py-1 text-xs text-gray-400 text-center">Chưa nhập</td>
+            </tr>`
             return `<tr class="border-b border-blue-100">
-              <td class="py-1 pr-3 font-medium text-blue-700">${monthName}/${year}</td>
+              <td class="py-1 pr-3">
+                <span class="font-medium text-blue-700">${ntcLabel}</span>
+                <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
+              </td>
               <td class="py-1 pr-3 text-right">—</td>
               <td class="py-1 pr-3 text-right text-purple-600">${cph > 0 ? fmtMoney(Math.round(cph)) + '/h' : '—'}</td>
               <td class="py-1 text-right font-semibold text-green-700">${fmtMoney(entry.total_labor_cost)}</td>

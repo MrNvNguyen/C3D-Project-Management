@@ -1494,19 +1494,19 @@
             </div>
             <!-- Multi-month mode (hidden by default) -->
             <div id="laborMultiControls" class="hidden flex flex-wrap gap-1" style="max-width:380px">
-              <span class="text-xs text-gray-500 self-center mr-1">Chọn tháng:</span>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 1"><input type="checkbox" class="laborMonthCheck" value="1">T1</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 2"><input type="checkbox" class="laborMonthCheck" value="2">T2</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 3"><input type="checkbox" class="laborMonthCheck" value="3">T3</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 4"><input type="checkbox" class="laborMonthCheck" value="4">T4</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 5"><input type="checkbox" class="laborMonthCheck" value="5">T5</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 6"><input type="checkbox" class="laborMonthCheck" value="6">T6</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 7"><input type="checkbox" class="laborMonthCheck" value="7">T7</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 8"><input type="checkbox" class="laborMonthCheck" value="8">T8</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 9"><input type="checkbox" class="laborMonthCheck" value="9">T9</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 10"><input type="checkbox" class="laborMonthCheck" value="10">T10</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 11"><input type="checkbox" class="laborMonthCheck" value="11">T11</label>
-              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 12"><input type="checkbox" class="laborMonthCheck" value="12">T12</label>
+              <span class="text-xs text-gray-500 self-center mr-1">Chọn tháng lịch:</span>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 1 (Tháng 1 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="1" onchange="loadLaborCost()">T1</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 2 (Tháng 2 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="2" onchange="loadLaborCost()">T2</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 3 (Tháng 3 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="3" onchange="loadLaborCost()">T3</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 4 (Tháng 4 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="4" onchange="loadLaborCost()">T4</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 5 (Tháng 5 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="5" onchange="loadLaborCost()">T5</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 6 (Tháng 6 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="6" onchange="loadLaborCost()">T6</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 7 (Tháng 7 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="7" onchange="loadLaborCost()">T7</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 8 (Tháng 8 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="8" onchange="loadLaborCost()">T8</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 9 (Tháng 9 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="9" onchange="loadLaborCost()">T9</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 10 (Tháng 10 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="10" onchange="loadLaborCost()">T10</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 11 (Tháng 11 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="11" onchange="loadLaborCost()">T11</label>
+              <label class="inline-flex items-center gap-1 text-xs border rounded px-2 py-1 cursor-pointer hover:bg-blue-50" title="Tháng 12 (Tháng 12 dương lịch)"><input type="checkbox" class="laborMonthCheck" value="12" onchange="loadLaborCost()">T12</label>
             </div>
             <select id="laborYearFilter" class="select-field" style="width:100px" onchange="loadLaborCost()"></select>
             <button onclick="loadLaborCost()" class="btn-primary text-sm flex items-center gap-1"><i class="fas fa-sync-alt"></i>Tải</button>

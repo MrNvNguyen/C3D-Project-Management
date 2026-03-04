@@ -1994,49 +1994,77 @@ app.delete('/api/projects/:id/labor-costs/duplicates', authMiddleware, adminOnly
 
 // GET /api/financial-summary/labor-costs-all-projects — aggregate across projects
 // Logic HYBRID từng tháng: ưu tiên project_labor_costs (synced), fallback real-time.
-// Cộng dồn từng tháng → đúng kể cả khi chỉ sync 1 phần tháng.
+// Hỗ trợ năm tài chính (NTC): all_months=true → dùng fiscal year mapping.
+// months=1..12 → tháng NTC (logical) → convert sang calendar (year, month).
 app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const OVERTIME_FACTOR = await getOvertimeFactor(db)
+    const fySettings = await getFiscalYearSettings(db)
     const { months, year, all_months } = c.req.query()
     const yInt = year ? parseInt(year) : new Date().getFullYear()
-    const y    = String(yInt)
 
-    // Xác định danh sách tháng dương lịch cần tính (1-12)
-    let monthList: number[] | null = null   // null = tất cả 12 tháng
-    if (all_months !== 'true' && months) {
+    // ── Xác định danh sách (calYear, calMonth) cần tính ──────────────
+    // Chế độ all_months: tất cả 12 tháng NTC của năm tài chính
+    //   e.g. NTC 2026, start_month=2: T1=Feb/2026, T2=Mar/2026, ..., T12=Jan/2027
+    // Chế độ months (multi-select): UI gửi giá trị tháng DƯƠNG LỊCH (1=Jan, 2=Feb, ...)
+    //   → dùng trực tiếp (month, yInt) không cần convert fiscal
+
+    interface CalPair { calYear: number; calMonth: number; fiscalIdx: number }
+    let calPairs: CalPair[]
+
+    if (all_months === 'true' || !months) {
+      // Tất cả 12 tháng NTC → convert từng tháng NTC (T1..T12) sang calendar
+      const sm = fySettings.start_month
+      calPairs = Array.from({ length: 12 }, (_, i) => {
+        const fiscalIdx = i + 1  // T1=1, T2=2, ..., T12=12
+        // Calendar month của Tháng fiscal T{fiscalIdx}:
+        // T1 = start_month (sm), T2 = sm+1, ..., wrap qua năm sau nếu > 12
+        const rawCal = sm - 1 + fiscalIdx  // 1-based
+        const calMonth = ((rawCal - 1) % 12) + 1
+        const calYear = rawCal > 12 ? yInt + 1 : yInt
+        return { calYear, calMonth, fiscalIdx }
+      })
+    } else {
+      // Multi-month: UI gửi tháng DƯƠNG LỊCH (1=Jan...12=Dec) của năm đang chọn
+      // Dùng trực tiếp, KHÔNG convert fiscal
       const parsed = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
-      if (parsed.length > 0) monthList = parsed
+      const sm = fySettings.start_month
+      calPairs = parsed.map((calM, idx) => {
+        // Tính fiscalIdx để hiển thị đúng nhãn T1..T12
+        const rawFiscal = calM - sm + 1
+        const fiscalIdx = rawFiscal <= 0 ? rawFiscal + 12 : rawFiscal
+        return { calYear: yInt, calMonth: calM, fiscalIdx }
+      })
     }
-    const monthsToUse: number[] = monthList ?? Array.from({ length: 12 }, (_, i) => i + 1)
 
-    // ── Tổng ngân sách đã nhập (monthly_labor_costs) cho kỳ này ─────
-    const poolInClause = monthsToUse.join(',')
-    const poolRow = await db.prepare(
-      `SELECT COALESCE(SUM(total_labor_cost), 0) as pool_total
-       FROM monthly_labor_costs
-       WHERE year = ? AND month IN (${poolInClause})`
-    ).bind(yInt).first() as any
-    const poolTotal: number = poolRow?.pool_total || 0
+    // ── Pool total: tổng ngân sách đã nhập (monthly_labor_costs) cho kỳ này ─
+    // monthly_labor_costs lưu theo tháng dương lịch (calYear, calMonth)
+    let poolTotal = 0
+    for (const { calYear, calMonth } of calPairs) {
+      const poolRow = await db.prepare(
+        `SELECT COALESCE(total_labor_cost, 0) as v FROM monthly_labor_costs WHERE month = ? AND year = ?`
+      ).bind(calMonth, calYear).first() as any
+      poolTotal += poolRow?.v || 0
+    }
 
-    // ── HYBRID: tính từng tháng, mỗi tháng ưu tiên synced rồi fallback real-time ──
-    // projectMap: { project_id → { ..., total_labor_cost, total_hours, _eff_hours, months_count } }
+    // ── HYBRID: tính từng tháng calendar, ưu tiên synced → fallback real-time ──
     const projectMap: Record<number, any> = {}
     let hasSynced = false, hasRealtime = false
     let grandEffHours = 0
 
-    for (const calMonth of monthsToUse) {
+    for (const { calYear, calMonth, fiscalIdx } of calPairs) {
+      const calY = String(calYear)
       const calM = String(calMonth).padStart(2, '0')
 
-      // 1. Kiểm tra project_labor_costs (synced) cho tháng này
+      // 1. Kiểm tra project_labor_costs (synced) cho (calYear, calMonth) này
       const syncedRows = await db.prepare(`
         SELECT p.id as project_id, p.code as project_code, p.name as project_name,
                plc.total_labor_cost, plc.total_hours, plc.cost_per_hour
         FROM project_labor_costs plc
         JOIN projects p ON plc.project_id = p.id
         WHERE plc.year = ? AND plc.month = ?
-      `).bind(yInt, calMonth).all()
+      `).bind(calYear, calMonth).all()
 
       if ((syncedRows.results as any[]).length > 0) {
         hasSynced = true
@@ -2045,7 +2073,6 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
           if (!projectMap[pid]) projectMap[pid] = { project_id: pid, project_code: row.project_code, project_name: row.project_name, total_labor_cost: 0, total_hours: 0, _eff_hours: 0, months_count: 0 }
           projectMap[pid].total_labor_cost += row.total_labor_cost || 0
           projectMap[pid].total_hours      += row.total_hours      || 0
-          // eff_hours ≈ total_labor_cost / cost_per_hour (synced lưu raw hours nên tính lại)
           const effH = row.cost_per_hour > 0 ? (row.total_labor_cost / row.cost_per_hour) : (row.total_hours || 0)
           projectMap[pid]._eff_hours += effH
           grandEffHours += effH
@@ -2057,20 +2084,18 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       // 2. Fallback real-time: monthly_labor_costs + timesheets
       const mlcRow = await db.prepare(
         `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
-      ).bind(calMonth, yInt).first() as any
+      ).bind(calMonth, calYear).first() as any
       if (!mlcRow?.total_labor_cost) continue
 
-      // Lấy eff-hours của toàn công ty tháng này
       const compHrsRow = await db.prepare(`
         SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
         FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-      `).bind(OVERTIME_FACTOR, y, calM).first() as any
+      `).bind(OVERTIME_FACTOR, calY, calM).first() as any
       const compEff = compHrsRow?.comp_eff || 0
       if (compEff <= 0) continue
 
       const cph = mlcRow.total_labor_cost / compEff
 
-      // Lấy hours từng dự án tháng này
       const projRows = await db.prepare(`
         SELECT project_id,
                SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
@@ -2079,12 +2104,11 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
         WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
         GROUP BY project_id
         HAVING proj_raw > 0
-      `).bind(OVERTIME_FACTOR, y, calM).all()
+      `).bind(OVERTIME_FACTOR, calY, calM).all()
 
       if ((projRows.results as any[]).length === 0) continue
       hasRealtime = true
 
-      // Lấy thông tin project
       const projIds = (projRows.results as any[]).map((r: any) => r.project_id)
       const projInfoRows = await db.prepare(
         `SELECT id, code, name FROM projects WHERE id IN (${projIds.join(',')})`
@@ -2129,7 +2153,8 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
 
     return c.json({
       year: yInt,
-      period_type: all_months === 'true' ? 'full_year' : months ? 'selected_months' : 'all',
+      fiscal_year_start_month: fySettings.start_month,
+      period_type: all_months === 'true' || !months ? 'full_year' : 'selected_months',
       data_source: dataSource,
       projects: projectsOut,
       grand_total_labor_cost: Math.round(grandTotal),
@@ -2139,7 +2164,11 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       projects_count: projectsArr.length,
       // Tổng ngân sách lương đã nhập (monthly_labor_costs pool)
       pool_total: Math.round(poolTotal),
-      months_included: monthsToUse
+      // Danh sách tháng NTC đã tính (chỉ số fiscal T1..T12)
+      fiscal_months_included: calPairs.map(p => p.fiscalIdx),
+      // Danh sách calendar pairs để UI render đúng nhãn tháng
+      // fiscalIdx = chỉ số NTC T1..T12; calMonth/calYear = tháng dương lịch tương ứng
+      cal_pairs: calPairs.map(p => ({ fiscalIdx: p.fiscalIdx, calYear: p.calYear, calMonth: p.calMonth }))
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
