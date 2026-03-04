@@ -3212,29 +3212,39 @@ async function loadFinanceProjectPage() {
         sel.appendChild(opt)
       })
     }
+    // Init default date range for 'range' mode
+    const today = new Date().toISOString().slice(0, 10)
+    const firstOfYear = today.slice(0, 4) + '-01-01'
+    if ($('finFromDate') && !$('finFromDate').value) $('finFromDate').value = firstOfYear
+    if ($('finToDate')   && !$('finToDate').value)   $('finToDate').value   = today
   } catch(e) { console.error(e) }
 }
 
 // Period-type toggle for Finance Project page
 function onFinPeriodTypeChange() {
-  const pt = $('finPeriodType')?.value || 'single'
-  const sc = $('finSingleMonthCtrl'); const mc = $('finMultiMonthCtrl')
-  if (sc) sc.classList.toggle('hidden', pt !== 'single')
-  if (mc) mc.classList.toggle('hidden', pt !== 'multi')
-  // Reset checkboxes & hide Apply button when switching to multi
-  if (pt === 'multi') {
+  const pt = $('finPeriodType')?.value || 'all_time'
+  const yearCtrl   = $('finYearCtrl')
+  const singleCtrl = $('finSingleMonthCtrl')
+  const multiCtrl  = $('finMultiMonthCtrl')
+  const rangeCtrl  = $('finRangeCtrl')
+
+  // Show/hide controls based on mode
+  if (yearCtrl)   yearCtrl.classList.toggle('hidden',   !['year','months','month'].includes(pt))
+  if (singleCtrl) singleCtrl.classList.toggle('hidden', pt !== 'month')
+  if (multiCtrl)  multiCtrl.classList.toggle('hidden',  pt !== 'months')
+  if (rangeCtrl)  rangeCtrl.classList.toggle('hidden',  pt !== 'range')
+
+  // Reset checkboxes when switching to months mode
+  if (pt === 'months') {
     document.querySelectorAll('.finMonthCheck').forEach(cb => cb.checked = false)
-    const btn = $('finMultiApplyBtn'); if (btn) btn.classList.add('hidden')
   }
-  // Auto-reload (unless multi which needs checkbox selection first)
-  if (pt !== 'multi') loadFinanceProject()
+  // Auto-reload (unless months which needs checkbox selection first)
+  if (pt !== 'months') loadFinanceProject()
 }
 
 // Called whenever a finMonthCheck checkbox changes
 function onFinMonthCheckChange() {
   const checked = [...document.querySelectorAll('.finMonthCheck:checked')]
-  const btn = $('finMultiApplyBtn')
-  if (btn) btn.classList.toggle('hidden', checked.length === 0)
   // Auto-load if at least 1 month selected
   if (checked.length > 0) loadFinanceProject()
 }
@@ -3245,34 +3255,34 @@ async function loadFinanceProject() {
   const el = $('financeProjectContent')
   if (el) el.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i><p class="mt-2 text-sm">Đang tải...</p></div>'
   try {
-    const yf = $('finYearFilter')?.value || String(new Date().getFullYear())
-    const periodType = $('finPeriodType')?.value || 'single'
+    const periodMode = $('finPeriodType')?.value || 'all_time'
+    const year = $('finYearFilter')?.value || String(new Date().getFullYear())
 
-    // Build query params
-    let query = `/finance/project/${projectId}`
-    const params = []
-    if (yf) params.push(`year=${yf}`)
+    // Build query params based on mode
+    let query = `/finance/project/${projectId}?mode=${periodMode}`
 
-    if (periodType === 'all') {
-      params.push('all_months=true')
-    } else if (periodType === 'multi') {
+    if (periodMode === 'year') {
+      query += `&year=${year}`
+    } else if (periodMode === 'month') {
+      const mf = $('finMonthFilter')?.value || String(new Date().getMonth() + 1)
+      query += `&year=${year}&month=${mf}`
+    } else if (periodMode === 'months') {
       const checked = [...document.querySelectorAll('.finMonthCheck:checked')].map(el => el.value)
       if (checked.length === 0) { toast('Vui lòng chọn ít nhất một tháng', 'warning'); return }
-      params.push(`months=${checked.join(',')}`)
-    } else {
-      const mf = $('finMonthFilter')?.value
-      if (mf) params.push(`month=${mf}`)
+      query += `&year=${year}&months=${checked.join(',')}`
+    } else if (periodMode === 'range') {
+      const fromDate = $('finFromDate')?.value
+      const toDate   = $('finToDate')?.value
+      if (!fromDate || !toDate) { toast('Vui lòng chọn ngày bắt đầu và kết thúc', 'warning'); return }
+      query += `&from=${fromDate}&to=${toDate}`
     }
-
-    if (params.length) query += '?' + params.join('&')
-
-    // Fetch project financial data and members in parallel
+    // all_time and ytd: no extra params needed
     const [data, projDetail] = await Promise.all([
       api(query),
       api(`/projects/${projectId}`).catch(() => null)
     ])
     if (!el) return
-    const { project, summary, costs_by_type, timeline, validation } = data
+    const { project, summary, costs_by_type, timeline, revenue_timeline, validation } = data
     const members = projDetail?.members || []
 
     // Validation warnings banner
@@ -3296,14 +3306,7 @@ async function loadFinanceProject() {
     const profitBorder = validation?.profit_status === 'ok' ? '#8B5CF6' : validation?.profit_status === 'warning' ? '#F59E0B' : (validation?.profit_status === 'no_revenue' || validation?.profit_status === 'no_data') ? '#9CA3AF' : '#EF4444'
 
     // Period label — use server-returned label for accuracy
-    let periodLabel = data.period?.label || ''
-    if (!periodLabel) {
-      if (periodType === 'all') periodLabel = `Toàn NTC ${yf}`
-      else if (periodType === 'multi') {
-        const checked = [...document.querySelectorAll('.finMonthCheck:checked')].map(el => el.value)
-        periodLabel = `T${checked.join(',')} NTC${yf}`
-      } else { const mf = $('finMonthFilter')?.value; periodLabel = mf ? `T${parseInt(mf)} NTC${yf}` : `NTC ${yf}` }
-    }
+    const periodLabel = data.period?.label || `Kỳ báo cáo`
 
     // Revenue progress vs contract
     const revenueProgress = project.contract_value > 0 ? Math.min(100, Math.round(summary.total_revenue / project.contract_value * 100)) : 0
@@ -3319,20 +3322,26 @@ async function loadFinanceProject() {
           ? `<span class="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full"><i class="fas fa-clock"></i> Real-time</span>`
           : `<span class="inline-flex items-center gap-1 text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Chưa có dữ liệu</span>`
 
-    // Monthly breakdown from timeline (aggregate by month)
+    // Monthly breakdown — merge cost and revenue timelines by month
     const timelineByMonth = {}
     ;(timeline || []).forEach(t => {
-      if (!timelineByMonth[t.month]) timelineByMonth[t.month] = { other: 0, types: {} }
-      timelineByMonth[t.month].other += t.total || 0
+      if (!timelineByMonth[t.month]) timelineByMonth[t.month] = { cost: 0, revenue: 0, types: {} }
+      timelineByMonth[t.month].cost += t.total || 0
       timelineByMonth[t.month].types[t.cost_type] = (timelineByMonth[t.month].types[t.cost_type] || 0) + (t.total || 0)
+    })
+    ;(revenue_timeline || []).forEach(r => {
+      if (!timelineByMonth[r.month]) timelineByMonth[r.month] = { cost: 0, revenue: 0, types: {} }
+      timelineByMonth[r.month].revenue += r.total || 0
     })
     const monthlyRows = Object.entries(timelineByMonth).sort(([a],[b]) => a.localeCompare(b)).map(([month, info]) => {
       const [yr, mo] = month.split('-')
+      const profitRow = info.revenue - info.cost
+      const profitClass = profitRow > 0 ? 'text-green-600' : profitRow < 0 ? 'text-red-600' : 'text-gray-400'
       return `<tr class="border-b hover:bg-gray-50 text-xs">
-        <td class="py-1.5 pr-2 font-medium">T${parseInt(mo)}/${yr}</td>
-        <td class="py-1.5 pr-2 text-right text-blue-600">—</td>
-        <td class="py-1.5 pr-2 text-right text-red-600">${fmt(info.other)}</td>
-        <td class="py-1.5 text-right text-gray-600">${fmt(info.other)}</td>
+        <td class="py-1.5 px-2 font-medium">T${parseInt(mo)}/${yr}</td>
+        <td class="py-1.5 px-2 text-right text-green-600">${info.revenue > 0 ? fmt(info.revenue) : '—'}</td>
+        <td class="py-1.5 px-2 text-right text-red-600">${info.cost > 0 ? fmt(info.cost) : '—'}</td>
+        <td class="py-1.5 px-2 text-right ${profitClass}">${(info.revenue > 0 || info.cost > 0) ? fmt(profitRow) : '—'}</td>
       </tr>`
     }).join('')
 
@@ -3473,13 +3482,13 @@ async function loadFinanceProject() {
           ${summary.labor_hours > 0 ? `<div><i class="fas fa-clock mr-1"></i>${summary.labor_hours}h × ${fmtMoney(summary.labor_per_hour)}/h</div>` : ''}
           <div><i class="fas fa-calendar mr-1"></i>Kỳ: <strong>${periodLabel}</strong></div>
           ${summary.labor_months_count > 0 ? `<div><i class="fas fa-layer-group mr-1"></i>${summary.labor_months_count} tháng có dữ liệu lương</div>` : ''}
-          <button onclick="syncLaborForFinProject(${projectId}, '${yf}')" class="ml-auto btn-secondary text-xs py-1 px-2">
+          <button onclick="syncLaborForFinProject(${project.id}, '${data.period?.date_from}', '${data.period?.date_to}')" class="ml-auto btn-secondary text-xs py-1 px-2">
             <i class="fas fa-sync mr-1"></i>${summary.labor_source === 'project_labor_costs' ? 'Đồng bộ lại' : 'Đồng bộ ngay'}
           </button>
         </div>` : `
         <div class="mt-3 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600 flex flex-wrap gap-3 items-center">
           <div><i class="fas fa-exclamation-circle mr-1 text-orange-500"></i>Chưa có dữ liệu chi phí lương cho dự án này</div>
-          <button onclick="syncLaborForFinProject(${projectId}, '${yf}')" class="ml-auto btn-secondary text-xs py-1 px-2">
+          <button onclick="syncLaborForFinProject(${project.id}, '${data.period?.date_from}', '${data.period?.date_to}')" class="ml-auto btn-secondary text-xs py-1 px-2">
             <i class="fas fa-sync mr-1"></i>Đồng bộ ngay
           </button>
         </div>`}
@@ -3520,6 +3529,24 @@ async function loadFinanceProject() {
           </div>
         </div>
       </div>
+
+      <!-- Monthly breakdown table -->
+      ${Object.keys(timelineByMonth).length > 0 ? `
+      <div class="card mb-4">
+        <h3 class="font-bold text-sm mb-3"><i class="fas fa-calendar-alt text-blue-500 mr-2"></i>Chi tiết theo tháng</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
+              <th class="py-2 px-2">Tháng</th>
+              <th class="py-2 px-2 text-right text-green-600">Doanh thu</th>
+              <th class="py-2 px-2 text-right text-red-600">Chi phí</th>
+              <th class="py-2 px-2 text-right">Lợi nhuận</th>
+            </tr></thead>
+            <tbody>${monthlyRows}</tbody>
+          </table>
+        </div>
+        <p class="text-xs text-gray-400 mt-2">* Chi phí lương và chi phí chung phân bổ không được phân tách theo tháng trong bảng này</p>
+      </div>` : ''}
     `
 
     // Render charts
@@ -3548,22 +3575,27 @@ async function loadFinanceProject() {
       destroyChart('finTimeline')
       const ctx2 = $('finTimeline')
       if (ctx2) {
-        const months = [...new Set((timeline || []).map(t => t.month))].sort()
-        // If no timeline months, use current month range
-        const displayMonths = months.length ? months : []
+        // Merge all months from cost timeline and revenue timeline
+        const allMonthsSet = new Set([
+          ...(timeline || []).map(t => t.month),
+          ...(revenue_timeline || []).map(r => r.month)
+        ])
+        const displayMonths = [...allMonthsSet].sort()
         if (displayMonths.length) {
-          const costData = displayMonths.map(m => (timeline || []).filter(t => t.month === m).reduce((s, t) => s + t.total, 0))
+          const costData    = displayMonths.map(m => (timeline || []).filter(t => t.month === m).reduce((s, t) => s + (t.total || 0), 0))
+          const revenueData = displayMonths.map(m => { const r = (revenue_timeline || []).find(r => r.month === m); return r?.total || 0 })
           charts['finTimeline'] = new Chart(ctx2, {
             type: 'bar',
             data: {
               labels: displayMonths.map(m => { const [y,mo] = m.split('-'); return `T${parseInt(mo)}/${y}` }),
               datasets: [
-                { label: 'Chi phí khác', data: costData, backgroundColor: 'rgba(239,68,68,0.7)', borderRadius: 4 }
+                { label: 'Chi phí', data: costData, backgroundColor: 'rgba(239,68,68,0.7)', borderRadius: 4, order: 2 },
+                { label: 'Doanh thu', data: revenueData, backgroundColor: 'rgba(16,185,129,0.7)', borderRadius: 4, order: 1 }
               ]
             },
             options: {
               responsive: true,
-              plugins: { legend: { position: 'top' }, tooltip: { callbacks: { label: (ctx) => ` ${fmtMoney(ctx.parsed.y)}` } } },
+              plugins: { legend: { position: 'top' }, tooltip: { callbacks: { label: (ctx) => ` ${ctx.dataset.label}: ${fmtMoney(ctx.parsed.y)}` } } },
               scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } }
             }
           })
@@ -3577,20 +3609,23 @@ async function loadFinanceProject() {
 }
 
 // Sync labor cost for finance project page
-async function syncLaborForFinProject(projectId, year) {
+async function syncLaborForFinProject(projectId, dateFrom, dateTo) {
   const btn = event?.target?.closest('button')
   const origLabel = btn?.innerHTML || ''
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang đồng bộ...' }
   try {
-    // FIX: sync ALL months of the year (all_months=true) instead of just current month
-    // FIX: use result.data?.total_labor_cost (API wraps value in data object)
-    const result = await api(`/projects/${projectId}/labor-costs/sync`, {
-      method: 'POST',
-      data: { year: parseInt(year), all_months: true, force_recalculate: true }
-    })
-    const synced = result.months_synced || 0
-    const total  = result.data?.total_labor_cost || result.total_labor_cost || 0
-    toast(`✅ Đã đồng bộ ${synced} tháng – tổng lương: ${fmtMoney(total)}`, 'success')
+    // Tính tất cả các năm nằm trong khoảng dateFrom → dateTo
+    const fromYear = dateFrom ? parseInt(dateFrom.slice(0, 4)) : new Date().getFullYear()
+    const toYear   = dateTo   ? parseInt(dateTo.slice(0, 4))   : new Date().getFullYear()
+    let totalSynced = 0
+    for (let y = fromYear; y <= toYear; y++) {
+      const result = await api(`/projects/${projectId}/labor-costs/sync`, {
+        method: 'POST',
+        data: { year: y, all_months: true, force_recalculate: true }
+      })
+      totalSynced += result.months_synced || 0
+    }
+    toast(`✅ Đã đồng bộ ${totalSynced} tháng`, 'success')
     loadFinanceProject()
   } catch(e) {
     toast('Lỗi đồng bộ: ' + e.message, 'error')

@@ -4415,105 +4415,211 @@ app.delete('/api/cost-types/:id', authMiddleware, adminOnly, async (c) => {
 
 // ===================================================
 // PROJECT FINANCE SUMMARY (per-project)
+// Không phụ thuộc năm tài chính — hỗ trợ các chế độ:
+//   ?mode=all_time           → Toàn dự án (từ start_date đến hiện tại hoặc end_date)
+//   ?mode=ytd                → Từ đầu năm dương lịch đến nay (Year-to-date)
+//   ?mode=year&year=2026     → Cả năm dương lịch 2026
+//   ?mode=month&year=2026&month=3 → Tháng 3/2026
+//   ?mode=range&from=2026-01-01&to=2026-06-30 → Khoảng ngày tuỳ chỉnh
+//   ?mode=months&year=2026&months=1,2,3 → Nhiều tháng dương lịch
 // ===================================================
 app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const OVERTIME_FACTOR = await getOvertimeFactor(db)
-    const fySettings = await getFiscalYearSettings(db)
     const projectId = parseInt(c.req.param('id'))
-    const { month, months, year, all_months } = c.req.query()
-    const yInt = year ? parseInt(year) : new Date().getFullYear()
-    const y = String(yInt)
-    const mInt = month ? parseInt(month) : null
+    const { mode, year, month, months, from, to } = c.req.query()
 
     const project = await db.prepare('SELECT * FROM projects WHERE id = ?').bind(projectId).first() as any
     if (!project) return c.json({ error: 'Not found' }, 404)
 
     const contractValue = project.contract_value || 0
     const validation_warnings: string[] = []
+    const today = new Date().toISOString().slice(0, 10)
 
-    // --- Fiscal year date range ---
-    const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(yInt, fySettings)
+    // ── Xác định khoảng ngày và nhãn kỳ báo cáo ──────────────────────────
+    let dateFrom: string
+    let dateTo: string
+    let periodLabel: string
+    let periodMode: string = mode || 'all_time'
 
-    // --- Build date filters based on period type ---
-    let costDateFilter: string
-    let revDateFilter: string
-    let periodLabel = `NTC ${yInt}`
+    const projectStart = project.start_date || '2020-01-01'
+    const projectEnd   = project.end_date   || today
 
-    // Determine finMonthList (logical months in NTC, 1-12)
-    let finMonthList: number[] | null = null  // null = all months in fiscal year
-    if (all_months === 'true') {
-      finMonthList = null
-      periodLabel = `Toàn NTC ${yInt}`
-    } else if (months) {
-      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12)
-      if (monthArr.length > 0) {
-        finMonthList = monthArr
-        periodLabel = `T${monthArr.join(',')} NTC${yInt}`
+    if (periodMode === 'all_time' || !mode) {
+      // Toàn bộ thời gian dự án (start_date → today hoặc end_date nếu đã xong)
+      dateFrom = projectStart
+      dateTo   = project.status === 'completed' ? projectEnd : today
+      const endLabel = project.status === 'completed' ? projectEnd.slice(0,7) : 'hiện tại'
+      periodLabel = `Toàn dự án (${projectStart.slice(0,7)} → ${endLabel})`
+      periodMode = 'all_time'
+    } else if (periodMode === 'ytd') {
+      // Year-to-date: từ đầu năm hiện tại đến hôm nay
+      const currentYear = new Date().getFullYear()
+      dateFrom = `${currentYear}-01-01`
+      dateTo   = today
+      periodLabel = `Lũy kế ${currentYear} (01/${currentYear} → hiện tại)`
+    } else if (periodMode === 'year' && year) {
+      // Cả năm dương lịch
+      dateFrom = `${year}-01-01`
+      dateTo   = `${year}-12-31`
+      periodLabel = `Năm ${year}`
+    } else if (periodMode === 'month' && year && month) {
+      // Tháng cụ thể (dương lịch)
+      const mPad = String(parseInt(month)).padStart(2, '0')
+      const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate()
+      dateFrom = `${year}-${mPad}-01`
+      dateTo   = `${year}-${mPad}-${String(lastDay).padStart(2,'0')}`
+      periodLabel = `Tháng ${parseInt(month)}/${year}`
+    } else if (periodMode === 'months' && year && months) {
+      // Nhiều tháng dương lịch trong cùng năm
+      const monthArr = months.split(',').map((m: string) => parseInt(m.trim())).filter((m: number) => m >= 1 && m <= 12).sort((a: number, b: number) => a - b)
+      if (monthArr.length === 0) {
+        dateFrom = `${year}-01-01`
+        dateTo   = `${year}-12-31`
+        periodLabel = `Năm ${year}`
+      } else {
+        const firstM = String(monthArr[0]).padStart(2,'0')
+        const lastM  = String(monthArr[monthArr.length - 1]).padStart(2,'0')
+        const lastDay = new Date(parseInt(year), monthArr[monthArr.length - 1], 0).getDate()
+        dateFrom = `${year}-${firstM}-01`
+        dateTo   = `${year}-${lastM}-${String(lastDay).padStart(2,'0')}`
+        // Build exact month filter for non-contiguous months
+        const monthConds = monthArr.map((m: number) => `strftime('%m', cost_date) = '${String(m).padStart(2,'0')}'`).join(' OR ')
+        const revMonthConds = monthArr.map((m: number) => `strftime('%m', revenue_date) = '${String(m).padStart(2,'0')}'`).join(' OR ')
+        periodLabel = `T${monthArr.join(',')}/${year}`
+
+        // Use month-specific filter logic for non-contiguous months
+        const costDateFilter = `AND strftime('%Y', cost_date) = '${year}' AND (${monthConds})`
+        const revDateFilter  = `AND strftime('%Y', revenue_date) = '${year}' AND (${revMonthConds})`
+
+        // Other costs
+        const otherCostsR = await db.prepare(
+          `SELECT cost_type, SUM(amount) as total FROM project_costs
+           WHERE project_id = ? AND cost_type != 'salary' ${costDateFilter} GROUP BY cost_type`
+        ).bind(projectId).all()
+        const totalOtherCostR = (otherCostsR.results as any[]).reduce((s, c) => s + (c as any).total, 0)
+
+        // Labor: hybrid per calendar month
+        let laborCostR = 0, laborHoursR = 0, totalCphSumR = 0, totalCphCountR = 0
+        let laborMonthsCountR = 0, hasSyncedR = false, hasRealtimeR = false
+        for (const calMonth of monthArr) {
+          const calYear = parseInt(year)
+          const calY = year
+          const calM = String(calMonth).padStart(2, '0')
+          const cachedRowR = await db.prepare(
+            `SELECT total_labor_cost, total_hours, cost_per_hour FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
+          ).bind(projectId, calMonth, calYear).first() as any
+          if (cachedRowR?.total_labor_cost) {
+            laborCostR += cachedRowR.total_labor_cost; laborHoursR += cachedRowR.total_hours || 0
+            totalCphSumR += cachedRowR.cost_per_hour || 0; totalCphCountR++; laborMonthsCountR++; hasSyncedR = true; continue
+          }
+          const mlcRowR = await db.prepare(`SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`).bind(calMonth, calYear).first() as any
+          if (!mlcRowR?.total_labor_cost) continue
+          const projHrsRowR = await db.prepare(`SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as proj_raw, SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
+          const compHrsRowR = await db.prepare(`SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`).bind(OVERTIME_FACTOR, calY, calM).first() as any
+          const projRawR = projHrsRowR?.proj_raw || 0; const projEffR = projHrsRowR?.proj_eff || 0; const compEffR = compHrsRowR?.comp_eff || 0
+          if (projRawR <= 0 || compEffR <= 0) continue
+          const cphR = mlcRowR.total_labor_cost / compEffR; const mcR = Math.round(projEffR * cphR)
+          laborCostR += mcR; laborHoursR += projRawR; totalCphSumR += cphR; totalCphCountR++; laborMonthsCountR++; hasRealtimeR = true
+        }
+        const laborPerHourR = totalCphCountR > 0 ? totalCphSumR / totalCphCountR : 0
+        const laborSourceR  = laborCostR > 0 ? (hasSyncedR && hasRealtimeR ? 'mixed' : hasSyncedR ? 'project_labor_costs' : 'realtime') : 'none'
+        if (contractValue > 0 && laborCostR > contractValue) { validation_warnings.push(`Chi phí lương vượt giá trị HĐ`); laborCostR = contractValue }
+
+        const revsR = await db.prepare(`SELECT SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total, SUM(CASE WHEN payment_status = 'pending' THEN amount ELSE 0 END) as pending_total FROM project_revenues WHERE project_id = ? ${revDateFilter}`).bind(projectId).first() as any
+        const totalRevenueR = revsR?.total || 0; const pendingRevenueR = revsR?.pending_total || 0
+
+        const timelineR = await db.prepare(`SELECT strftime('%Y-%m', cost_date) as month, cost_type, SUM(amount) as total FROM project_costs WHERE project_id = ? ${costDateFilter} GROUP BY month, cost_type ORDER BY month`).bind(projectId).all()
+        const revTimelineR = await db.prepare(`SELECT strftime('%Y-%m', revenue_date) as month, SUM(amount) as total FROM project_revenues WHERE project_id = ? AND payment_status IN ('paid','partial') ${revDateFilter} GROUP BY month ORDER BY month`).bind(projectId).all()
+
+        const sharedRowR = await db.prepare(`SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt FROM shared_cost_allocations sca JOIN shared_costs sc ON sc.id = sca.shared_cost_id WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ? AND sc.month IN (${monthArr.join(',')})`).bind(projectId, parseInt(year)).first() as any
+        const sharedTotalR = sharedRowR?.total || 0; const sharedCountR = sharedRowR?.cnt || 0
+
+        const totalCostR = laborCostR + totalOtherCostR + sharedTotalR
+        const profitR = (totalRevenueR > 0 || totalCostR > 0) ? totalRevenueR - totalCostR : null
+        const marginR = totalRevenueR > 0 && profitR !== null ? parseFloat(((profitR / totalRevenueR) * 100).toFixed(1)) : null
+        if (contractValue > 0 && totalCostR > contractValue * 1.2) validation_warnings.push(`Tổng chi phí vượt 120% giá trị HĐ`)
+        if (profitR !== null && profitR <= 0) validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profitR)} ₫`)
+        else if (profitR !== null && marginR !== null && marginR < 10 && marginR > 0) validation_warnings.push(`Lợi nhuận thấp: ${marginR}%`)
+        if (totalRevenueR > 0 && laborCostR > totalRevenueR * 0.8) validation_warnings.push(`Chi phí lương chiếm ${((laborCostR/totalRevenueR)*100).toFixed(1)}% doanh thu`)
+
+        const costTypeNamesR: Record<string, string> = { material: 'Vật liệu', equipment: 'Thiết bị', transport: 'Vận chuyển', other: 'Chi phí khác', salary: 'Lương nhân sự' }
+        const costsByTypeR = [
+          ...(laborCostR > 0 ? [{ cost_type: 'salary', total: laborCostR, label: 'Lương nhân sự', is_auto: true }] : []),
+          ...(otherCostsR.results as any[]).map((c: any) => ({ ...c, label: costTypeNamesR[c.cost_type] || c.cost_type, is_auto: false })),
+          ...(sharedTotalR > 0 ? [{ cost_type: 'shared', total: sharedTotalR, label: 'Chi phí chung (phân bổ)', is_auto: true, shared_count: sharedCountR }] : [])
+        ]
+        return c.json({
+          project: { id: project.id, code: project.code, name: project.name, contract_value: contractValue, start_date: project.start_date, end_date: project.end_date, status: project.status },
+          period: { label: periodLabel, mode: periodMode, date_from: dateFrom, date_to: dateTo },
+          summary: { total_revenue: totalRevenueR, pending_revenue: pendingRevenueR, contract_value: contractValue, total_cost: totalCostR, labor_cost: laborCostR, other_cost: totalOtherCostR, shared_cost: sharedTotalR, shared_cost_count: sharedCountR, profit: profitR ?? null, margin: marginR ?? null, labor_hours: laborHoursR, labor_per_hour: Math.round(laborPerHourR), labor_source: laborSourceR, labor_months_count: laborMonthsCountR },
+          costs_by_type: costsByTypeR,
+          timeline: timelineR.results,
+          revenue_timeline: revTimelineR.results,
+          validation: { warnings: validation_warnings, has_warnings: validation_warnings.length > 0, profit_status: profitR === null ? 'no_data' : (profitR > 0 ? (marginR !== null && marginR < 10 ? 'warning' : 'ok') : 'error') }
+        })
       }
-    } else if (mInt) {
-      finMonthList = [mInt]
-      periodLabel = `T${mInt} NTC${yInt}`
-    }
-
-    if (finMonthList !== null) {
-      // Map tháng NTC → calendar date filter
-      const costMonthConds = fiscalMonthsSQLFilter(finMonthList, yInt, fySettings, 'cost_date')
-      const revMonthConds  = fiscalMonthsSQLFilter(finMonthList, yInt, fySettings, 'revenue_date')
-      costDateFilter = `AND ${costMonthConds}`
-      revDateFilter  = `AND ${revMonthConds}`
+    } else if (periodMode === 'range' && from && to) {
+      dateFrom = from
+      dateTo   = to
+      periodLabel = `${from.slice(0,7)} → ${to.slice(0,7)}`
     } else {
-      // Toàn NTC: dùng date range
-      costDateFilter = `AND cost_date >= '${fyStart}' AND cost_date <= '${fyEnd}'`
-      revDateFilter  = `AND revenue_date >= '${fyStart}' AND revenue_date <= '${fyEnd}'`
+      // Mặc định: toàn dự án
+      dateFrom = projectStart
+      dateTo   = project.status === 'completed' ? projectEnd : today
+      periodLabel = `Toàn dự án`
+      periodMode = 'all_time'
     }
 
-    // --- Other costs from project_costs (excluding salary type) ---
+    // ── Lọc theo khoảng ngày (dateFrom → dateTo) ──────────────────────────
+    const costDateFilter = `AND cost_date >= '${dateFrom}' AND cost_date <= '${dateTo}'`
+    const revDateFilter  = `AND revenue_date >= '${dateFrom}' AND revenue_date <= '${dateTo}'`
+
+    // ── Other costs ──────────────────────────────────────────────────────
     const otherCosts = await db.prepare(
       `SELECT cost_type, SUM(amount) as total FROM project_costs
        WHERE project_id = ? AND cost_type != 'salary' ${costDateFilter} GROUP BY cost_type`
     ).bind(projectId).all()
     const totalOtherCost = (otherCosts.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
-    // --- Labor cost: tính HYBRID từng tháng ---
-    // Mỗi tháng trong NTC: ưu tiên project_labor_costs (đã sync),
-    // nếu chưa sync thì tính real-time từ monthly_labor_costs + timesheets.
-    // Cộng dồn tất cả tháng → tổng chính xác dù chỉ sync 1 phần.
-    let laborCost = 0; let laborHours = 0; let laborPerHour = 0; let laborSource = 'none'
-    let laborMonthsCount = 0
-    let hasSynced = false; let hasRealtime = false
+    // ── Labor cost: HYBRID per calendar month trong khoảng dateFrom→dateTo ──
+    // Tìm tất cả tháng dương lịch nằm trong [dateFrom, dateTo]
+    // Với mỗi tháng: ưu tiên project_labor_costs (synced), fallback real-time
+    let laborCost = 0, laborHours = 0, totalCphSum = 0, totalCphCount = 0
+    let laborMonthsCount = 0, hasSynced = false, hasRealtime = false
 
-    // Xác định danh sách tháng NTC cần tính
-    const monthsToCalcFin: number[] = finMonthList ?? (() => {
-      const sm = fySettings.start_month
-      return Array.from({ length: 12 }, (_, i) => ((sm - 1 + i) % 12) + 1)
-    })()
+    // Tạo danh sách {calYear, calMonth} trong khoảng dateFrom→dateTo
+    interface CalMonthPair { calYear: number; calMonth: number }
+    const calMonthsInRange: CalMonthPair[] = []
+    {
+      const dFrom = new Date(dateFrom + 'T00:00:00Z')
+      const dTo   = new Date(dateTo   + 'T00:00:00Z')
+      let cur = new Date(dFrom.getFullYear(), dFrom.getMonth(), 1)
+      const end = new Date(dTo.getFullYear(), dTo.getMonth(), 1)
+      while (cur <= end) {
+        calMonthsInRange.push({ calYear: cur.getFullYear(), calMonth: cur.getMonth() + 1 })
+        cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1)
+      }
+    }
 
-    let totalCphSum = 0; let totalCphCount = 0
-
-    for (const lm of monthsToCalcFin) {
-      const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
+    for (const { calYear, calMonth } of calMonthsInRange) {
       const calY = String(calYear)
       const calM = String(calMonth).padStart(2, '0')
 
-      // 1. Thử lấy từ project_labor_costs (đã sync)
+      // 1. Synced project_labor_costs
       const cachedRow = await db.prepare(
         `SELECT total_labor_cost, total_hours, cost_per_hour
          FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
       ).bind(projectId, calMonth, calYear).first() as any
-
       if (cachedRow?.total_labor_cost) {
         laborCost += cachedRow.total_labor_cost
         laborHours += cachedRow.total_hours || 0
         totalCphSum += cachedRow.cost_per_hour || 0
-        totalCphCount++
-        laborMonthsCount++
-        hasSynced = true
-        continue
+        totalCphCount++; laborMonthsCount++; hasSynced = true; continue
       }
 
-      // 2. Fallback real-time từ monthly_labor_costs + timesheets
+      // 2. Real-time từ monthly_labor_costs + timesheets
       const mlcRow = await db.prepare(
         `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
       ).bind(calMonth, calYear).first() as any
@@ -4522,14 +4628,11 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       const projHrsRow = await db.prepare(`
         SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
                SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
-        FROM timesheets
-        WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+        FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
       `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
-
       const compHrsRow = await db.prepare(`
         SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
-        FROM timesheets
-        WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+        FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
       `).bind(OVERTIME_FACTOR, calY, calM).first() as any
 
       const projRaw = projHrsRow?.proj_raw || 0
@@ -4539,115 +4642,121 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
 
       const cph = mlcRow.total_labor_cost / compEff
       const mc  = Math.round(projEff * cph)
-      laborCost += mc; laborHours += projRaw
-      totalCphSum += cph; totalCphCount++
-      laborMonthsCount++
-      hasRealtime = true
+      laborCost += mc; laborHours += projRaw; totalCphSum += cph; totalCphCount++
+      laborMonthsCount++; hasRealtime = true
     }
 
-    laborPerHour = totalCphCount > 0 ? totalCphSum / totalCphCount : 0
-    laborSource = laborCost > 0
+    const laborPerHour = totalCphCount > 0 ? totalCphSum / totalCphCount : 0
+    const laborSource  = laborCost > 0
       ? (hasSynced && hasRealtime ? 'mixed' : hasSynced ? 'project_labor_costs' : 'realtime')
       : 'none'
 
-    // Validate labor cost
     if (contractValue > 0 && laborCost > contractValue) {
       validation_warnings.push(`Chi phí lương (${fmtNum(laborCost)} ₫) vượt giá trị hợp đồng`)
       laborCost = contractValue
     }
 
-    // --- Revenue (chỉ paid + partial) ---
+    // ── Revenue ──────────────────────────────────────────────────────────
     const revenues = await db.prepare(
       `SELECT
          SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total,
          SUM(CASE WHEN payment_status = 'pending' THEN amount ELSE 0 END) as pending_total
        FROM project_revenues WHERE project_id = ? ${revDateFilter}`
     ).bind(projectId).first() as any
-    const totalRevenue = revenues?.total || 0
+    const totalRevenue  = revenues?.total || 0
     const pendingRevenue2 = revenues?.pending_total || 0
 
-    // --- Timeline ---
+    // ── Timeline: chi phí + doanh thu theo tháng ──────────────────────────
     const timeline = await db.prepare(`
       SELECT strftime('%Y-%m', cost_date) as month, cost_type, SUM(amount) as total
-      FROM project_costs WHERE project_id = ?
+      FROM project_costs WHERE project_id = ? ${costDateFilter}
       GROUP BY month, cost_type ORDER BY month
     `).bind(projectId).all()
 
-    // --- Shared cost allocated to this project ---
-    // FIX: Chi phí có month=NULL là chi phí CẢ NĂM → chỉ tính khi query toàn năm (finMonthList === null)
-    //      Khi query theo tháng cụ thể chỉ tính chi phí có month nằm trong danh sách tháng đó
-    let sharedWhereFin = `WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ?`
-    const sharedParamsFin: any[] = [projectId, yInt]
-    if (finMonthList !== null && finMonthList.length > 0) {
-      sharedWhereFin += ` AND sc.month IN (${finMonthList.join(',')})`
-    }
-    // finMonthList === null means all_months → include all costs for the year (NULL-month + specific-month)
-    const sharedRowFin = await db.prepare(`
-      SELECT COALESCE(SUM(sca.allocated_amount), 0) as total,
-             COUNT(DISTINCT sca.shared_cost_id) as cnt
-      FROM shared_cost_allocations sca
-      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
-      ${sharedWhereFin}
-    `).bind(...sharedParamsFin).first() as any
-    const sharedCostTotal = sharedRowFin?.total || 0
-    const sharedCostCount = sharedRowFin?.cnt || 0
+    // Timeline doanh thu theo tháng
+    const revenueTimeline = await db.prepare(`
+      SELECT strftime('%Y-%m', revenue_date) as month, SUM(amount) as total
+      FROM project_revenues WHERE project_id = ?
+        AND payment_status IN ('paid','partial') ${revDateFilter}
+      GROUP BY month ORDER BY month
+    `).bind(projectId).all()
 
+    // ── Shared cost ───────────────────────────────────────────────────────
+    // all_time / year / range: lấy tất cả shared_costs của dự án trong khoảng ngày
+    // Dùng ngày giao dịch (year+month của shared_costs) hoặc allocated_date nếu có
+    let sharedRow: any
+    if (periodMode === 'all_time' || periodMode === 'ytd') {
+      // Tất cả shared costs được phân bổ cho dự án (không giới hạn năm)
+      sharedRow = await db.prepare(`
+        SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt
+        FROM shared_cost_allocations sca
+        JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+        WHERE sca.project_id = ? AND sc.status != 'deleted'
+      `).bind(projectId).first() as any
+    } else {
+      // Năm cụ thể hoặc range: lọc theo năm trong khoảng
+      const yearsInRange = [...new Set(calMonthsInRange.map(p => p.calYear))]
+      if (yearsInRange.length === 1) {
+        sharedRow = await db.prepare(`
+          SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt
+          FROM shared_cost_allocations sca
+          JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+          WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ?
+        `).bind(projectId, yearsInRange[0]).first() as any
+      } else {
+        sharedRow = await db.prepare(`
+          SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt
+          FROM shared_cost_allocations sca
+          JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+          WHERE sca.project_id = ? AND sc.status != 'deleted'
+            AND sc.year >= ? AND sc.year <= ?
+        `).bind(projectId, Math.min(...yearsInRange), Math.max(...yearsInRange)).first() as any
+      }
+    }
+    const sharedCostTotal = sharedRow?.total || 0
+    const sharedCostCount = sharedRow?.cnt || 0
+
+    // ── Tổng hợp ─────────────────────────────────────────────────────────
     const totalCost = laborCost + totalOtherCost + sharedCostTotal
-    // FIX Bug3: Luôn tính profit khi có doanh thu hoặc chi phí
-    // Chỉ null khi dự án chưa có cả doanh thu lẫn chi phí (chưa hoạt động tài chính)
     const profit = (totalRevenue > 0 || totalCost > 0) ? totalRevenue - totalCost : null
     const margin = totalRevenue > 0 && profit !== null ? parseFloat(((profit / totalRevenue) * 100).toFixed(1)) : null
 
-    // Validation rules
-    if (contractValue > 0 && totalCost > contractValue * 1.2) {
-      validation_warnings.push(`Tổng chi phí (${fmtNum(totalCost)} ₫) vượt 120% giá trị HĐ`)
-    }
-    if (profit !== null && profit <= 0) {
-      validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
-    } else if (profit !== null && margin !== null && margin < 10 && margin > 0) {
-      validation_warnings.push(`Lợi nhuận thấp: ${margin}% (< 10%)`)
-    }
-    if (totalRevenue > 0 && laborCost > totalRevenue * 0.8) {
-      validation_warnings.push(`Chi phí lương chiếm ${((laborCost/totalRevenue)*100).toFixed(1)}% doanh thu (> 80%)`)
-    }
+    if (contractValue > 0 && totalCost > contractValue * 1.2) validation_warnings.push(`Tổng chi phí (${fmtNum(totalCost)} ₫) vượt 120% giá trị HĐ`)
+    if (profit !== null && profit <= 0) validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
+    else if (profit !== null && margin !== null && margin < 10 && margin > 0) validation_warnings.push(`Lợi nhuận thấp: ${margin}% (< 10%)`)
+    if (totalRevenue > 0 && laborCost > totalRevenue * 0.8) validation_warnings.push(`Chi phí lương chiếm ${((laborCost/totalRevenue)*100).toFixed(1)}% doanh thu (> 80%)`)
 
-    // Build costs_by_type with labor + shared included
     const costTypeNames: Record<string, string> = {
       material: 'Vật liệu', equipment: 'Thiết bị', transport: 'Vận chuyển',
       other: 'Chi phí khác', salary: 'Lương nhân sự'
     }
     const costsByType = [
       ...(laborCost > 0 ? [{ cost_type: 'salary', total: laborCost, label: 'Lương nhân sự', is_auto: true }] : []),
-      ...(otherCosts.results as any[]).map((c: any) => ({
-        ...c, label: costTypeNames[c.cost_type] || c.cost_type, is_auto: false
-      })),
-      ...(sharedCostTotal > 0 ? [{
-        cost_type: 'shared', total: sharedCostTotal,
-        label: 'Chi phí chung (phân bổ)', is_auto: true, shared_count: sharedCostCount
-      }] : [])
+      ...(otherCosts.results as any[]).map((c: any) => ({ ...c, label: costTypeNames[c.cost_type] || c.cost_type, is_auto: false })),
+      ...(sharedCostTotal > 0 ? [{ cost_type: 'shared', total: sharedCostTotal, label: 'Chi phí chung (phân bổ)', is_auto: true, shared_count: sharedCostCount }] : [])
     ]
 
     return c.json({
-      project: { id: project.id, code: project.code, name: project.name, contract_value: contractValue },
-      period: { label: periodLabel, year: yInt },
+      project: {
+        id: project.id, code: project.code, name: project.name,
+        contract_value: contractValue,
+        start_date: project.start_date, end_date: project.end_date, status: project.status
+      },
+      period: { label: periodLabel, mode: periodMode, date_from: dateFrom, date_to: dateTo },
       summary: {
-        total_revenue: totalRevenue,       // doanh thu đã thanh toán (paid + partial)
-        pending_revenue: pendingRevenue2,  // chờ thanh toán (chưa tính vào doanh thu)
-        contract_value: contractValue,     // giá trị hợp đồng (chỉ tham khảo)
-        total_cost: totalCost, labor_cost: laborCost,
-        other_cost: totalOtherCost,
-        shared_cost: sharedCostTotal,      // chi phí chung phân bổ
-        shared_cost_count: sharedCostCount,
-        profit: profit ?? null,            // null nếu chưa có doanh thu
-        margin: margin ?? null,
-        labor_hours: laborHours, labor_per_hour: Math.round(laborPerHour), labor_source: laborSource,
-        labor_months_count: laborMonthsCount
+        total_revenue: totalRevenue, pending_revenue: pendingRevenue2,
+        contract_value: contractValue, total_cost: totalCost,
+        labor_cost: laborCost, other_cost: totalOtherCost,
+        shared_cost: sharedCostTotal, shared_cost_count: sharedCostCount,
+        profit: profit ?? null, margin: margin ?? null,
+        labor_hours: laborHours, labor_per_hour: Math.round(laborPerHour),
+        labor_source: laborSource, labor_months_count: laborMonthsCount
       },
       costs_by_type: costsByType,
       timeline: timeline.results,
+      revenue_timeline: revenueTimeline.results,
       validation: {
-        warnings: validation_warnings,
-        has_warnings: validation_warnings.length > 0,
+        warnings: validation_warnings, has_warnings: validation_warnings.length > 0,
         profit_status: profit === null ? 'no_data' : (profit > 0 ? (margin !== null && margin < 10 ? 'warning' : 'ok') : 'error')
       }
     })
