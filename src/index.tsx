@@ -4550,6 +4550,23 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
           ...(otherCostsR.results as any[]).map((c: any) => ({ ...c, label: costTypeNamesR[c.cost_type] || c.cost_type, is_auto: false })),
           ...(sharedTotalR > 0 ? [{ cost_type: 'shared', total: sharedTotalR, label: 'Chi phí chung (phân bổ)', is_auto: true, shared_count: sharedCountR }] : [])
         ]
+        // Build labor_timeline per month for months mode
+        const laborTimelineMapR: Record<string, number> = {}
+        for (const calMonth of monthArr) {
+          const calYear = parseInt(year)
+          const calY = year
+          const calM = String(calMonth).padStart(2, '0')
+          const key = `${calYear}-${calM}`
+          const cachedR2 = await db.prepare(`SELECT total_labor_cost FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`).bind(projectId, calMonth, calYear).first() as any
+          if (cachedR2?.total_labor_cost) { laborTimelineMapR[key] = cachedR2.total_labor_cost; continue }
+          const mlcR2 = await db.prepare(`SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`).bind(calMonth, calYear).first() as any
+          if (!mlcR2?.total_labor_cost) continue
+          const phR2 = await db.prepare(`SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
+          const chR2 = await db.prepare(`SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`).bind(OVERTIME_FACTOR, calY, calM).first() as any
+          const pEff = phR2?.proj_eff || 0; const cEff = chR2?.comp_eff || 0
+          if (pEff > 0 && cEff > 0) laborTimelineMapR[key] = Math.round(pEff * (mlcR2.total_labor_cost / cEff))
+        }
+        const laborTimelineR = Object.entries(laborTimelineMapR).map(([month, total]) => ({ month, total })).sort((a, b) => a.month.localeCompare(b.month))
         return c.json({
           project: { id: project.id, code: project.code, name: project.name, contract_value: contractValue, start_date: project.start_date, end_date: project.end_date, status: project.status },
           period: { label: periodLabel, mode: periodMode, date_from: dateFrom, date_to: dateTo },
@@ -4557,6 +4574,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
           costs_by_type: costsByTypeR,
           timeline: timelineR.results,
           revenue_timeline: revTimelineR.results,
+          labor_timeline: laborTimelineR,
           validation: { warnings: validation_warnings, has_warnings: validation_warnings.length > 0, profit_status: profitR === null ? 'no_data' : (profitR > 0 ? (marginR !== null && marginR < 10 ? 'warning' : 'ok') : 'error') }
         })
       }
@@ -4681,6 +4699,47 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       GROUP BY month ORDER BY month
     `).bind(projectId).all()
 
+    // Timeline lương từng tháng (từ project_labor_costs đã sync)
+    // Dùng calMonthsInRange đã tính ở trên để lấy đúng tháng trong khoảng
+    const laborTimelineMap: Record<string, number> = {}
+    for (const { calYear, calMonth } of calMonthsInRange) {
+      const row = await db.prepare(
+        `SELECT total_labor_cost FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
+      ).bind(projectId, calMonth, calYear).first() as any
+      if (row?.total_labor_cost) {
+        const key = `${calYear}-${String(calMonth).padStart(2,'0')}`
+        laborTimelineMap[key] = (laborTimelineMap[key] || 0) + row.total_labor_cost
+      } else {
+        // Fallback real-time nếu chưa sync
+        const calY = String(calYear)
+        const calM = String(calMonth).padStart(2,'0')
+        const mlcRow = await db.prepare(
+          `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+        ).bind(calMonth, calYear).first() as any
+        if (mlcRow?.total_labor_cost) {
+          const projHrsRow = await db.prepare(`
+            SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as proj_raw,
+                   SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+            FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+          `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
+          const compHrsRow = await db.prepare(`
+            SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+            FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+          `).bind(OVERTIME_FACTOR, calY, calM).first() as any
+          const projEff = projHrsRow?.proj_eff || 0
+          const compEff = compHrsRow?.comp_eff || 0
+          if (projEff > 0 && compEff > 0) {
+            const cph = mlcRow.total_labor_cost / compEff
+            const key = `${calYear}-${calM}`
+            laborTimelineMap[key] = (laborTimelineMap[key] || 0) + Math.round(projEff * cph)
+          }
+        }
+      }
+    }
+    const laborTimeline = Object.entries(laborTimelineMap)
+      .map(([month, total]) => ({ month, total }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+
     // ── Shared cost ───────────────────────────────────────────────────────
     // all_time / year / range: lấy tất cả shared_costs của dự án trong khoảng ngày
     // Dùng ngày giao dịch (year+month của shared_costs) hoặc allocated_date nếu có
@@ -4755,6 +4814,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       costs_by_type: costsByType,
       timeline: timeline.results,
       revenue_timeline: revenueTimeline.results,
+      labor_timeline: laborTimeline,
       validation: {
         warnings: validation_warnings, has_warnings: validation_warnings.length > 0,
         profit_status: profit === null ? 'no_data' : (profit > 0 ? (margin !== null && margin < 10 ? 'warning' : 'ok') : 'error')

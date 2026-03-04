@@ -3282,7 +3282,7 @@ async function loadFinanceProject() {
       api(`/projects/${projectId}`).catch(() => null)
     ])
     if (!el) return
-    const { project, summary, costs_by_type, timeline, revenue_timeline, validation } = data
+    const { project, summary, costs_by_type, timeline, revenue_timeline, labor_timeline, validation } = data
     const members = projDetail?.members || []
 
     // Validation warnings banner
@@ -3322,26 +3322,33 @@ async function loadFinanceProject() {
           ? `<span class="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full"><i class="fas fa-clock"></i> Real-time</span>`
           : `<span class="inline-flex items-center gap-1 text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Chưa có dữ liệu</span>`
 
-    // Monthly breakdown — merge cost and revenue timelines by month
+    // Monthly breakdown — merge cost, labor, and revenue timelines by month
     const timelineByMonth = {}
     ;(timeline || []).forEach(t => {
-      if (!timelineByMonth[t.month]) timelineByMonth[t.month] = { cost: 0, revenue: 0, types: {} }
-      timelineByMonth[t.month].cost += t.total || 0
-      timelineByMonth[t.month].types[t.cost_type] = (timelineByMonth[t.month].types[t.cost_type] || 0) + (t.total || 0)
+      if (!timelineByMonth[t.month]) timelineByMonth[t.month] = { other_cost: 0, labor: 0, revenue: 0 }
+      timelineByMonth[t.month].other_cost += t.total || 0
+    })
+    ;(labor_timeline || []).forEach(l => {
+      if (!timelineByMonth[l.month]) timelineByMonth[l.month] = { other_cost: 0, labor: 0, revenue: 0 }
+      timelineByMonth[l.month].labor += l.total || 0
     })
     ;(revenue_timeline || []).forEach(r => {
-      if (!timelineByMonth[r.month]) timelineByMonth[r.month] = { cost: 0, revenue: 0, types: {} }
+      if (!timelineByMonth[r.month]) timelineByMonth[r.month] = { other_cost: 0, labor: 0, revenue: 0 }
       timelineByMonth[r.month].revenue += r.total || 0
     })
     const monthlyRows = Object.entries(timelineByMonth).sort(([a],[b]) => a.localeCompare(b)).map(([month, info]) => {
       const [yr, mo] = month.split('-')
-      const profitRow = info.revenue - info.cost
+      const totalCostRow = (info.other_cost || 0) + (info.labor || 0)
+      const profitRow = info.revenue - totalCostRow
       const profitClass = profitRow > 0 ? 'text-green-600' : profitRow < 0 ? 'text-red-600' : 'text-gray-400'
+      const costDetail = info.labor > 0
+        ? `${fmt(totalCostRow)} <span class="text-gray-400 text-xs">(lương ${fmt(info.labor)})</span>`
+        : (info.other_cost > 0 ? fmt(totalCostRow) : '—')
       return `<tr class="border-b hover:bg-gray-50 text-xs">
         <td class="py-1.5 px-2 font-medium">T${parseInt(mo)}/${yr}</td>
         <td class="py-1.5 px-2 text-right text-green-600">${info.revenue > 0 ? fmt(info.revenue) : '—'}</td>
-        <td class="py-1.5 px-2 text-right text-red-600">${info.cost > 0 ? fmt(info.cost) : '—'}</td>
-        <td class="py-1.5 px-2 text-right ${profitClass}">${(info.revenue > 0 || info.cost > 0) ? fmt(profitRow) : '—'}</td>
+        <td class="py-1.5 px-2 text-right text-red-600">${costDetail}</td>
+        <td class="py-1.5 px-2 text-right ${profitClass}">${(info.revenue > 0 || totalCostRow > 0) ? fmt(profitRow) : '—'}</td>
       </tr>`
     }).join('')
 
@@ -3545,7 +3552,7 @@ async function loadFinanceProject() {
             <tbody>${monthlyRows}</tbody>
           </table>
         </div>
-        <p class="text-xs text-gray-400 mt-2">* Chi phí lương và chi phí chung phân bổ không được phân tách theo tháng trong bảng này</p>
+        <p class="text-xs text-gray-400 mt-2">* Chi phí chung phân bổ không được phân tách theo tháng trong bảng này</p>
       </div>` : ''}
     `
 
@@ -3575,28 +3582,31 @@ async function loadFinanceProject() {
       destroyChart('finTimeline')
       const ctx2 = $('finTimeline')
       if (ctx2) {
-        // Merge all months from cost timeline and revenue timeline
+        // Merge all months from cost timeline, labor timeline and revenue timeline
         const allMonthsSet = new Set([
           ...(timeline || []).map(t => t.month),
+          ...(labor_timeline || []).map(l => l.month),
           ...(revenue_timeline || []).map(r => r.month)
         ])
         const displayMonths = [...allMonthsSet].sort()
         if (displayMonths.length) {
-          const costData    = displayMonths.map(m => (timeline || []).filter(t => t.month === m).reduce((s, t) => s + (t.total || 0), 0))
-          const revenueData = displayMonths.map(m => { const r = (revenue_timeline || []).find(r => r.month === m); return r?.total || 0 })
+          const otherCostData = displayMonths.map(m => (timeline || []).filter(t => t.month === m).reduce((s, t) => s + (t.total || 0), 0))
+          const laborData     = displayMonths.map(m => { const l = (labor_timeline || []).find(l => l.month === m); return l?.total || 0 })
+          const revenueData   = displayMonths.map(m => { const r = (revenue_timeline || []).find(r => r.month === m); return r?.total || 0 })
           charts['finTimeline'] = new Chart(ctx2, {
             type: 'bar',
             data: {
               labels: displayMonths.map(m => { const [y,mo] = m.split('-'); return `T${parseInt(mo)}/${y}` }),
               datasets: [
-                { label: 'Chi phí', data: costData, backgroundColor: 'rgba(239,68,68,0.7)', borderRadius: 4, order: 2 },
+                { label: 'Lương', data: laborData, backgroundColor: 'rgba(59,130,246,0.75)', borderRadius: 4, order: 3, stack: 'cost' },
+                { label: 'Chi phí khác', data: otherCostData, backgroundColor: 'rgba(239,68,68,0.7)', borderRadius: 4, order: 4, stack: 'cost' },
                 { label: 'Doanh thu', data: revenueData, backgroundColor: 'rgba(16,185,129,0.7)', borderRadius: 4, order: 1 }
               ]
             },
             options: {
               responsive: true,
               plugins: { legend: { position: 'top' }, tooltip: { callbacks: { label: (ctx) => ` ${ctx.dataset.label}: ${fmtMoney(ctx.parsed.y)}` } } },
-              scales: { y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } } }
+              scales: { x: { stacked: true }, y: { beginAtZero: true, stacked: false, ticks: { callback: v => fmtMoney(v) } } }
             }
           })
         } else {
