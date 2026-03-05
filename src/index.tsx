@@ -1427,7 +1427,13 @@ app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
     const params: any[] = []
     if (project_id) { query += ` AND pc.project_id = ?`; params.push(parseInt(project_id)) }
     if (cost_type) { query += ` AND pc.cost_type = ?`; params.push(cost_type) }
-    if (year) { query += ` AND strftime('%Y', pc.cost_date) = ?`; params.push(year) }
+    if (year) {
+      // Dùng fiscal year date range thay vì calendar year
+      const fySettings = await getFiscalYearSettings(db)
+      const { startDate, endDate } = getFiscalYearDateRange(parseInt(year), fySettings)
+      query += ` AND pc.cost_date >= ? AND pc.cost_date <= ?`
+      params.push(startDate, endDate)
+    }
     query += ' ORDER BY pc.cost_date DESC'
 
     const result = await db.prepare(query).bind(...params).all()
@@ -1532,7 +1538,13 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
     `
     const params: any[] = []
     if (project_id) { query += ` AND pr.project_id = ?`; params.push(parseInt(project_id)) }
-    if (year) { query += ` AND strftime('%Y', pr.revenue_date) = ?`; params.push(year) }
+    if (year) {
+      // Dùng fiscal year date range thay vì calendar year
+      const fySettings = await getFiscalYearSettings(db)
+      const { startDate, endDate } = getFiscalYearDateRange(parseInt(year), fySettings)
+      query += ` AND pr.revenue_date >= ? AND pr.revenue_date <= ?`
+      params.push(startDate, endDate)
+    }
     query += ' ORDER BY pr.revenue_date DESC'
     const result = await db.prepare(query).bind(...params).all()
     return c.json(result.results)
