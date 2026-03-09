@@ -70,6 +70,56 @@ function getRoleBadge(role) {
   return map[role] || role
 }
 
+// ─── Project-level role helpers ───────────────────────────────────────────────
+// Cache: projectId → { role } for currentUser
+const _projectRoleCache = {}
+
+// Lấy effective role của currentUser trong một dự án cụ thể
+// Kết hợp global role + project-member role
+function getEffectiveRoleForProject(projectId) {
+  const rolePriority = { system_admin: 4, project_admin: 3, project_leader: 2, member: 1 }
+  const globalLevel = rolePriority[currentUser?.role] || 1
+  const projRole = _projectRoleCache[projectId]
+  const projLevel = rolePriority[projRole] || 0
+  return (projLevel > globalLevel) ? projRole : (currentUser?.role || 'member')
+}
+
+// Lấy role cao nhất của currentUser trên tất cả project (dùng cho danh sách task toàn cục)
+function getEffectiveGlobalRole() {
+  if (!currentUser) return 'member'
+  const rolePriority = { system_admin: 4, project_admin: 3, project_leader: 2, member: 1 }
+  let best = currentUser.role
+  let bestLevel = rolePriority[best] || 1
+  for (const role of Object.values(_projectRoleCache)) {
+    const lvl = rolePriority[role] || 0
+    if (lvl > bestLevel) { best = role; bestLevel = lvl }
+  }
+  return best
+}
+
+// Gọi sau khi load allProjects để điền cache role theo project
+// Dùng my_project_role (trả về từ /api/projects) hoặc members nếu có
+function refreshProjectRoleCache() {
+  for (const p of (allProjects || [])) {
+    // Ưu tiên my_project_role được trả về từ API (hiệu quả hơn)
+    if (p.my_project_role) {
+      _projectRoleCache[p.id] = p.my_project_role
+      continue
+    }
+    // Fallback: dùng members nếu có (khi load project detail)
+    if (p.members) {
+      const m = p.members.find(m => m.user_id === currentUser?.id)
+      if (m?.role) _projectRoleCache[p.id] = m.role
+    }
+  }
+}
+
+// Kiểm tra user có quyền leader/admin trong bất kỳ dự án nào không
+function isAnyProjectLeaderOrAdmin() {
+  const eff = getEffectiveGlobalRole()
+  return ['system_admin','project_admin','project_leader'].includes(eff)
+}
+
 function getRoleLabel(role) {
   const map = { system_admin: 'System Admin', project_admin: 'Project Admin', project_leader: 'Project Leader', member: 'Member' }
   return map[role] || role
@@ -272,6 +322,13 @@ async function initApp() {
   try {
     allDisciplines = await api('/disciplines')
   } catch (e) { allDisciplines = [] }
+
+  // Preload allProjects để populate _projectRoleCache sớm nhất có thể
+  // (quan trọng: giúp task/timesheet pages biết effective role của user)
+  try {
+    allProjects = await api('/projects')
+    refreshProjectRoleCache()
+  } catch (e) { /* ignore */ }
 
   initDatetimeClock()
   loadDashboard()
@@ -490,6 +547,8 @@ async function loadProjects() {
   try {
     allProjects = await api('/projects')
     allUsers = await api('/users')
+    // Cập nhật cache role ngay sau khi load (my_project_role từ API)
+    refreshProjectRoleCache()
     renderProjectsGrid(allProjects)
 
     // Fill project filter dropdowns across pages
@@ -578,8 +637,19 @@ async function openProjectDetail(id) {
     $('projectDetailCode').textContent = `${project.code} • ${getProjectTypeName(project.project_type)}`
     $('projectDetailStatus').innerHTML = getStatusBadge(project.status)
 
-    const canEdit = ['system_admin', 'project_admin'].includes(currentUser.role)
+    // Kiểm tra project-level role của user hiện tại trong dự án này
+    const myMember = project.members?.find(m => m.user_id === currentUser.id)
+    const myProjectRole = myMember?.role || null
+    // Effective role: ưu tiên role cao hơn giữa global và project-level
+    const rolePriority = { system_admin: 4, project_admin: 3, project_leader: 2, member: 1 }
+    const globalRoleLevel = rolePriority[currentUser.role] || 1
+    const projectRoleLevel = rolePriority[myProjectRole] || 0
+    const effectiveRole = (projectRoleLevel > globalRoleLevel) ? myProjectRole : currentUser.role
+
+    const canEdit = ['system_admin', 'project_admin', 'project_leader'].includes(effectiveRole)
     const canDelete = currentUser.role === 'system_admin'
+    const canManageMembers = ['system_admin', 'project_admin'].includes(currentUser.role) ||
+      ['project_admin', 'project_leader'].includes(myProjectRole)
 
     // Show edit/delete in project detail header
     let projActions = document.getElementById('projDetailActions')
@@ -594,6 +664,16 @@ async function openProjectDetail(id) {
       ${canEdit ? `<button onclick="openProjectModal(${JSON.stringify(project).replace(/"/g,'&quot;')})" class="btn-secondary text-xs px-3 py-1.5"><i class="fas fa-edit mr-1"></i>Sửa</button>` : ''}
       ${canDelete ? `<button onclick="confirmDeleteProject(${project.id}, '${project.name.replace(/'/g,"\\'")}' )" class="btn-danger text-xs px-3 py-1.5"><i class="fas fa-trash mr-1"></i>Xóa</button>` : ''}
     `
+
+    // Nếu user là project_leader/admin theo project, show badge thông báo
+    if (myProjectRole && myProjectRole !== 'member' && currentUser.role === 'member') {
+      const roleNames = { project_leader: 'Trưởng dự án', project_admin: 'Quản lý dự án' }
+      const banner = document.createElement('div')
+      banner.className = 'mb-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700 flex items-center gap-2'
+      banner.innerHTML = `<i class="fas fa-shield-alt"></i> Bạn là <strong>${roleNames[myProjectRole] || myProjectRole}</strong> của dự án này – có quyền xem và quản lý toàn bộ công việc.`
+      const detailContent = $('projectDetailContent')
+      if (detailContent) detailContent.insertAdjacentElement('beforebegin', banner)
+    }
 
     const total = tasks.length
     const done = tasks.filter(t => t.status === 'completed' || t.status === 'review').length
@@ -626,7 +706,7 @@ async function openProjectDetail(id) {
         <div class="card">
           <div class="flex justify-between items-center mb-4">
             <h3 class="font-bold text-gray-800"><i class="fas fa-users text-primary mr-2"></i>Thành viên (${project.members?.length || 0})</h3>
-            ${canEdit ? `<button onclick="openAddMemberModal(${project.id})" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Thêm</button>` : ''}
+            ${canManageMembers ? `<button onclick="openAddMemberModal(${project.id})" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Thêm</button>` : ''}
           </div>
           <div class="space-y-2 max-h-48 overflow-y-auto">
             ${project.members?.map(m => `
@@ -634,13 +714,20 @@ async function openProjectDetail(id) {
                 <div class="flex items-center gap-2">
                   <div class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${m.full_name?.split(' ').pop()?.charAt(0) || 'U'}</div>
                   <div>
-                    <div class="text-sm font-medium text-gray-800">${m.full_name}</div>
+                    <div class="text-sm font-medium text-gray-800">${m.full_name}${m.user_id === currentUser.id ? ' <span class="text-xs text-blue-500">(bạn)</span>' : ''}</div>
                     <div class="text-xs text-gray-400">${m.department || ''}</div>
                   </div>
                 </div>
                 <div class="flex items-center gap-2">
-                  ${getRoleBadge(m.role)}
-                  ${canEdit ? `<button onclick="removeMember(${project.id}, ${m.user_id})" class="text-red-400 hover:text-red-600 text-xs"><i class="fas fa-times"></i></button>` : ''}
+                  ${canManageMembers ? `
+                    <select class="text-xs border rounded px-1 py-0.5 bg-white" style="max-width:130px"
+                      onchange="updateMemberRole(${project.id}, ${m.user_id}, this.value)">
+                      <option value="member" ${m.role==='member'?'selected':''}>Thành viên</option>
+                      <option value="project_leader" ${m.role==='project_leader'?'selected':''}>Trưởng DA</option>
+                      <option value="project_admin" ${m.role==='project_admin'?'selected':''}>Quản lý DA</option>
+                    </select>
+                  ` : `${getProjectRoleBadge(m.role)}`}
+                  ${canManageMembers ? `<button onclick="removeMember(${project.id}, ${m.user_id})" class="text-red-400 hover:text-red-600 text-xs"><i class="fas fa-times"></i></button>` : ''}
                 </div>
               </div>
             `).join('') || '<p class="text-gray-400 text-sm text-center">Chưa có thành viên</p>'}
@@ -676,7 +763,7 @@ async function openProjectDetail(id) {
       <div class="card">
         <div class="flex justify-between items-center mb-4">
           <h3 class="font-bold text-gray-800"><i class="fas fa-tasks text-primary mr-2"></i>Danh sách Task (${tasks.length})</h3>
-          <button onclick="openTaskModal(null, ${project.id})" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Tạo task</button>
+          ${canEdit ? `<button onclick="openTaskModal(null, ${project.id})" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Tạo task</button>` : ''}
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-xs">
@@ -807,6 +894,30 @@ async function removeMember(projectId, userId) {
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 
+// Cập nhật vai trò của thành viên trong dự án
+async function updateMemberRole(projectId, userId, newRole) {
+  try {
+    await api(`/projects/${projectId}/members/${userId}`, { method: 'put', data: { role: newRole } })
+    const roleNames = { member: 'Thành viên', project_leader: 'Trưởng dự án', project_admin: 'Quản lý dự án' }
+    toast(`Đã cập nhật vai trò thành "${roleNames[newRole] || newRole}"`)
+    // Không cần reload toàn trang, dropdown đã hiển thị giá trị mới
+  } catch (e) {
+    toast('Lỗi cập nhật vai trò: ' + (e.response?.data?.error || e.message), 'error')
+    // Reload lại để reset dropdown về giá trị cũ
+    openProjectDetail(projectId)
+  }
+}
+
+// Badge hiển thị vai trò trong dự án (project-level role)
+function getProjectRoleBadge(role) {
+  const badges = {
+    project_admin: '<span class="badge text-xs" style="background:#ede9fe;color:#5b21b6"><i class="fas fa-crown mr-1"></i>Quản lý DA</span>',
+    project_leader: '<span class="badge text-xs" style="background:#dbeafe;color:#1d4ed8"><i class="fas fa-star mr-1"></i>Trưởng DA</span>',
+    member: '<span class="badge text-xs" style="background:#f3f4f6;color:#6b7280">Thành viên</span>'
+  }
+  return badges[role] || badges.member
+}
+
 // Categories
 function openCategoryModal(projectId, cat = null) {
   $('catProjectId').value = projectId
@@ -873,6 +984,9 @@ async function loadTasks() {
     if (!allUsers.length) allUsers = await api('/users')
     allTasks = await api('/tasks')
 
+    // Populate project role cache for current user
+    refreshProjectRoleCache()
+
     // Fill project filter
     const pf = $('taskProjectFilter')
     if (pf) {
@@ -892,11 +1006,15 @@ async function loadTasks() {
 function renderTasksTable(tasks) {
   const tbody = $('tasksTable')
   if (!tbody) return
-  const canEditTask = ['system_admin', 'project_admin'].includes(currentUser?.role)
-  const canDeleteTask = ['system_admin', 'project_admin'].includes(currentUser?.role)
+  // Kiểm tra effective role: kể cả project-level role
+  const effGlobal = getEffectiveGlobalRole()
   tbody.innerHTML = tasks.map(t => {
     const isAssigned = t.assigned_to === currentUser?.id
-    const memberCanEdit = currentUser?.role === 'member' && isAssigned
+    // Có thể sửa nếu: là admin/leader global/project, hoặc là người được giao
+    const effForTask = getEffectiveRoleForProject(t.project_id)
+    const canEditThisTask = ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned
+    // Xóa task: system_admin hoặc project_admin (global hoặc per-project)
+    const canDeleteThisTask = ['system_admin','project_admin'].includes(currentUser?.role) || effForTask === 'project_admin'
     return `
     <tr class="table-row ${isOverdue(t) ? 'overdue-row' : ''}">
       <td class="py-2 pr-3">
@@ -918,8 +1036,8 @@ function renderTasksTable(tasks) {
       <td class="py-2 pr-3">${getStatusBadge(t.status)}</td>
       <td class="py-2">
         <div class="flex gap-1">
-          ${(canEditTask || memberCanEdit) ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
-          ${canDeleteTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-400 hover:text-red-600 px-2 py-1 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
+          ${canEditThisTask ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
+          ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-400 hover:text-red-600 px-2 py-1 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
         </div>
       </td>
     </tr>`
@@ -946,12 +1064,18 @@ function filterTasks() {
 }
 
 async function openTaskModal(taskId = null, projectId = null) {
-  if (!allProjects.length) allProjects = await api('/projects')
+  if (!allProjects.length) { allProjects = await api('/projects'); refreshProjectRoleCache() }
   if (!allUsers.length) allUsers = await api('/users')
 
   $('taskModalTitle').textContent = taskId ? 'Chỉnh sửa Task' : 'Tạo Task mới'
   $('taskId').value = taskId || ''
-  const isMember = currentUser?.role === 'member'
+
+  // Xác định effective role: ưu tiên project-level nếu đang tạo task trong project cụ thể
+  const effRoleForModal = projectId
+    ? getEffectiveRoleForProject(projectId)
+    : (taskId ? getEffectiveGlobalRole() : getEffectiveGlobalRole())
+  // isMember = chỉ là plain member (không có project-level quyền cao hơn)
+  const isMember = !['system_admin','project_admin','project_leader'].includes(effRoleForModal)
 
   // Fill projects
   $('taskProject').innerHTML = '<option value="">-- Chọn dự án --</option>' +
@@ -1115,7 +1239,11 @@ async function openTaskDetail(id) {
 
         <div class="flex justify-end gap-2 pt-2 border-t">
           <button onclick="closeModal('taskDetailModal')" class="btn-secondary text-sm">Đóng</button>
-          <button onclick="closeModal('taskDetailModal'); openTaskModal(${task.id})" class="btn-primary text-sm">Chỉnh sửa</button>
+          ${(()=> {
+            const effD = getEffectiveRoleForProject(task.project_id)
+            const canEditD = ['system_admin','project_admin','project_leader'].includes(effD) || task.assigned_to === currentUser?.id
+            return canEditD ? `<button onclick="closeModal('taskDetailModal'); openTaskModal(${task.id})" class="btn-primary text-sm">Chỉnh sửa</button>` : ''
+          })()}
         </div>
       </div>
     `
@@ -1139,7 +1267,7 @@ async function initTsFilterDropdowns() {
   _tsDropdownsInitialised = true
 
   const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
   const canSeeAll   = isAdmin || isProjAdmin
 
   // ------ Month ------
@@ -1174,8 +1302,11 @@ async function initTsFilterDropdowns() {
       const savedVal = projSel.value  // preserve current selection
       const projects = await api('/timesheets/projects')
       _tsProjectsCache = projects
-      // Backfill allProjects cache for other uses
-      if (!allProjects.length) allProjects = projects
+      // Backfill allProjects cache for other uses — nhưng cần refresh role cache
+      if (!allProjects.length) {
+        // timesheets/projects không có my_project_role, load từ /api/projects
+        try { allProjects = await api('/projects'); refreshProjectRoleCache() } catch(__) { allProjects = projects }
+      }
       projSel.innerHTML = '<option value="">📁 Tất cả dự án</option>' +
         projects.map(p => `<option value="${p.id}">${p.code} – ${p.name} (${p.total_hours || 0}h)</option>`).join('')
       // Restore selection after rebuild
@@ -1228,7 +1359,7 @@ async function initTsFilterDropdowns() {
 async function loadTimesheets() {
   try {
     const isAdmin     = currentUser.role === 'system_admin'
-    const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+    const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
     const canSeeAll   = isAdmin || isProjAdmin
 
     // Subtitle
@@ -1461,7 +1592,7 @@ function resetTimesheetFilters() {
 function exportTimesheetExcel() {
   if (!allTimesheets.length) { toast('Không có dữ liệu để xuất', 'warning'); return }
   const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
   const canSeeAll   = isAdmin || isProjAdmin
   const statusLabels = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
 
@@ -1497,7 +1628,7 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
   if (!tbody) return
 
   const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
   const canSeeAll   = isAdmin || isProjAdmin
   const canApprove  = isAdmin || isProjAdmin
 
@@ -1577,7 +1708,7 @@ async function openTimesheetModal(tsId = null) {
   if (!allProjects.length) allProjects = await api('/projects')
 
   const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
 
   $('tsModalTitle').textContent = tsId ? 'Sửa Timesheet' : 'Thêm Timesheet'
   $('tsId').value = tsId || ''

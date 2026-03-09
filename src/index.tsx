@@ -302,6 +302,8 @@ app.get('/api/projects', authMiddleware, async (c) => {
     const db = c.env.DB
     const user = c.get('user') as any
 
+    // Trả về my_project_role: role của user hiện tại trong từng project (từ project_members)
+    // Dùng để frontend populate _projectRoleCache mà không cần gọi thêm API
     let query = `
       SELECT p.*, 
         u1.full_name as admin_name, 
@@ -309,7 +311,8 @@ app.get('/api/projects', authMiddleware, async (c) => {
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) as total_tasks,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'completed') as completed_tasks,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.is_overdue = 1) as overdue_tasks,
-        (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) as member_count
+        (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) as member_count,
+        (SELECT pm2.role FROM project_members pm2 WHERE pm2.project_id = p.id AND pm2.user_id = ${user.id} LIMIT 1) as my_project_role
       FROM projects p
       LEFT JOIN users u1 ON p.admin_id = u1.id
       LEFT JOIN users u2 ON p.leader_id = u2.id
@@ -318,8 +321,13 @@ app.get('/api/projects', authMiddleware, async (c) => {
     if (user.role !== 'system_admin') {
       query += ` WHERE p.id IN (SELECT project_id FROM project_members WHERE user_id = ?) OR p.admin_id = ? OR p.leader_id = ?`
       const result = await db.prepare(query).bind(user.id, user.id, user.id).all()
-      // Hide financial data from non-system_admin
-      const masked = (result.results as any[]).map(p => ({ ...p, contract_value: undefined, budget: undefined }))
+      // Tính effective my_project_role (bao gồm admin_id / leader_id)
+      const masked = (result.results as any[]).map(p => {
+        let myRole = (p as any).my_project_role || null
+        if ((p as any).admin_id === user.id) myRole = higherRole(myRole || 'member', 'project_admin')
+        if ((p as any).leader_id === user.id) myRole = higherRole(myRole || 'member', 'project_leader')
+        return { ...p, contract_value: undefined, budget: undefined, my_project_role: myRole }
+      })
       return c.json(masked)
     }
 
@@ -469,6 +477,44 @@ app.post('/api/projects/:id/members', authMiddleware, async (c) => {
   }
 })
 
+// PUT /api/projects/:id/members/:userId — cập nhật vai trò thành viên trong dự án
+app.put('/api/projects/:id/members/:userId', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const projectId = parseInt(c.req.param('id'))
+    const targetUserId = parseInt(c.req.param('userId'))
+    const { role } = await c.req.json()
+
+    // Chỉ system_admin hoặc project admin của dự án này mới được đổi role
+    const canEdit = user.role === 'system_admin' || await isProjectAdmin(db, user.id, projectId)
+    if (!canEdit) return c.json({ error: 'Không có quyền thay đổi vai trò thành viên' }, 403)
+
+    const validRoles = ['member', 'project_leader', 'project_admin']
+    if (!validRoles.includes(role)) return c.json({ error: 'Vai trò không hợp lệ' }, 400)
+
+    await db.prepare(
+      'UPDATE project_members SET role = ? WHERE project_id = ? AND user_id = ?'
+    ).bind(role, projectId, targetUserId).run()
+
+    // Thông báo cho user được đổi role
+    const roleLabels: Record<string, string> = {
+      member: 'Thành viên',
+      project_leader: 'Trưởng dự án',
+      project_admin: 'Quản lý dự án'
+    }
+    await db.prepare(
+      'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(targetUserId, 'Vai trò dự án được cập nhật',
+      `Vai trò của bạn trong dự án đã được cập nhật thành: ${roleLabels[role] || role}`,
+      'info', 'project', projectId).run()
+
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 app.delete('/api/projects/:id/members/:userId', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -579,13 +625,20 @@ app.get('/api/tasks', authMiddleware, async (c) => {
     `
     const params: any[] = []
 
-    if (user.role === 'member') {
+    // Lấy effective role: member có thể là project_leader/admin trong project_members
+    const effectiveRole = await getEffectiveRole(db, user, project_id ? parseInt(project_id) : undefined)
+
+    if (effectiveRole === 'member') {
+      // Pure member: chỉ thấy task được giao cho mình
       query += ` AND t.assigned_to = ?`
       params.push(user.id)
-    } else if (user.role === 'project_leader') {
-      query += ` AND t.project_id IN (SELECT project_id FROM project_members WHERE user_id = ?)`
-      params.push(user.id)
+    } else if (effectiveRole === 'project_leader') {
+      // Project leader (global hoặc per-project): thấy tất cả task trong project mình quản lý
+      const sub = projectAccessSubquery(user.id)
+      query += ` AND t.project_id IN ${sub.sql}`
+      params.push(...sub.params)
     }
+    // project_admin / system_admin: không filter thêm
 
     if (project_id) { query += ` AND t.project_id = ?`; params.push(parseInt(project_id)) }
     if (status) { query += ` AND t.status = ?`; params.push(status) }
@@ -688,7 +741,7 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
 
     // RBAC: member chỉ được cập nhật progress và status của task được giao
     const isAdmin = user.role === 'system_admin'
-    const isProjAdmin = user.role === 'project_admin' || user.role === 'project_leader'
+    const isProjAdmin = await isProjectLeaderOrAdmin(db, user, task.project_id)
     const isAssigned = task.assigned_to === user.id
 
     if (!isAdmin && !isProjAdmin && !isAssigned)
@@ -769,6 +822,96 @@ async function isProjectAdmin(db: D1Database, userId: number, projectId: number)
     `SELECT id FROM project_members WHERE project_id = ? AND user_id = ? AND role IN ('project_admin','project_leader')`
   ).bind(projectId, userId).first()
   return !!mem
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: lấy role hiệu quả cho user trong ngữ cảnh project.
+//
+// Ý tưởng: một user có global role = 'member' vẫn có thể được giao vai trò
+// 'project_leader' hoặc 'project_admin' trong project_members cho từng dự án.
+// Hàm này trả về role CAO NHẤT trong số:
+//   1. Global role (users.role)
+//   2. Project-member role (project_members.role cho projectId, nếu có)
+//   3. Nếu không có projectId: kiểm tra xem user có bất kỳ project nào với
+//      role cao không (dùng cho danh sách toàn cục)
+//
+// Thứ tự ưu tiên: system_admin > project_admin > project_leader > member
+// ─────────────────────────────────────────────────────────────────────────────
+const ROLE_PRIORITY: Record<string, number> = {
+  system_admin: 4,
+  project_admin: 3,
+  project_leader: 2,
+  member: 1
+}
+function higherRole(a: string, b: string): string {
+  return (ROLE_PRIORITY[a] || 0) >= (ROLE_PRIORITY[b] || 0) ? a : b
+}
+
+async function getEffectiveRole(db: D1Database, user: any, projectId?: number): Promise<string> {
+  // system_admin: luôn là system_admin
+  if (user.role === 'system_admin') return 'system_admin'
+
+  let effectiveRole = user.role as string
+
+  if (projectId) {
+    // Kiểm tra role trong project_members cho dự án cụ thể
+    const mem = await db.prepare(
+      `SELECT role FROM project_members WHERE project_id = ? AND user_id = ?`
+    ).bind(projectId, user.id).first() as any
+    if (mem?.role) effectiveRole = higherRole(effectiveRole, mem.role)
+
+    // Kiểm tra projects.admin_id / projects.leader_id
+    const proj = await db.prepare(
+      `SELECT admin_id, leader_id FROM projects WHERE id = ?`
+    ).bind(projectId).first() as any
+    if (proj) {
+      if (proj.admin_id === user.id) effectiveRole = higherRole(effectiveRole, 'project_admin')
+      if (proj.leader_id === user.id) effectiveRole = higherRole(effectiveRole, 'project_leader')
+    }
+  } else {
+    // Không có projectId cụ thể: lấy role cao nhất từ tất cả project_members
+    const bestMem = await db.prepare(
+      `SELECT role FROM project_members WHERE user_id = ?
+       ORDER BY CASE role
+         WHEN 'project_admin'  THEN 3
+         WHEN 'project_leader' THEN 2
+         WHEN 'member'         THEN 1
+         ELSE 0 END DESC LIMIT 1`
+    ).bind(user.id).first() as any
+    if (bestMem?.role) effectiveRole = higherRole(effectiveRole, bestMem.role)
+
+    // Cũng kiểm tra projects.admin_id / leader_id
+    const projRole = await db.prepare(
+      `SELECT CASE WHEN admin_id = ? THEN 'project_admin'
+                   WHEN leader_id = ? THEN 'project_leader'
+                   ELSE NULL END as role
+       FROM projects WHERE admin_id = ? OR leader_id = ? LIMIT 1`
+    ).bind(user.id, user.id, user.id, user.id).first() as any
+    if (projRole?.role) effectiveRole = higherRole(effectiveRole, projRole.role)
+  }
+
+  return effectiveRole
+}
+
+// Helper nhanh: user có phải là project_leader/admin (cho project bất kỳ) không?
+// Dùng để thay thế: user.role === 'project_admin' || user.role === 'project_leader'
+async function isProjectLeaderOrAdmin(db: D1Database, user: any, projectId?: number): Promise<boolean> {
+  if (['system_admin', 'project_admin', 'project_leader'].includes(user.role)) return true
+  const role = await getEffectiveRole(db, user, projectId)
+  return ['system_admin', 'project_admin', 'project_leader'].includes(role)
+}
+
+// SQL subquery dùng trong WHERE clause để lọc project cho user có thể xem
+// (bao gồm cả project-level role)
+function projectAccessSubquery(userId: number): { sql: string; params: number[] } {
+  return {
+    sql: `(
+      SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+      UNION
+      SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader')
+    )`,
+    params: [userId, userId, userId]
+  }
 }
 
 // ===================================================
@@ -911,18 +1054,14 @@ app.get('/api/timesheets/summary', authMiddleware, async (c) => {
     `
     const params: any[] = []
 
-    if (user.role === 'system_admin') {
+    const effRole = await getEffectiveRole(db, user, project_id ? parseInt(project_id) : undefined)
+    if (effRole === 'system_admin') {
       if (user_id)    { query += ` AND ts.user_id = ?`;    params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
-    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
-      query += `
-        AND ts.project_id IN (
-          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
-          UNION
-          SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader')
-        )
-      `
-      params.push(user.id, user.id, user.id)
+    } else if (effRole === 'project_admin' || effRole === 'project_leader') {
+      const sub = projectAccessSubquery(user.id)
+      query += ` AND ts.project_id IN ${sub.sql}`
+      params.push(...sub.params)
       if (user_id)    { query += ` AND ts.user_id = ?`;    params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     } else {
@@ -975,17 +1114,13 @@ app.get('/api/timesheets/members', authMiddleware, async (c) => {
     const params: any[] = []
 
     // Scope to projects the requester can see
-    if (user.role === 'system_admin') {
+    const effRoleM = await getEffectiveRole(db, user, project_id ? parseInt(project_id) : undefined)
+    if (effRoleM === 'system_admin') {
       // no extra restriction
-    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
-      query += `
-        AND ts.project_id IN (
-          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
-          UNION
-          SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader')
-        )
-      `
-      params.push(user.id, user.id, user.id)
+    } else if (effRoleM === 'project_admin' || effRoleM === 'project_leader') {
+      const sub = projectAccessSubquery(user.id)
+      query += ` AND ts.project_id IN ${sub.sql}`
+      params.push(...sub.params)
     } else {
       // member: only their own row
       query += ` AND ts.user_id = ?`
@@ -1029,17 +1164,13 @@ app.get('/api/timesheets/projects', authMiddleware, async (c) => {
     `
     const params: any[] = []
 
-    if (user.role === 'system_admin') {
+    const effRoleP = await getEffectiveRole(db, user, undefined)
+    if (effRoleP === 'system_admin') {
       // no extra restriction
-    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
-      query += `
-        AND p.id IN (
-          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
-          UNION
-          SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader')
-        )
-      `
-      params.push(user.id, user.id, user.id)
+    } else if (effRoleP === 'project_admin' || effRoleP === 'project_leader') {
+      const sub = projectAccessSubquery(user.id)
+      query += ` AND p.id IN ${sub.sql}`
+      params.push(...sub.params)
     } else {
       query += ` AND ts.user_id = ?`
       params.push(user.id)
@@ -1158,19 +1289,14 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     `
     const params: any[] = []
 
-    if (user.role === 'system_admin') {
+    const effRoleTS = await getEffectiveRole(db, user, project_id ? parseInt(project_id) : undefined)
+    if (effRoleTS === 'system_admin') {
       if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
-    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
-      query += `
-        AND ts.project_id IN (
-          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
-          UNION
-          SELECT project_id FROM project_members
-          WHERE user_id = ? AND role IN ('project_admin','project_leader')
-        )
-      `
-      params.push(user.id, user.id, user.id)
+    } else if (effRoleTS === 'project_admin' || effRoleTS === 'project_leader') {
+      const sub = projectAccessSubquery(user.id)
+      query += ` AND ts.project_id IN ${sub.sql}`
+      params.push(...sub.params)
       if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     } else {
@@ -1195,22 +1321,16 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       FROM timesheets ts
       WHERE 1=1
     `
-    // Build identical WHERE conditions for summary
+    // Build identical WHERE conditions for summary (using same effRoleTS)
     let sumQ = sumQuery
     const sumParams: any[] = []
-    if (user.role === 'system_admin') {
+    if (effRoleTS === 'system_admin') {
       if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
       if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
-    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
-      sumQ += `
-        AND ts.project_id IN (
-          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
-          UNION
-          SELECT project_id FROM project_members
-          WHERE user_id = ? AND role IN ('project_admin','project_leader')
-        )
-      `
-      sumParams.push(user.id, user.id, user.id)
+    } else if (effRoleTS === 'project_admin' || effRoleTS === 'project_leader') {
+      const sub = projectAccessSubquery(user.id)
+      sumQ += ` AND ts.project_id IN ${sub.sql}`
+      sumParams.push(...sub.params)
       if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
       if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
     } else {
@@ -1249,11 +1369,13 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     if (!project_id || !work_date) return c.json({ error: 'project_id and work_date required' }, 400)
 
     // member chỉ được tạo timesheet cho chính mình
-    // system_admin/project_admin có thể tạo cho user_id bất kỳ (nếu truyền vào)
-    const targetUserId = (data.user_id && user.role !== 'member') ? data.user_id : user.id
+    // system_admin/project_admin/project_leader có thể tạo cho user_id bất kỳ (nếu truyền vào)
+    const effRoleGlobal = await getEffectiveRole(db, user)
+    const targetUserId = (data.user_id && effRoleGlobal !== 'member') ? data.user_id : user.id
 
-    // project_admin/leader chỉ tạo được trong dự án mình quản lý
-    if (user.role === 'project_admin' || user.role === 'project_leader') {
+    // project_leader/admin chỉ tạo được trong dự án mình quản lý
+    const effRoleCreate = await getEffectiveRole(db, user, parseInt(project_id))
+    if (effRoleCreate !== 'system_admin' && (effRoleCreate === 'project_admin' || effRoleCreate === 'project_leader')) {
       const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
       if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho dự án này' }, 403)
     }
@@ -1303,8 +1425,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     // Kiểm tra quyền chỉnh sửa
     const isOwner = ts.user_id === user.id
     const isAdmin = user.role === 'system_admin'
-    const isProjAdmin = (user.role === 'project_admin' || user.role === 'project_leader')
-      && await isProjectAdmin(db, user.id, ts.project_id)
+    const isProjAdmin = await isProjectLeaderOrAdmin(db, user, ts.project_id)
 
     if (!isOwner && !isAdmin && !isProjAdmin) {
       return c.json({ error: 'Bạn không có quyền chỉnh sửa timesheet này' }, 403)
@@ -1363,7 +1484,8 @@ app.post('/api/timesheets/bulk-approve', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    if (!['system_admin', 'project_admin', 'project_leader'].includes(user.role)) {
+    if (!['system_admin', 'project_admin', 'project_leader'].includes(user.role) &&
+        !(await isProjectLeaderOrAdmin(db, user))) {
       return c.json({ error: 'Access denied' }, 403)
     }
     const { ids } = await c.req.json()
@@ -1392,12 +1514,11 @@ app.delete('/api/timesheets/:id', authMiddleware, async (c) => {
     const ts = await db.prepare('SELECT * FROM timesheets WHERE id = ?').bind(id).first() as any
     if (!ts) return c.json({ error: 'Not found' }, 404)
 
-    const isOwner = ts.user_id === user.id
-    const isAdmin = user.role === 'system_admin'
-    const isProjAdmin = (user.role === 'project_admin' || user.role === 'project_leader')
-      && await isProjectAdmin(db, user.id, ts.project_id)
+    const isOwner2 = ts.user_id === user.id
+    const isAdmin2 = user.role === 'system_admin'
+    const isProjAdmin2 = await isProjectLeaderOrAdmin(db, user, ts.project_id)
 
-    if (!isAdmin && !isProjAdmin && !(isOwner && ['draft', 'rejected'].includes(ts.status))) {
+    if (!isAdmin2 && !isProjAdmin2 && !(isOwner2 && ['draft', 'rejected'].includes(ts.status))) {
       return c.json({ error: 'Không có quyền xóa timesheet này' }, 403)
     }
 
