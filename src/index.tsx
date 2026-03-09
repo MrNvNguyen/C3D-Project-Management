@@ -262,17 +262,37 @@ app.put('/api/users/:id', authMiddleware, async (c) => {
     }
 
     const data = await c.req.json()
-    const { full_name, email, phone, department, salary_monthly, is_active, role } = data
+    const { username, full_name, email, phone, department, salary_monthly, is_active, role, password } = data
 
-    const updateFields = []
-    const values = []
+    const updateFields: string[] = []
+    const values: any[] = []
+
     if (full_name !== undefined) { updateFields.push('full_name = ?'); values.push(full_name) }
     if (email !== undefined) { updateFields.push('email = ?'); values.push(email) }
     if (phone !== undefined) { updateFields.push('phone = ?'); values.push(phone) }
     if (department !== undefined) { updateFields.push('department = ?'); values.push(department) }
-    if (user.role === 'system_admin' && salary_monthly !== undefined) { updateFields.push('salary_monthly = ?'); values.push(salary_monthly) }
-    if (user.role === 'system_admin' && is_active !== undefined) { updateFields.push('is_active = ?'); values.push(is_active) }
-    if (user.role === 'system_admin' && role !== undefined) { updateFields.push('role = ?'); values.push(role) }
+
+    // Chỉ system_admin mới được đổi username, role, salary, status
+    if (user.role === 'system_admin') {
+      if (username !== undefined && username.trim() !== '') {
+        // Kiểm tra username chưa tồn tại ở user khác
+        const existing = await db.prepare('SELECT id FROM users WHERE username = ? AND id != ?')
+          .bind(username.trim(), id).first()
+        if (existing) return c.json({ error: 'Tên đăng nhập đã tồn tại' }, 400)
+        updateFields.push('username = ?'); values.push(username.trim())
+      }
+      if (role !== undefined) { updateFields.push('role = ?'); values.push(role) }
+      if (salary_monthly !== undefined) { updateFields.push('salary_monthly = ?'); values.push(salary_monthly) }
+      if (is_active !== undefined) { updateFields.push('is_active = ?'); values.push(is_active) }
+    }
+
+    // Đổi mật khẩu (cả admin và user tự đổi)
+    if (password && password.trim() !== '') {
+      const hashed = await hashPassword(password.trim())
+      updateFields.push('password_hash = ?'); values.push(hashed)
+    }
+
+    if (updateFields.length === 0) return c.json({ error: 'Không có gì để cập nhật' }, 400)
     updateFields.push('updated_at = CURRENT_TIMESTAMP')
     values.push(id)
 
@@ -283,12 +303,34 @@ app.put('/api/users/:id', authMiddleware, async (c) => {
   }
 })
 
+// DELETE /api/users/:id — hard delete: xóa hoàn toàn tài khoản và tất cả dữ liệu liên quan
 app.delete('/api/users/:id', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
     const id = parseInt(c.req.param('id'))
-    await db.prepare('UPDATE users SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(id).run()
-    return c.json({ success: true })
+
+    // Không được tự xóa chính mình
+    if (user.id === id) return c.json({ error: 'Không thể tự xóa tài khoản của mình' }, 400)
+
+    // Kiểm tra user tồn tại
+    const target = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first() as any
+    if (!target) return c.json({ error: 'Không tìm thấy tài khoản' }, 404)
+
+    // Cascade xóa dữ liệu liên quan
+    await db.prepare('DELETE FROM timesheets WHERE user_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM project_members WHERE user_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM notifications WHERE user_id = ?').bind(id).run()
+    await db.prepare('DELETE FROM task_history WHERE user_id = ?').bind(id).run()
+    // Các task được giao cho user này: bỏ assigned_to
+    await db.prepare('UPDATE tasks SET assigned_to = NULL WHERE assigned_to = ?').bind(id).run()
+    // Các project có admin/leader là user này: bỏ trống
+    await db.prepare('UPDATE projects SET admin_id = NULL WHERE admin_id = ?').bind(id).run()
+    await db.prepare('UPDATE projects SET leader_id = NULL WHERE leader_id = ?').bind(id).run()
+    // Xóa user
+    await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run()
+
+    return c.json({ success: true, message: `Đã xóa tài khoản "${target.full_name}"` })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

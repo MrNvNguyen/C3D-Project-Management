@@ -2904,9 +2904,19 @@ function renderUsersTable(users) {
         <span class="badge ${u.is_active ? 'badge-completed' : 'badge-cancelled'}">${u.is_active ? 'Hoạt động' : 'Vô hiệu'}</span>
       </td>
       <td class="py-2">
-        <div class="flex gap-1">
-          <button onclick="openUserModal(${u.id})" class="btn-secondary text-xs px-2 py-1"><i class="fas fa-edit"></i></button>
-          ${u.id !== currentUser.id ? `<button onclick="toggleUserStatus(${u.id}, ${u.is_active})" class="${u.is_active ? 'text-red-400 hover:text-red-600' : 'text-green-400 hover:text-green-600'} px-1.5 text-sm" title="${u.is_active ? 'Vô hiệu hóa' : 'Kích hoạt'}"><i class="fas fa-${u.is_active ? 'ban' : 'check'}"></i></button>` : ''}
+        <div class="flex gap-1 items-center">
+          <button onclick="openUserModal(${u.id})" class="btn-secondary text-xs px-2 py-1" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
+          ${u.id !== currentUser.id ? `
+            <button onclick="toggleUserStatus(${u.id}, ${u.is_active})" 
+              class="${u.is_active ? 'text-orange-400 hover:text-orange-600' : 'text-green-400 hover:text-green-600'} px-1.5 text-sm" 
+              title="${u.is_active ? 'Vô hiệu hóa' : 'Kích hoạt'}">
+              <i class="fas fa-${u.is_active ? 'ban' : 'check-circle'}"></i>
+            </button>
+            <button onclick="confirmDeleteUser(${u.id}, '${u.full_name.replace(/'/g,"\\'")}')" 
+              class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa vĩnh viễn">
+              <i class="fas fa-trash"></i>
+            </button>
+          ` : '<span class="text-xs text-gray-300 px-2">(bạn)</span>'}
         </div>
       </td>
     </tr>
@@ -2927,11 +2937,21 @@ async function openUserModal(userId = null) {
   $('userModalTitle').textContent = userId ? 'Chỉnh sửa tài khoản' : 'Tạo tài khoản mới'
   $('userId').value = userId || ''
 
-  const passwordField = $('userPassword').parentElement
+  // Submit button text
+  const submitBtn = $('userSubmitBtn')
+  if (submitBtn) submitBtn.textContent = userId ? 'Lưu thay đổi' : 'Tạo tài khoản'
+
+  // Username: có thể sửa khi edit (system_admin), hiển thị hint
+  const usernameInput = $('userUsername')
+  const usernameHint  = $('userUsernameHint')
   if (userId) {
+    if (usernameInput) usernameInput.disabled = false  // cho phép sửa
+    if (usernameHint)  usernameHint.classList.remove('hidden')
     $('userPassword').required = false
     $('userPassword').placeholder = 'Để trống nếu không đổi'
   } else {
+    if (usernameInput) usernameInput.disabled = false
+    if (usernameHint)  usernameHint.classList.add('hidden')
     $('userPassword').required = true
     $('userPassword').placeholder = 'Mật khẩu ban đầu'
   }
@@ -2948,7 +2968,6 @@ async function openUserModal(userId = null) {
       const deptEl = $('userDepartment')
       if (deptEl) {
         if (deptEl.tagName === 'SELECT') {
-          // Try exact match first, else add custom option
           let found = false
           for (const opt of deptEl.options) { if (opt.value === user.department) { found = true; break } }
           if (!found && user.department) {
@@ -2980,8 +2999,14 @@ async function openUserModal(userId = null) {
 $('userForm').addEventListener('submit', async (e) => {
   e.preventDefault()
   const id = $('userId').value
+  const username = $('userUsername').value.trim()
+  const password = $('userPassword').value
+
+  if (!id && !password) { toast('Nhập mật khẩu', 'warning'); return }
+  if (!username) { toast('Tên đăng nhập không được để trống', 'warning'); return }
+
   const data = {
-    username: $('userUsername').value,
+    username,
     full_name: $('userFullName').value,
     email: $('userEmail').value,
     phone: $('userPhone').value,
@@ -2989,15 +3014,13 @@ $('userForm').addEventListener('submit', async (e) => {
     department: ($('userDepartment')?.value) || '',
     salary_monthly: parseFloat($('userSalary').value) || 0
   }
-  const password = $('userPassword').value
-  if (!id && !password) { toast('Nhập mật khẩu', 'warning'); return }
   if (password) data.password = password
 
   try {
     if (id) await api(`/users/${id}`, { method: 'put', data })
-    else await api('/users', { method: 'post', data })
+    else     await api('/users', { method: 'post', data })
     closeModal('userModal')
-    toast(id ? 'Cập nhật tài khoản' : 'Tạo tài khoản thành công')
+    toast(id ? 'Cập nhật tài khoản thành công' : 'Tạo tài khoản thành công')
     loadUsers()
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
@@ -3009,6 +3032,21 @@ async function toggleUserStatus(id, isActive) {
     toast(isActive ? 'Đã vô hiệu hóa' : 'Đã kích hoạt')
     loadUsers()
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+function confirmDeleteUser(id, name) {
+  showConfirmDelete(
+    'Xóa tài khoản',
+    `<p>Bạn có chắc muốn <strong class="text-red-600">XÓA VĨNH VIỄN</strong> tài khoản <strong>"${name}"</strong>?</p>
+     <p class="text-red-600 mt-2 text-xs font-bold">⚠️ Toàn bộ dữ liệu liên quan (timesheet, thành viên dự án, thông báo) sẽ bị xóa và không thể khôi phục!</p>`,
+    async () => {
+      try {
+        const res = await api(`/users/${id}`, { method: 'delete' })
+        toast(res?.message || 'Đã xóa tài khoản thành công')
+        loadUsers()
+      } catch (e) { toast('Lỗi xóa: ' + (e.response?.data?.error || e.message), 'error') }
+    }
+  )
 }
 
 // ================================================================

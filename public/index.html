@@ -2429,6 +2429,7 @@
         <div>
           <label class="label">Tên đăng nhập *</label>
           <input type="text" id="userUsername" class="input-field" placeholder="VD: nguyen.van.a" required>
+          <p id="userUsernameHint" class="text-xs text-gray-400 mt-1 hidden">Thay đổi tên đăng nhập sẽ yêu cầu người dùng đăng nhập lại.</p>
         </div>
         <div>
           <label class="label">Mật khẩu *</label>
@@ -2480,7 +2481,7 @@
       </div>
       <div class="flex justify-end gap-3 pt-2">
         <button type="button" onclick="closeModal('userModal')" class="btn-secondary">Hủy</button>
-        <button type="submit" class="btn-primary">Tạo tài khoản</button>
+        <button type="submit" id="userSubmitBtn" class="btn-primary">Tạo tài khoản</button>
       </div>
     </form>
   </div>
