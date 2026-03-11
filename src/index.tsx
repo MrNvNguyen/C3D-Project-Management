@@ -1758,6 +1758,108 @@ app.delete('/api/subtasks/:id', authMiddleware, async (c) => {
 })
 
 // ===================================================
+// CHAT / MESSAGES ROUTES
+// GET    /api/messages?context_type=task|project&context_id=X
+// POST   /api/messages
+// DELETE /api/messages/:id
+// ===================================================
+
+// GET messages for a context (task or project)
+app.get('/api/messages', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const { context_type, context_id } = c.req.query()
+    if (!context_type || !context_id) return c.json({ error: 'context_type and context_id required' }, 400)
+
+    const messages = await db.prepare(`
+      SELECT m.*,
+        u.full_name as sender_name,
+        u.role as sender_role,
+        (SELECT json_group_array(json_object(
+          'id', a.id, 'file_name', a.file_name, 'file_type', a.file_type,
+          'file_size', a.file_size, 'data', a.data
+        )) FROM message_attachments a WHERE a.message_id = m.id) as attachments
+      FROM messages m
+      JOIN users u ON m.sender_id = u.id
+      WHERE m.context_type = ? AND m.context_id = ?
+      ORDER BY m.created_at ASC
+    `).bind(context_type, parseInt(context_id)).all()
+
+    // Parse attachments JSON string
+    const result = messages.results.map((msg: any) => ({
+      ...msg,
+      mentions: JSON.parse(msg.mentions || '[]'),
+      attachments: JSON.parse(msg.attachments || '[]').filter((a: any) => a.id !== null)
+    }))
+    return c.json(result)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST new message with optional attachments
+app.post('/api/messages', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const body = await c.req.json()
+    const { context_type, context_id, content, mentions = [], attachments = [] } = body
+
+    if (!context_type || !context_id || !content?.trim()) {
+      return c.json({ error: 'context_type, context_id and content required' }, 400)
+    }
+    if (!['task', 'project'].includes(context_type)) {
+      return c.json({ error: 'context_type must be task or project' }, 400)
+    }
+    // Check total attachment size (max 10MB total per message)
+    const totalSize = attachments.reduce((s: number, a: any) => s + (a.file_size || 0), 0)
+    if (totalSize > 10 * 1024 * 1024) return c.json({ error: 'Tổng file đính kèm không vượt quá 10MB' }, 400)
+
+    const msgResult = await db.prepare(
+      `INSERT INTO messages (context_type, context_id, sender_id, content, mentions) VALUES (?, ?, ?, ?, ?)`
+    ).bind(context_type, parseInt(context_id), user.id, content.trim(), JSON.stringify(mentions)).run()
+
+    const msgId = msgResult.meta.last_row_id
+
+    // Insert attachments
+    for (const att of attachments) {
+      if (!att.file_name || !att.data) continue
+      await db.prepare(
+        `INSERT INTO message_attachments (message_id, file_name, file_type, file_size, data) VALUES (?, ?, ?, ?, ?)`
+      ).bind(msgId, att.file_name, att.file_type || 'application/octet-stream', att.file_size || 0, att.data).run()
+    }
+
+    // Fetch created message
+    const msg = await db.prepare(`
+      SELECT m.*, u.full_name as sender_name, u.role as sender_role
+      FROM messages m JOIN users u ON m.sender_id = u.id WHERE m.id = ?
+    `).bind(msgId).first() as any
+
+    const atts = await db.prepare(`SELECT id, file_name, file_type, file_size, data FROM message_attachments WHERE message_id = ?`).bind(msgId).all()
+
+    return c.json({
+      ...msg,
+      mentions: JSON.parse(msg.mentions || '[]'),
+      attachments: atts.results
+    }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE message (only sender or system_admin)
+app.delete('/api/messages/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const id = parseInt(c.req.param('id'))
+    const msg = await db.prepare('SELECT sender_id FROM messages WHERE id = ?').bind(id).first() as any
+    if (!msg) return c.json({ error: 'Không tìm thấy tin nhắn' }, 404)
+    if (msg.sender_id !== user.id && user.role !== 'system_admin') {
+      return c.json({ error: 'Không có quyền xóa tin nhắn này' }, 403)
+    }
+    await db.prepare('DELETE FROM messages WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
 // COST MANAGEMENT ROUTES (Admin Only)
 // ===================================================
 app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
@@ -5393,6 +5495,10 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, user_id INTEGER NOT NULL, field_changed TEXT NOT NULL, old_value TEXT, new_value TEXT, comment TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS subtasks (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT, status TEXT NOT NULL DEFAULT 'todo', priority TEXT NOT NULL DEFAULT 'medium', assigned_to INTEGER, due_date DATE, estimated_hours REAL DEFAULT 0, actual_hours REAL DEFAULT 0, notes TEXT, created_by INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE INDEX IF NOT EXISTS idx_subtasks_task_id ON subtasks(task_id)`,
+      `CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, context_type TEXT NOT NULL, context_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, content TEXT NOT NULL, mentions TEXT DEFAULT '[]', edited_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE TABLE IF NOT EXISTS message_attachments (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER NOT NULL, file_name TEXT NOT NULL, file_type TEXT NOT NULL, file_size INTEGER DEFAULT 0, data TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(context_type, context_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_msg_attachments ON message_attachments(message_id)`,
       `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER, work_date DATE NOT NULL, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, project_id, work_date))`,
       `CREATE TABLE IF NOT EXISTS project_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, cost_type TEXT NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', cost_date DATE, invoice_number TEXT, vendor TEXT, approved_by INTEGER, notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS project_revenues (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', revenue_date DATE, invoice_number TEXT, payment_status TEXT DEFAULT 'pending', notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,

@@ -766,43 +766,66 @@ async function openProjectDetail(id) {
         </div>
       </div>
 
-      <!-- Tasks Table -->
-      <div class="card">
-        <div class="flex justify-between items-center mb-4">
-          <h3 class="font-bold text-gray-800"><i class="fas fa-tasks text-primary mr-2"></i>Danh sách Task (${tasks.length})</h3>
-          ${canEdit ? `<button onclick="openTaskModal(null, ${project.id})" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Tạo task</button>` : ''}
+      <!-- Project Tabs: Tasks / Chat -->
+      <div class="card p-0 overflow-hidden">
+        <!-- Tab bar -->
+        <div class="flex border-b bg-gray-50 px-4 pt-2">
+          <button id="projTab-tasks" onclick="switchProjectTab('tasks',${project.id})"
+            class="tab-btn active text-xs py-2 px-4 mr-1">
+            <i class="fas fa-tasks mr-1"></i>Danh sách Task (${tasks.length})
+          </button>
+          <button id="projTab-chat" onclick="switchProjectTab('chat',${project.id})"
+            class="tab-btn text-xs py-2 px-4">
+            <i class="fas fa-comments mr-1"></i>Chat nhóm
+          </button>
         </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-xs">
-            <thead><tr class="text-left text-gray-400 border-b">
-              <th class="pb-2 pr-3">Tên task</th>
-              <th class="pb-2 pr-3">Bộ môn</th>
-              <th class="pb-2 pr-3">Ưu tiên</th>
-              <th class="pb-2 pr-3">Phụ trách</th>
-              <th class="pb-2 pr-3">Hạn</th>
-              <th class="pb-2 pr-3">Tiến độ</th>
-              <th class="pb-2">TT</th>
-            </tr></thead>
-            <tbody class="divide-y">
-              ${tasks.map(t => `<tr class="${isOverdue(t) ? 'overdue-row' : 'table-row'}">
-                <td class="py-1.5 pr-3 font-medium text-gray-800">${t.title}</td>
-                <td class="py-1.5 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
-                <td class="py-1.5 pr-3">${getPriorityBadge(t.priority)}</td>
-                <td class="py-1.5 pr-3 text-gray-600">${t.assigned_to_name||'<span class="text-gray-300">Chưa giao</span>'}</td>
-                <td class="py-1.5 pr-3 ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
-                <td class="py-1.5 pr-3">
-                  <div class="flex items-center gap-1.5">
-                    <div class="progress-bar" style="width:60px"><div class="progress-fill ${isOverdue(t)?'danger':''}" style="width:${t.progress||0}%"></div></div>
-                    <span>${t.progress||0}%</span>
-                  </div>
-                </td>
-                <td class="py-1.5">${getStatusBadge(t.status)}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
+
+        <!-- Tasks panel -->
+        <div id="projPanel-tasks" class="p-4">
+          <div class="flex justify-between items-center mb-3">
+            <span class="text-xs text-gray-500">Tổng ${tasks.length} task • ${done} hoàn thành • ${overdue > 0 ? `<span class="text-red-500">${overdue} trễ hạn</span>` : '0 trễ hạn'}</span>
+            ${canEdit ? `<button onclick="openTaskModal(null, ${project.id})" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Tạo task</button>` : ''}
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+              <thead><tr class="text-left text-gray-400 border-b">
+                <th class="pb-2 pr-3">Tên task</th>
+                <th class="pb-2 pr-3">Bộ môn</th>
+                <th class="pb-2 pr-3">Ưu tiên</th>
+                <th class="pb-2 pr-3">Phụ trách</th>
+                <th class="pb-2 pr-3">Hạn</th>
+                <th class="pb-2 pr-3">Tiến độ</th>
+                <th class="pb-2">TT</th>
+              </tr></thead>
+              <tbody class="divide-y">
+                ${tasks.length ? tasks.map(t => `<tr class="${isOverdue(t) ? 'overdue-row' : 'table-row'}" onclick="openTaskDetail(${t.id})" style="cursor:pointer">
+                  <td class="py-1.5 pr-3 font-medium text-gray-800">${t.title}</td>
+                  <td class="py-1.5 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
+                  <td class="py-1.5 pr-3">${getPriorityBadge(t.priority)}</td>
+                  <td class="py-1.5 pr-3 text-gray-600">${t.assigned_to_name||'<span class="text-gray-300">Chưa giao</span>'}</td>
+                  <td class="py-1.5 pr-3 ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
+                  <td class="py-1.5 pr-3">
+                    <div class="flex items-center gap-1.5">
+                      <div class="progress-bar" style="width:60px"><div class="progress-fill ${isOverdue(t)?'danger':''}" style="width:${t.progress||0}%"></div></div>
+                      <span>${t.progress||0}%</span>
+                    </div>
+                  </td>
+                  <td class="py-1.5">${getStatusBadge(t.status)}</td>
+                </tr>`).join('') : `<tr><td colspan="7" class="py-8 text-center text-gray-400 text-sm">Chưa có task nào trong dự án này</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Chat panel (lazy-loaded) -->
+        <div id="projPanel-chat" class="hidden" style="height:520px">
+          <div id="projectChatPanel_${project.id}" style="height:100%"></div>
         </div>
       </div>
     `
+
+    // Store current project id for chat tab switching
+    window._currentProjectDetailId = project.id
 
     navigate('project-detail')
   } catch (e) { toast('Lỗi tải dự án: ' + e.message, 'error') }
@@ -1462,29 +1485,25 @@ async function openTaskDetail(id) {
       return `<i class="fas fa-flag text-xs ${map[p]||'text-gray-400'}" title="${p}"></i>`
     }
 
+    // ── TAB: INFO ────────────────────────────────────────────────────────
     $('taskDetailContent').innerHTML = `
       <div class="space-y-4">
-        <!-- Badges -->
         <div class="flex flex-wrap gap-2">
           ${getStatusBadge(task.status)} ${getPriorityBadge(task.priority)}
           ${task.discipline_code ? `<span class="badge" style="background:#e0f2fe;color:#0369a1">${task.discipline_code}</span>` : ''}
           ${task.phase ? `<span class="badge" style="background:#f0fdf4;color:#15803d">${getPhaseName(task.phase)}</span>` : ''}
           ${overdue ? '<span class="badge badge-overdue">Trễ hạn!</span>' : ''}
         </div>
-
         ${task.description ? `<p class="text-gray-600 text-sm">${task.description}</p>` : ''}
-
-        <!-- Info grid -->
         <div class="grid grid-cols-2 gap-3 text-sm bg-gray-50 rounded-lg p-3">
           <div><span class="text-gray-500">Dự án:</span> <span class="font-medium">${task.project_name||'-'}</span></div>
+          <div><span class="text-gray-500">Hạng mục:</span> <span class="font-medium">${task.category_name||'-'}</span></div>
           <div><span class="text-gray-500">Phụ trách:</span> <span class="font-medium">${task.assigned_to_name||'-'}</span></div>
           <div><span class="text-gray-500">Bắt đầu:</span> <span class="font-medium">${fmtDate(task.start_date)}</span></div>
           <div><span class="text-gray-500 ${overdue?'text-red-500':''}">Hạn:</span> <span class="font-medium ${overdue?'text-red-600':''}">${fmtDate(task.due_date)}</span></div>
           <div><span class="text-gray-500">Giờ dự kiến:</span> <span class="font-medium">${task.estimated_hours||0}h</span></div>
           <div><span class="text-gray-500">Giờ thực tế:</span> <span class="font-medium">${task.actual_hours||0}h</span></div>
         </div>
-
-        <!-- Task progress -->
         <div>
           <div class="flex justify-between text-sm mb-1">
             <span class="text-gray-500 font-medium">Tiến độ Task</span>
@@ -1492,73 +1511,6 @@ async function openTaskDetail(id) {
           </div>
           <div class="progress-bar"><div class="progress-fill ${overdue?'danger':''}" style="width:${task.progress||0}%"></div></div>
         </div>
-
-        <!-- SUBTASKS SECTION -->
-        <div class="border rounded-lg overflow-hidden">
-          <div class="flex items-center justify-between px-3 py-2 bg-gray-50 border-b">
-            <div class="flex items-center gap-2">
-              <i class="fas fa-tasks text-primary text-sm"></i>
-              <span class="font-semibold text-gray-700 text-sm">Subtasks</span>
-              <span class="badge text-xs" style="background:#e0f2fe;color:#0369a1">${doneSub}/${totalSub}</span>
-              ${totalSub > 0 ? `
-                <div class="flex items-center gap-1 ml-1">
-                  <div class="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                    <div class="h-full bg-primary rounded-full" style="width:${subPct}%"></div>
-                  </div>
-                  <span class="text-xs text-gray-400">${subPct}%</span>
-                </div>` : ''}
-            </div>
-            <button onclick="openSubtaskModal(${task.id})" class="btn-primary text-xs px-2 py-1">
-              <i class="fas fa-plus mr-1"></i>Thêm
-            </button>
-          </div>
-
-          <div id="subtaskList_${task.id}" class="divide-y max-h-56 overflow-y-auto">
-            ${totalSub === 0 ? `
-              <div class="py-6 text-center text-gray-400 text-sm">
-                <i class="fas fa-clipboard-list text-2xl mb-2 block opacity-30"></i>
-                Chưa có subtask. Nhấn <strong>+ Thêm</strong> để tạo công việc con.
-              </div>` :
-              subtasks.map(s => {
-                const canEditSub = isAdminOrLeader || s.created_by === currentUser?.id || s.assigned_to === currentUser?.id
-                const canDeleteSub = isAdminOrLeader || s.created_by === currentUser?.id
-                const isOverdueSub = s.due_date && s.status !== 'done' && new Date(s.due_date) < new Date()
-                return `
-                <div class="flex items-start gap-2 px-3 py-2 hover:bg-gray-50 group" id="subtaskRow_${s.id}">
-                  <!-- Checkbox toggle done -->
-                  <button onclick="toggleSubtaskDoneDetail(${s.id}, '${s.status}', ${task.id})"
-                    class="mt-0.5 flex-shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
-                    ${s.status==='done' ? 'bg-primary border-primary' : 'border-gray-300 hover:border-primary'}">
-                    ${s.status==='done' ? '<i class="fas fa-check text-white" style="font-size:8px"></i>' : ''}
-                  </button>
-                  <!-- Content -->
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-1.5 flex-wrap">
-                      ${getSubPriorityIcon(s.priority)}
-                      <span class="text-sm ${s.status==='done' ? 'line-through text-gray-400' : 'text-gray-800'} font-medium">${s.title}</span>
-                      ${getSubStatusBadge(s.status)}
-                      ${isOverdueSub ? '<span class="badge badge-overdue text-xs">Trễ!</span>' : ''}
-                    </div>
-                    ${s.notes ? `<p class="text-xs text-gray-500 mt-0.5 truncate">${s.notes}</p>` : ''}
-                    <div class="flex items-center gap-3 mt-0.5 text-xs text-gray-400">
-                      ${s.assigned_to_name ? `<span><i class="fas fa-user mr-1"></i>${s.assigned_to_name}</span>` : ''}
-                      ${s.due_date ? `<span class="${isOverdueSub?'text-red-500 font-medium':''}"><i class="fas fa-calendar mr-1"></i>${fmtDate(s.due_date)}</span>` : ''}
-                      ${s.estimated_hours > 0 ? `<span><i class="fas fa-clock mr-1"></i>${s.estimated_hours}h</span>` : ''}
-                      <span class="text-gray-300">bởi ${s.created_by_name||'-'}</span>
-                    </div>
-                  </div>
-                  <!-- Actions -->
-                  <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    ${canEditSub ? `<button onclick="openSubtaskModal(${task.id}, ${JSON.stringify(s).replace(/"/g,'&quot;')})" class="text-blue-400 hover:text-blue-600 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>` : ''}
-                    ${canDeleteSub ? `<button onclick="deleteSubtask(${s.id}, ${task.id})" class="text-red-400 hover:text-red-600 p-1" title="Xóa"><i class="fas fa-trash text-xs"></i></button>` : ''}
-                  </div>
-                </div>`
-              }).join('')
-            }
-          </div>
-        </div>
-
-        <!-- Task history -->
         ${task.history?.length > 0 ? `
         <div>
           <h4 class="font-bold text-gray-700 mb-2 text-sm"><i class="fas fa-history mr-2 text-gray-400"></i>Lịch sử thay đổi</h4>
@@ -1572,19 +1524,538 @@ async function openTaskDetail(id) {
             `).join('')}
           </div>
         </div>` : ''}
-
-        <!-- Buttons -->
         <div class="flex justify-end gap-2 pt-2 border-t">
           <button onclick="closeModal('taskDetailModal')" class="btn-secondary text-sm">Đóng</button>
           ${canEditTask ? `<button onclick="closeModal('taskDetailModal'); openTaskModal(${task.id})" class="btn-primary text-sm"><i class="fas fa-edit mr-1"></i>Chỉnh sửa Task</button>` : ''}
         </div>
       </div>
     `
+
+    // ── TAB: SUBTASKS ──────────────────────────────────────────────────
+    $('taskDetailSubtasks').innerHTML = `
+      <div class="space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold text-gray-700 text-sm">Subtasks</span>
+            <span class="badge text-xs" style="background:#e0f2fe;color:#0369a1">${doneSub}/${totalSub}</span>
+            ${totalSub > 0 ? `<div class="flex items-center gap-1">
+              <div class="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                <div class="h-full bg-primary rounded-full" style="width:${subPct}%"></div>
+              </div>
+              <span class="text-xs text-gray-400">${subPct}%</span>
+            </div>` : ''}
+          </div>
+          <button onclick="openSubtaskModal(${task.id})" class="btn-primary text-xs px-3 py-1.5">
+            <i class="fas fa-plus mr-1"></i>Thêm subtask
+          </button>
+        </div>
+        <div id="subtaskList_${task.id}" class="border rounded-lg overflow-hidden divide-y">
+          ${totalSub === 0 ? `
+            <div class="py-8 text-center text-gray-400 text-sm">
+              <i class="fas fa-clipboard-list text-2xl mb-2 block opacity-30"></i>
+              Chưa có subtask. Nhấn <strong>+ Thêm subtask</strong> để tạo công việc con.
+            </div>` :
+            subtasks.map(s => {
+              const canEditSub = isAdminOrLeader || s.created_by === currentUser?.id || s.assigned_to === currentUser?.id
+              const canDeleteSub = isAdminOrLeader || s.created_by === currentUser?.id
+              const isOverdueSub = s.due_date && s.status !== 'done' && new Date(s.due_date) < new Date()
+              return `
+              <div class="flex items-start gap-2 px-3 py-2.5 hover:bg-gray-50 group" id="subtaskRow_${s.id}">
+                <button onclick="toggleSubtaskDoneDetail(${s.id}, '${s.status}', ${task.id})"
+                  class="mt-0.5 flex-shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
+                  ${s.status==='done' ? 'bg-primary border-primary' : 'border-gray-300 hover:border-primary'}">
+                  ${s.status==='done' ? '<i class="fas fa-check text-white" style="font-size:8px"></i>' : ''}
+                </button>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    ${getSubPriorityIcon(s.priority)}
+                    <span class="text-sm ${s.status==='done' ? 'line-through text-gray-400' : 'text-gray-800'} font-medium">${s.title}</span>
+                    ${getSubStatusBadge(s.status)}
+                    ${isOverdueSub ? '<span class="badge badge-overdue text-xs">Trễ!</span>' : ''}
+                  </div>
+                  ${s.notes ? `<p class="text-xs text-gray-500 mt-0.5 truncate">${s.notes}</p>` : ''}
+                  <div class="flex items-center gap-3 mt-0.5 text-xs text-gray-400">
+                    ${s.assigned_to_name ? `<span><i class="fas fa-user mr-1"></i>${s.assigned_to_name}</span>` : ''}
+                    ${s.due_date ? `<span class="${isOverdueSub?'text-red-500 font-medium':''}"><i class="fas fa-calendar mr-1"></i>${fmtDate(s.due_date)}</span>` : ''}
+                    ${s.estimated_hours > 0 ? `<span><i class="fas fa-clock mr-1"></i>${s.estimated_hours}h</span>` : ''}
+                  </div>
+                </div>
+                <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                  ${canEditSub ? `<button onclick="openSubtaskModal(${task.id}, ${JSON.stringify(s).replace(/"/g,'&quot;')})" class="text-blue-400 hover:text-blue-600 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>` : ''}
+                  ${canDeleteSub ? `<button onclick="deleteSubtask(${s.id}, ${task.id})" class="text-red-400 hover:text-red-600 p-1" title="Xóa"><i class="fas fa-trash text-xs"></i></button>` : ''}
+                </div>
+              </div>`
+            }).join('')
+          }
+        </div>
+      </div>
+    `
+
+    // ── TAB: CHAT (lazy load) ─────────────────────────────────────────
+    const chatDiv = $('taskDetailChat')
+    chatDiv.innerHTML = ''
+    chatDiv.style.display = 'none'
+    chatDiv._chatContext = { type: 'task', id: task.id }
+    chatDiv._initialized = false  // Reset so new task loads fresh chat
+
+    // Reset to Info tab
+    switchTaskDetailTab('info')
+
     openModal('taskDetailModal')
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 
+// ── Tab switcher for Task Detail ─────────────────────────────────────────
+function switchTaskDetailTab(tab) {
+  const tabs = { info: 'taskDetailContent', subtasks: 'taskDetailSubtasks', chat: 'taskDetailChat' }
+  Object.entries(tabs).forEach(([key, elId]) => {
+    const el = $(elId)
+    if (el) el.style.display = key === tab ? (key === 'chat' ? 'flex' : 'block') : 'none'
+    const btn = $(`tdTab-${key}`)
+    if (btn) btn.className = `tab-btn text-xs py-2 px-4${key === tab ? ' active' : ''}`
+  })
+  // When chat tab is active: outer body should not overflow so chat fills height
+  const body = $('taskDetailBody')
+  if (body) body.style.overflowY = tab === 'chat' ? 'hidden' : 'auto'
+
+  if (tab === 'chat') {
+    const chatDiv = $('taskDetailChat')
+    if (chatDiv && chatDiv._chatContext && !chatDiv._initialized) {
+      chatDiv._initialized = true
+      initChatPanel(chatDiv, chatDiv._chatContext.type, chatDiv._chatContext.id, 500)
+    }
+  }
+}
+
 // ── Subtask functions ─────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CHAT ENGINE — shared for task chat and project chat
+// ═══════════════════════════════════════════════════════════════════════════
+let _chatMembersCache = {}  // projectId → members list for @mention
+
+// Build and inject chat panel into `container` element
+async function initChatPanel(container, contextType, contextId, heightPx = 500) {
+  container.style.display = 'flex'
+  container.style.flexDirection = 'column'
+  // For task chat: use flex:1 to fill the modal; for project: use fixed height
+  if (contextType === 'task') {
+    container.style.flex = '1'
+    container.style.minHeight = '420px'
+  } else {
+    container.style.height = heightPx + 'px'
+  }
+
+  container.innerHTML = `
+    <div class="chat-messages flex-1 overflow-y-auto bg-gray-50 p-4" id="chatMsgs_${contextType}_${contextId}">
+      <div class="text-center text-gray-400 text-sm py-6"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</div>
+    </div>
+    <div class="chat-input-bar flex-shrink-0" id="chatInputBar_${contextType}_${contextId}">
+      <!-- Attachment preview -->
+      <div class="chat-att-preview" id="chatAttPreview_${contextType}_${contextId}"></div>
+      <!-- Input area -->
+      <div class="chat-input-area" id="chatInputArea_${contextType}_${contextId}" style="position:relative">
+        <textarea id="chatTextarea_${contextType}_${contextId}"
+          class="chat-textarea"
+          placeholder="Nhắn tin... Dùng @ để đề cập thành viên"
+          rows="1"
+          onkeydown="chatKeydown(event,'${contextType}',${contextId})"
+          oninput="chatInput(this,'${contextType}',${contextId})"
+          onpaste="chatPaste(event,'${contextType}',${contextId})"></textarea>
+        <!-- @mention dropdown -->
+        <div id="mentionDropdown_${contextType}_${contextId}" class="mention-dropdown hidden" style="bottom:100%;left:8px;max-width:280px"></div>
+      </div>
+      <!-- Action bar -->
+      <div class="flex items-center justify-between px-2 pt-1.5 pb-1">
+        <div class="flex gap-1">
+          <button onclick="triggerFileAttach('${contextType}',${contextId})" class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors" title="Đính kèm file">
+            <i class="fas fa-paperclip text-sm"></i>
+          </button>
+          <button onclick="triggerImageAttach('${contextType}',${contextId})" class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-indigo-500 transition-colors" title="Đính kèm ảnh">
+            <i class="fas fa-image text-sm"></i>
+          </button>
+          <input type="file" id="fileInput_${contextType}_${contextId}" style="display:none" multiple onchange="onFileSelected(this,'${contextType}',${contextId})">
+          <input type="file" id="imgInput_${contextType}_${contextId}" style="display:none" accept="image/*" multiple onchange="onFileSelected(this,'${contextType}',${contextId})">
+        </div>
+        <button onclick="sendChatMessage('${contextType}',${contextId})"
+          class="flex items-center gap-1.5 bg-primary text-white text-xs font-medium px-4 py-1.5 rounded-lg hover:bg-green-600 transition-colors"
+          title="Gửi (Enter)">
+          <i class="fas fa-paper-plane text-xs"></i> Gửi
+        </button>
+      </div>
+    </div>
+  `
+  // Load messages
+  await loadChatMessages(contextType, contextId)
+}
+
+// ── Load & render messages ────────────────────────────────────────────────
+async function loadChatMessages(contextType, contextId) {
+  const msgsEl = $(`chatMsgs_${contextType}_${contextId}`)
+  if (!msgsEl) return
+  try {
+    const msgs = await api(`/messages?context_type=${contextType}&context_id=${contextId}`)
+    renderChatMessages(msgsEl, msgs, contextType, contextId)
+    scrollChatToBottom(contextType, contextId)
+  } catch(e) {
+    msgsEl.innerHTML = `<div class="text-center text-red-400 text-sm py-6">Lỗi tải chat: ${e.message}</div>`
+  }
+}
+
+function renderChatMessages(container, msgs, contextType, contextId) {
+  if (!msgs.length) {
+    container.innerHTML = `<div class="text-center py-10 text-gray-400">
+      <i class="fas fa-comments text-3xl mb-2 block opacity-20"></i>
+      <p class="text-sm">Chưa có tin nhắn nào. Hãy bắt đầu cuộc trò chuyện!</p>
+    </div>`
+    return
+  }
+
+  // Group messages by date
+  let lastDate = ''
+  container.innerHTML = msgs.map(msg => {
+    const isMe = msg.sender_id === currentUser?.id
+    const dt = dayjs(msg.created_at)
+    const dateLabel = dt.format('DD/MM/YYYY')
+    let dateSep = ''
+    if (dateLabel !== lastDate) {
+      lastDate = dateLabel
+      dateSep = `<div class="flex items-center gap-2 my-3">
+        <div class="flex-1 h-px bg-gray-200"></div>
+        <span class="text-xs text-gray-400 font-medium">${dateLabel}</span>
+        <div class="flex-1 h-px bg-gray-200"></div>
+      </div>`
+    }
+
+    const timeStr = dt.format('HH:mm')
+    const initials = msg.sender_name?.split(' ').pop()?.charAt(0) || '?'
+
+    // Render content with @mention highlighting
+    const contentHtml = renderChatContent(msg.content, msg.mentions || [])
+
+    // Attachments
+    const atts = (msg.attachments || []).map(a => renderAttachment(a)).join('')
+
+    const canDelete = msg.sender_id === currentUser?.id || currentUser?.role === 'system_admin'
+
+    return `${dateSep}
+    <div class="chat-bubble ${isMe ? 'me' : 'other'}" data-msg-id="${msg.id}">
+      ${!isMe ? `<div class="bubble-meta">
+        <div class="mention-avatar" style="width:22px;height:22px;font-size:10px">${initials}</div>
+        <span class="font-medium text-gray-600">${msg.sender_name}</span>
+        <span>${timeStr}</span>
+      </div>` : `<div class="bubble-meta"><span>${timeStr}</span></div>`}
+      <div class="bubble-inner">
+        ${contentHtml}
+        ${atts ? `<div class="mt-2 space-y-1">${atts}</div>` : ''}
+      </div>
+      ${canDelete ? `<div class="flex ${isMe?'justify-end':'justify-start'} mt-0.5">
+        <button class="msg-delete-btn" onclick="deleteChatMessage(${msg.id},'${contextType}',${contextId})" title="Xóa tin nhắn">
+          <i class="fas fa-trash-alt"></i>
+        </button>
+      </div>` : ''}
+    </div>`
+  }).join('')
+}
+
+function renderChatContent(text, mentions) {
+  // Escape HTML
+  let html = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')
+  // Highlight @mentions
+  if (mentions?.length) {
+    mentions.forEach(m => {
+      if (m.name) {
+        html = html.replace(new RegExp('@' + m.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'g'),
+          `<span class="chat-mention">@${m.name}</span>`)
+      }
+    })
+  }
+  return html
+}
+
+function renderAttachment(a) {
+  const isImage = a.file_type?.startsWith('image/')
+  if (isImage) {
+    return `<div class="chat-att-thumb">
+      <img src="${a.data}" alt="${a.file_name}" onclick="openImageViewer('${a.data}','${a.file_name}')" title="${a.file_name}">
+    </div>`
+  }
+  const icon = a.file_type?.includes('pdf') ? 'fa-file-pdf text-red-500' :
+               a.file_type?.includes('word') ? 'fa-file-word text-blue-500' :
+               a.file_type?.includes('sheet') || a.file_type?.includes('excel') ? 'fa-file-excel text-green-500' :
+               'fa-file text-gray-500'
+  const size = a.file_size > 1024*1024 ? (a.file_size/1024/1024).toFixed(1)+'MB' : Math.round(a.file_size/1024)+'KB'
+  return `<a href="${a.data}" download="${a.file_name}" class="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 rounded-lg px-3 py-2 text-sm transition-colors no-underline text-gray-700">
+    <i class="fas ${icon} text-lg flex-shrink-0"></i>
+    <div class="min-w-0"><div class="font-medium truncate max-w-xs">${a.file_name}</div><div class="text-xs text-gray-400">${size}</div></div>
+    <i class="fas fa-download text-gray-400 ml-auto flex-shrink-0"></i>
+  </a>`
+}
+
+function scrollChatToBottom(contextType, contextId) {
+  const el = $(`chatMsgs_${contextType}_${contextId}`)
+  if (el) setTimeout(() => el.scrollTop = el.scrollHeight, 50)
+}
+
+// ── Send message ──────────────────────────────────────────────────────────
+async function sendChatMessage(contextType, contextId) {
+  const ta = $(`chatTextarea_${contextType}_${contextId}`)
+  const content = ta?.value?.trim()
+  if (!content) return
+
+  // Collect pending attachments
+  const attKey = `chatAtts_${contextType}_${contextId}`
+  const attachments = window[attKey] || []
+
+  const mentions = extractMentions(content, contextType, contextId)
+
+  try {
+    const btn = document.querySelector(`#chatInputBar_${contextType}_${contextId} button[onclick*="sendChatMessage"]`)
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin text-xs"></i>' }
+
+    await api('/messages', { method: 'post', data: { context_type: contextType, context_id: parseInt(contextId), content, mentions, attachments } })
+
+    ta.value = ''
+    ta.style.height = 'auto'
+    window[attKey] = []
+    const prev = $(`chatAttPreview_${contextType}_${contextId}`)
+    if (prev) prev.innerHTML = ''
+
+    await loadChatMessages(contextType, contextId)
+
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane text-xs"></i> Gửi' }
+  } catch(e) {
+    toast('Lỗi gửi tin: ' + e.message, 'error')
+    const btn = document.querySelector(`#chatInputBar_${contextType}_${contextId} button[onclick*="sendChatMessage"]`)
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane text-xs"></i> Gửi' }
+  }
+}
+
+// ── Delete message ────────────────────────────────────────────────────────
+async function deleteChatMessage(msgId, contextType, contextId) {
+  showConfirmDelete('Xóa tin nhắn', 'Xóa tin nhắn này?', async () => {
+    await api(`/messages/${msgId}`, { method: 'delete' })
+    await loadChatMessages(contextType, contextId)
+  })
+}
+
+// ── Keyboard handler ──────────────────────────────────────────────────────
+function chatKeydown(e, contextType, contextId) {
+  const dropKey = `mentionDropdownActive_${contextType}_${contextId}`
+  if (window[dropKey]) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); navigateMentionDropdown(contextType, contextId, e.key === 'ArrowDown' ? 1 : -1); return }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); selectActiveMention(contextType, contextId); return }
+    if (e.key === 'Escape') { closeMentionDropdown(contextType, contextId); return }
+  }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    sendChatMessage(contextType, contextId)
+  }
+}
+
+// ── Auto-resize textarea + @mention trigger ───────────────────────────────
+function chatInput(ta, contextType, contextId) {
+  ta.style.height = 'auto'
+  ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
+  checkMentionTrigger(ta, contextType, contextId)
+}
+
+// ── Paste handler — capture images from clipboard ─────────────────────────
+async function chatPaste(e, contextType, contextId) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault()
+      const file = item.getAsFile()
+      if (file) await addAttachment(file, contextType, contextId)
+    }
+  }
+}
+
+// ── File / Image attach ───────────────────────────────────────────────────
+function triggerFileAttach(contextType, contextId) { $(`fileInput_${contextType}_${contextId}`)?.click() }
+function triggerImageAttach(contextType, contextId) { $(`imgInput_${contextType}_${contextId}`)?.click() }
+
+async function onFileSelected(input, contextType, contextId) {
+  for (const file of input.files) await addAttachment(file, contextType, contextId)
+  input.value = ''
+}
+
+async function addAttachment(file, contextType, contextId) {
+  const MAX = 5 * 1024 * 1024
+  if (file.size > MAX) { toast(`File "${file.name}" quá lớn (tối đa 5MB)`, 'error'); return }
+  const attKey = `chatAtts_${contextType}_${contextId}`
+  if (!window[attKey]) window[attKey] = []
+
+  const reader = new FileReader()
+  reader.onload = (ev) => {
+    const att = { file_name: file.name, file_type: file.type, file_size: file.size, data: ev.target.result }
+    window[attKey].push(att)
+    renderAttachmentPreview(contextType, contextId)
+  }
+  reader.readAsDataURL(file)
+}
+
+function renderAttachmentPreview(contextType, contextId) {
+  const atts = window[`chatAtts_${contextType}_${contextId}`] || []
+  const prev = $(`chatAttPreview_${contextType}_${contextId}`)
+  if (!prev) return
+  prev.innerHTML = atts.map((a, i) => {
+    const isImage = a.file_type?.startsWith('image/')
+    return `<div class="chat-att-chip">
+      ${isImage ? `<img src="${a.data}" alt="${a.file_name}">` : `<i class="fas fa-file text-gray-400 text-lg"></i>`}
+      <span class="truncate text-xs flex-1">${a.file_name}</span>
+      <button class="att-remove" onclick="removeAttachment(${i},'${contextType}',${contextId})"><i class="fas fa-times text-xs"></i></button>
+    </div>`
+  }).join('')
+}
+
+function removeAttachment(idx, contextType, contextId) {
+  const atts = window[`chatAtts_${contextType}_${contextId}`] || []
+  atts.splice(idx, 1)
+  renderAttachmentPreview(contextType, contextId)
+}
+
+// ── @mention system ───────────────────────────────────────────────────────
+async function getProjectMembers(contextType, contextId) {
+  // For task chat, we need the project_id — use allTasks cache
+  let projectId = contextId
+  if (contextType === 'task') {
+    const t = allTasks.find(x => x.id == contextId)
+    projectId = t?.project_id || contextId
+  }
+  if (_chatMembersCache[projectId]) return _chatMembersCache[projectId]
+  try {
+    const proj = await api(`/projects/${projectId}`)
+    _chatMembersCache[projectId] = proj.members || []
+    return _chatMembersCache[projectId]
+  } catch { return [] }
+}
+
+function checkMentionTrigger(ta, contextType, contextId) {
+  const val = ta.value
+  const cursor = ta.selectionStart
+  // Find the @ before cursor
+  const before = val.slice(0, cursor)
+  const atIdx = before.lastIndexOf('@')
+  if (atIdx === -1 || (atIdx > 0 && /\S/.test(before[atIdx - 1]))) {
+    closeMentionDropdown(contextType, contextId)
+    return
+  }
+  const query = before.slice(atIdx + 1).toLowerCase()
+  if (query.includes(' ')) { closeMentionDropdown(contextType, contextId); return }
+  showMentionDropdown(query, contextType, contextId, ta, atIdx)
+}
+
+async function showMentionDropdown(query, contextType, contextId, ta, atIdx) {
+  const members = await getProjectMembers(contextType, contextId)
+  const filtered = members.filter(m => m.full_name.toLowerCase().includes(query)).slice(0, 8)
+  const dd = $(`mentionDropdown_${contextType}_${contextId}`)
+  if (!dd) return
+
+  if (!filtered.length) { closeMentionDropdown(contextType, contextId); return }
+
+  dd.innerHTML = filtered.map((m, i) => {
+    const initials = m.full_name.split(' ').pop()?.charAt(0) || '?'
+    return `<div class="mention-item ${i===0?'active':''}" onclick="insertMention('${m.full_name.replace(/'/g,"\\'")}','${contextType}',${contextId})" data-idx="${i}">
+      <div class="mention-avatar">${initials}</div>
+      <div>
+        <div class="font-medium text-gray-800 text-xs">${m.full_name}</div>
+        <div class="text-xs text-gray-400">${m.department||''}</div>
+      </div>
+    </div>`
+  }).join('')
+  dd.classList.remove('hidden')
+  window[`mentionDropdownActive_${contextType}_${contextId}`] = { members: filtered, activeIdx: 0, atIdx }
+}
+
+function closeMentionDropdown(contextType, contextId) {
+  const dd = $(`mentionDropdown_${contextType}_${contextId}`)
+  if (dd) dd.classList.add('hidden')
+  delete window[`mentionDropdownActive_${contextType}_${contextId}`]
+}
+
+function navigateMentionDropdown(contextType, contextId, dir) {
+  const state = window[`mentionDropdownActive_${contextType}_${contextId}`]
+  if (!state) return
+  state.activeIdx = Math.max(0, Math.min(state.members.length - 1, state.activeIdx + dir))
+  const dd = $(`mentionDropdown_${contextType}_${contextId}`)
+  if (!dd) return
+  dd.querySelectorAll('.mention-item').forEach((el, i) => el.classList.toggle('active', i === state.activeIdx))
+}
+
+function selectActiveMention(contextType, contextId) {
+  const state = window[`mentionDropdownActive_${contextType}_${contextId}`]
+  if (!state) return
+  insertMention(state.members[state.activeIdx].full_name, contextType, contextId)
+}
+
+function insertMention(fullName, contextType, contextId) {
+  const ta = $(`chatTextarea_${contextType}_${contextId}`)
+  if (!ta) return
+  const state = window[`mentionDropdownActive_${contextType}_${contextId}`]
+  const cursor = ta.selectionStart
+  const before = ta.value.slice(0, state?.atIdx ?? cursor)
+  const after = ta.value.slice(cursor)
+  ta.value = before + '@' + fullName + ' ' + after
+  const newCursor = before.length + fullName.length + 2
+  ta.setSelectionRange(newCursor, newCursor)
+  ta.focus()
+  closeMentionDropdown(contextType, contextId)
+}
+
+function extractMentions(content, contextType, contextId) {
+  const matches = content.match(/@([\w\s\.]+?)(?=\s|$|@)/g) || []
+  return matches.map(m => ({ name: m.slice(1).trim() }))
+}
+
+// ── Image viewer lightbox ─────────────────────────────────────────────────
+function openImageViewer(src, name) {
+  const existing = $('imageViewerOverlay')
+  if (existing) existing.remove()
+  const overlay = document.createElement('div')
+  overlay.id = 'imageViewerOverlay'
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out'
+  overlay.onclick = () => overlay.remove()
+  overlay.innerHTML = `
+    <div style="position:relative;max-width:90vw;max-height:90vh">
+      <img src="${src}" alt="${name}" style="max-width:90vw;max-height:90vh;border-radius:8px;object-fit:contain">
+      <div style="position:absolute;bottom:-28px;left:0;right:0;text-align:center;color:rgba(255,255,255,.7);font-size:12px">${name}</div>
+      <button onclick="event.stopPropagation();this.closest('a')?.click()" style="position:absolute;top:-10px;right:-10px;background:#fff;border:none;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center" onclick="event.stopPropagation();document.getElementById('imageViewerOverlay').remove()">✕</button>
+    </div>`
+  document.body.appendChild(overlay)
+}
+
+// ── Project Detail Tab Switcher ───────────────────────────────────────────
+function switchProjectTab(tab, projectId) {
+  // Show/hide panels
+  const taskPanel = $('projPanel-tasks')
+  const chatPanel = $('projPanel-chat')
+  if (taskPanel) taskPanel.style.display = tab === 'tasks' ? 'block' : 'none'
+  if (chatPanel) chatPanel.style.display = tab === 'chat' ? 'block' : 'none'
+
+  // Update tab buttons
+  ;['tasks','chat'].forEach(key => {
+    const btn = $(`projTab-${key}`)
+    if (btn) btn.className = `tab-btn text-xs py-2 px-4 mr-1${key === tab ? ' active' : ''}`
+  })
+
+  if (tab === 'chat') {
+    const pid = projectId || window._currentProjectDetailId
+    const container = $(`projectChatPanel_${pid}`)
+    if (container && !container._initialized) {
+      container._initialized = true
+      initChatPanel(container, 'project', pid, 520)
+    }
+  }
+}
+
+// ── Project Chat (embedded in project detail) ─────────────────────────────
+function openProjectChat(projectId) {
+  switchProjectTab('chat', projectId)
+}
+
 
 function openSubtaskModal(taskId, sub = null) {
   $('subtaskTaskId').value = taskId
