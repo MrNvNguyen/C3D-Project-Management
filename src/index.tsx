@@ -682,20 +682,59 @@ app.get('/api/tasks', authMiddleware, async (c) => {
     `
     const params: any[] = []
 
-    // Lấy effective role: member có thể là project_leader/admin trong project_members
-    const effectiveRole = await getEffectiveRole(db, user, project_id ? parseInt(project_id) : undefined)
+    // ─── PHÂN QUYỀN FILTER TASK ───────────────────────────────────────────────
+    // Logic đúng:
+    //  - system_admin / project_admin (global): thấy TẤT CẢ task
+    //  - project_leader (global): thấy task thuộc project mình là leader/admin
+    //  - member (global role):
+    //      + Nếu có project_id cụ thể: kiểm tra role trong project đó
+    //          → nếu là leader/admin trong project đó → thấy tất cả task của project
+    //          → nếu là member trong project đó → chỉ thấy task của mình
+    //      + Nếu KHÔNG có project_id (global list):
+    //          → Dùng UNION: task được giao cho mình
+    //                      + task thuộc project mà mình là leader/admin
+    //          KHÔNG dùng role cao nhất chung vì sẽ bị leak task project khác
 
-    if (effectiveRole === 'member') {
-      // Pure member: chỉ thấy task được giao cho mình
-      query += ` AND t.assigned_to = ?`
-      params.push(user.id)
-    } else if (effectiveRole === 'project_leader') {
-      // Project leader (global hoặc per-project): thấy tất cả task trong project mình quản lý
+    if (user.role === 'system_admin') {
+      // System admin: thấy tất cả, không filter thêm
+    } else if (user.role === 'project_admin') {
+      // Project admin global: thấy tất cả task trong project mình quản lý
       const sub = projectAccessSubquery(user.id)
       query += ` AND t.project_id IN ${sub.sql}`
       params.push(...sub.params)
+    } else if (user.role === 'project_leader') {
+      // Project leader global: thấy task trong project mình là leader/admin
+      const sub = projectAccessSubquery(user.id)
+      query += ` AND t.project_id IN ${sub.sql}`
+      params.push(...sub.params)
+    } else {
+      // Global role = member → cần kiểm tra per-project
+      if (project_id) {
+        // Có project_id cụ thể: kiểm tra đúng role trong project này
+        const effectiveRole = await getEffectiveRole(db, user, parseInt(project_id))
+        if (['project_admin', 'project_leader'].includes(effectiveRole)) {
+          // Là leader/admin trong project này → thấy tất cả task của project
+          // (project_id filter sẽ được thêm bên dưới)
+        } else {
+          // Là member thuần trong project này → chỉ thấy task của mình
+          query += ` AND t.assigned_to = ?`
+          params.push(user.id)
+        }
+      } else {
+        // Không có project_id → global list: UNION hai tập
+        //   1. Task được giao cho mình (ở bất kỳ project nào)
+        //   2. Task thuộc project mà mình là leader/admin
+        query += ` AND (
+          t.assigned_to = ?
+          OR t.project_id IN (
+            SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+            UNION
+            SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader','admin','leader')
+          )
+        )`
+        params.push(user.id, user.id, user.id, user.id)
+      }
     }
-    // project_admin / system_admin: không filter thêm
 
     if (project_id) { query += ` AND t.project_id = ?`; params.push(parseInt(project_id)) }
     if (status) { query += ` AND t.status = ?`; params.push(status) }
@@ -876,7 +915,7 @@ async function isProjectAdmin(db: D1Database, userId: number, projectId: number)
   if (proj) return true
   // cũng check trong bảng project_members với role project_admin
   const mem = await db.prepare(
-    `SELECT id FROM project_members WHERE project_id = ? AND user_id = ? AND role IN ('project_admin','project_leader')`
+    `SELECT id FROM project_members WHERE project_id = ? AND user_id = ? AND role IN ('project_admin','project_leader','admin','leader')`
   ).bind(projectId, userId).first()
   return !!mem
 }
@@ -915,7 +954,11 @@ async function getEffectiveRole(db: D1Database, user: any, projectId?: number): 
     const mem = await db.prepare(
       `SELECT role FROM project_members WHERE project_id = ? AND user_id = ?`
     ).bind(projectId, user.id).first() as any
-    if (mem?.role) effectiveRole = higherRole(effectiveRole, mem.role)
+    // Normalize legacy role values ('admin' → 'project_admin', 'leader' → 'project_leader')
+    const normalizedMemRole = mem?.role === 'admin' ? 'project_admin'
+      : mem?.role === 'leader' ? 'project_leader'
+      : mem?.role
+    if (normalizedMemRole) effectiveRole = higherRole(effectiveRole, normalizedMemRole)
 
     // Kiểm tra projects.admin_id / projects.leader_id
     const proj = await db.prepare(
@@ -931,11 +974,17 @@ async function getEffectiveRole(db: D1Database, user: any, projectId?: number): 
       `SELECT role FROM project_members WHERE user_id = ?
        ORDER BY CASE role
          WHEN 'project_admin'  THEN 3
+         WHEN 'admin'          THEN 3
          WHEN 'project_leader' THEN 2
+         WHEN 'leader'         THEN 2
          WHEN 'member'         THEN 1
          ELSE 0 END DESC LIMIT 1`
     ).bind(user.id).first() as any
-    if (bestMem?.role) effectiveRole = higherRole(effectiveRole, bestMem.role)
+    // Normalize legacy role values
+    const normalizedBestRole = bestMem?.role === 'admin' ? 'project_admin'
+      : bestMem?.role === 'leader' ? 'project_leader'
+      : bestMem?.role
+    if (normalizedBestRole) effectiveRole = higherRole(effectiveRole, normalizedBestRole)
 
     // Cũng kiểm tra projects.admin_id / leader_id
     const projRole = await db.prepare(
@@ -965,7 +1014,7 @@ function projectAccessSubquery(userId: number): { sql: string; params: number[] 
     sql: `(
       SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
       UNION
-      SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader')
+      SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader','admin','leader')
     )`,
     params: [userId, userId, userId]
   }
@@ -5701,7 +5750,7 @@ app.post('/api/system/init', async (c) => {
     }
 
     // Seed project_members for Project 1
-    const proj1Members = [[2, 'member'], [3, 'leader'], [4, 'admin']]
+    const proj1Members = [[2, 'member'], [3, 'project_leader'], [4, 'project_admin']]
     for (const [uid, role] of proj1Members) {
       try {
         await db.prepare(`INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES (1, ?, ?)`).bind(uid, role).run()
@@ -5766,7 +5815,7 @@ app.post('/api/system/init', async (c) => {
     }
 
     // Project 2 members
-    const proj2Members = [[2, 'member'], [3, 'leader'], [4, 'admin']]
+    const proj2Members = [[2, 'member'], [3, 'project_leader'], [4, 'project_admin']]
     for (const [uid, role] of proj2Members) {
       try {
         await db.prepare(`INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES (2, ?, ?)`).bind(uid, role).run()
@@ -5833,7 +5882,7 @@ app.post('/api/system/init', async (c) => {
     } catch (_) { /* skip */ }
 
     // Project 3 members
-    const proj3Members = [[3, 'leader'], [4, 'admin']]
+    const proj3Members = [[3, 'project_leader'], [4, 'project_admin']]
     for (const [uid, role] of proj3Members) {
       try {
         await db.prepare(`INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES (3, ?, ?)`).bind(uid, role).run()
