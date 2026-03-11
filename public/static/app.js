@@ -745,8 +745,7 @@ async function openProjectDetail(id) {
               <div class="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg">
                 <div>
                   <span class="text-xs font-medium text-gray-800">${cat.name}</span>
-                  ${cat.discipline_code ? `<span class="badge ml-2 text-xs" style="background:#e0f2fe;color:#0369a1">${cat.discipline_code}</span>` : ''}
-                  <span class="badge ml-1 text-xs" style="background:#f0fdf4;color:#15803d">${getPhaseName(cat.phase)}</span>
+                  ${cat.code ? `<span class="badge ml-1 text-xs" style="background:#f3f4f6;color:#6b7280">${cat.code}</span>` : ''}
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-400">${cat.completed_tasks||0}/${cat.task_count||0}</span>
@@ -928,10 +927,6 @@ function openCategoryModal(projectId, cat = null) {
   $('catStartDate').value = cat?.start_date || ''
   $('catEndDate').value = cat?.end_date || ''
   $('catDescription').value = cat?.description || ''
-  $('catPhase').value = cat?.phase || 'basic_design'
-  $('catDiscipline').innerHTML = '<option value="">-- Chọn bộ môn --</option>' +
-    allDisciplines.map(d => `<option value="${d.code}" ${cat?.discipline_code===d.code?'selected':''}>${d.code} - ${d.name}</option>`).join('')
-  $('catDiscipline').value = cat?.discipline_code || ''
   openModal('categoryModal')
 }
 
@@ -941,7 +936,6 @@ $('categoryForm').addEventListener('submit', async (e) => {
   const data = {
     project_id: parseInt($('catProjectId').value),
     name: $('catName').value, code: $('catCode').value,
-    discipline_code: $('catDiscipline').value, phase: $('catPhase').value,
     start_date: $('catStartDate').value, end_date: $('catEndDate').value,
     description: $('catDescription').value
   }
