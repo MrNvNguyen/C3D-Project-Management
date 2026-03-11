@@ -672,7 +672,9 @@ app.get('/api/tasks', authMiddleware, async (c) => {
         u1.full_name as assigned_to_name,
         u2.full_name as assigned_by_name,
         p.name as project_name, p.code as project_code,
-        cat.name as category_name
+        cat.name as category_name,
+        (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id) as subtask_count,
+        (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id AND st.status = 'done') as subtask_done_count
       FROM tasks t
       LEFT JOIN users u1 ON t.assigned_to = u1.id
       LEFT JOIN users u2 ON t.assigned_by = u2.id

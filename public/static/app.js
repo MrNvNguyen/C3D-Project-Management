@@ -643,8 +643,16 @@ async function openProjectDetail(id) {
     // Effective role: ưu tiên role cao hơn giữa global và project-level
     const rolePriority = { system_admin: 4, project_admin: 3, project_leader: 2, member: 1 }
     const globalRoleLevel = rolePriority[currentUser.role] || 1
-    const projectRoleLevel = rolePriority[myProjectRole] || 0
-    const effectiveRole = (projectRoleLevel > globalRoleLevel) ? myProjectRole : currentUser.role
+    let projectRoleLevel = rolePriority[myProjectRole] || 0
+    // Bổ sung: kiểm tra user có phải admin_id / leader_id của project
+    if (project.admin_id === currentUser.id) projectRoleLevel = Math.max(projectRoleLevel, rolePriority['project_admin'])
+    if (project.leader_id === currentUser.id) projectRoleLevel = Math.max(projectRoleLevel, rolePriority['project_leader'])
+    const effectiveRole = projectRoleLevel > globalRoleLevel
+      ? (projectRoleLevel >= rolePriority['project_admin'] ? 'project_admin' : 'project_leader')
+      : currentUser.role
+
+    // Cập nhật cache để các hàm khác dùng đúng role trong project này
+    _projectRoleCache[id] = effectiveRole
 
     const canEdit = ['system_admin', 'project_admin', 'project_leader'].includes(effectiveRole)
     const canDelete = currentUser.role === 'system_admin'
@@ -1000,21 +1008,51 @@ async function loadTasks() {
 function renderTasksTable(tasks) {
   const tbody = $('tasksTable')
   if (!tbody) return
-  // Kiểm tra effective role: kể cả project-level role
   const effGlobal = getEffectiveGlobalRole()
+
+  if (!tasks.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
+    return
+  }
+
   tbody.innerHTML = tasks.map(t => {
     const isAssigned = t.assigned_to === currentUser?.id
-    // Có thể sửa nếu: là admin/leader global/project, hoặc là người được giao
     const effForTask = getEffectiveRoleForProject(t.project_id)
     const canEditThisTask = ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned
-    // Xóa task: system_admin hoặc project_admin (global hoặc per-project)
     const canDeleteThisTask = ['system_admin','project_admin'].includes(currentUser?.role) || effForTask === 'project_admin'
+    const subCount = t.subtask_count || 0
+    const subDone  = t.subtask_done_count || 0
+    const hasSubtasks = subCount > 0
+
+    // Subtask progress color
+    const subPct = subCount > 0 ? Math.round(subDone / subCount * 100) : 0
+    const subBadgeColor = subCount === 0 ? '#e5e7eb' : subDone === subCount ? '#dcfce7' : '#fef9c3'
+    const subTextColor  = subCount === 0 ? '#9ca3af' : subDone === subCount ? '#16a34a' : '#92400e'
+
     return `
-    <tr class="table-row ${isOverdue(t) ? 'overdue-row' : ''}">
+    <tr class="task-main-row table-row ${isOverdue(t) ? 'overdue-row' : ''}" data-task-id="${t.id}">
+      <td class="py-2 pl-2 pr-1" style="width:32px">
+        ${hasSubtasks
+          ? `<button onclick="toggleSubtasks(${t.id}, this)" class="subtask-toggle w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 text-gray-400 transition-transform" title="Mở rộng/thu gọn subtask">
+               <i class="fas fa-chevron-right text-xs"></i>
+             </button>`
+          : `<button onclick="openSubtaskModal(${t.id})" class="w-6 h-6 flex items-center justify-center rounded hover:bg-indigo-50 text-gray-300 hover:text-indigo-400 transition-colors" title="Thêm subtask">
+               <i class="fas fa-plus text-xs"></i>
+             </button>`}
+      </td>
       <td class="py-2 pr-3">
-        <div class="font-medium text-gray-800 text-sm cursor-pointer hover:text-primary" onclick="openTaskDetail(${t.id})">${t.title}</div>
-        ${isOverdue(t) ? '<span class="badge badge-overdue text-xs">Trễ hạn!</span>' : ''}
-        <div class="text-xs text-gray-400">${getPhaseName(t.phase)}</div>
+        <div class="flex items-center gap-2">
+          <div>
+            <div class="font-medium text-gray-800 text-sm cursor-pointer hover:text-primary" onclick="openTaskDetail(${t.id})">${t.title}</div>
+            ${isOverdue(t) ? '<span class="badge badge-overdue text-xs">Trễ hạn!</span>' : ''}
+            <div class="flex items-center gap-2 mt-0.5">
+              <span class="text-xs text-gray-400">${getPhaseName(t.phase)}</span>
+              ${hasSubtasks ? `<span class="inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full" style="background:${subBadgeColor};color:${subTextColor}">
+                <i class="fas fa-list-check" style="font-size:9px"></i>${subDone}/${subCount}
+              </span>` : ''}
+            </div>
+          </div>
+        </div>
       </td>
       <td class="py-2 pr-3 text-sm text-gray-600">${t.project_code || '-'}</td>
       <td class="py-2 pr-3"><span class="badge text-xs" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
@@ -1034,8 +1072,174 @@ function renderTasksTable(tasks) {
           ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-400 hover:text-red-600 px-2 py-1 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
         </div>
       </td>
+    </tr>
+    <tr id="subtask-rows-${t.id}" class="subtask-container-row" style="display:none">
+      <td colspan="10" class="p-0">
+        <div id="subtask-panel-${t.id}" class="subtask-panel"></div>
+      </td>
     </tr>`
-  }).join('') || '<tr><td colspan="9" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
+  }).join('')
+}
+
+// ── Expand / collapse subtasks inline ─────────────────────────────────────
+async function toggleSubtasks(taskId, btn) {
+  const containerRow = document.getElementById(`subtask-rows-${taskId}`)
+  const panel = document.getElementById(`subtask-panel-${taskId}`)
+  const icon = btn.querySelector('i')
+
+  const isOpen = containerRow.style.display !== 'none'
+
+  if (isOpen) {
+    // Collapse
+    containerRow.style.display = 'none'
+    icon.style.transform = 'rotate(0deg)'
+    btn.classList.remove('text-indigo-500')
+    btn.classList.add('text-gray-400')
+    return
+  }
+
+  // Expand — load subtasks if not already loaded
+  icon.style.transform = 'rotate(90deg)'
+  btn.classList.remove('text-gray-400')
+  btn.classList.add('text-indigo-500')
+  containerRow.style.display = ''
+
+  if (panel.dataset.loaded === '1') return  // already loaded
+
+  panel.innerHTML = `<div class="flex items-center justify-center py-3 text-gray-400 text-sm">
+    <i class="fas fa-spinner fa-spin mr-2"></i>Đang tải subtask...
+  </div>`
+
+  try {
+    const subtasks = await api(`/tasks/${taskId}/subtasks`)
+    panel.dataset.loaded = '1'
+
+    // Find parent task info for "add subtask" button permission
+    const task = allTasks.find(t => t.id === taskId) || {}
+    const effForTask = getEffectiveRoleForProject(task.project_id)
+    const isAssigned = task.assigned_to === currentUser?.id
+    const canAddSubtask = ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned
+
+    renderSubtaskPanel(taskId, subtasks, canAddSubtask)
+  } catch(e) {
+    panel.innerHTML = `<div class="py-3 px-4 text-red-400 text-sm">Lỗi tải subtask: ${e.message}</div>`
+  }
+}
+
+// ── Render subtask rows inside the panel ──────────────────────────────────
+function renderSubtaskPanel(taskId, subtasks, canAddSubtask) {
+  const panel = document.getElementById(`subtask-panel-${taskId}`)
+  if (!panel) return
+
+  const priorityIcon = { urgent:'🔴', high:'🟠', medium:'🟡', low:'🟢' }
+  const statusColors = {
+    todo:        { bg:'#f3f4f6', text:'#6b7280', label:'Chờ làm'  },
+    in_progress: { bg:'#dbeafe', text:'#1d4ed8', label:'Đang làm' },
+    review:      { bg:'#fef3c7', text:'#92400e', label:'Đang duyệt'},
+    done:        { bg:'#dcfce7', text:'#16a34a', label:'Hoàn thành'}
+  }
+
+  const rows = subtasks.map(s => {
+    const sc = statusColors[s.status] || statusColors.todo
+    const isDone = s.status === 'done'
+    const canEdit = canAddSubtask || s.created_by === currentUser?.id
+    const isChecked = isDone ? 'checked' : ''
+    return `
+    <div class="subtask-row flex items-center gap-3 px-4 py-2 hover:bg-indigo-50/40 border-b border-indigo-50 group" id="str-${s.id}">
+      <!-- indent line -->
+      <div class="flex-shrink-0 flex items-center" style="width:24px">
+        <div class="w-px h-full bg-indigo-200 mx-auto" style="height:20px"></div>
+      </div>
+      <div class="flex-shrink-0 w-4 h-4 flex items-center justify-center">
+        <span class="text-xs">${priorityIcon[s.priority] || '🟡'}</span>
+      </div>
+      <!-- checkbox toggle done -->
+      <input type="checkbox" ${isChecked} onchange="toggleSubtaskDone(${s.id}, ${taskId}, this)"
+        class="w-4 h-4 rounded border-gray-300 text-indigo-500 cursor-pointer flex-shrink-0"
+        title="Đánh dấu hoàn thành">
+      <div class="flex-1 min-w-0">
+        <span class="text-sm ${isDone ? 'line-through text-gray-400' : 'text-gray-700'}">${s.title}</span>
+        <div class="flex flex-wrap items-center gap-2 mt-0.5">
+          <span class="text-xs px-1.5 py-0.5 rounded-full font-medium" style="background:${sc.bg};color:${sc.text}">${sc.label}</span>
+          ${s.assigned_to_name ? `<span class="text-xs text-gray-400"><i class="fas fa-user text-gray-300 mr-1"></i>${s.assigned_to_name}</span>` : ''}
+          ${s.due_date ? `<span class="text-xs text-gray-400"><i class="fas fa-calendar-alt text-gray-300 mr-1"></i>${fmtDate(s.due_date)}</span>` : ''}
+          ${s.estimated_hours ? `<span class="text-xs text-gray-400"><i class="fas fa-clock text-gray-300 mr-1"></i>${s.estimated_hours}h</span>` : ''}
+          ${s.notes ? `<span class="text-xs text-gray-400 italic truncate max-w-xs" title="${s.notes.replace(/"/g,'&quot;')}"><i class="fas fa-sticky-note text-gray-300 mr-1"></i>${s.notes.substring(0,40)}${s.notes.length>40?'…':''}</span>` : ''}
+        </div>
+      </div>
+      ${canEdit ? `<div class="flex-shrink-0 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button onclick="openSubtaskModal(${taskId}, ${JSON.stringify(s).replace(/"/g,'&quot;')})" class="w-7 h-7 flex items-center justify-center rounded hover:bg-indigo-100 text-gray-400 hover:text-indigo-600 transition-colors" title="Sửa">
+          <i class="fas fa-pen text-xs"></i>
+        </button>
+        <button onclick="deleteSubtaskInline(${s.id}, ${taskId})" class="w-7 h-7 flex items-center justify-center rounded hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors" title="Xóa">
+          <i class="fas fa-trash text-xs"></i>
+        </button>
+      </div>` : ''}
+    </div>`
+  }).join('')
+
+  panel.innerHTML = `
+  <div class="bg-indigo-50/30 border-t border-indigo-100">
+    ${rows || `<div class="px-12 py-2 text-xs text-gray-400 italic">Chưa có subtask</div>`}
+    ${canAddSubtask ? `
+    <div class="px-4 py-2 border-t border-indigo-100">
+      <button onclick="openSubtaskModal(${taskId})" class="inline-flex items-center gap-1.5 text-xs text-indigo-500 hover:text-indigo-700 font-medium hover:bg-indigo-50 px-2 py-1 rounded transition-colors">
+        <i class="fas fa-plus"></i> Thêm subtask
+      </button>
+    </div>` : ''}
+  </div>`
+}
+
+// ── Toggle subtask done/todo inline ───────────────────────────────────────
+async function toggleSubtaskDone(subId, taskId, checkbox) {
+  const newStatus = checkbox.checked ? 'done' : 'todo'
+  try {
+    await api(`/subtasks/${subId}`, { method: 'put', data: { status: newStatus } })
+    // Reload panel
+    const subtasks = await api(`/tasks/${taskId}/subtasks`)
+    const task = allTasks.find(t => t.id === taskId) || {}
+    const effForTask = getEffectiveRoleForProject(task.project_id)
+    const isAssigned = task.assigned_to === currentUser?.id
+    renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned)
+    // Update badge in parent row
+    refreshSubtaskBadge(taskId, subtasks)
+  } catch(e) {
+    toast('Lỗi cập nhật: ' + e.message, 'error')
+    checkbox.checked = !checkbox.checked  // revert
+  }
+}
+
+// ── Delete subtask from inline panel ──────────────────────────────────────
+async function deleteSubtaskInline(subId, taskId) {
+  showConfirmDelete('Xóa Subtask', 'Bạn có chắc muốn xóa subtask này?', async () => {
+    await api(`/subtasks/${subId}`, { method: 'delete' })
+    toast('Đã xóa subtask')
+    const subtasks = await api(`/tasks/${taskId}/subtasks`)
+    const task = allTasks.find(t => t.id === taskId) || {}
+    const effForTask = getEffectiveRoleForProject(task.project_id)
+    const isAssigned = task.assigned_to === currentUser?.id
+    renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned)
+    refreshSubtaskBadge(taskId, subtasks)
+  })
+}
+
+// ── Refresh the subtask done/total badge in the parent task row ───────────
+function refreshSubtaskBadge(taskId, subtasks) {
+  const subCount = subtasks.length
+  const subDone = subtasks.filter(s => s.status === 'done').length
+  // Update in allTasks cache
+  const t = allTasks.find(x => x.id === taskId)
+  if (t) { t.subtask_count = subCount; t.subtask_done_count = subDone }
+  // Re-render the badge in the DOM row (without full re-render)
+  const mainRow = document.querySelector(`tr.task-main-row[data-task-id="${taskId}"]`)
+  if (!mainRow) return
+  const badgeEl = mainRow.querySelector('.subtask-badge')
+  if (!badgeEl) return
+  const subBadgeColor = subDone === subCount ? '#dcfce7' : '#fef9c3'
+  const subTextColor  = subDone === subCount ? '#16a34a' : '#92400e'
+  badgeEl.style.background = subBadgeColor
+  badgeEl.style.color = subTextColor
+  badgeEl.innerHTML = `<i class="fas fa-list-check" style="font-size:9px"></i>${subDone}/${subCount}`
 }
 
 function filterTasks() {
@@ -1278,7 +1482,7 @@ async function openTaskDetail(id) {
                 return `
                 <div class="flex items-start gap-2 px-3 py-2 hover:bg-gray-50 group" id="subtaskRow_${s.id}">
                   <!-- Checkbox toggle done -->
-                  <button onclick="toggleSubtaskDone(${s.id}, '${s.status}', ${task.id})"
+                  <button onclick="toggleSubtaskDoneDetail(${s.id}, '${s.status}', ${task.id})"
                     class="mt-0.5 flex-shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
                     ${s.status==='done' ? 'bg-primary border-primary' : 'border-gray-300 hover:border-primary'}">
                     ${s.status==='done' ? '<i class="fas fa-check text-white" style="font-size:8px"></i>' : ''}
@@ -1383,12 +1587,74 @@ $('subtaskForm').addEventListener('submit', async (e) => {
       toast('Đã thêm subtask')
     }
     closeModal('subtaskModal')
-    // Refresh task detail
-    openTaskDetail(taskId)
-  } catch (e) { toast('Lỗi: ' + e.response?.data?.error || e.message, 'error') }
+
+    // Refresh inline panel in task table (if visible)
+    const panel = document.getElementById(`subtask-panel-${taskId}`)
+    const containerRow = document.getElementById(`subtask-rows-${taskId}`)
+    if (panel && containerRow && containerRow.style.display !== 'none') {
+      const subtasks = await api(`/tasks/${taskId}/subtasks`)
+      panel.dataset.loaded = '1'
+      const task = allTasks.find(t => t.id === taskId) || {}
+      const effForTask = getEffectiveRoleForProject(task.project_id)
+      const isAssigned = task.assigned_to === currentUser?.id
+      renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned)
+      refreshSubtaskBadge(taskId, subtasks)
+    } else {
+      // If panel not open yet, just re-open toggle or refresh task detail
+      // Also refresh the expand button if task now has subtasks
+      await refreshTaskRowSubtaskCount(taskId)
+    }
+
+    // Also refresh task detail if it's open
+    const detailModal = $('taskDetailModal')
+    if (detailModal && detailModal.style.display !== 'none') openTaskDetail(taskId)
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
 
-async function toggleSubtaskDone(subId, currentStatus, taskId) {
+// Refresh subtask count in a task row (after first subtask added)
+async function refreshTaskRowSubtaskCount(taskId) {
+  try {
+    const subtasks = await api(`/tasks/${taskId}/subtasks`)
+    const t = allTasks.find(x => x.id === taskId)
+    if (t) {
+      t.subtask_count = subtasks.length
+      t.subtask_done_count = subtasks.filter(s => s.status === 'done').length
+    }
+    // Re-render just the toggle cell
+    const mainRow = document.querySelector(`tr.task-main-row[data-task-id="${taskId}"]`)
+    if (!mainRow) return
+    const toggleCell = mainRow.querySelector('td:first-child')
+    if (!toggleCell) return
+    const subCount = subtasks.length
+    if (subCount > 0) {
+      toggleCell.innerHTML = `<button onclick="toggleSubtasks(${taskId}, this)" class="subtask-toggle w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 text-gray-400 transition-transform" title="Mở rộng/thu gọn subtask">
+        <i class="fas fa-chevron-right text-xs"></i>
+      </button>`
+    }
+    // Update badge
+    const subDone = subtasks.filter(s => s.status === 'done').length
+    const titleCell = mainRow.querySelector('td:nth-child(2)')
+    if (titleCell) {
+      const subBadgeColor = subDone === subCount ? '#dcfce7' : '#fef9c3'
+      const subTextColor  = subDone === subCount ? '#16a34a' : '#92400e'
+      let badge = titleCell.querySelector('.subtask-badge')
+      if (!badge && subCount > 0) {
+        const badgeContainer = titleCell.querySelector('.flex.items-center.gap-2.mt-0\\.5')
+        if (badgeContainer) {
+          const span = document.createElement('span')
+          span.className = 'subtask-badge inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full'
+          span.style.background = subBadgeColor
+          span.style.color = subTextColor
+          span.innerHTML = `<i class="fas fa-list-check" style="font-size:9px"></i>${subDone}/${subCount}`
+          badgeContainer.appendChild(span)
+        }
+      }
+    }
+  } catch(_) {}
+}
+
+// Keep old toggleSubtaskDone signature for task detail modal (uses string status)
+async function toggleSubtaskDoneDetail(subId, currentStatus, taskId) {
   const newStatus = currentStatus === 'done' ? 'in_progress' : 'done'
   try {
     await api(`/subtasks/${subId}`, { method: 'put', data: { status: newStatus } })

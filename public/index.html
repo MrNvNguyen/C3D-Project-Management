@@ -95,6 +95,12 @@
     ================================================================ */
     .table-row:hover { background: #f9fafb; }
     .overdue-row { background: #fff5f5 !important; border-left: 3px solid #ef4444; }
+    /* Subtask expand/collapse */
+    .subtask-container-row td { padding: 0; }
+    .subtask-panel { border-left: 3px solid #818cf8; }
+    .subtask-row { transition: background 0.15s; }
+    .subtask-toggle i { transition: transform 0.2s ease; }
+    .subtask-toggle.expanded i { transform: rotate(90deg); }
     .progress-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
     .progress-fill { height: 100%; background: linear-gradient(90deg, #00A651, #47c67e); border-radius: 4px; transition: width 0.3s; }
     .progress-fill.danger { background: linear-gradient(90deg, #ef4444, #f87171); }
@@ -619,6 +625,7 @@
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead><tr class="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
+                <th class="pb-3 pr-3 font-medium" style="width:32px"></th>
                 <th class="pb-3 pr-3 font-medium min-w-48">Tên công việc</th>
                 <th class="pb-3 pr-3 font-medium">Dự án</th>
                 <th class="pb-3 pr-3 font-medium">Bộ môn</th>
