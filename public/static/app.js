@@ -57,7 +57,18 @@ function toast(message, type = 'success', duration = 3000) {
   setTimeout(() => { t.style.animation = 'fadeOut 0.3s forwards'; setTimeout(() => t.remove(), 300) }, duration)
 }
 
-function closeModal(id) { $(id).style.display = 'none' }
+function closeModal(id) {
+  $(id).style.display = 'none'
+  // Stop chat polling when task detail modal is closed
+  if (id === 'taskDetailModal') {
+    const chatDiv = $('taskDetailChat')
+    if (chatDiv?._chatContext) {
+      const { type, id: ctxId } = chatDiv._chatContext
+      const pollKey = `_chatPoll_${type}_${ctxId}`
+      if (window[pollKey]) { clearInterval(window[pollKey]); delete window[pollKey] }
+    }
+  }
+}
 function openModal(id) { $(id).style.display = 'flex' }
 
 function getRoleBadge(role) {
@@ -333,7 +344,7 @@ async function initApp() {
   initDatetimeClock()
   loadDashboard()
   loadNotifications()
-  setInterval(loadNotifications, 60000)
+  setInterval(loadNotifications, 30000)  // Poll every 30s for chat notifications
 }
 
 // ================================================================
@@ -502,9 +513,22 @@ async function renderRecentTasksTable(projectData) {
 // ================================================================
 // NOTIFICATIONS
 // ================================================================
+// Global unread chat map: { 'task_3': 2, 'project_5': 1 }
+let _chatUnreadMap = {}
+
 async function loadNotifications() {
   try {
-    const notifs = await api('/notifications')
+    const [notifs, unreadChat] = await Promise.all([
+      api('/notifications'),
+      api('/messages/unread').catch(() => [])
+    ])
+
+    // Build unread chat map
+    _chatUnreadMap = {}
+    ;(unreadChat || []).forEach(r => {
+      _chatUnreadMap[`${r.context_type}_${r.context_id}`] = r.count
+    })
+
     const unread = notifs.filter(n => !n.is_read).length
     const badge = $('notifBadge')
     if (badge) {
@@ -513,31 +537,101 @@ async function loadNotifications() {
     }
     const list = $('notifList')
     if (list) {
-      list.innerHTML = notifs.slice(0, 10).map(n => `
-        <div class="p-3 hover:bg-gray-50 cursor-pointer ${!n.is_read ? 'bg-green-50' : ''}" onclick="readNotif(${n.id})">
+      list.innerHTML = notifs.slice(0, 20).map(n => {
+        const isChatMention = n.type === 'chat_mention'
+        const isChatMsg = n.type === 'chat_message'
+        const icon = isChatMention ? '💬' : isChatMsg ? '📨' : '🔔'
+        const bgColor = !n.is_read ? (isChatMention ? 'bg-blue-50' : 'bg-green-50') : ''
+        const dotColor = !n.is_read ? (isChatMention ? 'bg-blue-500' : 'bg-green-500') : 'bg-gray-300'
+        return `
+        <div class="p-3 hover:bg-gray-50 cursor-pointer ${bgColor}" onclick="handleNotifClick(${n.id},'${n.type}','${n.related_type || ''}',${n.related_id || 0})">
           <div class="flex gap-2">
-            <div class="w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${!n.is_read ? 'bg-green-500' : 'bg-gray-300'}"></div>
-            <div>
-              <p class="text-sm font-medium text-gray-800">${n.title}</p>
-              <p class="text-xs text-gray-500">${n.message}</p>
+            <div class="w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${dotColor}"></div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium text-gray-800">${icon} ${n.title}</p>
+              <p class="text-xs text-gray-500 truncate">${n.message}</p>
               <p class="text-xs text-gray-400 mt-1">${dayjs(n.created_at).format('DD/MM HH:mm')}</p>
             </div>
           </div>
         </div>`
-      ).join('') || '<div class="p-4 text-center text-gray-400 text-sm">Không có thông báo</div>'
+      }).join('') || '<div class="p-4 text-center text-gray-400 text-sm">Không có thông báo</div>'
     }
+
+    // Update chat unread badges on task rows
+    updateChatUnreadBadges()
   } catch (e) { /* silent */ }
 }
 
-async function readNotif(id) {
-  await api(`/notifications/${id}/read`, { method: 'patch' })
+// Handle notification click — navigate to correct chat tab
+async function handleNotifClick(notifId, type, relatedType, relatedId) {
+  // Mark as read
+  await api(`/notifications/${notifId}/read`, { method: 'patch' })
+  $('notifDropdown').style.display = 'none'
   loadNotifications()
+
+  if (!relatedId) return
+
+  if (relatedType === 'task') {
+    // Open task detail and switch to Chat tab
+    await openTaskDetail(relatedId, true)
+  } else if (relatedType === 'project') {
+    // Open project detail and switch to Chat tab
+    await openProjectDetail(relatedId, true)
+  }
+}
+
+// Update chat unread badges on visible task rows
+function updateChatUnreadBadges() {
+  // Update task row chat badges
+  document.querySelectorAll('tr.task-main-row[data-task-id]').forEach(row => {
+    const taskId = row.getAttribute('data-task-id')
+    const key = `task_${taskId}`
+    const count = _chatUnreadMap[key] || 0
+    const wrap = row.querySelector('.task-name-wrap')
+    if (!wrap) return
+    let badge = wrap.querySelector('.chat-unread-badge')
+    if (count > 0) {
+      if (!badge) {
+        badge = document.createElement('span')
+        badge.className = 'chat-unread-badge'
+        wrap.appendChild(badge)
+      }
+      badge.textContent = count
+    } else if (badge) {
+      badge.remove()
+    }
+  })
+
+  // Update project chat tab badge if on project detail page
+  const projId = window._currentProjectDetailId
+  if (projId) updateProjectChatTabBadge(projId)
 }
 
 async function markAllRead() {
   await api('/notifications/read-all', { method: 'patch' })
   loadNotifications()
   $('notifDropdown').style.display = 'none'
+}
+
+// Mark all chat notifications as read for a given context
+async function markChatNotifsRead(contextType, contextId) {
+  try {
+    // Remove from local unread map immediately for instant UI update
+    delete _chatUnreadMap[`${contextType}_${contextId}`]
+    updateChatUnreadBadges()
+    // Mark on server via read-all for this context (batch via notifications list)
+    const notifs = await api('/notifications')
+    const toRead = notifs.filter(n =>
+      !n.is_read &&
+      (n.type === 'chat_message' || n.type === 'chat_mention') &&
+      n.related_type === contextType &&
+      String(n.related_id) === String(contextId)
+    )
+    if (toRead.length > 0) {
+      await Promise.all(toRead.map(n => api(`/notifications/${n.id}/read`, { method: 'patch' })))
+      loadNotifications()
+    }
+  } catch (e) { /* silent */ }
 }
 
 // ================================================================
@@ -627,7 +721,7 @@ function filterProjects() {
   renderProjectsGrid(filtered)
 }
 
-async function openProjectDetail(id) {
+async function openProjectDetail(id, openChatTab = false) {
   try {
     const project = await api(`/projects/${id}`)
     const categories = await api(`/projects/${id}/categories`)
@@ -828,6 +922,14 @@ async function openProjectDetail(id) {
     window._currentProjectDetailId = project.id
 
     navigate('project-detail')
+
+    // If opened from notification, auto-switch to chat tab
+    if (openChatTab) {
+      setTimeout(() => {
+        switchProjectTab('chat', project.id)
+        markChatNotifsRead('project', project.id)
+      }, 100)
+    }
   } catch (e) { toast('Lỗi tải dự án: ' + e.message, 'error') }
 }
 
@@ -1101,7 +1203,10 @@ function renderTasksTable(tasks) {
              </button>`}
       </td>
       <td class="py-2 pr-3">
-        <div class="font-medium text-gray-800 text-sm cursor-pointer hover:text-primary" onclick="openTaskDetail(${t.id})">${t.title}</div>
+        <div class="task-name-wrap flex items-center gap-1.5 flex-wrap">
+          <span class="font-medium text-gray-800 text-sm cursor-pointer hover:text-primary" onclick="openTaskDetail(${t.id})">${t.title}</span>
+          ${(_chatUnreadMap[`task_${t.id}`] || 0) > 0 ? `<span class="chat-unread-badge">${_chatUnreadMap[`task_${t.id}`]}</span>` : ''}
+        </div>
         ${isOverdue(t) ? '<span class="badge badge-overdue text-xs">Trễ hạn!</span>' : ''}
         ${hasSubtasks ? `<span class="subtask-badge inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full mt-0.5" style="background:${subBadgeColor};color:${subTextColor}">
           <i class="fas fa-list-check" style="font-size:9px"></i>${subDone}/${subCount}
@@ -1457,7 +1562,7 @@ async function deleteTask(id) {
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 
-async function openTaskDetail(id) {
+async function openTaskDetail(id, openChatTab = false) {
   try {
     const task = await api(`/tasks/${id}`)
     const subtasks = await api(`/tasks/${id}/subtasks`).catch(() => [])
@@ -1598,10 +1703,13 @@ async function openTaskDetail(id) {
     chatDiv._chatContext = { type: 'task', id: task.id }
     chatDiv._initialized = false  // Reset so new task loads fresh chat
 
-    // Reset to Info tab
-    switchTaskDetailTab('info')
+    // Switch to correct tab (chat if triggered from notification)
+    switchTaskDetailTab(openChatTab ? 'chat' : 'info')
 
     openModal('taskDetailModal')
+
+    // Mark chat notifications as read for this task
+    if (openChatTab) markChatNotifsRead('task', task.id)
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 
@@ -1620,9 +1728,13 @@ function switchTaskDetailTab(tab) {
 
   if (tab === 'chat') {
     const chatDiv = $('taskDetailChat')
-    if (chatDiv && chatDiv._chatContext && !chatDiv._initialized) {
-      chatDiv._initialized = true
-      initChatPanel(chatDiv, chatDiv._chatContext.type, chatDiv._chatContext.id, 500)
+    if (chatDiv && chatDiv._chatContext) {
+      if (!chatDiv._initialized) {
+        chatDiv._initialized = true
+        initChatPanel(chatDiv, chatDiv._chatContext.type, chatDiv._chatContext.id, 500)
+      }
+      // Mark notifications read when user opens chat tab
+      markChatNotifsRead(chatDiv._chatContext.type, chatDiv._chatContext.id)
     }
   }
 }
@@ -1688,6 +1800,29 @@ async function initChatPanel(container, contextType, contextId, heightPx = 500) 
   `
   // Load messages
   await loadChatMessages(contextType, contextId)
+
+  // Start auto-refresh polling every 15 seconds
+  const pollKey = `_chatPoll_${contextType}_${contextId}`
+  if (window[pollKey]) clearInterval(window[pollKey])
+  window[pollKey] = setInterval(async () => {
+    // Only poll if the container is still visible
+    if (container.style.display === 'none' || !document.body.contains(container)) {
+      clearInterval(window[pollKey])
+      delete window[pollKey]
+      return
+    }
+    const msgsEl = $(`chatMsgs_${contextType}_${contextId}`)
+    if (!msgsEl) return
+    // Check if user is near bottom before refresh (auto-scroll only if near bottom)
+    const nearBottom = msgsEl.scrollTop + msgsEl.clientHeight >= msgsEl.scrollHeight - 80
+    const msgs = await api(`/messages?context_type=${contextType}&context_id=${contextId}`).catch(() => null)
+    if (msgs) {
+      renderChatMessages(msgsEl, msgs, contextType, contextId)
+      if (nearBottom) scrollChatToBottom(contextType, contextId)
+    }
+    // Also reload notifications to update badges
+    loadNotifications()
+  }, 15000)
 }
 
 // ── Load & render messages ────────────────────────────────────────────────
@@ -2082,12 +2217,36 @@ function switchProjectTab(tab, projectId) {
       container._initialized = true
       initChatPanel(container, 'project', pid, 520)
     }
+    // Mark project chat notifications as read
+    markChatNotifsRead('project', pid)
+    // Update chat button badge
+    updateProjectChatTabBadge(pid)
   }
 }
 
 // ── Project Chat (embedded in project detail) ─────────────────────────────
 function openProjectChat(projectId) {
   switchProjectTab('chat', projectId)
+}
+
+// Update the "Chat nhóm" tab button badge for project
+function updateProjectChatTabBadge(projectId) {
+  const btn = $('projTab-chat')
+  if (!btn) return
+  const count = _chatUnreadMap[`project_${projectId}`] || 0
+  const existing = btn.querySelector('.chat-unread-badge')
+  if (count > 0) {
+    if (!existing) {
+      const b = document.createElement('span')
+      b.className = 'chat-unread-badge ml-1'
+      b.textContent = count
+      btn.appendChild(b)
+    } else {
+      existing.textContent = count
+    }
+  } else if (existing) {
+    existing.remove()
+  }
 }
 
 

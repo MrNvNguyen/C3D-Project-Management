@@ -1827,6 +1827,91 @@ app.post('/api/messages', authMiddleware, async (c) => {
       ).bind(msgId, att.file_name, att.file_type || 'application/octet-stream', att.file_size || 0, att.data).run()
     }
 
+    // ── Send notifications ──────────────────────────────────────────────
+    // Collect recipients: @mentioned users (priority) + all participants
+    const snippet = content.trim().length > 60 ? content.trim().slice(0, 60) + '…' : content.trim()
+    const notifiedIds = new Set<number>()
+
+    // Resolve context name (task title or project name)
+    let contextName = ''
+    let projectId = 0
+    if (context_type === 'task') {
+      const task = await db.prepare('SELECT title, project_id FROM tasks WHERE id = ?').bind(parseInt(context_id)).first() as any
+      contextName = task?.title || `Task #${context_id}`
+      projectId = task?.project_id || 0
+    } else {
+      const proj = await db.prepare('SELECT name, id FROM projects WHERE id = ?').bind(parseInt(context_id)).first() as any
+      contextName = proj?.name || `Dự án #${context_id}`
+      projectId = parseInt(context_id)
+    }
+
+    // 1. Notify @mentioned users first (high priority)
+    if (mentions && mentions.length > 0) {
+      for (const m of mentions) {
+        if (!m.name) continue
+        const mentionedUser = await db.prepare(
+          `SELECT id FROM users WHERE full_name = ? AND is_active = 1`
+        ).bind(m.name).first() as any
+        if (mentionedUser && mentionedUser.id !== user.id) {
+          notifiedIds.add(mentionedUser.id)
+          const title = context_type === 'task'
+            ? `💬 @Bạn được nhắc trong task`
+            : `💬 @Bạn được nhắc trong dự án`
+          await db.prepare(
+            `INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(
+            mentionedUser.id,
+            title,
+            `${user.full_name} đã nhắc đến bạn trong "${contextName}": ${snippet}`,
+            'chat_mention',
+            context_type,
+            parseInt(context_id)
+          ).run()
+        }
+      }
+    }
+
+    // 2. Notify other participants (task assigned user + project members)
+    let participantIds: number[] = []
+    if (context_type === 'task') {
+      // Notify: assigned_to user of this task
+      const taskInfo = await db.prepare('SELECT assigned_to, assigned_by FROM tasks WHERE id = ?').bind(parseInt(context_id)).first() as any
+      if (taskInfo?.assigned_to) participantIds.push(taskInfo.assigned_to)
+      if (taskInfo?.assigned_by) participantIds.push(taskInfo.assigned_by)
+      // Also project admin/leader
+      const projMembers = await db.prepare(
+        `SELECT user_id FROM project_members WHERE project_id = ? AND role IN ('project_admin','project_leader')`
+      ).bind(projectId).all()
+      projMembers.results.forEach((r: any) => participantIds.push(r.user_id))
+    } else {
+      // Notify all project members
+      const projMembers = await db.prepare(
+        `SELECT user_id FROM project_members WHERE project_id = ?`
+      ).bind(parseInt(context_id)).all()
+      projMembers.results.forEach((r: any) => participantIds.push(r.user_id))
+    }
+
+    // Deduplicate & exclude sender and already-notified (mentioned) users
+    const uniqueParticipants = [...new Set(participantIds)].filter(
+      uid => uid !== user.id && !notifiedIds.has(uid)
+    )
+    for (const uid of uniqueParticipants) {
+      const title = context_type === 'task'
+        ? `💬 Tin nhắn mới trong task`
+        : `💬 Tin nhắn mới trong dự án`
+      await db.prepare(
+        `INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(
+        uid,
+        title,
+        `${user.full_name} đã gửi tin trong "${contextName}": ${snippet}`,
+        'chat_message',
+        context_type,
+        parseInt(context_id)
+      ).run()
+    }
+    // ── End notifications ──────────────────────────────────────────────────
+
     // Fetch created message
     const msg = await db.prepare(`
       SELECT m.*, u.full_name as sender_name, u.role as sender_role
@@ -1840,6 +1925,22 @@ app.post('/api/messages', authMiddleware, async (c) => {
       mentions: JSON.parse(msg.mentions || '[]'),
       attachments: atts.results
     }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET unread chat message count per context (for badge display)
+app.get('/api/messages/unread', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    // Return count of chat_message + chat_mention notifications unread per context
+    const rows = await db.prepare(`
+      SELECT related_type as context_type, related_id as context_id, COUNT(*) as count
+      FROM notifications
+      WHERE user_id = ? AND is_read = 0 AND type IN ('chat_message','chat_mention')
+      GROUP BY related_type, related_id
+    `).bind(user.id).all()
+    return c.json(rows.results)
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
