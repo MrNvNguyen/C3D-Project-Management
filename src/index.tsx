@@ -1587,6 +1587,126 @@ app.delete('/api/timesheets/:id', authMiddleware, async (c) => {
 })
 
 // ===================================================
+// SUBTASK ROUTES
+// Quyền:
+//   - Tất cả members trong project đều có thể TẠO subtask cho task được giao cho mình
+//   - System admin / project admin / project leader: xem + sửa + xóa tất cả
+//   - Member: chỉ sửa + xóa subtask do chính mình tạo (hoặc được giao)
+// ===================================================
+
+// GET /api/tasks/:id/subtasks
+app.get('/api/tasks/:id/subtasks', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const taskId = parseInt(c.req.param('id'))
+    const subtasks = await db.prepare(`
+      SELECT st.*,
+        u1.full_name as assigned_to_name,
+        u2.full_name as created_by_name
+      FROM subtasks st
+      LEFT JOIN users u1 ON st.assigned_to = u1.id
+      LEFT JOIN users u2 ON st.created_by = u2.id
+      WHERE st.task_id = ?
+      ORDER BY st.created_at ASC
+    `).bind(taskId).all()
+    return c.json(subtasks.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/tasks/:id/subtasks — tạo subtask (mọi member trong project đều được)
+app.post('/api/tasks/:id/subtasks', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const taskId = parseInt(c.req.param('id'))
+
+    // Kiểm tra task tồn tại
+    const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(taskId).first() as any
+    if (!task) return c.json({ error: 'Task không tồn tại' }, 404)
+
+    // Tất cả mọi người có thể tạo subtask (kể cả member)
+    const data = await c.req.json()
+    const { title, description, status, priority, assigned_to, due_date, estimated_hours, notes } = data
+    if (!title?.trim()) return c.json({ error: 'Tên subtask không được để trống' }, 400)
+
+    const result = await db.prepare(`
+      INSERT INTO subtasks (task_id, title, description, status, priority, assigned_to, due_date, estimated_hours, notes, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      taskId, title.trim(), description || null,
+      status || 'todo', priority || 'medium',
+      assigned_to || user.id,
+      due_date || null, estimated_hours || 0, notes || null, user.id
+    ).run()
+
+    return c.json({ success: true, id: result.meta.last_row_id }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PUT /api/subtasks/:id — cập nhật subtask
+app.put('/api/subtasks/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const id = parseInt(c.req.param('id'))
+
+    const st = await db.prepare('SELECT * FROM subtasks WHERE id = ?').bind(id).first() as any
+    if (!st) return c.json({ error: 'Subtask không tồn tại' }, 404)
+
+    // Lấy task cha để kiểm tra quyền project
+    const task = await db.prepare('SELECT project_id FROM tasks WHERE id = ?').bind(st.task_id).first() as any
+    const isAdmin = user.role === 'system_admin'
+    const isProjAdminOrLeader = await isProjectLeaderOrAdmin(db, user, task?.project_id)
+    const isCreator = st.created_by === user.id
+    const isAssigned = st.assigned_to === user.id
+
+    if (!isAdmin && !isProjAdminOrLeader && !isCreator && !isAssigned) {
+      return c.json({ error: 'Không có quyền sửa subtask này' }, 403)
+    }
+
+    const data = await c.req.json()
+    const allowedFields = (isAdmin || isProjAdminOrLeader)
+      ? ['title', 'description', 'status', 'priority', 'assigned_to', 'due_date', 'estimated_hours', 'actual_hours', 'notes']
+      : ['status', 'actual_hours', 'notes']  // member chỉ cập nhật trạng thái, giờ thực tế, ghi chú
+
+    const updates: string[] = []
+    const values: any[] = []
+    allowedFields.forEach(f => {
+      if (data[f] !== undefined) { updates.push(`${f} = ?`); values.push(data[f]) }
+    })
+    if (!updates.length) return c.json({ error: 'Không có gì để cập nhật' }, 400)
+    updates.push('updated_at = CURRENT_TIMESTAMP')
+    values.push(id)
+    await db.prepare(`UPDATE subtasks SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/subtasks/:id — xóa subtask
+app.delete('/api/subtasks/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const id = parseInt(c.req.param('id'))
+
+    const st = await db.prepare('SELECT * FROM subtasks WHERE id = ?').bind(id).first() as any
+    if (!st) return c.json({ error: 'Subtask không tồn tại' }, 404)
+
+    const task = await db.prepare('SELECT project_id FROM tasks WHERE id = ?').bind(st.task_id).first() as any
+    const isAdmin = user.role === 'system_admin'
+    const isProjAdminOrLeader = await isProjectLeaderOrAdmin(db, user, task?.project_id)
+    const isCreator = st.created_by === user.id
+
+    if (!isAdmin && !isProjAdminOrLeader && !isCreator) {
+      return c.json({ error: 'Không có quyền xóa subtask này' }, 403)
+    }
+
+    await db.prepare('DELETE FROM subtasks WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
 // COST MANAGEMENT ROUTES (Admin Only)
 // ===================================================
 app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
@@ -5220,6 +5340,8 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, code TEXT, description TEXT, discipline_code TEXT, phase TEXT DEFAULT 'basic_design', start_date DATE, end_date DATE, progress INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', parent_id INTEGER, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, category_id INTEGER, title TEXT NOT NULL, description TEXT, discipline_code TEXT, phase TEXT DEFAULT 'basic_design', priority TEXT DEFAULT 'medium', status TEXT DEFAULT 'todo', assigned_to INTEGER, assigned_by INTEGER, start_date DATE, due_date DATE, actual_start_date DATE, actual_end_date DATE, estimated_hours REAL DEFAULT 0, actual_hours REAL DEFAULT 0, progress INTEGER DEFAULT 0, is_overdue INTEGER DEFAULT 0, tags TEXT, attachments TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, user_id INTEGER NOT NULL, field_changed TEXT NOT NULL, old_value TEXT, new_value TEXT, comment TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE TABLE IF NOT EXISTS subtasks (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT, status TEXT NOT NULL DEFAULT 'todo', priority TEXT NOT NULL DEFAULT 'medium', assigned_to INTEGER, due_date DATE, estimated_hours REAL DEFAULT 0, actual_hours REAL DEFAULT 0, notes TEXT, created_by INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE INDEX IF NOT EXISTS idx_subtasks_task_id ON subtasks(task_id)`,
       `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER, work_date DATE NOT NULL, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, project_id, work_date))`,
       `CREATE TABLE IF NOT EXISTS project_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, cost_type TEXT NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', cost_date DATE, invoice_number TEXT, vendor TEXT, approved_by INTEGER, notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS project_revenues (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', revenue_date DATE, invoice_number TEXT, payment_status TEXT DEFAULT 'pending', notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,

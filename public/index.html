@@ -2560,12 +2560,66 @@
 
 <!-- Task Detail Modal -->
 <div id="taskDetailModal" class="modal-overlay" style="display:none">
-  <div class="modal p-6 max-w-2xl">
+  <div class="modal p-6 max-w-2xl" style="max-height:90vh;overflow-y:auto">
     <div class="flex justify-between items-center mb-4">
       <h3 class="text-lg font-bold text-gray-800" id="taskDetailTitle">Chi tiết Task</h3>
       <button onclick="closeModal('taskDetailModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
     </div>
     <div id="taskDetailContent"></div>
+  </div>
+</div>
+
+<!-- Subtask Modal -->
+<div id="subtaskModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:500px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="subtaskModalTitle">Thêm Subtask</h3>
+      <button onclick="closeModal('subtaskModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="subtaskForm" class="space-y-3">
+      <input type="hidden" id="subtaskId">
+      <input type="hidden" id="subtaskTaskId">
+      <div>
+        <label class="label">Tên subtask *</label>
+        <input type="text" id="subtaskTitle" class="input-field" placeholder="Mô tả công việc cụ thể..." required>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="subtaskStatus" class="select-field">
+            <option value="todo">Chờ thực hiện</option>
+            <option value="in_progress">Đang làm</option>
+            <option value="done">Hoàn thành</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Ưu tiên</label>
+          <select id="subtaskPriority" class="select-field">
+            <option value="low">Thấp</option>
+            <option value="medium" selected>Trung bình</option>
+            <option value="high">Cao</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Hạn hoàn thành</label>
+          <input type="date" id="subtaskDueDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Giờ dự kiến</label>
+          <input type="number" id="subtaskEstHours" class="input-field" placeholder="0" min="0" step="0.5">
+        </div>
+      </div>
+      <div>
+        <label class="label">Mô tả / Ghi chú báo cáo</label>
+        <textarea id="subtaskNotes" class="input-field" rows="3" placeholder="Mô tả chi tiết, kết quả thực hiện, vướng mắc..."></textarea>
+      </div>
+      <div class="flex justify-end gap-3 pt-1">
+        <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
+      </div>
+    </form>
   </div>
 </div>
 

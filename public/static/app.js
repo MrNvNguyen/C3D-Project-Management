@@ -1189,19 +1189,45 @@ async function deleteTask(id) {
 async function openTaskDetail(id) {
   try {
     const task = await api(`/tasks/${id}`)
+    const subtasks = await api(`/tasks/${id}/subtasks`).catch(() => [])
     $('taskDetailTitle').textContent = task.title
     const overdue = isOverdue(task)
+    const effD = getEffectiveRoleForProject(task.project_id)
+    const canEditTask = ['system_admin','project_admin','project_leader'].includes(effD) || task.assigned_to === currentUser?.id
+    const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(effD)
+
+    // Subtask stats
+    const totalSub = subtasks.length
+    const doneSub = subtasks.filter(s => s.status === 'done').length
+    const subPct = totalSub > 0 ? Math.round(doneSub / totalSub * 100) : 0
+
+    const getSubStatusBadge = (s) => {
+      const map = {
+        todo: '<span class="badge text-xs" style="background:#f3f4f6;color:#374151"><i class="fas fa-circle mr-1"></i>Chờ</span>',
+        in_progress: '<span class="badge text-xs" style="background:#dbeafe;color:#1d4ed8"><i class="fas fa-spinner mr-1"></i>Đang làm</span>',
+        done: '<span class="badge text-xs" style="background:#dcfce7;color:#15803d"><i class="fas fa-check mr-1"></i>Xong</span>'
+      }
+      return map[s] || s
+    }
+    const getSubPriorityIcon = (p) => {
+      const map = { low: 'text-gray-400', medium: 'text-yellow-500', high: 'text-red-500' }
+      return `<i class="fas fa-flag text-xs ${map[p]||'text-gray-400'}" title="${p}"></i>`
+    }
 
     $('taskDetailContent').innerHTML = `
       <div class="space-y-4">
+        <!-- Badges -->
         <div class="flex flex-wrap gap-2">
           ${getStatusBadge(task.status)} ${getPriorityBadge(task.priority)}
-          <span class="badge" style="background:#e0f2fe;color:#0369a1">${task.discipline_code||'N/A'}</span>
-          <span class="badge" style="background:#f0fdf4;color:#15803d">${getPhaseName(task.phase)}</span>
+          ${task.discipline_code ? `<span class="badge" style="background:#e0f2fe;color:#0369a1">${task.discipline_code}</span>` : ''}
+          ${task.phase ? `<span class="badge" style="background:#f0fdf4;color:#15803d">${getPhaseName(task.phase)}</span>` : ''}
           ${overdue ? '<span class="badge badge-overdue">Trễ hạn!</span>' : ''}
         </div>
+
         ${task.description ? `<p class="text-gray-600 text-sm">${task.description}</p>` : ''}
-        <div class="grid grid-cols-2 gap-4 text-sm">
+
+        <!-- Info grid -->
+        <div class="grid grid-cols-2 gap-3 text-sm bg-gray-50 rounded-lg p-3">
           <div><span class="text-gray-500">Dự án:</span> <span class="font-medium">${task.project_name||'-'}</span></div>
           <div><span class="text-gray-500">Phụ trách:</span> <span class="font-medium">${task.assigned_to_name||'-'}</span></div>
           <div><span class="text-gray-500">Bắt đầu:</span> <span class="font-medium">${fmtDate(task.start_date)}</span></div>
@@ -1209,40 +1235,173 @@ async function openTaskDetail(id) {
           <div><span class="text-gray-500">Giờ dự kiến:</span> <span class="font-medium">${task.estimated_hours||0}h</span></div>
           <div><span class="text-gray-500">Giờ thực tế:</span> <span class="font-medium">${task.actual_hours||0}h</span></div>
         </div>
+
+        <!-- Task progress -->
         <div>
           <div class="flex justify-between text-sm mb-1">
-            <span class="text-gray-500">Tiến độ</span>
+            <span class="text-gray-500 font-medium">Tiến độ Task</span>
             <span class="font-bold">${task.progress||0}%</span>
           </div>
           <div class="progress-bar"><div class="progress-fill ${overdue?'danger':''}" style="width:${task.progress||0}%"></div></div>
         </div>
-        
+
+        <!-- SUBTASKS SECTION -->
+        <div class="border rounded-lg overflow-hidden">
+          <div class="flex items-center justify-between px-3 py-2 bg-gray-50 border-b">
+            <div class="flex items-center gap-2">
+              <i class="fas fa-tasks text-primary text-sm"></i>
+              <span class="font-semibold text-gray-700 text-sm">Subtasks</span>
+              <span class="badge text-xs" style="background:#e0f2fe;color:#0369a1">${doneSub}/${totalSub}</span>
+              ${totalSub > 0 ? `
+                <div class="flex items-center gap-1 ml-1">
+                  <div class="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                    <div class="h-full bg-primary rounded-full" style="width:${subPct}%"></div>
+                  </div>
+                  <span class="text-xs text-gray-400">${subPct}%</span>
+                </div>` : ''}
+            </div>
+            <button onclick="openSubtaskModal(${task.id})" class="btn-primary text-xs px-2 py-1">
+              <i class="fas fa-plus mr-1"></i>Thêm
+            </button>
+          </div>
+
+          <div id="subtaskList_${task.id}" class="divide-y max-h-56 overflow-y-auto">
+            ${totalSub === 0 ? `
+              <div class="py-6 text-center text-gray-400 text-sm">
+                <i class="fas fa-clipboard-list text-2xl mb-2 block opacity-30"></i>
+                Chưa có subtask. Nhấn <strong>+ Thêm</strong> để tạo công việc con.
+              </div>` :
+              subtasks.map(s => {
+                const canEditSub = isAdminOrLeader || s.created_by === currentUser?.id || s.assigned_to === currentUser?.id
+                const canDeleteSub = isAdminOrLeader || s.created_by === currentUser?.id
+                const isOverdueSub = s.due_date && s.status !== 'done' && new Date(s.due_date) < new Date()
+                return `
+                <div class="flex items-start gap-2 px-3 py-2 hover:bg-gray-50 group" id="subtaskRow_${s.id}">
+                  <!-- Checkbox toggle done -->
+                  <button onclick="toggleSubtaskDone(${s.id}, '${s.status}', ${task.id})"
+                    class="mt-0.5 flex-shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
+                    ${s.status==='done' ? 'bg-primary border-primary' : 'border-gray-300 hover:border-primary'}">
+                    ${s.status==='done' ? '<i class="fas fa-check text-white" style="font-size:8px"></i>' : ''}
+                  </button>
+                  <!-- Content -->
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      ${getSubPriorityIcon(s.priority)}
+                      <span class="text-sm ${s.status==='done' ? 'line-through text-gray-400' : 'text-gray-800'} font-medium">${s.title}</span>
+                      ${getSubStatusBadge(s.status)}
+                      ${isOverdueSub ? '<span class="badge badge-overdue text-xs">Trễ!</span>' : ''}
+                    </div>
+                    ${s.notes ? `<p class="text-xs text-gray-500 mt-0.5 truncate">${s.notes}</p>` : ''}
+                    <div class="flex items-center gap-3 mt-0.5 text-xs text-gray-400">
+                      ${s.assigned_to_name ? `<span><i class="fas fa-user mr-1"></i>${s.assigned_to_name}</span>` : ''}
+                      ${s.due_date ? `<span class="${isOverdueSub?'text-red-500 font-medium':''}"><i class="fas fa-calendar mr-1"></i>${fmtDate(s.due_date)}</span>` : ''}
+                      ${s.estimated_hours > 0 ? `<span><i class="fas fa-clock mr-1"></i>${s.estimated_hours}h</span>` : ''}
+                      <span class="text-gray-300">bởi ${s.created_by_name||'-'}</span>
+                    </div>
+                  </div>
+                  <!-- Actions -->
+                  <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                    ${canEditSub ? `<button onclick="openSubtaskModal(${task.id}, ${JSON.stringify(s).replace(/"/g,'&quot;')})" class="text-blue-400 hover:text-blue-600 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>` : ''}
+                    ${canDeleteSub ? `<button onclick="deleteSubtask(${s.id}, ${task.id})" class="text-red-400 hover:text-red-600 p-1" title="Xóa"><i class="fas fa-trash text-xs"></i></button>` : ''}
+                  </div>
+                </div>`
+              }).join('')
+            }
+          </div>
+        </div>
+
+        <!-- Task history -->
         ${task.history?.length > 0 ? `
         <div>
-          <h4 class="font-bold text-gray-700 mb-2 text-sm"><i class="fas fa-history mr-2"></i>Lịch sử thay đổi</h4>
-          <div class="space-y-1 max-h-40 overflow-y-auto">
+          <h4 class="font-bold text-gray-700 mb-2 text-sm"><i class="fas fa-history mr-2 text-gray-400"></i>Lịch sử thay đổi</h4>
+          <div class="space-y-1 max-h-32 overflow-y-auto">
             ${task.history.map(h => `
               <div class="flex gap-2 text-xs text-gray-500 py-1 border-b">
-                <span class="text-gray-400">${dayjs(h.created_at).format('DD/MM HH:mm')}</span>
-                <span class="font-medium text-gray-700">${h.changed_by_name}</span>
-                <span>→ ${h.field_changed}: ${h.new_value || '-'}</span>
+                <span class="text-gray-400 flex-shrink-0">${dayjs(h.created_at).format('DD/MM HH:mm')}</span>
+                <span class="font-medium text-gray-700 flex-shrink-0">${h.changed_by_name}</span>
+                <span class="truncate">→ ${h.field_changed}: ${h.new_value || '-'}</span>
               </div>
             `).join('')}
           </div>
         </div>` : ''}
 
+        <!-- Buttons -->
         <div class="flex justify-end gap-2 pt-2 border-t">
           <button onclick="closeModal('taskDetailModal')" class="btn-secondary text-sm">Đóng</button>
-          ${(()=> {
-            const effD = getEffectiveRoleForProject(task.project_id)
-            const canEditD = ['system_admin','project_admin','project_leader'].includes(effD) || task.assigned_to === currentUser?.id
-            return canEditD ? `<button onclick="closeModal('taskDetailModal'); openTaskModal(${task.id})" class="btn-primary text-sm">Chỉnh sửa</button>` : ''
-          })()}
+          ${canEditTask ? `<button onclick="closeModal('taskDetailModal'); openTaskModal(${task.id})" class="btn-primary text-sm"><i class="fas fa-edit mr-1"></i>Chỉnh sửa Task</button>` : ''}
         </div>
       </div>
     `
     openModal('taskDetailModal')
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+// ── Subtask functions ─────────────────────────────────────────────────────────
+
+function openSubtaskModal(taskId, sub = null) {
+  $('subtaskTaskId').value = taskId
+  $('subtaskId').value = sub?.id || ''
+  $('subtaskModalTitle').textContent = sub ? 'Chỉnh sửa Subtask' : 'Thêm Subtask'
+  $('subtaskTitle').value = sub?.title || ''
+  $('subtaskStatus').value = sub?.status || 'todo'
+  $('subtaskPriority').value = sub?.priority || 'medium'
+  $('subtaskDueDate').value = sub?.due_date || ''
+  $('subtaskEstHours').value = sub?.estimated_hours || ''
+  $('subtaskNotes').value = sub?.notes || ''
+
+  // Member chỉ được sửa status/actual_hours/notes nếu không phải creator/admin
+  const effRole = getEffectiveGlobalRole()
+  const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(effRole)
+  const isCreator = sub ? (sub.created_by === currentUser?.id) : true
+  const canEditAll = isAdminOrLeader || isCreator || !sub
+
+  ;['subtaskTitle','subtaskPriority','subtaskDueDate','subtaskEstHours'].forEach(id => {
+    const el = $(id); if (el) el.disabled = !canEditAll
+  })
+
+  openModal('subtaskModal')
+}
+
+$('subtaskForm').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const id = $('subtaskId').value
+  const taskId = parseInt($('subtaskTaskId').value)
+  const data = {
+    title: $('subtaskTitle').value.trim(),
+    status: $('subtaskStatus').value,
+    priority: $('subtaskPriority').value,
+    due_date: $('subtaskDueDate').value || null,
+    estimated_hours: parseFloat($('subtaskEstHours').value) || 0,
+    notes: $('subtaskNotes').value.trim() || null
+  }
+  try {
+    if (id) {
+      await api(`/subtasks/${id}`, { method: 'put', data })
+      toast('Đã cập nhật subtask')
+    } else {
+      await api(`/tasks/${taskId}/subtasks`, { method: 'post', data })
+      toast('Đã thêm subtask')
+    }
+    closeModal('subtaskModal')
+    // Refresh task detail
+    openTaskDetail(taskId)
+  } catch (e) { toast('Lỗi: ' + e.response?.data?.error || e.message, 'error') }
+})
+
+async function toggleSubtaskDone(subId, currentStatus, taskId) {
+  const newStatus = currentStatus === 'done' ? 'in_progress' : 'done'
+  try {
+    await api(`/subtasks/${subId}`, { method: 'put', data: { status: newStatus } })
+    openTaskDetail(taskId)
+  } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+async function deleteSubtask(subId, taskId) {
+  showConfirmDelete('Xóa Subtask', 'Bạn có chắc muốn xóa subtask này?', async () => {
+    await api(`/subtasks/${subId}`, { method: 'delete' })
+    toast('Đã xóa subtask')
+    openTaskDetail(taskId)
+  })
 }
 
 // ================================================================
