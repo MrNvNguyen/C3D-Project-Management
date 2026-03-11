@@ -1871,24 +1871,36 @@ app.post('/api/messages', authMiddleware, async (c) => {
       }
     }
 
-    // 2. Notify other participants (task assigned user + project members)
+    // 2. Notify other participants (task assigned user + ALL project members + admin/leader)
     let participantIds: number[] = []
-    if (context_type === 'task') {
-      // Notify: assigned_to user of this task
-      const taskInfo = await db.prepare('SELECT assigned_to, assigned_by FROM tasks WHERE id = ?').bind(parseInt(context_id)).first() as any
-      if (taskInfo?.assigned_to) participantIds.push(taskInfo.assigned_to)
-      if (taskInfo?.assigned_by) participantIds.push(taskInfo.assigned_by)
-      // Also project admin/leader
-      const projMembers = await db.prepare(
-        `SELECT user_id FROM project_members WHERE project_id = ? AND role IN ('project_admin','project_leader')`
-      ).bind(projectId).all()
-      projMembers.results.forEach((r: any) => participantIds.push(r.user_id))
-    } else {
-      // Notify all project members
+
+    // Helper: collect ALL people involved in a project (members table + admin_id + leader_id)
+    const collectProjectParticipants = async (projId: number) => {
+      const ids: number[] = []
+      // All project_members rows
       const projMembers = await db.prepare(
         `SELECT user_id FROM project_members WHERE project_id = ?`
-      ).bind(parseInt(context_id)).all()
-      projMembers.results.forEach((r: any) => participantIds.push(r.user_id))
+      ).bind(projId).all()
+      projMembers.results.forEach((r: any) => ids.push(r.user_id))
+      // Also admin_id and leader_id from projects table
+      const proj = await db.prepare('SELECT admin_id, leader_id FROM projects WHERE id = ?').bind(projId).first() as any
+      if (proj?.admin_id) ids.push(proj.admin_id)
+      if (proj?.leader_id) ids.push(proj.leader_id)
+      return ids
+    }
+
+    if (context_type === 'task') {
+      // Task: notify assigned_to + assigned_by + ALL project participants
+      const taskInfo = await db.prepare('SELECT assigned_to, assigned_by, project_id FROM tasks WHERE id = ?').bind(parseInt(context_id)).first() as any
+      if (taskInfo?.assigned_to) participantIds.push(taskInfo.assigned_to)
+      if (taskInfo?.assigned_by) participantIds.push(taskInfo.assigned_by)
+      const taskProjectId = taskInfo?.project_id || projectId
+      const projParticipants = await collectProjectParticipants(taskProjectId)
+      participantIds.push(...projParticipants)
+    } else {
+      // Project chat: notify ALL project participants
+      const projParticipants = await collectProjectParticipants(parseInt(context_id))
+      participantIds.push(...projParticipants)
     }
 
     // Deduplicate & exclude sender and already-notified (mentioned) users

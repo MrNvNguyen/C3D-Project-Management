@@ -221,6 +221,14 @@ function logout() {
 // NAVIGATION
 // ================================================================
 function navigate(page) {
+  // Stop project chat polling when leaving project-detail
+  if (window._currentProjectDetailId && page !== 'project-detail') {
+    const pid = window._currentProjectDetailId
+    const pollKey = `_chatPoll_project_${pid}`
+    if (window[pollKey]) { clearInterval(window[pollKey]); delete window[pollKey] }
+    window._currentProjectDetailId = null
+  }
+
   // Reset timesheet page state when leaving timesheet
   if (typeof _tsDropdownsInitialised !== 'undefined') {
     const currentPage = document.querySelector('.page.active')?.id?.replace('page-', '')
@@ -605,6 +613,25 @@ function updateChatUnreadBadges() {
   // Update project chat tab badge if on project detail page
   const projId = window._currentProjectDetailId
   if (projId) updateProjectChatTabBadge(projId)
+
+  // Update project card badges in the projects grid
+  document.querySelectorAll('[data-project-id]').forEach(card => {
+    const pid = card.getAttribute('data-project-id')
+    const count = _chatUnreadMap[`project_${pid}`] || 0
+    let dot = card.querySelector('.proj-chat-badge')
+    if (count > 0) {
+      if (!dot) {
+        dot = document.createElement('span')
+        dot.className = 'proj-chat-badge'
+        dot.title = `${count} tin nhắn chưa đọc trong Chat nhóm`
+        card.style.position = 'relative'
+        card.appendChild(dot)
+      }
+      dot.textContent = count
+    } else if (dot) {
+      dot.remove()
+    }
+  })
 }
 
 async function markAllRead() {
@@ -672,7 +699,7 @@ function renderProjectsGrid(projects) {
     const pct = total > 0 ? Math.round((done / total) * 100) : p.progress || 0
     const hasOverdue = p.overdue_tasks > 0
     const typeColors = { building: '#0066CC', infrastructure: '#F59E0B', transport: '#8B5CF6', energy: '#EF4444' }
-    return `<div class="card hover:shadow-md transition-shadow cursor-pointer" onclick="openProjectDetail(${p.id})">
+    return `<div class="card hover:shadow-md transition-shadow cursor-pointer" data-project-id="${p.id}" onclick="openProjectDetail(${p.id})" style="position:relative">
       <div class="flex justify-between items-start mb-3">
         <div class="flex items-center gap-2">
           <div class="w-10 h-10 rounded-lg flex items-center justify-center text-white text-xs font-bold" style="background:${typeColors[p.project_type]||'#0066CC'}">
@@ -922,6 +949,9 @@ async function openProjectDetail(id, openChatTab = false) {
     window._currentProjectDetailId = project.id
 
     navigate('project-detail')
+
+    // Always show unread badge on the chat tab button immediately
+    setTimeout(() => updateProjectChatTabBadge(project.id), 50)
 
     // If opened from notification, auto-switch to chat tab
     if (openChatTab) {
@@ -1805,22 +1835,36 @@ async function initChatPanel(container, contextType, contextId, heightPx = 500) 
   const pollKey = `_chatPoll_${contextType}_${contextId}`
   if (window[pollKey]) clearInterval(window[pollKey])
   window[pollKey] = setInterval(async () => {
-    // Only poll if the container is still visible
-    if (container.style.display === 'none' || !document.body.contains(container)) {
+    // Stop polling if container is removed from DOM
+    if (!document.body.contains(container)) {
       clearInterval(window[pollKey])
       delete window[pollKey]
       return
     }
-    const msgsEl = $(`chatMsgs_${contextType}_${contextId}`)
-    if (!msgsEl) return
-    // Check if user is near bottom before refresh (auto-scroll only if near bottom)
-    const nearBottom = msgsEl.scrollTop + msgsEl.clientHeight >= msgsEl.scrollHeight - 80
-    const msgs = await api(`/messages?context_type=${contextType}&context_id=${contextId}`).catch(() => null)
-    if (msgs) {
-      renderChatMessages(msgsEl, msgs, contextType, contextId)
-      if (nearBottom) scrollChatToBottom(contextType, contextId)
+
+    // Determine if chat panel is currently visible to the user
+    let isVisible = false
+    if (contextType === 'project') {
+      const outerPanel = $('projPanel-chat')
+      isVisible = outerPanel ? (outerPanel.style.display === 'block' && !outerPanel.classList.contains('hidden')) : false
+    } else {
+      // Task chat: check if the container is shown (flex) and modal is open
+      isVisible = container.style.display === 'flex' && container.offsetParent !== null
     }
-    // Also reload notifications to update badges
+
+    if (isVisible) {
+      // Chat is open — refresh messages and scroll if near bottom
+      const msgsEl = $(`chatMsgs_${contextType}_${contextId}`)
+      if (msgsEl) {
+        const nearBottom = msgsEl.scrollTop + msgsEl.clientHeight >= msgsEl.scrollHeight - 80
+        const msgs = await api(`/messages?context_type=${contextType}&context_id=${contextId}`).catch(() => null)
+        if (msgs) {
+          renderChatMessages(msgsEl, msgs, contextType, contextId)
+          if (nearBottom) scrollChatToBottom(contextType, contextId)
+        }
+      }
+    }
+    // Always refresh notifications to update badges (both when visible and hidden)
     loadNotifications()
   }, 15000)
 }
@@ -2198,11 +2242,15 @@ function openImageViewer(src, name) {
 
 // ── Project Detail Tab Switcher ───────────────────────────────────────────
 function switchProjectTab(tab, projectId) {
+  const pid = projectId || window._currentProjectDetailId
   // Show/hide panels
   const taskPanel = $('projPanel-tasks')
   const chatPanel = $('projPanel-chat')
   if (taskPanel) taskPanel.style.display = tab === 'tasks' ? 'block' : 'none'
-  if (chatPanel) chatPanel.style.display = tab === 'chat' ? 'block' : 'none'
+  if (chatPanel) {
+    chatPanel.classList.remove('hidden')
+    chatPanel.style.display = tab === 'chat' ? 'block' : 'none'
+  }
 
   // Update tab buttons
   ;['tasks','chat'].forEach(key => {
@@ -2211,15 +2259,16 @@ function switchProjectTab(tab, projectId) {
   })
 
   if (tab === 'chat') {
-    const pid = projectId || window._currentProjectDetailId
     const container = $(`projectChatPanel_${pid}`)
     if (container && !container._initialized) {
       container._initialized = true
       initChatPanel(container, 'project', pid, 520)
+    } else if (container && container._initialized) {
+      // Refresh messages when switching back to chat tab
+      loadChatMessages('project', pid)
     }
-    // Mark project chat notifications as read
+    // Mark project chat notifications as read & clear badge
     markChatNotifsRead('project', pid)
-    // Update chat button badge
     updateProjectChatTabBadge(pid)
   }
 }
