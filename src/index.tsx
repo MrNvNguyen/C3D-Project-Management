@@ -317,17 +317,32 @@ app.delete('/api/users/:id', authMiddleware, adminOnly, async (c) => {
     const target = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first() as any
     if (!target) return c.json({ error: 'Không tìm thấy tài khoản' }, 404)
 
-    // Cascade xóa dữ liệu liên quan
+    // Cascade xóa dữ liệu liên quan — NULL-ify trước, xóa sau để tránh FK constraint
+
+    // 1. NULL-ify các FK trỏ tới user này (các bảng không có ON DELETE CASCADE)
+    await db.prepare('UPDATE tasks SET assigned_to = NULL WHERE assigned_to = ?').bind(id).run()
+    await db.prepare('UPDATE tasks SET assigned_by = NULL WHERE assigned_by = ?').bind(id).run()
+    await db.prepare('UPDATE projects SET admin_id = NULL WHERE admin_id = ?').bind(id).run()
+    await db.prepare('UPDATE projects SET leader_id = NULL WHERE leader_id = ?').bind(id).run()
+    await db.prepare('UPDATE projects SET created_by = NULL WHERE created_by = ?').bind(id).run()
+    await db.prepare('UPDATE categories SET created_by = NULL WHERE created_by = ?').bind(id).run()
+    await db.prepare('UPDATE project_costs SET approved_by = NULL WHERE approved_by = ?').bind(id).run()
+    await db.prepare('UPDATE project_costs SET created_by = NULL WHERE created_by = ?').bind(id).run()
+    await db.prepare('UPDATE project_revenues SET created_by = NULL WHERE created_by = ?').bind(id).run()
+    await db.prepare('UPDATE timesheets SET approved_by = NULL WHERE approved_by = ?').bind(id).run()
+    await db.prepare('UPDATE assets SET assigned_to = NULL WHERE assigned_to = ?').bind(id).run()
+    await db.prepare('UPDATE assets SET created_by = NULL WHERE created_by = ?').bind(id).run()
+    await db.prepare('UPDATE asset_history SET from_user = NULL WHERE from_user = ?').bind(id).run()
+    await db.prepare('UPDATE asset_history SET to_user = NULL WHERE to_user = ?').bind(id).run()
+
+    // 2. Xóa các bản ghi trực tiếp của user này
     await db.prepare('DELETE FROM timesheets WHERE user_id = ?').bind(id).run()
     await db.prepare('DELETE FROM project_members WHERE user_id = ?').bind(id).run()
     await db.prepare('DELETE FROM notifications WHERE user_id = ?').bind(id).run()
     await db.prepare('DELETE FROM task_history WHERE user_id = ?').bind(id).run()
-    // Các task được giao cho user này: bỏ assigned_to
-    await db.prepare('UPDATE tasks SET assigned_to = NULL WHERE assigned_to = ?').bind(id).run()
-    // Các project có admin/leader là user này: bỏ trống
-    await db.prepare('UPDATE projects SET admin_id = NULL WHERE admin_id = ?').bind(id).run()
-    await db.prepare('UPDATE projects SET leader_id = NULL WHERE leader_id = ?').bind(id).run()
-    // Xóa user
+    await db.prepare('DELETE FROM asset_history WHERE user_id = ?').bind(id).run()
+
+    // 3. Xóa user
     await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run()
 
     return c.json({ success: true, message: `Đã xóa tài khoản "${target.full_name}"` })
