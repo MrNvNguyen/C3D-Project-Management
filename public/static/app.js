@@ -1650,11 +1650,14 @@ async function initChatPanel(container, contextType, contextId, heightPx = 500) 
     <div class="chat-messages flex-1 overflow-y-auto bg-gray-50 p-4" id="chatMsgs_${contextType}_${contextId}">
       <div class="text-center text-gray-400 text-sm py-6"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</div>
     </div>
-    <div class="chat-input-bar flex-shrink-0" id="chatInputBar_${contextType}_${contextId}">
+    <div class="chat-input-bar flex-shrink-0" id="chatInputBar_${contextType}_${contextId}" style="position:relative">
+      <!-- @mention dropdown — positioned above the input bar, not inside overflow:hidden -->
+      <div id="mentionDropdown_${contextType}_${contextId}" class="mention-dropdown hidden"
+        style="position:absolute;bottom:100%;left:14px;right:14px;max-width:320px;margin-bottom:4px;z-index:9999"></div>
       <!-- Attachment preview -->
       <div class="chat-att-preview" id="chatAttPreview_${contextType}_${contextId}"></div>
       <!-- Input area -->
-      <div class="chat-input-area" id="chatInputArea_${contextType}_${contextId}" style="position:relative">
+      <div class="chat-input-area" id="chatInputArea_${contextType}_${contextId}">
         <textarea id="chatTextarea_${contextType}_${contextId}"
           class="chat-textarea"
           placeholder="Nhắn tin... Dùng @ để đề cập thành viên"
@@ -1662,8 +1665,6 @@ async function initChatPanel(container, contextType, contextId, heightPx = 500) 
           onkeydown="chatKeydown(event,'${contextType}',${contextId})"
           oninput="chatInput(this,'${contextType}',${contextId})"
           onpaste="chatPaste(event,'${contextType}',${contextId})"></textarea>
-        <!-- @mention dropdown -->
-        <div id="mentionDropdown_${contextType}_${contextId}" class="mention-dropdown hidden" style="bottom:100%;left:8px;max-width:280px"></div>
       </div>
       <!-- Action bar -->
       <div class="flex items-center justify-between px-2 pt-1.5 pb-1">
@@ -1922,15 +1923,39 @@ async function getProjectMembers(contextType, contextId) {
   // For task chat, we need the project_id — use allTasks cache
   let projectId = contextId
   if (contextType === 'task') {
+    // Try allTasks cache first
     const t = allTasks.find(x => x.id == contextId)
-    projectId = t?.project_id || contextId
+    projectId = t?.project_id
+    if (!projectId) {
+      // Fetch task detail to get project_id
+      try {
+        const task = await api(`/tasks/${contextId}`)
+        projectId = task?.project_id
+      } catch { projectId = contextId }
+    }
   }
+  if (!projectId) return allUsers || []
   if (_chatMembersCache[projectId]) return _chatMembersCache[projectId]
   try {
     const proj = await api(`/projects/${projectId}`)
-    _chatMembersCache[projectId] = proj.members || []
-    return _chatMembersCache[projectId]
-  } catch { return [] }
+    // Include project members + admin + leader (deduplicated)
+    const members = proj.members || []
+    // Also add allUsers as fallback so @mention always works
+    const memberIds = new Set(members.map(m => m.user_id))
+    if (proj.admin_id && !memberIds.has(proj.admin_id)) {
+      const admin = (allUsers || []).find(u => u.id === proj.admin_id)
+      if (admin) members.push({ user_id: admin.id, full_name: admin.full_name, department: admin.department })
+    }
+    if (proj.leader_id && !memberIds.has(proj.leader_id)) {
+      const leader = (allUsers || []).find(u => u.id === proj.leader_id)
+      if (leader) members.push({ user_id: leader.id, full_name: leader.full_name, department: leader.department })
+    }
+    _chatMembersCache[projectId] = members
+    return members
+  } catch {
+    // Fallback: return allUsers if project fetch fails
+    return allUsers || []
+  }
 }
 
 function checkMentionTrigger(ta, contextType, contextId) {
@@ -1944,25 +1969,33 @@ function checkMentionTrigger(ta, contextType, contextId) {
     return
   }
   const query = before.slice(atIdx + 1).toLowerCase()
-  if (query.includes(' ')) { closeMentionDropdown(contextType, contextId); return }
+  // Allow spaces in query for Vietnamese multi-word names
+  // Close only if query ends with 2 consecutive spaces (user is done)
+  if (query.endsWith('  ')) { closeMentionDropdown(contextType, contextId); return }
   showMentionDropdown(query, contextType, contextId, ta, atIdx)
 }
 
 async function showMentionDropdown(query, contextType, contextId, ta, atIdx) {
   const members = await getProjectMembers(contextType, contextId)
-  const filtered = members.filter(m => m.full_name.toLowerCase().includes(query)).slice(0, 8)
+  // Support both full_name (project members) and name (allUsers)
+  const filtered = members.filter(m => {
+    const name = m.full_name || m.name || ''
+    return name.toLowerCase().includes(query.trim().toLowerCase())
+  }).slice(0, 8)
   const dd = $(`mentionDropdown_${contextType}_${contextId}`)
   if (!dd) return
 
   if (!filtered.length) { closeMentionDropdown(contextType, contextId); return }
 
   dd.innerHTML = filtered.map((m, i) => {
-    const initials = m.full_name.split(' ').pop()?.charAt(0) || '?'
-    return `<div class="mention-item ${i===0?'active':''}" onclick="insertMention('${m.full_name.replace(/'/g,"\\'")}','${contextType}',${contextId})" data-idx="${i}">
+    const name = m.full_name || m.name || 'Unknown'
+    const dept = m.department || ''
+    const initials = name.split(' ').pop()?.charAt(0) || '?'
+    return `<div class="mention-item ${i===0?'active':''}" onclick="insertMention('${name.replace(/'/g,"\\'")}','${contextType}',${contextId})" data-idx="${i}">
       <div class="mention-avatar">${initials}</div>
       <div>
-        <div class="font-medium text-gray-800 text-xs">${m.full_name}</div>
-        <div class="text-xs text-gray-400">${m.department||''}</div>
+        <div class="font-medium text-gray-800 text-xs">${name}</div>
+        <div class="text-xs text-gray-400">${dept}</div>
       </div>
     </div>`
   }).join('')
@@ -1988,7 +2021,8 @@ function navigateMentionDropdown(contextType, contextId, dir) {
 function selectActiveMention(contextType, contextId) {
   const state = window[`mentionDropdownActive_${contextType}_${contextId}`]
   if (!state) return
-  insertMention(state.members[state.activeIdx].full_name, contextType, contextId)
+  const m = state.members[state.activeIdx]
+  insertMention(m.full_name || m.name || '', contextType, contextId)
 }
 
 function insertMention(fullName, contextType, contextId) {
