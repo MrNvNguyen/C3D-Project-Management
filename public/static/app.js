@@ -1001,8 +1001,37 @@ async function loadTasks() {
       df.innerHTML = '<option value="">Tất cả bộ môn</option>' + allDisciplines.map(d => `<option value="${d.code}">${d.code} - ${d.name}</option>`).join('')
     }
 
+    // Populate category filter (all categories from loaded tasks)
+    updateTaskCategoryFilter()
+
     renderTasksTable(allTasks)
   } catch (e) { toast('Lỗi tải task: ' + e.message, 'error') }
+}
+
+// Rebuild category filter based on selected project (or all)
+function updateTaskCategoryFilter(selectedProjectId = '') {
+  const cf = $('taskCategoryFilter')
+  if (!cf) return
+  const prevVal = cf.value
+  // Collect unique categories from visible tasks
+  const tasksForProject = selectedProjectId
+    ? allTasks.filter(t => String(t.project_id) === String(selectedProjectId))
+    : allTasks
+  const catMap = {}
+  tasksForProject.forEach(t => {
+    if (t.category_id && t.category_name) catMap[t.category_id] = t.category_name
+  })
+  const opts = Object.entries(catMap).map(([id, name]) => `<option value="${id}">${name}</option>`).join('')
+  cf.innerHTML = '<option value="">Tất cả hạng mục</option>' + opts
+  // Restore previous selection if still valid
+  if (prevVal && catMap[prevVal]) cf.value = prevVal
+}
+
+// Called when project filter changes
+function onTaskProjectFilterChange() {
+  const projectId = $('taskProjectFilter').value
+  updateTaskCategoryFilter(projectId)
+  filterTasks()
 }
 
 function renderTasksTable(tasks) {
@@ -1011,7 +1040,7 @@ function renderTasksTable(tasks) {
   const effGlobal = getEffectiveGlobalRole()
 
   if (!tasks.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="12" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
     return
   }
 
@@ -1024,10 +1053,18 @@ function renderTasksTable(tasks) {
     const subDone  = t.subtask_done_count || 0
     const hasSubtasks = subCount > 0
 
-    // Subtask progress color
-    const subPct = subCount > 0 ? Math.round(subDone / subCount * 100) : 0
+    // Subtask badge color
     const subBadgeColor = subCount === 0 ? '#e5e7eb' : subDone === subCount ? '#dcfce7' : '#fef9c3'
     const subTextColor  = subCount === 0 ? '#9ca3af' : subDone === subCount ? '#16a34a' : '#92400e'
+
+    // Phase badge
+    const phaseColors = {
+      basic_design:        { bg:'#f0f9ff', text:'#0369a1' },
+      technical_design:    { bg:'#fdf4ff', text:'#7e22ce' },
+      construction_design: { bg:'#fff7ed', text:'#c2410c' },
+      as_built:            { bg:'#f0fdf4', text:'#15803d' }
+    }
+    const pc = phaseColors[t.phase] || { bg:'#f3f4f6', text:'#6b7280' }
 
     return `
     <tr class="task-main-row table-row ${isOverdue(t) ? 'overdue-row' : ''}" data-task-id="${t.id}">
@@ -1041,20 +1078,23 @@ function renderTasksTable(tasks) {
              </button>`}
       </td>
       <td class="py-2 pr-3">
-        <div class="flex items-center gap-2">
-          <div>
-            <div class="font-medium text-gray-800 text-sm cursor-pointer hover:text-primary" onclick="openTaskDetail(${t.id})">${t.title}</div>
-            ${isOverdue(t) ? '<span class="badge badge-overdue text-xs">Trễ hạn!</span>' : ''}
-            <div class="flex items-center gap-2 mt-0.5">
-              <span class="text-xs text-gray-400">${getPhaseName(t.phase)}</span>
-              ${hasSubtasks ? `<span class="inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full" style="background:${subBadgeColor};color:${subTextColor}">
-                <i class="fas fa-list-check" style="font-size:9px"></i>${subDone}/${subCount}
-              </span>` : ''}
-            </div>
-          </div>
-        </div>
+        <div class="font-medium text-gray-800 text-sm cursor-pointer hover:text-primary" onclick="openTaskDetail(${t.id})">${t.title}</div>
+        ${isOverdue(t) ? '<span class="badge badge-overdue text-xs">Trễ hạn!</span>' : ''}
+        ${hasSubtasks ? `<span class="subtask-badge inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full mt-0.5" style="background:${subBadgeColor};color:${subTextColor}">
+          <i class="fas fa-list-check" style="font-size:9px"></i>${subDone}/${subCount}
+        </span>` : ''}
       </td>
       <td class="py-2 pr-3 text-sm text-gray-600">${t.project_code || '-'}</td>
+      <td class="py-2 pr-3">
+        ${t.category_name
+          ? `<span class="text-xs text-gray-700 font-medium bg-slate-100 px-2 py-0.5 rounded max-w-32 truncate block" title="${t.category_name}">${t.category_name}</span>`
+          : '<span class="text-xs text-gray-300">—</span>'}
+      </td>
+      <td class="py-2 pr-3">
+        ${t.phase
+          ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap" style="background:${pc.bg};color:${pc.text}">${getPhaseName(t.phase)}</span>`
+          : '<span class="text-xs text-gray-300">—</span>'}
+      </td>
       <td class="py-2 pr-3"><span class="badge text-xs" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
       <td class="py-2 pr-3">${getPriorityBadge(t.priority)}</td>
       <td class="py-2 pr-3 text-sm text-gray-600">${t.assigned_to_name || '<span class="text-gray-300 text-xs">Chưa giao</span>'}</td>
@@ -1074,7 +1114,7 @@ function renderTasksTable(tasks) {
       </td>
     </tr>
     <tr id="subtask-rows-${t.id}" class="subtask-container-row" style="display:none">
-      <td colspan="10" class="p-0">
+      <td colspan="12" class="p-0">
         <div id="subtask-panel-${t.id}" class="subtask-panel"></div>
       </td>
     </tr>`
@@ -1243,18 +1283,22 @@ function refreshSubtaskBadge(taskId, subtasks) {
 }
 
 function filterTasks() {
-  const search = $('taskSearch').value.toLowerCase()
-  const status = $('taskStatusFilter').value
+  const search   = $('taskSearch').value.toLowerCase()
+  const status   = $('taskStatusFilter').value
   const priority = $('taskPriorityFilter').value
-  const project = $('taskProjectFilter').value
+  const project  = $('taskProjectFilter').value
+  const category = $('taskCategoryFilter')?.value || ''
+  const phase    = $('taskPhaseFilter')?.value || ''
   const discipline = $('taskDisciplineFilter')?.value || ''
   const onlyOverdue = $('taskOverdueFilter').checked
 
   const filtered = allTasks.filter(t =>
-    (!search || t.title.toLowerCase().includes(search) || (t.assigned_to_name||'').toLowerCase().includes(search)) &&
-    (!status || t.status === status) &&
+    (!search   || t.title.toLowerCase().includes(search) || (t.assigned_to_name||'').toLowerCase().includes(search) || (t.category_name||'').toLowerCase().includes(search)) &&
+    (!status   || t.status === status) &&
     (!priority || t.priority === priority) &&
-    (!project || String(t.project_id) === project) &&
+    (!project  || String(t.project_id) === project) &&
+    (!category || String(t.category_id) === category) &&
+    (!phase    || t.phase === phase) &&
     (!discipline || t.discipline_code === discipline) &&
     (!onlyOverdue || isOverdue(t))
   )

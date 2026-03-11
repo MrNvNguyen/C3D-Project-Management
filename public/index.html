@@ -609,8 +609,18 @@
               <option value="medium">Trung bình</option>
               <option value="low">Thấp</option>
             </select>
-            <select id="taskProjectFilter" class="select-field" style="width:180px" onchange="filterTasks()">
+            <select id="taskProjectFilter" class="select-field" style="width:150px" onchange="onTaskProjectFilterChange()">
               <option value="">Tất cả dự án</option>
+            </select>
+            <select id="taskCategoryFilter" class="select-field" style="width:160px" onchange="filterTasks()">
+              <option value="">Tất cả hạng mục</option>
+            </select>
+            <select id="taskPhaseFilter" class="select-field" style="width:140px" onchange="filterTasks()">
+              <option value="">Tất cả giai đoạn</option>
+              <option value="basic_design">TKCS - Cơ sở</option>
+              <option value="technical_design">TKKT - Kỹ thuật</option>
+              <option value="construction_design">TKTC - Thi công</option>
+              <option value="as_built">Hoàn công</option>
             </select>
             <select id="taskDisciplineFilter" class="select-field" style="width:120px" onchange="filterTasks()">
               <option value="">Tất cả bộ môn</option>
@@ -628,6 +638,8 @@
                 <th class="pb-3 pr-3 font-medium" style="width:32px"></th>
                 <th class="pb-3 pr-3 font-medium min-w-48">Tên công việc</th>
                 <th class="pb-3 pr-3 font-medium">Dự án</th>
+                <th class="pb-3 pr-3 font-medium">Hạng mục</th>
+                <th class="pb-3 pr-3 font-medium">Giai đoạn</th>
                 <th class="pb-3 pr-3 font-medium">Bộ môn</th>
                 <th class="pb-3 pr-3 font-medium">Ưu tiên</th>
                 <th class="pb-3 pr-3 font-medium">Phụ trách</th>
