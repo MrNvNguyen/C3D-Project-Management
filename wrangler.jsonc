@@ -1,14 +1,14 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "bim-management",
+  "name": "cim-management",
   "compatibility_date": "2024-09-23",
   "compatibility_flags": ["nodejs_compat"],
   "pages_build_output_dir": "./dist",
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "bim-management-production",
-      "database_id": "1ecd2aa0-3156-4c30-866b-21dc5545d6d5"
+      "database_name": "cim-management-production",
+      "database_id": "54de43b9-7ee1-49bc-ba19-ddae78573690"
     }
   ]
 }
