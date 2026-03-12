@@ -175,6 +175,25 @@
       .kpi-card { padding: 14px; }
       .card { padding: 14px; }
     }
+    /* Analytics Tabs */
+    .analytics-tab { color: #6b7280; background: transparent; border: none; cursor: pointer; }
+    .analytics-tab:hover { background: white; color: #374151; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+    .analytics-tab.active { background: white; color: #00A651; font-weight: 600; box-shadow: 0 1px 6px rgba(0,0,0,0.12); }
+    .analytics-content { display: block; }
+    .analytics-content.hidden { display: none; }
+    /* Health Score Badge */
+    .health-excellent { background:#d1fae5; color:#065f46; }
+    .health-good { background:#dbeafe; color:#1e3a8a; }
+    .health-fair { background:#fef9c3; color:#713f12; }
+    .health-poor { background:#fee2e2; color:#7f1d1d; }
+    .health-critical { background:#fce7f3; color:#831843; }
+    /* Score ring */
+    .score-ring { width:64px; height:64px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; flex-shrink:0; }
+    .score-ring.excellent { background:conic-gradient(#00A651 calc(var(--score)*3.6deg), #e5e7eb 0deg); }
+    .score-ring.good { background:conic-gradient(#3b82f6 calc(var(--score)*3.6deg), #e5e7eb 0deg); }
+    .score-ring.fair { background:conic-gradient(#f59e0b calc(var(--score)*3.6deg), #e5e7eb 0deg); }
+    .score-ring.poor { background:conic-gradient(#ef4444 calc(var(--score)*3.6deg), #e5e7eb 0deg); }
+    .score-ring.critical { background:conic-gradient(#be185d calc(var(--score)*3.6deg), #e5e7eb 0deg); }
   </style>
 </head>
 <body>
@@ -281,6 +300,9 @@
         </div>
 
         <div class="sidebar-section mt-3">Hệ thống</div>
+        <div class="nav-item" onclick="navigate('analytics')">
+          <i class="fas fa-chart-pie"></i><span>Báo cáo & Phân tích</span>
+        </div>
         <div class="nav-item" onclick="navigate('system-config')">
           <i class="fas fa-sliders-h"></i><span>Cấu hình hệ thống</span>
         </div>
@@ -1955,6 +1977,78 @@
         </div>
       </div><!-- End system-config page -->
 
+      <!-- ========== ANALYTICS PAGE ========== -->
+      <div id="page-analytics" class="page">
+        <div class="flex flex-wrap justify-between items-center mb-6 gap-3">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800"><i class="fas fa-chart-pie mr-2 text-primary"></i>Báo cáo & Phân tích</h1>
+            <p class="text-gray-500 text-sm">Phân tích chuyên sâu về dự án, nhân sự, tài chính và hiệu suất</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <select id="analyticsYear" onchange="reloadAnalytics()" class="select-field w-32">
+              <option value="2023">2023</option>
+              <option value="2024">2024</option>
+              <option value="2025" selected>2025</option>
+              <option value="2026">2026</option>
+            </select>
+            <button onclick="exportAnalyticsPDF()" class="btn-secondary text-sm"><i class="fas fa-download mr-1"></i>Xuất PDF</button>
+          </div>
+        </div>
+
+        <!-- Tab Navigation -->
+        <div class="flex gap-1 mb-6 bg-gray-100 p-1 rounded-xl overflow-x-auto">
+          <button onclick="switchAnalyticsTab('health')" id="tab-health" class="analytics-tab active flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all">
+            <i class="fas fa-heartbeat"></i> Sức khỏe dự án
+          </button>
+          <button onclick="switchAnalyticsTab('performance')" id="tab-performance" class="analytics-tab flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all">
+            <i class="fas fa-rocket"></i> Hiệu suất dự án
+          </button>
+          <button onclick="switchAnalyticsTab('tasks')" id="tab-tasks" class="analytics-tab flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all">
+            <i class="fas fa-tasks"></i> Phân tích Task
+          </button>
+          <button onclick="switchAnalyticsTab('team')" id="tab-team" class="analytics-tab flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all">
+            <i class="fas fa-users"></i> Năng suất nhân sự
+          </button>
+          <button onclick="switchAnalyticsTab('timesheet')" id="tab-timesheet" class="analytics-tab flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all">
+            <i class="fas fa-clock"></i> Chấm công
+          </button>
+          <button onclick="switchAnalyticsTab('financial')" id="tab-financial" class="analytics-tab flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all" id="tab-financial-btn">
+            <i class="fas fa-chart-line"></i> Tài chính
+          </button>
+        </div>
+
+        <!-- Tab Content: Project Health -->
+        <div id="analytics-health" class="analytics-content">
+          <div id="analyticsHealthContent"><div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải...</p></div></div>
+        </div>
+
+        <!-- Tab Content: Project Performance -->
+        <div id="analytics-performance" class="analytics-content hidden">
+          <div id="analyticsPerformanceContent"><div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải...</p></div></div>
+        </div>
+
+        <!-- Tab Content: Task Analytics -->
+        <div id="analytics-tasks" class="analytics-content hidden">
+          <div id="analyticsTasksContent"><div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải...</p></div></div>
+        </div>
+
+        <!-- Tab Content: Team Productivity -->
+        <div id="analytics-team" class="analytics-content hidden">
+          <div id="analyticsTeamContent"><div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải...</p></div></div>
+        </div>
+
+        <!-- Tab Content: Timesheet -->
+        <div id="analytics-timesheet" class="analytics-content hidden">
+          <div id="analyticsTimesheetContent"><div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải...</p></div></div>
+        </div>
+
+        <!-- Tab Content: Financial -->
+        <div id="analytics-financial" class="analytics-content hidden">
+          <div id="analyticsFinancialContent"><div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải...</p></div></div>
+        </div>
+      </div>
+      <!-- ========== END ANALYTICS PAGE ========== -->
+
       </div><!-- End Pages -->
       </div><!-- End max-width wrapper -->
 
@@ -2069,7 +2163,7 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Dự án *</label>
-          <select id="taskProject" class="select-field" onchange="loadTaskCategories()" required></select>
+          <select id="taskProject" class="select-field" onchange="loadTaskCategories(); updateTaskAssigneeByProject()" required></select>
         </div>
         <div>
           <label class="label">Hạng mục</label>

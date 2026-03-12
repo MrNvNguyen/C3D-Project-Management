@@ -700,15 +700,15 @@ app.get('/api/tasks', authMiddleware, async (c) => {
     if (user.role === 'system_admin') {
       // System admin: thấy tất cả, không filter thêm
     } else if (user.role === 'project_admin') {
-      // Project admin global: thấy tất cả task trong project mình quản lý
+      // Project admin global: thấy task trong project mình quản lý + task được giao cho mình
       const sub = projectAccessSubquery(user.id)
-      query += ` AND t.project_id IN ${sub.sql}`
-      params.push(...sub.params)
+      query += ` AND (t.assigned_to = ? OR t.project_id IN ${sub.sql})`
+      params.push(user.id, ...sub.params)
     } else if (user.role === 'project_leader') {
-      // Project leader global: thấy task trong project mình là leader/admin
+      // Project leader global: thấy task trong project mình là leader/admin + task được giao cho mình
       const sub = projectAccessSubquery(user.id)
-      query += ` AND t.project_id IN ${sub.sql}`
-      params.push(...sub.params)
+      query += ` AND (t.assigned_to = ? OR t.project_id IN ${sub.sql})`
+      params.push(user.id, ...sub.params)
     } else {
       // Global role = member → cần kiểm tra per-project
       if (project_id) {
@@ -1402,9 +1402,10 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     } else if (effRoleTS === 'project_admin' || effRoleTS === 'project_leader') {
+      // Thấy timesheets trong project mình quản lý + LUÔN thấy timesheet của chính mình
       const sub = projectAccessSubquery(user.id)
-      query += ` AND ts.project_id IN ${sub.sql}`
-      params.push(...sub.params)
+      query += ` AND (ts.user_id = ? OR ts.project_id IN ${sub.sql})`
+      params.push(user.id, ...sub.params)
       if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     } else {
@@ -1437,8 +1438,8 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
     } else if (effRoleTS === 'project_admin' || effRoleTS === 'project_leader') {
       const sub = projectAccessSubquery(user.id)
-      sumQ += ` AND ts.project_id IN ${sub.sql}`
-      sumParams.push(...sub.params)
+      sumQ += ` AND (ts.user_id = ? OR ts.project_id IN ${sub.sql})`
+      sumParams.push(user.id, ...sub.params)
       if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
       if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
     } else {
@@ -1481,11 +1482,30 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     const effRoleGlobal = await getEffectiveRole(db, user)
     const targetUserId = (data.user_id && effRoleGlobal !== 'member') ? data.user_id : user.id
 
-    // project_leader/admin chỉ tạo được trong dự án mình quản lý
-    const effRoleCreate = await getEffectiveRole(db, user, parseInt(project_id))
-    if (effRoleCreate !== 'system_admin' && (effRoleCreate === 'project_admin' || effRoleCreate === 'project_leader')) {
-      const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
-      if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho dự án này' }, 403)
+    // Kiểm tra quyền tạo timesheet:
+    // - system_admin: được tạo cho mọi dự án, mọi user
+    // - project_admin/project_leader của dự án này: được tạo timesheet cho user khác (targetUserId != user.id)
+    // - member (kể cả global role cao hơn) tạo timesheet CHO CHÍNH MÌNH: luôn được phép
+    //   nếu họ là thành viên của dự án (project_members hoặc admin_id/leader_id)
+    // - Tạo timesheet CHO NGƯỜI KHÁC mà không phải admin/leader của dự án: bị từ chối
+
+    if (effRoleGlobal !== 'system_admin') {
+      if (targetUserId !== user.id) {
+        // Đang tạo timesheet cho người khác → phải là admin/leader của dự án này
+        const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
+        if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác trong dự án này' }, 403)
+      } else {
+        // Tạo timesheet cho chính mình → kiểm tra có là thành viên của dự án không
+        const isMember = await db.prepare(
+          `SELECT id FROM project_members WHERE project_id = ? AND user_id = ?`
+        ).bind(parseInt(project_id), user.id).first()
+        const isAdminOrLeader = await db.prepare(
+          `SELECT id FROM projects WHERE id = ? AND (admin_id = ? OR leader_id = ?)`
+        ).bind(parseInt(project_id), user.id, user.id).first()
+        if (!isMember && !isAdminOrLeader) {
+          return c.json({ error: 'Bạn không phải thành viên của dự án này' }, 403)
+        }
+      }
     }
 
     // === CREATE-OR-UPDATE: check for existing record before inserting ===
@@ -6309,6 +6329,539 @@ app.post('/api/system/cleanup-production', authMiddleware, async (c) => {
     })
   } catch (e: any) {
     return c.json({ error: `Cleanup failed: ${e.message}` }, 500)
+  }
+})
+
+// ===================================================
+// ADVANCED ANALYTICS ROUTES
+// ===================================================
+
+// 1. Project Performance Overview (tổng quan hiệu suất tất cả dự án)
+app.get('/api/analytics/project-performance', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { year } = c.req.query()
+    const y = year || new Date().getFullYear().toString()
+
+    let projectFilter = ''
+    let binds: any[] = [y, y]
+    if (user.role !== 'system_admin') {
+      projectFilter = 'AND p.id IN (SELECT project_id FROM project_members WHERE user_id = ?)'
+      binds.push(user.id)
+    }
+
+    const projects = await db.prepare(`
+      SELECT
+        p.id, p.code, p.name, p.status, p.start_date, p.end_date,
+        p.budget, p.contract_value, p.progress,
+        COALESCE(t_stats.total_tasks, 0)     as total_tasks,
+        COALESCE(t_stats.completed_tasks, 0) as completed_tasks,
+        COALESCE(t_stats.overdue_tasks, 0)   as overdue_tasks,
+        COALESCE(t_stats.urgent_tasks, 0)    as urgent_tasks,
+        COALESCE(ts_stats.total_hours, 0)    as total_hours,
+        COALESCE(ts_stats.approved_hours, 0) as approved_hours,
+        COALESCE(mem_stats.member_count, 0)  as member_count,
+        COALESCE(cost_stats.total_cost, 0)   as total_cost,
+        COALESCE(rev_stats.total_revenue, 0) as total_revenue
+      FROM projects p
+      LEFT JOIN (
+        SELECT project_id,
+          COUNT(*) as total_tasks,
+          SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed_tasks,
+          SUM(CASE WHEN is_overdue=1 AND status!='completed' THEN 1 ELSE 0 END) as overdue_tasks,
+          SUM(CASE WHEN priority='urgent' AND status!='completed' THEN 1 ELSE 0 END) as urgent_tasks
+        FROM tasks GROUP BY project_id
+      ) t_stats ON t_stats.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id,
+          SUM(regular_hours + overtime_hours) as total_hours,
+          SUM(CASE WHEN status='approved' THEN regular_hours + overtime_hours ELSE 0 END) as approved_hours
+        FROM timesheets WHERE strftime('%Y', work_date) = ?
+        GROUP BY project_id
+      ) ts_stats ON ts_stats.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id, COUNT(DISTINCT user_id) as member_count
+        FROM project_members GROUP BY project_id
+      ) mem_stats ON mem_stats.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id, SUM(amount) as total_cost
+        FROM project_costs WHERE strftime('%Y', cost_date) = ?
+        GROUP BY project_id
+      ) cost_stats ON cost_stats.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id, SUM(amount) as total_revenue
+        FROM project_revenues GROUP BY project_id
+      ) rev_stats ON rev_stats.project_id = p.id
+      WHERE 1=1 ${projectFilter}
+      ORDER BY p.created_at DESC
+    `).bind(...binds).all()
+
+    return c.json({ projects: projects.results })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 2. Team Productivity Deep Dive (phân tích năng suất nhân sự chi tiết)
+app.get('/api/analytics/team-productivity', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { year, month } = c.req.query()
+    const y = year || new Date().getFullYear().toString()
+    const dateFilter = month ? `AND strftime('%Y-%m', ts.work_date) = '${y}-${month.padStart(2,'0')}'`
+                              : `AND strftime('%Y', ts.work_date) = '${y}'`
+
+    const members = await db.prepare(`
+      SELECT
+        u.id, u.full_name, u.department, u.role,
+        COUNT(DISTINCT ts.id) as timesheet_days,
+        COALESCE(SUM(ts.regular_hours), 0) as regular_hours,
+        COALESCE(SUM(ts.overtime_hours), 0) as overtime_hours,
+        COALESCE(SUM(ts.regular_hours + ts.overtime_hours), 0) as total_hours,
+        COALESCE(SUM(CASE WHEN ts.status='approved' THEN ts.regular_hours+ts.overtime_hours ELSE 0 END),0) as approved_hours,
+        COUNT(DISTINCT t.id) as assigned_tasks,
+        SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) as completed_tasks,
+        SUM(CASE WHEN t.is_overdue=1 AND t.status!='completed' THEN 1 ELSE 0 END) as overdue_tasks,
+        COUNT(DISTINCT pm.project_id) as active_projects
+      FROM users u
+      LEFT JOIN timesheets ts ON ts.user_id = u.id ${dateFilter}
+      LEFT JOIN tasks t ON t.assigned_to = u.id
+      LEFT JOIN project_members pm ON pm.user_id = u.id
+      WHERE u.is_active = 1
+      GROUP BY u.id
+      ORDER BY total_hours DESC
+    `).all()
+
+    // Monthly trend for each member
+    const trend = await db.prepare(`
+      SELECT
+        u.id as user_id, u.full_name,
+        strftime('%m', ts.work_date) as month,
+        SUM(ts.regular_hours + ts.overtime_hours) as hours,
+        COUNT(DISTINCT ts.work_date) as days
+      FROM users u
+      JOIN timesheets ts ON ts.user_id = u.id
+      WHERE strftime('%Y', ts.work_date) = ? AND u.is_active = 1
+      GROUP BY u.id, strftime('%m', ts.work_date)
+      ORDER BY u.id, month
+    `).bind(y).all()
+
+    return c.json({ members: members.results, trend: trend.results })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 3. Task Analytics (phân tích công việc theo discipline, priority, trạng thái)
+app.get('/api/analytics/task-analytics', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { year, project_id } = c.req.query()
+    const y = year || new Date().getFullYear().toString()
+
+    let projectFilter = ''
+    let binds: any[] = []
+    if (project_id) {
+      projectFilter = 'AND t.project_id = ?'
+      binds.push(project_id)
+    } else if (user.role !== 'system_admin') {
+      projectFilter = 'AND t.project_id IN (SELECT project_id FROM project_members WHERE user_id = ?)'
+      binds.push(user.id)
+    }
+
+    const byStatus = await db.prepare(`
+      SELECT status, COUNT(*) as count FROM tasks t WHERE 1=1 ${projectFilter} GROUP BY status
+    `).bind(...binds).all()
+
+    const byPriority = await db.prepare(`
+      SELECT priority, COUNT(*) as count FROM tasks t WHERE 1=1 ${projectFilter} GROUP BY priority
+    `).bind(...binds).all()
+
+    const byDiscipline = await db.prepare(`
+      SELECT discipline_code, COUNT(*) as count,
+        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN is_overdue=1 AND status!='completed' THEN 1 ELSE 0 END) as overdue
+      FROM tasks t WHERE discipline_code IS NOT NULL AND discipline_code != '' ${projectFilter}
+      GROUP BY discipline_code ORDER BY count DESC
+    `).bind(...binds).all()
+
+    const byPhase = await db.prepare(`
+      SELECT phase, COUNT(*) as count,
+        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed
+      FROM tasks t WHERE 1=1 ${projectFilter} GROUP BY phase
+    `).bind(...binds).all()
+
+    // Monthly completion trend
+    const completionTrend = await db.prepare(`
+      SELECT strftime('%m', updated_at) as month,
+        COUNT(*) as total,
+        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed
+      FROM tasks t
+      WHERE strftime('%Y', created_at) = ? ${projectFilter}
+      GROUP BY strftime('%m', updated_at)
+      ORDER BY month
+    `).bind(y, ...binds).all()
+
+    // Avg completion time
+    const avgTime = await db.prepare(`
+      SELECT
+        AVG(CAST((julianday(actual_end_date) - julianday(start_date)) AS REAL)) as avg_days,
+        priority,
+        COUNT(*) as count
+      FROM tasks t
+      WHERE status='completed' AND actual_end_date IS NOT NULL AND start_date IS NOT NULL ${projectFilter}
+      GROUP BY priority
+    `).bind(...binds).all()
+
+    return c.json({
+      byStatus: byStatus.results,
+      byPriority: byPriority.results,
+      byDiscipline: byDiscipline.results,
+      byPhase: byPhase.results,
+      completionTrend: completionTrend.results,
+      avgCompletionTime: avgTime.results
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 4. Financial Analytics (phân tích tài chính tổng hợp)
+// ⚠️ ĐỒNG BỘ với /api/dashboard/cost-summary:
+//   - Dùng NTC date range thay vì năm lịch
+//   - Tính đủ: project_costs + labor costs + shared costs
+//   - Doanh thu chỉ tính paid/partial (đã thu)
+app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
+    const fySettings = await getFiscalYearSettings(db)
+    const { year } = c.req.query()
+    const fyYear = year ? parseInt(year) : new Date().getFullYear()
+    const y = String(fyYear)
+    const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(fyYear, fySettings)
+
+    // ── 1. KPI: Doanh thu chỉ tính paid/partial (đồng bộ với cost-summary)
+    const rawRevenue = await db.prepare(`
+      SELECT strftime('%Y-%m', revenue_date) as month,
+        SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as revenue,
+        SUM(amount) as total_amount
+      FROM project_revenues
+      WHERE revenue_date >= ? AND revenue_date <= ?
+      GROUP BY strftime('%Y-%m', revenue_date)
+    `).bind(fyStart, fyEnd).all()
+
+    // ── 2. Chi phí trực tiếp (non-salary) trong NTC
+    const rawDirectCost = await db.prepare(`
+      SELECT strftime('%Y-%m', cost_date) as month, SUM(amount) as cost
+      FROM project_costs
+      WHERE cost_date >= ? AND cost_date <= ? AND cost_type != 'salary'
+      GROUP BY strftime('%Y-%m', cost_date)
+    `).bind(fyStart, fyEnd).all()
+
+    // ── 3. Labor costs trong NTC (ưu tiên project_labor_costs)
+    const fyEnd1Year = fySettings.start_month === 1 ? fyYear : fyYear + 1
+    let laborWhereSimple: string
+    let laborParams: any[]
+    if (fySettings.start_month === 1) {
+      laborWhereSimple = `year = ?`
+      laborParams = [fyYear]
+    } else {
+      laborWhereSimple = `((year = ? AND month >= ?) OR (year = ? AND month < ?))`
+      laborParams = [fyYear, fySettings.start_month, fyEnd1Year, fySettings.start_month]
+    }
+
+    const plcMonthly = await db.prepare(`
+      SELECT PRINTF('%d-%02d', year, month) as month,
+        SUM(total_labor_cost) as labor_cost
+      FROM project_labor_costs WHERE ${laborWhereSimple}
+      GROUP BY month ORDER BY month
+    `).bind(...laborParams).all()
+
+    // Fallback: monthly_labor_costs nếu project_labor_costs trống
+    let laborMonthly = plcMonthly.results as any[]
+    if (!laborMonthly.length) {
+      const mlc = await db.prepare(`
+        SELECT PRINTF('%d-%02d', year, month) as month,
+          total_labor_cost as labor_cost
+        FROM monthly_labor_costs WHERE ${laborWhereSimple}
+        ORDER BY month
+      `).bind(...laborParams).all()
+      laborMonthly = mlc.results as any[]
+    }
+
+    // ── 4. Shared costs trong NTC
+    const sharedRows = await db.prepare(`
+      SELECT strftime('%Y-%m', cost_date) as month, SUM(amount) as shared_cost
+      FROM shared_costs
+      WHERE cost_date >= ? AND cost_date <= ?
+      GROUP BY strftime('%Y-%m', cost_date)
+    `).bind(fyStart, fyEnd).all()
+
+    // ── 5. Build monthly map (12 tháng NTC)
+    const revMap: Record<string, number> = {}
+    ;(rawRevenue.results as any[]).forEach((r: any) => { revMap[r.month] = r.revenue || 0 })
+    const directCostMap: Record<string, number> = {}
+    ;(rawDirectCost.results as any[]).forEach((r: any) => { directCostMap[r.month] = r.cost || 0 })
+    const laborMap: Record<string, number> = {}
+    laborMonthly.forEach((r: any) => { laborMap[r.month] = r.labor_cost || 0 })
+    const sharedMap: Record<string, number> = {}
+    ;(sharedRows.results as any[]).forEach((r: any) => { sharedMap[r.month] = r.shared_cost || 0 })
+
+    // Build 12-month array theo NTC
+    const sm = fySettings.start_month
+    const monthlyRevCostResults = Array.from({length: 12}, (_, i) => {
+      const lm = ((sm - 1 + i) % 12) + 1
+      const { calYear, calMonth } = fiscalMonthToCalendar(lm, fyYear, fySettings)
+      const mkey = `${calYear}-${String(calMonth).padStart(2,'0')}`
+      const revenue = revMap[mkey] || 0
+      const directCost = directCostMap[mkey] || 0
+      const laborCost = laborMap[mkey] || 0
+      const sharedCost = sharedMap[mkey] || 0
+      const cost = directCost + laborCost + sharedCost
+      return {
+        month: `T${lm}`,             // Tháng NTC (T1..T12)
+        month_key: mkey,              // YYYY-MM thực tế
+        revenue, directCost, laborCost, sharedCost, cost,
+        profit: revenue - cost
+      }
+    })
+
+    // ── 6. KPI tổng hợp (đồng bộ với cost-summary)
+    const totalRevenue = (rawRevenue.results as any[]).reduce((s: number, r: any) => s + (r.revenue || 0), 0)
+    const totalDirectCost = (rawDirectCost.results as any[]).reduce((s: number, r: any) => s + (r.cost || 0), 0)
+    const totalLaborCost = laborMonthly.reduce((s: number, r: any) => s + (r.labor_cost || 0), 0)
+    const totalSharedCost = (sharedRows.results as any[]).reduce((s: number, r: any) => s + (r.shared_cost || 0), 0)
+    const totalCost = totalDirectCost + totalLaborCost + totalSharedCost
+
+    // ── 7. Cost breakdown by type (trong NTC, gộp cả labor & shared)
+    const costByTypeRaw = await db.prepare(`
+      SELECT cost_type, SUM(amount) as total, COUNT(*) as count
+      FROM project_costs
+      WHERE cost_date >= ? AND cost_date <= ? AND cost_type != 'salary'
+      GROUP BY cost_type ORDER BY total DESC
+    `).bind(fyStart, fyEnd).all()
+
+    const costByType: any[] = [...(costByTypeRaw.results as any[])]
+    if (totalLaborCost > 0) costByType.push({ cost_type: 'salary', total: totalLaborCost, count: 0 })
+    if (totalSharedCost > 0) costByType.push({ cost_type: 'shared', total: totalSharedCost, count: 0 })
+
+    // ── 8. Top projects by revenue (trong NTC)
+    const topProjectsByRevenue = await db.prepare(`
+      SELECT p.code, p.name,
+        COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0) as revenue,
+        COALESCE(SUM(pc.amount), 0) as cost,
+        COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0)
+          - COALESCE(SUM(pc.amount), 0) as profit
+      FROM projects p
+      LEFT JOIN project_revenues pr ON pr.project_id = p.id
+        AND pr.revenue_date >= ? AND pr.revenue_date <= ?
+      LEFT JOIN project_costs pc ON pc.project_id = p.id
+        AND pc.cost_date >= ? AND pc.cost_date <= ?
+      WHERE p.status != 'cancelled'
+      GROUP BY p.id HAVING revenue > 0 OR cost > 0
+      ORDER BY revenue DESC LIMIT 10
+    `).bind(fyStart, fyEnd, fyStart, fyEnd).all()
+
+    // ── 9. Revenue by payment status (trong NTC)
+    const revenueByStatus = await db.prepare(`
+      SELECT payment_status, SUM(amount) as total, COUNT(*) as count
+      FROM project_revenues WHERE revenue_date >= ? AND revenue_date <= ?
+      GROUP BY payment_status
+    `).bind(fyStart, fyEnd).all()
+
+    // ── 10. Active / completed projects
+    const activeProjects = await db.prepare(`SELECT COUNT(*) as cnt FROM projects WHERE status='active'`).first() as any
+    const completedProjects = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM projects WHERE status='completed' AND end_date >= ? AND end_date <= ?
+    `).bind(fyStart, fyEnd).first() as any
+
+    const kpi = {
+      total_revenue: totalRevenue,
+      total_cost: totalCost,
+      total_direct_cost: totalDirectCost,
+      total_labor_cost: totalLaborCost,
+      total_shared_cost: totalSharedCost,
+      active_projects: activeProjects?.cnt || 0,
+      completed_projects: completedProjects?.cnt || 0,
+      fiscal_year: fyYear,
+      fiscal_year_label: getFiscalYearLabel(fyYear, fySettings),
+      fiscal_year_start: fyStart,
+      fiscal_year_end: fyEnd
+    }
+
+    return c.json({
+      monthlyRevCost: monthlyRevCostResults,
+      costByType,
+      topProjectsByRevenue: topProjectsByRevenue.results,
+      revenueByStatus: revenueByStatus.results,
+      kpi
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 5. Timesheet Analytics (phân tích chấm công tổng hợp)
+app.get('/api/analytics/timesheet', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { year } = c.req.query()
+    const y = year || new Date().getFullYear().toString()
+
+    // Hours by month & status
+    const monthlyHours = await db.prepare(`
+      SELECT strftime('%m', work_date) as month,
+        SUM(regular_hours) as regular,
+        SUM(overtime_hours) as overtime,
+        COUNT(DISTINCT user_id) as active_users,
+        SUM(CASE WHEN status='approved' THEN regular_hours+overtime_hours ELSE 0 END) as approved_hours
+      FROM timesheets
+      WHERE strftime('%Y', work_date) = ?
+      GROUP BY strftime('%m', work_date) ORDER BY month
+    `).bind(y).all()
+
+    // By department
+    const byDepartment = await db.prepare(`
+      SELECT u.department,
+        SUM(ts.regular_hours + ts.overtime_hours) as total_hours,
+        COUNT(DISTINCT ts.user_id) as members,
+        AVG(ts.regular_hours + ts.overtime_hours) as avg_hours_per_day
+      FROM timesheets ts JOIN users u ON u.id = ts.user_id
+      WHERE strftime('%Y', ts.work_date) = ? AND u.is_active = 1
+      GROUP BY u.department ORDER BY total_hours DESC
+    `).bind(y).all()
+
+    // Status distribution
+    const byStatus = await db.prepare(`
+      SELECT status, COUNT(*) as count,
+        SUM(regular_hours + overtime_hours) as hours
+      FROM timesheets WHERE strftime('%Y', work_date) = ?
+      GROUP BY status
+    `).bind(y).all()
+
+    // Top workers by hours
+    const topWorkers = await db.prepare(`
+      SELECT u.full_name, u.department,
+        SUM(ts.regular_hours + ts.overtime_hours) as total_hours,
+        SUM(ts.overtime_hours) as overtime_hours,
+        COUNT(DISTINCT ts.work_date) as days_worked,
+        COUNT(DISTINCT ts.project_id) as projects
+      FROM timesheets ts JOIN users u ON u.id = ts.user_id
+      WHERE strftime('%Y', ts.work_date) = ? AND u.is_active = 1
+      GROUP BY ts.user_id ORDER BY total_hours DESC LIMIT 10
+    `).bind(y).all()
+
+    return c.json({
+      monthlyHours: monthlyHours.results,
+      byDepartment: byDepartment.results,
+      byStatus: byStatus.results,
+      topWorkers: topWorkers.results
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 6. Project Health Score (điểm sức khỏe dự án)
+app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+
+    let projectFilter = ''
+    let binds: any[] = []
+    if (user.role !== 'system_admin') {
+      projectFilter = 'AND p.id IN (SELECT project_id FROM project_members WHERE user_id = ?)'
+      binds.push(user.id)
+    }
+
+    const projects = await db.prepare(`
+      SELECT
+        p.id, p.code, p.name, p.status, p.progress,
+        p.start_date, p.end_date, p.budget, p.contract_value,
+        COALESCE(t_stats.total_tasks, 0)    as total_tasks,
+        COALESCE(t_stats.done_tasks, 0)     as done_tasks,
+        COALESCE(t_stats.overdue_tasks, 0)  as overdue_tasks,
+        COALESCE(t_stats.urgent_pending, 0) as urgent_pending,
+        COALESCE(cost_stats.total_cost, 0)  as total_cost,
+        COALESCE(rev_stats.total_revenue, 0) as total_revenue,
+        COALESCE(mem_stats.team_size, 0)    as team_size
+      FROM projects p
+      LEFT JOIN (
+        SELECT project_id,
+          COUNT(*) as total_tasks,
+          SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as done_tasks,
+          SUM(CASE WHEN is_overdue=1 AND status!='completed' THEN 1 ELSE 0 END) as overdue_tasks,
+          SUM(CASE WHEN priority='urgent' AND status!='completed' THEN 1 ELSE 0 END) as urgent_pending
+        FROM tasks GROUP BY project_id
+      ) t_stats ON t_stats.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id, SUM(amount) as total_cost
+        FROM project_costs GROUP BY project_id
+      ) cost_stats ON cost_stats.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id, SUM(amount) as total_revenue
+        FROM project_revenues GROUP BY project_id
+      ) rev_stats ON rev_stats.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id, COUNT(DISTINCT user_id) as team_size
+        FROM project_members GROUP BY project_id
+      ) mem_stats ON mem_stats.project_id = p.id
+      WHERE p.status != 'cancelled' ${projectFilter}
+      ORDER BY p.created_at DESC
+    `).bind(...binds).all()
+
+    // Calculate health score for each project
+    const scored = (projects.results as any[]).map((p: any) => {
+      let score = 100
+      const issues: string[] = []
+
+      // Task completion rate (30 pts)
+      const completionRate = p.total_tasks > 0 ? p.done_tasks / p.total_tasks : 0
+      const taskScore = Math.round(completionRate * 30)
+      score -= (30 - taskScore)
+
+      // Overdue penalty (-5 each, max -25)
+      const overduePenalty = Math.min(p.overdue_tasks * 5, 25)
+      score -= overduePenalty
+      if (p.overdue_tasks > 0) issues.push(`${p.overdue_tasks} task trễ hạn`)
+
+      // Budget health (20 pts)
+      if (p.budget > 0) {
+        const budgetUsage = p.total_cost / p.budget
+        if (budgetUsage > 1.2) { score -= 20; issues.push('Vượt ngân sách >20%') }
+        else if (budgetUsage > 1.0) { score -= 10; issues.push('Vượt ngân sách') }
+        else if (budgetUsage > 0.9) score -= 5
+      }
+
+      // Deadline (20 pts)
+      if (p.end_date) {
+        const daysLeft = Math.ceil((new Date(p.end_date).getTime() - Date.now()) / 86400000)
+        if (daysLeft < 0 && p.status !== 'completed') { score -= 20; issues.push('Quá hạn dự án') }
+        else if (daysLeft < 7 && p.status !== 'completed') { score -= 10; issues.push('Sắp hết hạn (<7 ngày)') }
+      }
+
+      // Urgent pending penalty
+      if (p.urgent_pending > 0) { score -= Math.min(p.urgent_pending * 3, 10); issues.push(`${p.urgent_pending} task urgent`) }
+
+      score = Math.max(0, Math.min(100, score))
+
+      let health = 'excellent'
+      if (score < 40) health = 'critical'
+      else if (score < 60) health = 'poor'
+      else if (score < 75) health = 'fair'
+      else if (score < 90) health = 'good'
+
+      return { ...p, health_score: score, health_status: health, issues, completion_rate: Math.round(completionRate * 100) }
+    })
+
+    return c.json({ projects: scored })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
   }
 })
 

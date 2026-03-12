@@ -16,9 +16,45 @@ let allDisciplines = []
 let currentCostTab = 'costs'
 let charts = {}
 
-// ── Guard flags to prevent duplicate API calls on Chi Phí & Doanh Thu ──
+// ── Chart.js global safety wrapper ──────────────────────────────────────────
+// Intercept every new Chart() call to auto-destroy existing instance on same canvas
+// This prevents "Canvas is already in use" errors when re-rendering charts
+;(function patchChartJs() {
+  if (typeof Chart === 'undefined') return  // Chart.js not loaded yet
+  const OriginalChart = Chart
+  window._safeCreateChart = function(ctx, config) {
+    if (!ctx) return null
+    // Destroy any existing chart on this canvas element
+    const canvasEl = (ctx instanceof HTMLCanvasElement) ? ctx : ctx.canvas
+    if (canvasEl) {
+      const existing = OriginalChart.getChart(canvasEl)
+      if (existing) { try { existing.destroy() } catch(e){} }
+    }
+    return new OriginalChart(ctx, config)
+  }
+})()
+
+// Safe chart creator — always destroy existing chart on canvas before creating new one
+function safeChart(ctx, config) {
+  if (!ctx) return null
+  try {
+    const canvasEl = (ctx instanceof HTMLCanvasElement) ? ctx : (ctx.canvas || document.getElementById(ctx))
+    if (canvasEl) {
+      const existing = Chart.getChart(canvasEl)
+      if (existing) { try { existing.destroy() } catch(e){} }
+    }
+    return new Chart(ctx, config)
+  } catch(e) {
+    console.error('safeChart error:', e)
+    return null
+  }
+}
+
+
 let _costDashboardLoading = false      // prevent concurrent loadCostDashboard calls
+let _costDashboardPending = false      // track if a reload was requested while loading
 let _costAnalysisLoading = false       // prevent concurrent loadCostAnalysis calls
+let _costAnalysisPending = false       // track if a reload was requested while loading
 let _costAnalysisLoaded = false        // track if analysis was already rendered for current selection
 let _costAnalysisDebounceTimer = null  // debounce timer for filter changes
 let _lastAnalysisKey = ''              // cache key: projId+periodType+month+year to avoid re-fetch
@@ -250,7 +286,7 @@ function navigate(page) {
     costs: 'Chi phí & Doanh thu', assets: 'Tài sản', users: 'Nhân sự', profile: 'Hồ sơ',
     productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
     'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí',
-    'system-config': 'Cấu hình hệ thống'
+    'system-config': 'Cấu hình hệ thống', analytics: 'Báo cáo & Phân tích'
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
@@ -268,6 +304,7 @@ function navigate(page) {
   else if (page === 'labor-cost') loadLaborCost()
   else if (page === 'cost-types') loadCostTypes()
   else if (page === 'system-config') loadSystemConfig()
+  else if (page === 'analytics') loadAnalytics()
 
   closeAllDropdowns()
 }
@@ -396,7 +433,26 @@ async function loadDashboard() {
 }
 
 function destroyChart(id) {
-  if (charts[id]) { charts[id].destroy(); delete charts[id] }
+  if (charts[id]) { try { charts[id].destroy() } catch(e){} delete charts[id] }
+  // Chart.js v3+ guard: destroy by canvas element directly to prevent "canvas already in use"
+  // Map chart key → canvas element ID
+  const canvasMap = {
+    costProject: 'costProjectChart',
+    costMonthly: 'costMonthlyChart',
+    productivity: 'productivityChart',
+    discipline: 'disciplineChart',
+    hours: 'hoursChart',
+    anaDoughnut: 'anaDoughnutChart',
+    prodBar: 'prodBarChart',
+    prodPie: 'prodPieChart',
+    finCostPie: 'finCostPieChart',
+    finTimeline: 'finTimelineChart',
+    labor: 'laborChart',
+    laborPie: 'laborPieChart',
+  }
+  const canvasId = canvasMap[id] || (id + 'Chart')
+  const el = document.getElementById(canvasId)
+  if (el) { const existing = Chart.getChart(el); if (existing) { try { existing.destroy() } catch(e){} } }
 }
 
 function renderProductivityChart(data) {
@@ -408,7 +464,7 @@ function renderProductivityChart(data) {
   // Compute completion_rate on the fly if not present
   const getRate = u => u.completion_rate != null ? u.completion_rate
     : (u.total_tasks > 0 ? Math.round((u.completed_tasks || 0) / u.total_tasks * 100) : 0)
-  charts['productivity'] = new Chart(ctx, {
+  charts['productivity'] = safeChart(ctx, {
     type: 'bar',
     data: {
       labels: top10.map(u => u.full_name?.split(' ').pop() || u.full_name),
@@ -433,7 +489,7 @@ function renderDisciplineChart(data) {
   if (!ctx || !data?.length) return
   const top8 = data.slice(0, 8)
   const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
-  charts['discipline'] = new Chart(ctx, {
+  charts['discipline'] = safeChart(ctx, {
     type: 'doughnut',
     data: {
       labels: top8.map(d => `${d.discipline_code} - ${d.count} task`),
@@ -454,7 +510,7 @@ function renderHoursChart(data) {
   const ctx = $('hoursChart')
   if (!ctx) return
   const months = data?.map(d => d.month) || []
-  charts['hours'] = new Chart(ctx, {
+  charts['hours'] = safeChart(ctx, {
     type: 'line',
     data: {
       labels: months,
@@ -1463,6 +1519,67 @@ function filterTasks() {
   renderTasksTable(filtered)
 }
 
+// Cập nhật dropdown "Phụ trách" theo thành viên của dự án được chọn.
+// Nếu chưa chọn dự án → hiển thị tất cả user active.
+// Gọi khi: mở modal (openTaskModal) + khi người dùng đổi dự án (onchange taskProject).
+async function updateTaskAssigneeByProject(projectId = null, preserveValue = null) {
+  const selProjId = projectId || $('taskProject')?.value || ''
+  const assigneeSelect = $('taskAssignee')
+  if (!assigneeSelect) return
+
+  let members = []
+
+  if (selProjId) {
+    try {
+      const proj = await api(`/projects/${selProjId}`)
+      const memberIds = new Set()
+
+      // 1. Lấy từ project_members (thành viên được add vào dự án)
+      if (proj.members && proj.members.length > 0) {
+        for (const m of proj.members) {
+          if (m.is_active === 0) continue
+          if (!memberIds.has(m.user_id)) {
+            memberIds.add(m.user_id)
+            members.push({ id: m.user_id, full_name: m.full_name })
+          }
+        }
+      }
+
+      // 2. Thêm admin_id của dự án nếu chưa có
+      if (proj.admin_id && !memberIds.has(proj.admin_id)) {
+        const u = (allUsers || []).find(u => u.id === proj.admin_id)
+        if (u && u.is_active !== 0) {
+          memberIds.add(u.id)
+          members.push({ id: u.id, full_name: u.full_name })
+        }
+      }
+
+      // 3. Thêm leader_id của dự án nếu chưa có
+      if (proj.leader_id && !memberIds.has(proj.leader_id)) {
+        const u = (allUsers || []).find(u => u.id === proj.leader_id)
+        if (u && u.is_active !== 0) {
+          memberIds.add(u.id)
+          members.push({ id: u.id, full_name: u.full_name })
+        }
+      }
+    } catch (e) { /* fallback bên dưới */ }
+  }
+
+  // Fallback: nếu không lấy được members → hiển thị tất cả user active
+  if (!members.length) {
+    members = (allUsers || []).filter(u => u.is_active !== 0).map(u => ({ id: u.id, full_name: u.full_name }))
+  }
+
+  // Sắp xếp theo tên
+  members.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || '', 'vi'))
+
+  assigneeSelect.innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
+    members.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+
+  // Khôi phục giá trị đã chọn trước đó (khi edit task)
+  if (preserveValue) assigneeSelect.value = preserveValue
+}
+
 async function openTaskModal(taskId = null, projectId = null) {
   if (!allProjects.length) { allProjects = await api('/projects'); refreshProjectRoleCache() }
   if (!allUsers.length) allUsers = await api('/users')
@@ -1485,9 +1602,9 @@ async function openTaskModal(taskId = null, projectId = null) {
   $('taskDiscipline').innerHTML = '<option value="">-- Chọn bộ môn --</option>' +
     allDisciplines.map(d => `<option value="${d.code}">${d.code} - ${d.name}</option>`).join('')
 
-  // Fill assignees
+  // Fill assignees — mặc định hiển thị tất cả, sẽ được thu hẹp bên dưới khi có projectId
   $('taskAssignee').innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
-    allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+    (allUsers || []).filter(u => u.is_active !== 0).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
 
   // For member: disable admin-only fields
   const adminOnlyFields = ['taskTitle','taskDesc','taskProject','taskCategory','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
@@ -1503,13 +1620,16 @@ async function openTaskModal(taskId = null, projectId = null) {
       $('taskPhase').value = task.phase || 'basic_design'
       $('taskPriority').value = task.priority || 'medium'
       $('taskStatus').value = task.status || 'todo'
-      $('taskAssignee').value = task.assigned_to || ''
       $('taskStartDate').value = task.start_date || ''
       $('taskDueDate').value = task.due_date || ''
       $('taskEstHours').value = task.estimated_hours || 0
       $('taskProgress').value = task.progress || 0
       $('taskProgressLabel').textContent = task.progress || 0
-      await loadTaskCategories(task.project_id, task.category_id)
+      // Load categories và assignees theo project, giữ nguyên giá trị assigned_to
+      await Promise.all([
+        loadTaskCategories(task.project_id, task.category_id),
+        updateTaskAssigneeByProject(task.project_id, task.assigned_to)
+      ])
     } catch (e) { toast('Lỗi tải task', 'error'); return }
   } else {
     $('taskTitle').value = ''
@@ -1525,7 +1645,12 @@ async function openTaskModal(taskId = null, projectId = null) {
     $('taskEstHours').value = ''
     $('taskProgress').value = 0
     $('taskProgressLabel').textContent = 0
-    if (projectId) await loadTaskCategories(projectId)
+    if (projectId) {
+      await Promise.all([
+        loadTaskCategories(projectId),
+        updateTaskAssigneeByProject(projectId)
+      ])
+    }
   }
 
   openModal('taskModal')
@@ -2455,7 +2580,7 @@ async function initTsFilterDropdowns() {
       const opt = document.createElement('option')
       opt.value = String(i + 1).padStart(2, '0')
       opt.textContent = name
-      if (i + 1 === new Date().getMonth() + 1) opt.selected = true
+      // Không auto-select tháng hiện tại — để "Tất cả" là default
       monthSel.appendChild(opt)
     })
   }
@@ -2970,6 +3095,14 @@ $('tsForm').addEventListener('submit', async (e) => {
       } else {
         toast('✅ Đã thêm timesheet thành công', 'success')
       }
+      // Tự động đồng bộ filter tháng/năm với work_date của timesheet vừa tạo
+      if (data.work_date) {
+        const [wYear, wMonth] = data.work_date.split('-')
+        const monthSel = $('tsMonthFilter')
+        const yearSel  = $('tsYearFilter')
+        if (monthSel) monthSel.value = wMonth
+        if (yearSel)  yearSel.value  = wYear
+      }
     }
     closeModal('timesheetModal')
     loadTimesheets()
@@ -3133,9 +3266,10 @@ async function renderGantt() {
 // COSTS
 // ================================================================
 async function loadCostDashboard() {
-  // Guard: prevent concurrent calls
-  if (_costDashboardLoading) return
+  // Guard: if already loading, mark pending so we re-run after current finishes
+  if (_costDashboardLoading) { _costDashboardPending = true; return }
   _costDashboardLoading = true
+  _costDashboardPending = false
   try {
     if (!allProjects.length) allProjects = await api('/projects')
 
@@ -3215,15 +3349,22 @@ async function loadCostDashboard() {
 
     loadCosts()
   } catch (e) { toast('Lỗi tải dữ liệu tài chính: ' + e.message, 'error') }
-  finally { _costDashboardLoading = false }
+  finally {
+    _costDashboardLoading = false
+    // If a new reload was requested while we were loading, run it now
+    if (_costDashboardPending) { _costDashboardPending = false; setTimeout(loadCostDashboard, 50) }
+  }
 }
 
 function renderCostProjectChart(revenues, costs) {
   destroyChart('costProject')
   const ctx = $('costProjectChart')
   if (!ctx) return
+  // Extra guard: destroy any existing chart on this canvas
+  const existingCostProject = Chart.getChart(ctx)
+  if (existingCostProject) { try { existingCostProject.destroy() } catch(e){} }
   const projects = revenues?.slice(0, 6) || []
-  charts['costProject'] = new Chart(ctx, {
+  charts['costProject'] = safeChart(ctx, {
     type: 'bar',
     data: {
       labels: projects.map(p => p.code || p.name?.substring(0, 10)),
@@ -3244,6 +3385,9 @@ function renderCostMonthlyChart(data, sharedByProject) {
   destroyChart('costMonthly')
   const ctx = $('costMonthlyChart')
   if (!ctx) return
+  // Extra guard: destroy any existing chart on this canvas
+  const existingCostMonthly = Chart.getChart(ctx)
+  if (existingCostMonthly) { try { existingCostMonthly.destroy() } catch(e){} }
 
   // Aggregate monthly non-salary + labor costs
   const monthlyMap = {}
@@ -3253,7 +3397,7 @@ function renderCostMonthlyChart(data, sharedByProject) {
   })
 
   const months = Object.keys(monthlyMap).sort()
-  charts['costMonthly'] = new Chart(ctx, {
+  charts['costMonthly'] = safeChart(ctx, {
     type: 'line',
     data: {
       labels: months,
@@ -3351,8 +3495,8 @@ function debouncedLoadCostAnalysis() {
 }
 
 async function loadCostAnalysis() {
-  // Guard: prevent concurrent API calls
-  if (_costAnalysisLoading) return
+  // Guard: if already loading, mark pending so we re-run after current finishes
+  if (_costAnalysisLoading) { _costAnalysisPending = true; return }
   const projId = $('analysisProjSel')?.value
   const year   = $('analysisYearSel')?.value
   const periodType = $('analysisPeriodType')?.value || 'single'
@@ -3382,6 +3526,7 @@ async function loadCostAnalysis() {
   _lastAnalysisKey = cacheKey
 
   _costAnalysisLoading = true
+  _costAnalysisPending = false
   try {
     const data = await api(apiUrl)
 
@@ -3569,9 +3714,10 @@ async function loadCostAnalysis() {
       // Doughnut chart
       destroyChart('anaDoughnut')
       const ctx = $('anaDoughnutChart')
+      if (ctx) { const ex = Chart.getChart(ctx); if (ex) { try { ex.destroy() } catch(e){} } }
       if (ctx && breakdown.length) {
         const colors = ['#2196f3','#ff9800','#f44336','#9c27b0','#00bcd4','#4caf50','#795548']
-        charts['anaDoughnut'] = new Chart(ctx, {
+        charts['anaDoughnut'] = safeChart(ctx, {
           type: 'doughnut',
           data: {
             labels: breakdown.map(b => b.type),
@@ -3597,6 +3743,8 @@ async function loadCostAnalysis() {
     _lastAnalysisKey = '' // reset cache key on error so next call can retry
   } finally {
     _costAnalysisLoading = false
+    // If a new reload was requested while loading, run it now
+    if (_costAnalysisPending) { _costAnalysisPending = false; setTimeout(loadCostAnalysis, 50) }
   }
 }
 
@@ -4310,7 +4458,9 @@ window.addEventListener('load', async () => {
 // Reset loading guards on page unload so they don't persist on back-navigation
 window.addEventListener('beforeunload', () => {
   _costDashboardLoading = false
+  _costDashboardPending = false
   _costAnalysisLoading = false
+  _costAnalysisPending = false
   _costAnalysisLoaded = false
   _lastAnalysisKey = ''
 })
@@ -4434,7 +4584,7 @@ function renderProductivityPage(data) {
   const ctx1 = $('prodBarChart')
   if (ctx1 && data.length) {
     const top = data.slice(0, 10)
-    charts['prodBar'] = new Chart(ctx1, {
+    charts['prodBar'] = safeChart(ctx1, {
       type: 'bar',
       data: {
         labels: top.map(u => u.full_name?.split(' ').pop() || u.full_name),
@@ -4477,7 +4627,7 @@ function renderProductivityPage(data) {
     const topP = data.filter(u => u.completed_tasks > 0).slice(0, 8)
     const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
     if (topP.length) {
-      charts['prodPie'] = new Chart(ctx2, {
+      charts['prodPie'] = safeChart(ctx2, {
         type: 'pie',
         data: {
           labels: topP.map(u => u.full_name?.split(' ').pop()),
@@ -4907,7 +5057,7 @@ async function loadFinanceProject() {
       const ctx1 = $('finCostPie')
       if (ctx1 && costs_by_type.length) {
         const colors = ['#00A651','#2196F3','#FF6B00','#8B5CF6','#F59E0B','#EF4444']
-        charts['finCostPie'] = new Chart(ctx1, {
+        charts['finCostPie'] = safeChart(ctx1, {
           type: 'doughnut',
           data: {
             labels: costs_by_type.map(c => c.label || getCostTypeName(c.cost_type)),
@@ -4938,7 +5088,7 @@ async function loadFinanceProject() {
           const otherCostData = displayMonths.map(m => (timeline || []).filter(t => t.month === m).reduce((s, t) => s + (t.total || 0), 0))
           const laborData     = displayMonths.map(m => { const l = (labor_timeline || []).find(l => l.month === m); return l?.total || 0 })
           const revenueData   = displayMonths.map(m => { const r = (revenue_timeline || []).find(r => r.month === m); return r?.total || 0 })
-          charts['finTimeline'] = new Chart(ctx2, {
+          charts['finTimeline'] = safeChart(ctx2, {
             type: 'bar',
             data: {
               labels: displayMonths.map(m => { const [y,mo] = m.split('-'); return `T${parseInt(mo)}/${y}` }),
@@ -5203,7 +5353,7 @@ async function loadLaborCost() {
       destroyChart('labor')
       const ctx1 = $('laborChart')
       if (ctx1 && projs.length) {
-        charts['labor'] = new Chart(ctx1, {
+        charts['labor'] = safeChart(ctx1, {
           type: 'bar',
           data: {
             labels: projs.map(p => p.project_code),
@@ -5220,7 +5370,7 @@ async function loadLaborCost() {
       const ctx2 = $('laborPieChart')
       if (ctx2 && projs.length) {
         const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
-        charts['laborPie'] = new Chart(ctx2, {
+        charts['laborPie'] = safeChart(ctx2, {
           type: 'pie',
           data: {
             labels: projs.map(p => p.project_code + ' (' + (totalHrs>0 ? ((p.total_hours||0)/totalHrs*100).toFixed(1) : '0.0') + '%)'),
@@ -5333,7 +5483,7 @@ async function loadLaborCost() {
     destroyChart('labor')
     const ctx1 = $('laborChart')
     if (ctx1 && data.projects?.length) {
-      charts['labor'] = new Chart(ctx1, {
+      charts['labor'] = safeChart(ctx1, {
         type: 'bar',
         data: {
           labels: data.projects.map(p => p.code),
@@ -5350,7 +5500,7 @@ async function loadLaborCost() {
     const ctx2 = $('laborPieChart')
     if (ctx2 && data.projects?.length) {
       const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
-      charts['laborPie'] = new Chart(ctx2, {
+      charts['laborPie'] = safeChart(ctx2, {
         type: 'pie',
         data: {
           labels: data.projects.map(p => p.code + ' (' + p.pct + '%)'),
@@ -6262,4 +6412,817 @@ async function deleteSharedCost(id) {
   } catch (e) {
     toast('Lỗi xóa: ' + e.message, 'error')
   }
+}
+
+// ================================================================
+// ADVANCED ANALYTICS
+// ================================================================
+let _analyticsActiveTab = 'health'
+let _analyticsCharts = {}
+
+function getAnalyticsYear() {
+  return document.getElementById('analyticsYear')?.value || new Date().getFullYear().toString()
+}
+
+async function loadAnalytics() {
+  switchAnalyticsTab(_analyticsActiveTab)
+}
+
+function reloadAnalytics() {
+  // Clear caches and reload current tab
+  _analyticsActiveTab = _analyticsActiveTab
+  switchAnalyticsTab(_analyticsActiveTab, true)
+}
+
+function switchAnalyticsTab(tab, force = false) {
+  _analyticsActiveTab = tab
+  document.querySelectorAll('.analytics-tab').forEach(btn => btn.classList.remove('active'))
+  const activeBtn = document.getElementById(`tab-${tab}`)
+  if (activeBtn) activeBtn.classList.add('active')
+
+  document.querySelectorAll('.analytics-content').forEach(el => el.classList.add('hidden'))
+  const activeContent = document.getElementById(`analytics-${tab}`)
+  if (activeContent) activeContent.classList.remove('hidden')
+
+  if (tab === 'health') renderHealthTab(force)
+  else if (tab === 'performance') renderPerformanceTab(force)
+  else if (tab === 'tasks') renderTasksTab(force)
+  else if (tab === 'team') renderTeamTab(force)
+  else if (tab === 'timesheet') renderTimesheetAnalyticsTab(force)
+  else if (tab === 'financial' && currentUser?.role === 'system_admin') renderFinancialTab(force)
+}
+
+// ---- Helpers ----
+function fmtM(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + ' tỷ'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' triệu'
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + ' K'
+  return (n || 0).toLocaleString()
+}
+function pct(a, b) { return b > 0 ? Math.round(a / b * 100) : 0 }
+function monthName(m) { return ['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12'][parseInt(m)-1] || m }
+
+function destroyChart(key) {
+  if (_analyticsCharts[key]) { try { _analyticsCharts[key].destroy() } catch(e){} delete _analyticsCharts[key] }
+}
+
+// ================================================================
+// TAB 1: PROJECT HEALTH SCORE
+// ================================================================
+async function renderHealthTab(force = false) {
+  const el = document.getElementById('analyticsHealthContent')
+  el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải dữ liệu sức khỏe dự án...</p></div>`
+  try {
+    const data = await api(`/analytics/project-health`)
+    const projects = data.projects || []
+    if (!projects.length) { el.innerHTML = `<div class="text-center py-16 text-gray-400"><i class="fas fa-folder-open text-4xl mb-3"></i><p>Chưa có dự án nào</p></div>`; return }
+
+    const counts = { excellent: 0, good: 0, fair: 0, poor: 0, critical: 0 }
+    projects.forEach(p => counts[p.health_status] = (counts[p.health_status] || 0) + 1)
+    const avgScore = Math.round(projects.reduce((s, p) => s + p.health_score, 0) / projects.length)
+
+    const healthLabel = { excellent: 'Xuất sắc', good: 'Tốt', fair: 'Trung bình', poor: 'Kém', critical: 'Nguy kịch' }
+    const healthColor = { excellent: '#00A651', good: '#3b82f6', fair: '#f59e0b', poor: '#ef4444', critical: '#be185d' }
+
+    el.innerHTML = `
+      <!-- KPI Row -->
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+        <div class="card text-center col-span-2 md:col-span-1">
+          <div class="text-3xl font-black text-gray-800">${avgScore}</div>
+          <div class="text-xs text-gray-500 mt-1">Điểm TB toàn công ty</div>
+          <div class="text-xs font-semibold mt-1 ${avgScore>=75?'text-green-600':avgScore>=60?'text-blue-600':avgScore>=40?'text-yellow-600':'text-red-600'}">${avgScore>=90?'Xuất sắc':avgScore>=75?'Tốt':avgScore>=60?'Trung bình':avgScore>=40?'Kém':'Nguy kịch'}</div>
+        </div>
+        ${Object.entries(counts).map(([k, v]) => `
+          <div class="card text-center">
+            <div class="text-2xl font-bold" style="color:${healthColor[k]}">${v}</div>
+            <div class="text-xs text-gray-500 mt-1">${healthLabel[k]}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        <!-- Donut chart -->
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-chart-pie mr-2 text-primary"></i>Phân bố sức khỏe</h3>
+          <div class="relative" style="height:200px">
+            <canvas id="chartHealthDist"></canvas>
+          </div>
+        </div>
+        <!-- Bar chart: scores -->
+        <div class="card lg:col-span-2">
+          <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-bar-chart mr-2 text-blue-500"></i>Điểm sức khỏe từng dự án</h3>
+          <div class="relative" style="height:200px">
+            <canvas id="chartHealthBars"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Project list -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-list mr-2 text-gray-500"></i>Danh sách dự án theo sức khỏe</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b text-left text-gray-500 text-xs uppercase">
+                <th class="pb-2 pr-4">Dự án</th>
+                <th class="pb-2 pr-4 text-center">Điểm</th>
+                <th class="pb-2 pr-4 text-center">Trạng thái</th>
+                <th class="pb-2 pr-4 text-center">Hoàn thành</th>
+                <th class="pb-2 pr-4 text-center">Task trễ</th>
+                <th class="pb-2 pr-4 text-center">Nhóm</th>
+                <th class="pb-2">Vấn đề</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${projects.sort((a,b) => a.health_score - b.health_score).map(p => `
+                <tr class="border-b hover:bg-gray-50">
+                  <td class="py-3 pr-4">
+                    <div class="font-medium text-gray-800">${p.name}</div>
+                    <div class="text-xs text-gray-400">${p.code}</div>
+                  </td>
+                  <td class="py-3 pr-4 text-center">
+                    <span class="inline-flex items-center justify-center w-12 h-8 rounded-lg font-bold text-sm health-${p.health_status}">${p.health_score}</span>
+                  </td>
+                  <td class="py-3 pr-4 text-center">
+                    <span class="px-2 py-1 rounded-full text-xs font-medium health-${p.health_status}">${healthLabel[p.health_status]}</span>
+                  </td>
+                  <td class="py-3 pr-4 text-center">
+                    <div class="flex items-center gap-2">
+                      <div class="flex-1 bg-gray-200 rounded-full h-2">
+                        <div class="h-2 rounded-full ${p.completion_rate>=80?'bg-green-500':p.completion_rate>=50?'bg-blue-500':'bg-red-400'}" style="width:${p.completion_rate}%"></div>
+                      </div>
+                      <span class="text-xs text-gray-600 w-8">${p.completion_rate}%</span>
+                    </div>
+                  </td>
+                  <td class="py-3 pr-4 text-center">
+                    <span class="${p.overdue_tasks > 0 ? 'text-red-600 font-bold' : 'text-gray-400'}">${p.overdue_tasks}</span>
+                  </td>
+                  <td class="py-3 pr-4 text-center text-gray-600">${p.team_size} người</td>
+                  <td class="py-3 text-xs text-gray-500">${p.issues.length ? p.issues.slice(0,2).join(', ') : '<span class="text-green-600">Không có vấn đề</span>'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `
+
+    // Draw charts
+    destroyChart('healthDist')
+    destroyChart('healthBars')
+
+    const ctxDist = document.getElementById('chartHealthDist')?.getContext('2d')
+    if (ctxDist) {
+      _analyticsCharts['healthDist'] = safeChart(ctxDist, {
+        type: 'doughnut',
+        data: {
+          labels: Object.keys(counts).map(k => healthLabel[k]),
+          datasets: [{ data: Object.values(counts), backgroundColor: Object.keys(counts).map(k => healthColor[k]), borderWidth: 2 }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } } }
+      })
+    }
+
+    const topProjects = [...projects].sort((a,b) => b.health_score - a.health_score).slice(0, 12)
+    const ctxBars = document.getElementById('chartHealthBars')?.getContext('2d')
+    if (ctxBars) {
+      _analyticsCharts['healthBars'] = safeChart(ctxBars, {
+        type: 'bar',
+        data: {
+          labels: topProjects.map(p => p.code || p.name.substring(0, 10)),
+          datasets: [{ label: 'Điểm sức khỏe', data: topProjects.map(p => p.health_score),
+            backgroundColor: topProjects.map(p => healthColor[p.health_status] + 'cc'), borderRadius: 4 }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+          scales: { y: { min: 0, max: 100, ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 10 } } } } }
+      })
+    }
+  } catch (e) {
+    el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
+  }
+}
+
+// ================================================================
+// TAB 2: PROJECT PERFORMANCE
+// ================================================================
+async function renderPerformanceTab(force = false) {
+  const el = document.getElementById('analyticsPerformanceContent')
+  el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải dữ liệu hiệu suất...</p></div>`
+  try {
+    const year = getAnalyticsYear()
+    const data = await api(`/analytics/project-performance?year=${year}`)
+    const projects = data.projects || []
+    if (!projects.length) { el.innerHTML = `<div class="text-center py-16 text-gray-400"><i class="fas fa-folder-open text-4xl mb-3"></i><p>Chưa có dự án</p></div>`; return }
+
+    const totalTasks = projects.reduce((s, p) => s + (p.total_tasks||0), 0)
+    const totalDone = projects.reduce((s, p) => s + (p.completed_tasks||0), 0)
+    const totalHours = projects.reduce((s, p) => s + (p.total_hours||0), 0)
+    const totalMembers = projects.reduce((s, p) => s + (p.member_count||0), 0)
+    const overallPct = pct(totalDone, totalTasks)
+
+    const statusLabel = { planning:'Lập kế hoạch', active:'Đang hoạt động', on_hold:'Tạm dừng', completed:'Hoàn thành', cancelled:'Đã hủy' }
+    const statusColor = { planning:'#6b7280', active:'#00A651', on_hold:'#f59e0b', completed:'#3b82f6', cancelled:'#ef4444' }
+
+    el.innerHTML = `
+      <!-- KPI Row -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="kpi-card card"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center"><i class="fas fa-project-diagram text-green-600"></i></div><div><div class="text-2xl font-bold text-gray-800">${projects.length}</div><div class="text-xs text-gray-500">Tổng dự án</div></div></div></div>
+        <div class="kpi-card card"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center"><i class="fas fa-check-circle text-blue-600"></i></div><div><div class="text-2xl font-bold text-gray-800">${overallPct}%</div><div class="text-xs text-gray-500">Tỷ lệ hoàn thành task</div></div></div></div>
+        <div class="kpi-card card"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center"><i class="fas fa-clock text-purple-600"></i></div><div><div class="text-2xl font-bold text-gray-800">${fmtM(totalHours)}h</div><div class="text-xs text-gray-500">Tổng giờ làm việc</div></div></div></div>
+        <div class="kpi-card card"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center"><i class="fas fa-users text-orange-600"></i></div><div><div class="text-2xl font-bold text-gray-800">${totalMembers}</div><div class="text-xs text-gray-500">Tổng thành viên</div></div></div></div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <!-- Task completion stacked bar -->
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-tasks mr-2 text-primary"></i>Task hoàn thành vs tổng theo dự án</h3>
+          <div style="height:240px"><canvas id="chartPerfTasks"></canvas></div>
+        </div>
+        <!-- Hours by project -->
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-clock mr-2 text-purple-500"></i>Giờ làm việc theo dự án</h3>
+          <div style="height:240px"><canvas id="chartPerfHours"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Project Table -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-table mr-2 text-gray-500"></i>Chi tiết hiệu suất từng dự án (${year})</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="border-b text-left text-gray-500 text-xs uppercase">
+              <th class="pb-2 pr-4">Dự án</th><th class="pb-2 pr-4">Trạng thái</th>
+              <th class="pb-2 pr-4 text-right">Task (Xong/Tổng)</th>
+              <th class="pb-2 pr-4 text-right">Trễ hạn</th>
+              <th class="pb-2 pr-4 text-right">Giờ làm</th>
+              <th class="pb-2 pr-4 text-right">Nhóm</th>
+              <th class="pb-2 text-right">Tiến độ</th>
+            </tr></thead>
+            <tbody>
+              ${projects.map(p => `
+                <tr class="border-b hover:bg-gray-50">
+                  <td class="py-3 pr-4"><div class="font-medium text-gray-800">${p.name}</div><div class="text-xs text-gray-400">${p.code}</div></td>
+                  <td class="py-3 pr-4"><span class="px-2 py-1 rounded-full text-xs font-medium" style="background:${statusColor[p.status]}22;color:${statusColor[p.status]}">${statusLabel[p.status]||p.status}</span></td>
+                  <td class="py-3 pr-4 text-right font-medium">${p.completed_tasks||0}/${p.total_tasks||0}</td>
+                  <td class="py-3 pr-4 text-right"><span class="${p.overdue_tasks>0?'text-red-600 font-bold':'text-gray-400'}">${p.overdue_tasks||0}</span></td>
+                  <td class="py-3 pr-4 text-right text-gray-600">${(p.total_hours||0).toFixed(1)}h</td>
+                  <td class="py-3 pr-4 text-right text-gray-600">${p.member_count||0}</td>
+                  <td class="py-3 text-right">
+                    <div class="flex items-center justify-end gap-2">
+                      <div class="w-16 bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full bg-green-500" style="width:${p.progress||0}%"></div></div>
+                      <span class="text-xs text-gray-600 w-8">${p.progress||0}%</span>
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `
+
+    destroyChart('perfTasks'); destroyChart('perfHours')
+    const top10 = [...projects].sort((a,b) => (b.total_tasks||0) - (a.total_tasks||0)).slice(0, 10)
+
+    const ctxT = document.getElementById('chartPerfTasks')?.getContext('2d')
+    if (ctxT) _analyticsCharts['perfTasks'] = safeChart(ctxT, {
+      type: 'bar',
+      data: {
+        labels: top10.map(p => p.code || p.name.substring(0,8)),
+        datasets: [
+          { label: 'Hoàn thành', data: top10.map(p => p.completed_tasks||0), backgroundColor: '#00A651cc', borderRadius: 3 },
+          { label: 'Còn lại', data: top10.map(p => (p.total_tasks||0) - (p.completed_tasks||0)), backgroundColor: '#e5e7eb', borderRadius: 3 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } },
+        scales: { x: { stacked: true, ticks: { font: { size: 10 } } }, y: { stacked: true, ticks: { font: { size: 10 } } } } }
+    })
+
+    const ctxH = document.getElementById('chartPerfHours')?.getContext('2d')
+    if (ctxH) _analyticsCharts['perfHours'] = safeChart(ctxH, {
+      type: 'bar',
+      data: {
+        labels: top10.map(p => p.code || p.name.substring(0,8)),
+        datasets: [{ label: 'Giờ làm', data: top10.map(p => +(p.total_hours||0).toFixed(1)), backgroundColor: '#818cf8cc', borderRadius: 4 }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+        scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } } }
+    })
+  } catch (e) {
+    el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
+  }
+}
+
+// ================================================================
+// TAB 3: TASK ANALYTICS
+// ================================================================
+async function renderTasksTab(force = false) {
+  const el = document.getElementById('analyticsTasksContent')
+  el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang phân tích task...</p></div>`
+  try {
+    const year = getAnalyticsYear()
+    const data = await api(`/analytics/task-analytics?year=${year}`)
+
+    const statusLabel = { todo: 'Chờ làm', in_progress: 'Đang làm', review: 'Review', completed: 'Hoàn thành', cancelled: 'Đã hủy' }
+    const statusColors = ['#94a3b8','#3b82f6','#f59e0b','#00A651','#ef4444']
+    const prioLabel = { low: 'Thấp', medium: 'Trung bình', high: 'Cao', urgent: 'Khẩn cấp' }
+    const prioColors = ['#10b981','#3b82f6','#f59e0b','#ef4444']
+
+    const totalTasks = (data.byStatus||[]).reduce((s,x)=>s+(x.count||0),0)
+    const doneTasks = (data.byStatus||[]).find(x=>x.status==='completed')?.count || 0
+    const overdueTasks = (data.byDiscipline||[]).reduce((s,x)=>s+(x.overdue||0),0)
+    const urgentTasks = (data.byPriority||[]).find(x=>x.priority==='urgent')?.count || 0
+
+    el.innerHTML = `
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="kpi-card card"><div class="text-2xl font-bold text-gray-800">${totalTasks}</div><div class="text-xs text-gray-500 mt-1">Tổng task</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-green-600">${doneTasks}</div><div class="text-xs text-gray-500 mt-1">Hoàn thành (${pct(doneTasks,totalTasks)}%)</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-red-500">${overdueTasks}</div><div class="text-xs text-gray-500 mt-1">Trễ hạn</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-orange-500">${urgentTasks}</div><div class="text-xs text-gray-500 mt-1">Khẩn cấp</div></div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-circle-notch mr-2 text-blue-500"></i>Phân bố trạng thái</h3>
+          <div style="height:200px"><canvas id="chartTaskStatus"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-flag mr-2 text-orange-500"></i>Phân bố độ ưu tiên</h3>
+          <div style="height:200px"><canvas id="chartTaskPriority"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-layer-group mr-2 text-purple-500"></i>Theo giai đoạn</h3>
+          <div style="height:200px"><canvas id="chartTaskPhase"></canvas></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-building mr-2 text-primary"></i>Task theo bộ môn BIM</h3>
+          <div style="height:260px"><canvas id="chartTaskDiscipline"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-chart-line mr-2 text-green-500"></i>Xu hướng hoàn thành (${year})</h3>
+          <div style="height:260px"><canvas id="chartTaskTrend"></canvas></div>
+        </div>
+      </div>
+    `
+
+    destroyChart('taskStatus'); destroyChart('taskPriority'); destroyChart('taskPhase'); destroyChart('taskDiscipline'); destroyChart('taskTrend')
+
+    const ctxS = document.getElementById('chartTaskStatus')?.getContext('2d')
+    if (ctxS) _analyticsCharts['taskStatus'] = safeChart(ctxS, {
+      type: 'doughnut',
+      data: { labels: (data.byStatus||[]).map(x=>statusLabel[x.status]||x.status), datasets: [{ data: (data.byStatus||[]).map(x=>x.count), backgroundColor: statusColors }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } } }
+    })
+
+    const ctxP = document.getElementById('chartTaskPriority')?.getContext('2d')
+    if (ctxP) _analyticsCharts['taskPriority'] = safeChart(ctxP, {
+      type: 'pie',
+      data: { labels: (data.byPriority||[]).map(x=>prioLabel[x.priority]||x.priority), datasets: [{ data: (data.byPriority||[]).map(x=>x.count), backgroundColor: prioColors }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } } }
+    })
+
+    const phaseLabel = { basic_design:'Thiết kế cơ sở', technical_design:'TKKT', construction_design:'TK thi công', as_built:'Hoàn công' }
+    const ctxPh = document.getElementById('chartTaskPhase')?.getContext('2d')
+    if (ctxPh) _analyticsCharts['taskPhase'] = safeChart(ctxPh, {
+      type: 'doughnut',
+      data: { labels: (data.byPhase||[]).map(x=>phaseLabel[x.phase]||x.phase), datasets: [{ data: (data.byPhase||[]).map(x=>x.count), backgroundColor: ['#00A651','#3b82f6','#f59e0b','#8b5cf6'] }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 10 } } } } }
+    })
+
+    const disc = (data.byDiscipline||[]).slice(0,10)
+    const ctxD = document.getElementById('chartTaskDiscipline')?.getContext('2d')
+    if (ctxD) _analyticsCharts['taskDiscipline'] = safeChart(ctxD, {
+      type: 'bar',
+      data: {
+        labels: disc.map(x=>x.discipline_code),
+        datasets: [
+          { label: 'Hoàn thành', data: disc.map(x=>x.completed), backgroundColor: '#00A651cc', borderRadius: 3 },
+          { label: 'Trễ hạn', data: disc.map(x=>x.overdue), backgroundColor: '#ef4444cc', borderRadius: 3 },
+          { label: 'Tổng', data: disc.map(x=>x.count - x.completed - x.overdue), backgroundColor: '#d1d5db', borderRadius: 3 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } },
+        scales: { x: { stacked: true, ticks: { font: { size: 10 } } }, y: { stacked: true, ticks: { font: { size: 10 } } } } }
+    })
+
+    const months = Array.from({length:12}, (_,i)=>String(i+1).padStart(2,'0'))
+    const trendMap = {}
+    ;(data.completionTrend||[]).forEach(x=>{ trendMap[x.month] = x })
+    const ctxTr = document.getElementById('chartTaskTrend')?.getContext('2d')
+    if (ctxTr) _analyticsCharts['taskTrend'] = safeChart(ctxTr, {
+      type: 'line',
+      data: {
+        labels: months.map(m=>monthName(m)),
+        datasets: [
+          { label: 'Tổng task', data: months.map(m=>trendMap[m]?.total||0), borderColor: '#3b82f6', backgroundColor: '#3b82f620', fill: true, tension: 0.4 },
+          { label: 'Hoàn thành', data: months.map(m=>trendMap[m]?.completed||0), borderColor: '#00A651', backgroundColor: '#00A65120', fill: true, tension: 0.4 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 11 } } } },
+        scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } } }
+    })
+  } catch (e) {
+    el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
+  }
+}
+
+// ================================================================
+// TAB 4: TEAM PRODUCTIVITY
+// ================================================================
+async function renderTeamTab(force = false) {
+  const el = document.getElementById('analyticsTeamContent')
+  el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang phân tích năng suất nhân sự...</p></div>`
+  try {
+    const year = getAnalyticsYear()
+    const data = await api(`/analytics/team-productivity?year=${year}`)
+    const members = data.members || []
+    if (!members.length) { el.innerHTML = `<div class="text-center py-16 text-gray-400"><p>Chưa có dữ liệu</p></div>`; return }
+
+    const totalHours = members.reduce((s,m)=>s+(m.total_hours||0),0)
+    const totalOT = members.reduce((s,m)=>s+(m.overtime_hours||0),0)
+    const active = members.filter(m=>m.total_hours>0).length
+    const avgHours = active > 0 ? (totalHours / active).toFixed(1) : 0
+
+    el.innerHTML = `
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="kpi-card card"><div class="text-2xl font-bold text-gray-800">${members.length}</div><div class="text-xs text-gray-500 mt-1">Tổng nhân sự</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-green-600">${fmtM(totalHours)}h</div><div class="text-xs text-gray-500 mt-1">Tổng giờ làm</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-orange-500">${fmtM(totalOT)}h</div><div class="text-xs text-gray-500 mt-1">Giờ tăng ca</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-blue-600">${avgHours}h</div><div class="text-xs text-gray-500 mt-1">TB giờ/người</div></div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-trophy mr-2 text-yellow-500"></i>Top 10 nhân sự (giờ làm)</h3>
+          <div style="height:260px"><canvas id="chartTeamTopHours"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-check-double mr-2 text-green-500"></i>Task hoàn thành vs được giao</h3>
+          <div style="height:260px"><canvas id="chartTeamTaskRate"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Member Detail Table -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-table mr-2 text-gray-500"></i>Bảng năng suất chi tiết (${year})</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="border-b text-left text-gray-500 text-xs uppercase">
+              <th class="pb-2 pr-4">Nhân sự</th><th class="pb-2 pr-4">Phòng ban</th>
+              <th class="pb-2 pr-4 text-right">Giờ thường</th><th class="pb-2 pr-4 text-right">Giờ TC</th>
+              <th class="pb-2 pr-4 text-right">Tổng giờ</th><th class="pb-2 pr-4 text-right">Task xong/giao</th>
+              <th class="pb-2 text-right">Hiệu suất task</th>
+            </tr></thead>
+            <tbody>
+              ${members.sort((a,b)=>(b.total_hours||0)-(a.total_hours||0)).map(m => {
+                const rate = pct(m.completed_tasks||0, m.assigned_tasks||1)
+                return `<tr class="border-b hover:bg-gray-50">
+                  <td class="py-3 pr-4 font-medium text-gray-800">${m.full_name}</td>
+                  <td class="py-3 pr-4 text-gray-500 text-xs">${m.department||'-'}</td>
+                  <td class="py-3 pr-4 text-right">${(m.regular_hours||0).toFixed(1)}h</td>
+                  <td class="py-3 pr-4 text-right text-orange-600">${(m.overtime_hours||0).toFixed(1)}h</td>
+                  <td class="py-3 pr-4 text-right font-semibold">${(m.total_hours||0).toFixed(1)}h</td>
+                  <td class="py-3 pr-4 text-right">${m.completed_tasks||0}/${m.assigned_tasks||0}</td>
+                  <td class="py-3 text-right">
+                    <div class="flex items-center justify-end gap-2">
+                      <div class="w-16 bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full ${rate>=80?'bg-green-500':rate>=50?'bg-blue-500':'bg-red-400'}" style="width:${rate}%"></div></div>
+                      <span class="text-xs text-gray-600 w-8">${rate}%</span>
+                    </div>
+                  </td>
+                </tr>`
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `
+
+    destroyChart('teamTopHours'); destroyChart('teamTaskRate')
+    const top10 = members.slice(0, 10)
+
+    const ctxH = document.getElementById('chartTeamTopHours')?.getContext('2d')
+    if (ctxH) _analyticsCharts['teamTopHours'] = safeChart(ctxH, {
+      type: 'bar',
+      data: {
+        labels: top10.map(m => m.full_name.split(' ').pop()),
+        datasets: [
+          { label: 'Giờ thường', data: top10.map(m=>+(m.regular_hours||0).toFixed(1)), backgroundColor: '#00A651bb', borderRadius: 3 },
+          { label: 'Tăng ca', data: top10.map(m=>+(m.overtime_hours||0).toFixed(1)), backgroundColor: '#f59e0bbb', borderRadius: 3 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } },
+        scales: { x: { stacked: true, ticks: { font: { size: 10 } } }, y: { stacked: true, ticks: { font: { size: 10 } } } } }
+    })
+
+    const ctxR = document.getElementById('chartTeamTaskRate')?.getContext('2d')
+    if (ctxR) _analyticsCharts['teamTaskRate'] = safeChart(ctxR, {
+      type: 'bar',
+      data: {
+        labels: top10.map(m => m.full_name.split(' ').pop()),
+        datasets: [
+          { label: 'Được giao', data: top10.map(m=>m.assigned_tasks||0), backgroundColor: '#93c5fdbb', borderRadius: 3 },
+          { label: 'Hoàn thành', data: top10.map(m=>m.completed_tasks||0), backgroundColor: '#00A651bb', borderRadius: 3 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } },
+        scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } } }
+    })
+  } catch (e) {
+    el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
+  }
+}
+
+// ================================================================
+// TAB 5: TIMESHEET ANALYTICS
+// ================================================================
+async function renderTimesheetAnalyticsTab(force = false) {
+  const el = document.getElementById('analyticsTimesheetContent')
+  el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang phân tích chấm công...</p></div>`
+  try {
+    const year = getAnalyticsYear()
+    const data = await api(`/analytics/timesheet?year=${year}`)
+    const monthly = data.monthlyHours || []
+    const byDept = data.byDepartment || []
+    const byStatus = data.byStatus || []
+    const topWorkers = data.topWorkers || []
+
+    const totalHours = monthly.reduce((s,m)=>s+(m.regular||0)+(m.overtime||0),0)
+    const totalOT = monthly.reduce((s,m)=>s+(m.overtime||0),0)
+    const totalApproved = monthly.reduce((s,m)=>s+(m.approved_hours||0),0)
+    const approvalRate = totalHours > 0 ? pct(totalApproved, totalHours) : 0
+
+    const statusLabel = { draft:'Nháp', submitted:'Đã nộp', approved:'Đã duyệt', rejected:'Từ chối' }
+    const statusColor = { draft:'#6b7280', submitted:'#3b82f6', approved:'#00A651', rejected:'#ef4444' }
+
+    el.innerHTML = `
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="kpi-card card"><div class="text-2xl font-bold text-gray-800">${fmtM(totalHours)}h</div><div class="text-xs text-gray-500 mt-1">Tổng giờ làm</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-orange-500">${fmtM(totalOT)}h</div><div class="text-xs text-gray-500 mt-1">Tổng giờ tăng ca</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-green-600">${fmtM(totalApproved)}h</div><div class="text-xs text-gray-500 mt-1">Giờ được duyệt</div></div>
+        <div class="kpi-card card"><div class="text-2xl font-bold text-blue-600">${approvalRate}%</div><div class="text-xs text-gray-500 mt-1">Tỷ lệ phê duyệt</div></div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        <div class="card lg:col-span-2">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-calendar-alt mr-2 text-blue-500"></i>Giờ làm theo tháng (${year})</h3>
+          <div style="height:240px"><canvas id="chartTsMonthly"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-check-circle mr-2 text-green-500"></i>Trạng thái timesheet</h3>
+          <div style="height:240px"><canvas id="chartTsStatus"></canvas></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-building mr-2 text-primary"></i>Giờ làm theo phòng ban</h3>
+          <div style="height:240px"><canvas id="chartTsDept"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-medal mr-2 text-yellow-500"></i>Top nhân sự (tổng giờ - ${year})</h3>
+          <div class="overflow-y-auto" style="max-height:240px">
+            <table class="w-full text-sm">
+              <thead class="sticky top-0 bg-white"><tr class="border-b text-xs text-gray-500 uppercase">
+                <th class="pb-2 text-left">#</th><th class="pb-2 text-left">Nhân sự</th><th class="pb-2 text-right">Tổng giờ</th><th class="pb-2 text-right">Tăng ca</th><th class="pb-2 text-right">Ngày làm</th>
+              </tr></thead>
+              <tbody>
+                ${topWorkers.map((w,i)=>`
+                  <tr class="border-b hover:bg-gray-50">
+                    <td class="py-2 text-gray-400 font-bold">${i+1}</td>
+                    <td class="py-2"><div class="font-medium text-gray-800 text-xs">${w.full_name}</div><div class="text-gray-400 text-xs">${w.department||'-'}</div></td>
+                    <td class="py-2 text-right font-semibold text-green-600">${(w.total_hours||0).toFixed(1)}h</td>
+                    <td class="py-2 text-right text-orange-500">${(w.overtime_hours||0).toFixed(1)}h</td>
+                    <td class="py-2 text-right text-gray-500">${w.days_worked||0}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `
+
+    destroyChart('tsMonthly'); destroyChart('tsStatus'); destroyChart('tsDept')
+
+    const months = Array.from({length:12}, (_,i)=>String(i+1).padStart(2,'0'))
+    const mMap = {}; monthly.forEach(m=>{ mMap[m.month] = m })
+    const ctxM = document.getElementById('chartTsMonthly')?.getContext('2d')
+    if (ctxM) _analyticsCharts['tsMonthly'] = safeChart(ctxM, {
+      type: 'bar',
+      data: {
+        labels: months.map(m=>monthName(m)),
+        datasets: [
+          { label: 'Giờ thường', data: months.map(m=>+(mMap[m]?.regular||0).toFixed(1)), backgroundColor: '#00A651bb', borderRadius: 3 },
+          { label: 'Tăng ca', data: months.map(m=>+(mMap[m]?.overtime||0).toFixed(1)), backgroundColor: '#f59e0bbb', borderRadius: 3 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } },
+        scales: { x: { stacked: true, ticks: { font: { size: 10 } } }, y: { stacked: true, ticks: { font: { size: 10 } } } } }
+    })
+
+    const ctxSt = document.getElementById('chartTsStatus')?.getContext('2d')
+    if (ctxSt) _analyticsCharts['tsStatus'] = safeChart(ctxSt, {
+      type: 'doughnut',
+      data: {
+        labels: (byStatus||[]).map(s=>statusLabel[s.status]||s.status),
+        datasets: [{ data: (byStatus||[]).map(s=>s.count), backgroundColor: (byStatus||[]).map(s=>statusColor[s.status]||'#6b7280') }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } } }
+    })
+
+    const ctxDp = document.getElementById('chartTsDept')?.getContext('2d')
+    if (ctxDp) _analyticsCharts['tsDept'] = safeChart(ctxDp, {
+      type: 'bar',
+      data: {
+        labels: byDept.map(d=>d.department||'Chưa phân công'),
+        datasets: [{ label: 'Tổng giờ', data: byDept.map(d=>+(d.total_hours||0).toFixed(1)), backgroundColor: '#818cf8bb', borderRadius: 4 }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, indexAxis: 'y', plugins: { legend: { display: false } },
+        scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } } }
+    })
+  } catch (e) {
+    el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
+  }
+}
+
+// ================================================================
+// TAB 6: FINANCIAL ANALYTICS (Admin only)
+// ================================================================
+async function renderFinancialTab(force = false) {
+  const el = document.getElementById('analyticsFinancialContent')
+  el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải dữ liệu tài chính...</p></div>`
+  try {
+    const year = getAnalyticsYear()
+    const data = await api(`/analytics/financial?year=${year}`)
+    const monthly = data.monthlyRevCost || []
+    const kpi = data.kpi || {}
+    const costTypes = data.costByType || []
+    const topProjects = data.topProjectsByRevenue || []
+    const revenueStatus = data.revenueByStatus || []
+
+    const totalRev = kpi.total_revenue || 0
+    const totalCost = kpi.total_cost || 0
+    const totalLaborCost = kpi.total_labor_cost || 0
+    const totalDirectCost = kpi.total_direct_cost || 0
+    const totalSharedCost = kpi.total_shared_cost || 0
+    const profit = totalRev - totalCost
+    const margin = totalRev > 0 ? pct(profit, totalRev) : 0
+    const fyLabel = kpi.fiscal_year_label || `NTC ${year}`
+    const fyStart = kpi.fiscal_year_start || ''
+    const fyEnd = kpi.fiscal_year_end || ''
+
+    const costTypeLabel = { salary:'Lương', equipment:'Thiết bị', material:'Vật liệu', travel:'Đi lại', office:'Văn phòng', shared:'Chi phí chung', transport:'Vận chuyển', other:'Khác' }
+    const revStatusLabel = { pending:'Chờ thanh toán', partial:'Thanh toán một phần', paid:'Đã thanh toán' }
+    const revStatusColor = { pending:'#f59e0b', partial:'#3b82f6', paid:'#00A651' }
+
+    el.innerHTML = `
+      <!-- NTC label -->
+      <div class="mb-4 flex items-center gap-2">
+        <span class="inline-flex items-center gap-1 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 px-3 py-1 rounded-full">
+          <i class="fas fa-calendar-alt"></i> ${fyLabel}
+          ${fyStart ? `<span class="text-blue-400 ml-1">${fyStart} → ${fyEnd}</span>` : ''}
+        </span>
+        <span class="text-xs text-gray-400">Doanh thu chỉ tính đã thu (paid/partial) · Chi phí gồm trực tiếp + lương + chi phí chung</span>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="kpi-card card border-l-4 border-green-500">
+          <div class="text-xs text-gray-500 mb-1">Tổng doanh thu</div>
+          <div class="text-xl font-bold text-green-600">${fmtM(totalRev)} VNĐ</div>
+          <div class="text-xs text-gray-400 mt-1">Đã thu (paid/partial)</div>
+        </div>
+        <div class="kpi-card card border-l-4 border-red-400">
+          <div class="text-xs text-gray-500 mb-1">Tổng chi phí</div>
+          <div class="text-xl font-bold text-red-500">${fmtM(totalCost)} VNĐ</div>
+          <div class="text-xs text-gray-400 mt-1 space-y-0.5">
+            ${totalDirectCost>0?`<span class="block">Trực tiếp: ${fmtM(totalDirectCost)}</span>`:''}
+            ${totalLaborCost>0?`<span class="block">Lương: ${fmtM(totalLaborCost)}</span>`:''}
+            ${totalSharedCost>0?`<span class="block">Chi phí chung: ${fmtM(totalSharedCost)}</span>`:''}
+          </div>
+        </div>
+        <div class="kpi-card card border-l-4 ${profit>=0?'border-blue-500':'border-orange-500'}">
+          <div class="text-xs text-gray-500 mb-1">Lợi nhuận</div>
+          <div class="text-xl font-bold ${profit>=0?'text-blue-600':'text-orange-600'}">${fmtM(profit)} VNĐ</div>
+          <div class="text-xs ${profit>=0?'text-blue-400':'text-orange-400'} mt-1">${profit>=0?'Có lãi':'Lỗ'}</div>
+        </div>
+        <div class="kpi-card card border-l-4 border-purple-500">
+          <div class="text-xs text-gray-500 mb-1">Biên lợi nhuận</div>
+          <div class="text-xl font-bold text-purple-600">${margin}%</div>
+          <div class="text-xs text-gray-400 mt-1">${margin>=30?'Tốt':margin>=10?'Trung bình':'Thấp'}</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div class="card lg:col-span-2">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-chart-line mr-2 text-green-500"></i>Doanh thu & Chi phí & Lợi nhuận theo tháng (${fyLabel})</h3>
+          <div style="height:260px"><canvas id="chartFinMonthly"></canvas></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-tags mr-2 text-blue-500"></i>Chi phí theo loại</h3>
+          <div style="height:200px"><canvas id="chartFinCostType"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-file-invoice-dollar mr-2 text-yellow-500"></i>Trạng thái doanh thu</h3>
+          <div style="height:200px"><canvas id="chartFinRevStatus"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-info-circle mr-2 text-gray-500"></i>Tóm tắt</h3>
+          <div class="space-y-3 mt-2">
+            <div class="flex justify-between text-sm"><span class="text-gray-500">Dự án đang hoạt động</span><span class="font-bold">${kpi.active_projects||0}</span></div>
+            <div class="flex justify-between text-sm"><span class="text-gray-500">Dự án hoàn thành (${fyLabel})</span><span class="font-bold text-green-600">${kpi.completed_projects||0}</span></div>
+            <div class="border-t pt-3 space-y-1">
+              <div class="flex justify-between text-sm"><span class="text-gray-500">Doanh thu (đã thu)</span><span class="font-bold text-green-600">${fmtM(totalRev)}</span></div>
+              <div class="flex justify-between text-sm"><span class="text-gray-500">Chi phí trực tiếp</span><span class="font-semibold text-red-500">${fmtM(totalDirectCost)}</span></div>
+              ${totalLaborCost>0?`<div class="flex justify-between text-sm"><span class="text-gray-500">Chi phí lương</span><span class="font-semibold text-orange-500">${fmtM(totalLaborCost)}</span></div>`:''}
+              ${totalSharedCost>0?`<div class="flex justify-between text-sm"><span class="text-gray-500">Chi phí chung</span><span class="font-semibold text-yellow-600">${fmtM(totalSharedCost)}</span></div>`:''}
+              <div class="flex justify-between text-sm font-semibold border-t pt-1"><span>Tổng chi phí</span><span class="text-red-500">${fmtM(totalCost)}</span></div>
+              <div class="flex justify-between text-sm border-t pt-2"><span class="font-semibold">Lợi nhuận ròng</span><span class="font-bold ${profit>=0?'text-blue-600':'text-red-600'}">${fmtM(profit)}</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top projects table -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-crown mr-2 text-yellow-500"></i>Top dự án theo doanh thu (${fyLabel})</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="border-b text-left text-gray-500 text-xs uppercase">
+              <th class="pb-2 pr-4">Dự án</th><th class="pb-2 pr-4 text-right">Doanh thu</th>
+              <th class="pb-2 pr-4 text-right">Chi phí</th><th class="pb-2 pr-4 text-right">Lợi nhuận</th><th class="pb-2 text-right">Biên LN</th>
+            </tr></thead>
+            <tbody>
+              ${topProjects.map(p=>{
+                const pm = p.revenue>0 ? pct(p.profit, p.revenue) : 0
+                return `<tr class="border-b hover:bg-gray-50">
+                  <td class="py-3 pr-4"><div class="font-medium text-gray-800">${p.name}</div><div class="text-xs text-gray-400">${p.code}</div></td>
+                  <td class="py-3 pr-4 text-right font-semibold text-green-600">${fmtM(p.revenue)}</td>
+                  <td class="py-3 pr-4 text-right text-red-500">${fmtM(p.cost)}</td>
+                  <td class="py-3 pr-4 text-right font-semibold ${p.profit>=0?'text-blue-600':'text-red-600'}">${fmtM(p.profit)}</td>
+                  <td class="py-3 text-right">
+                    <span class="px-2 py-1 rounded text-xs font-medium ${pm>=30?'bg-green-100 text-green-700':pm>=10?'bg-blue-100 text-blue-700':'bg-red-100 text-red-600'}">${pm}%</span>
+                  </td>
+                </tr>`
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `
+
+    destroyChart('finMonthly'); destroyChart('finCostType'); destroyChart('finRevStatus')
+
+    // Monthly chart dùng label T1..T12 từ NTC
+    const monthLabels = monthly.map(m => m.month || m.month_key)
+    const ctxFM = document.getElementById('chartFinMonthly')?.getContext('2d')
+    if (ctxFM) _analyticsCharts['finMonthly'] = safeChart(ctxFM, {
+      type: 'bar',
+      data: {
+        labels: monthLabels,
+        datasets: [
+          { label: 'Doanh thu', data: monthly.map(m=>+(m.revenue||0)), backgroundColor: '#00A651bb', borderRadius: 3, yAxisID: 'y' },
+          { label: 'Chi phí', data: monthly.map(m=>+(m.cost||0)), backgroundColor: '#ef4444bb', borderRadius: 3, yAxisID: 'y' },
+          { type: 'line', label: 'Lợi nhuận', data: monthly.map(m=>+(m.profit||0)), borderColor: '#3b82f6', pointRadius: 4, tension: 0.4, yAxisID: 'y' }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { font: { size: 11 } } } },
+        scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } } }
+    })
+
+    const ctxCT = document.getElementById('chartFinCostType')?.getContext('2d')
+    if (ctxCT) _analyticsCharts['finCostType'] = safeChart(ctxCT, {
+      type: 'doughnut',
+      data: {
+        labels: costTypes.map(x=>costTypeLabel[x.cost_type]||x.cost_type),
+        datasets: [{ data: costTypes.map(x=>x.total), backgroundColor: ['#00A651','#3b82f6','#f59e0b','#8b5cf6','#ef4444','#6b7280'] }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } } }
+    })
+
+    const ctxRS = document.getElementById('chartFinRevStatus')?.getContext('2d')
+    if (ctxRS) _analyticsCharts['finRevStatus'] = safeChart(ctxRS, {
+      type: 'doughnut',
+      data: {
+        labels: revenueStatus.map(s=>revStatusLabel[s.payment_status]||s.payment_status),
+        datasets: [{ data: revenueStatus.map(s=>s.total), backgroundColor: revenueStatus.map(s=>revStatusColor[s.payment_status]||'#6b7280') }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } } }
+    })
+  } catch (e) {
+    el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
+  }
+}
+
+// ----------------------------------------------------------------
+// Export PDF (basic print dialog)
+// ----------------------------------------------------------------
+function exportAnalyticsPDF() {
+  window.print()
 }
