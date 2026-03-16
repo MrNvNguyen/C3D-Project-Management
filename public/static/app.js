@@ -3932,6 +3932,10 @@ async function openTimesheetModal(tsId = null) {
     // Mở modal trước để DOM đã render rồi mới fill task
     openModal('timesheetModal')
 
+    // Ẩn gợi ý khi đang sửa (không cần thiết)
+    const _hintEl = document.getElementById('tsDateHint')
+    if (_hintEl) _hintEl.style.display = 'none'
+
     // Load & init task combobox với task đang chọn sẵn + đúng locked
     await _loadAndInitTsTaskCombobox(ts.project_id, ts.task_id, locked)
 
@@ -3958,6 +3962,9 @@ async function openTimesheetModal(tsId = null) {
     _initTsTaskCombobox([], null, false)
 
     openModal('timesheetModal')
+
+    // Hiển thị gợi ý dự án đã khai báo cho ngày hôm nay
+    _updateTsDateHint(today())
   }
 }
 
@@ -3972,11 +3979,45 @@ function _getCurrentWeekRange() {
   return { start: fmt(mon), end: fmt(sun) }
 }
 
+// ── Cập nhật gợi ý dự án đã khai báo cho ngày được chọn ──
+function _updateTsDateHint(selectedDate, excludeTimesheetId = null) {
+  const hint      = document.getElementById('tsDateHint')
+  const hintProjs = document.getElementById('tsDateHintProjects')
+  if (!hint || !hintProjs) return
+
+  if (!selectedDate) { hint.style.display = 'none'; return }
+
+  // Lọc timesheets cùng ngày, cùng user, loại trừ bản ghi đang sửa
+  const userId = currentUser.id
+  const sameDay = allTimesheets.filter(t =>
+    t.work_date === selectedDate &&
+    t.user_id   === userId &&
+    (excludeTimesheetId == null || t.id !== excludeTimesheetId)
+  )
+
+  if (!sameDay.length) { hint.style.display = 'none'; return }
+
+  // Lấy tên dự án (dùng allProjects nếu có, fallback project_name từ timesheet)
+  const projNames = sameDay.map(t => {
+    const proj = allProjects.find(p => p.id === t.project_id)
+    return proj ? (proj.code ? `${proj.code}` : proj.name) : (t.project_name || `#${t.project_id}`)
+  })
+  hintProjs.textContent = projNames.join(', ')
+  hint.style.display = ''
+}
+
 // Giữ lại hàm loadTsTasks để tương thích nơi khác gọi
 async function loadTsTasks(projectId = null, selectedTaskId = null) {
   const projId = projectId || _cbGetValue('tsProjectCombobox')
   if (projId) await _loadAndInitTsTaskCombobox(projId, selectedTaskId, false)
 }
+
+// Cập nhật gợi ý khi người dùng thay đổi ngày (chỉ khi đang thêm mới)
+$('tsDate').addEventListener('change', () => {
+  if (!$('tsId').value) {   // chỉ khi thêm mới (tsId rỗng)
+    _updateTsDateHint($('tsDate').value)
+  }
+})
 
 $('tsForm').addEventListener('submit', async (e) => {
   e.preventDefault()
@@ -5141,7 +5182,8 @@ async function deleteAsset(id) {
 // ================================================================
 async function loadUsers() {
   try {
-    allUsers = await api('/users')
+    // show_inactive=1: admin quản lý nhân sự cần thấy cả người bị vô hiệu hóa
+    allUsers = await api('/users?show_inactive=1')
     renderUsersTable(allUsers)
   } catch (e) { toast('Lỗi tải nhân sự: ' + e.message, 'error') }
 }

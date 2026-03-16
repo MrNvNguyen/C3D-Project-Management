@@ -210,8 +210,10 @@ app.get('/api/users', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
+    // show_inactive=1 only for system_admin (e.g. from the Users management page)
+    const showInactive = user.role === 'system_admin' && c.req.query('show_inactive') === '1'
     let query = 'SELECT id, username, full_name, email, phone, role, department, is_active, created_at FROM users'
-    if (user.role !== 'system_admin') {
+    if (!showInactive) {
       query += ' WHERE is_active = 1'
     }
     const users = await db.prepare(query).all()
