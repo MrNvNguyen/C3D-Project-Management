@@ -1535,6 +1535,31 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
   }
 })
 
+// ── Helper: kiểm tra ngày có nằm trong tuần làm việc hiện tại không ──
+// Tuần làm việc: Thứ Hai → Chủ Nhật (ISO week, timezone UTC+7)
+function isWithinCurrentWeek(workDateStr: string): boolean {
+  // Parse work_date (YYYY-MM-DD)
+  const [y, m, d] = workDateStr.split('-').map(Number)
+  const workDate = new Date(Date.UTC(y, m - 1, d))
+
+  // Lấy "hôm nay" theo UTC+7
+  const nowUtc7 = new Date(Date.now() + 7 * 60 * 60 * 1000)
+  const todayUtc7 = new Date(Date.UTC(
+    nowUtc7.getUTCFullYear(),
+    nowUtc7.getUTCMonth(),
+    nowUtc7.getUTCDate()
+  ))
+
+  // Thứ trong tuần: 0=CN, 1=T2 ... 6=T7 — chuyển sang ISO: T2=0 ... CN=6
+  const dow = (todayUtc7.getUTCDay() + 6) % 7  // 0=T2, 6=CN
+  const weekStart = new Date(todayUtc7)
+  weekStart.setUTCDate(todayUtc7.getUTCDate() - dow)   // Thứ Hai
+  const weekEnd = new Date(weekStart)
+  weekEnd.setUTCDate(weekStart.getUTCDate() + 6)       // Chủ Nhật
+
+  return workDate >= weekStart && workDate <= weekEnd
+}
+
 app.post('/api/timesheets', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -1543,6 +1568,15 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description } = data
 
     if (!project_id || !work_date) return c.json({ error: 'project_id and work_date required' }, 400)
+
+    // ── Giới hạn tuần: member & project_admin/leader chỉ khai báo trong tuần hiện tại ──
+    const effRoleGlobalCheck = await getEffectiveRole(db, user)
+    if (effRoleGlobalCheck !== 'system_admin' && !isWithinCurrentWeek(work_date)) {
+      return c.json({
+        error: 'Chỉ được khai báo timesheet trong tuần làm việc hiện tại (Thứ Hai – Chủ Nhật). Tuần đã qua không thể khai báo lại.',
+        week_limit: true
+      }, 422)
+    }
 
     // member chỉ được tạo timesheet cho chính mình
     // system_admin/project_admin/project_leader có thể tạo cho user_id bất kỳ (nếu truyền vào)
@@ -1637,12 +1671,37 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     const updates: string[] = []
     const values: any[] = []
 
+    // ── Giới hạn tuần cho member/project_admin khi sửa nội dung timesheet ──
+    // Kiểm tra ngày gốc của timesheet: nếu nằm ngoài tuần hiện tại → không cho sửa
+    // (chỉ system_admin được phép sửa timesheet tuần cũ)
+    if (!isAdmin && !isProjAdmin && !isWithinCurrentWeek(ts.work_date)) {
+      // Chỉ chặn sửa nội dung (không chặn admin phê duyệt/từ chối)
+      const isContentEdit = task_id !== undefined || work_date !== undefined ||
+                            regular_hours !== undefined || overtime_hours !== undefined ||
+                            description !== undefined
+      if (isContentEdit) {
+        return c.json({
+          error: 'Timesheet này thuộc tuần đã qua, không thể chỉnh sửa nữa.',
+          week_limit: true
+        }, 422)
+      }
+    }
+
     // task_id và work_date: chỉ admin/projAdmin hoặc owner ở trạng thái draft/rejected mới được sửa
     const canEditContent = isAdmin || isProjAdmin || (isOwner && ['draft', 'rejected'].includes(ts.status))
     if (canEditContent) {
       // task_id: cho phép set null (xóa task) hoặc set id mới
       if (task_id !== undefined) { updates.push('task_id = ?'); values.push(task_id || null) }
-      if (work_date !== undefined) { updates.push('work_date = ?'); values.push(work_date) }
+      if (work_date !== undefined) {
+        // Kiểm tra ngày mới cũng phải trong tuần hiện tại (trừ admin)
+        if (!isAdmin && !isProjAdmin && !isWithinCurrentWeek(work_date)) {
+          return c.json({
+            error: 'Chỉ được cập nhật ngày làm việc trong tuần hiện tại (Thứ Hai – Chủ Nhật).',
+            week_limit: true
+          }, 422)
+        }
+        updates.push('work_date = ?'); values.push(work_date)
+      }
       if (regular_hours !== undefined) { updates.push('regular_hours = ?'); values.push(regular_hours) }
       if (overtime_hours !== undefined) { updates.push('overtime_hours = ?'); values.push(overtime_hours) }
       if (description !== undefined) { updates.push('description = ?'); values.push(description) }

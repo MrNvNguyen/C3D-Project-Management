@@ -2285,9 +2285,16 @@
 <!-- Timesheet Modal -->
 <div id="timesheetModal" class="modal-overlay" style="display:none">
   <div class="modal p-6">
-    <div class="flex justify-between items-center mb-4">
+    <div class="flex justify-between items-center mb-3">
       <h3 class="text-lg font-bold text-gray-800" id="tsModalTitle">Thêm Timesheet</h3>
       <button onclick="closeModal('timesheetModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <!-- Banner giới hạn tuần — ẩn với system_admin, hiện với mọi role còn lại -->
+    <div id="tsWeekBanner" class="flex items-center gap-2 px-3 py-2 mb-4 rounded-lg text-xs font-medium" style="background:#f0fdf4;border:1px solid #bbf7d0;color:#166534">
+      <i class="fas fa-calendar-week text-green-600"></i>
+      <span>Tuần làm việc hiện tại: </span>
+      <span id="tsWeekLabel" class="font-bold"></span>
+      <span class="ml-auto text-gray-400 font-normal">(chỉ được khai báo trong tuần này)</span>
     </div>
     <form id="tsForm" class="space-y-4">
       <input type="hidden" id="tsId">

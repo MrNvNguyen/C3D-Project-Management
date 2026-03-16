@@ -3843,6 +3843,22 @@ async function openTimesheetModal(tsId = null) {
                       currentUser.role === 'project_leader' ||
                       isAnyProjectLeaderOrAdmin()
 
+  // ── Tính phạm vi tuần hiện tại (T2 → CN) ──
+  const weekRange = _getCurrentWeekRange()
+  const canEditFreeDate = isAdmin   // chỉ system_admin không bị giới hạn ngày
+
+  // Cập nhật banner tuần
+  const banner = document.getElementById('tsWeekBanner')
+  const weekLabel = document.getElementById('tsWeekLabel')
+  if (banner && weekLabel) {
+    if (canEditFreeDate) {
+      banner.style.display = 'none'
+    } else {
+      banner.style.display = ''
+      weekLabel.textContent = `${fmtDate(weekRange.start)} → ${fmtDate(weekRange.end)}`
+    }
+  }
+
   $('tsModalTitle').textContent = tsId ? 'Sửa Timesheet' : 'Thêm Timesheet'
   $('tsId').value = tsId || ''
 
@@ -3857,11 +3873,30 @@ async function openTimesheetModal(tsId = null) {
       return
     }
 
+    // ── Kiểm tra giới hạn tuần (chặn sớm ở frontend) ──
+    if (!canEditFreeDate && !isProjAdmin) {
+      const workDate = new Date(ts.work_date + 'T00:00:00')
+      const wkStart  = new Date(weekRange.start + 'T00:00:00')
+      const wkEnd    = new Date(weekRange.end   + 'T00:00:00')
+      if (workDate < wkStart || workDate > wkEnd) {
+        toast(`Timesheet ngày ${fmtDate(ts.work_date)} thuộc tuần đã qua — không thể chỉnh sửa nữa.`, 'warning')
+        return
+      }
+    }
+
     // locked = chỉ khi member thường & timesheet đã submitted
     const locked = !isAdmin && !isProjAdmin && ts.status === 'submitted'
 
     $('tsDate').value             = ts.work_date || ''
     $('tsDate').disabled          = locked
+    // Giới hạn ngày trong tuần hiện tại cho non-admin
+    if (!canEditFreeDate) {
+      $('tsDate').min = weekRange.start
+      $('tsDate').max = weekRange.end
+    } else {
+      $('tsDate').removeAttribute('min')
+      $('tsDate').removeAttribute('max')
+    }
     $('tsRegularHours').value     = ts.regular_hours  ?? 8
     $('tsOvertimeHours').value    = ts.overtime_hours ?? 0
     $('tsDescription').value      = ts.description    || ''
@@ -3882,6 +3917,14 @@ async function openTimesheetModal(tsId = null) {
     // ─── Thêm mới ────────────────────────────────────────────
     $('tsDate').value             = today()
     $('tsDate').disabled          = false
+    // Giới hạn ngày trong tuần hiện tại cho non-admin
+    if (!canEditFreeDate) {
+      $('tsDate').min = weekRange.start
+      $('tsDate').max = weekRange.end
+    } else {
+      $('tsDate').removeAttribute('min')
+      $('tsDate').removeAttribute('max')
+    }
     $('tsRegularHours').value     = 8
     $('tsOvertimeHours').value    = 0
     $('tsDescription').value      = ''
@@ -3894,6 +3937,17 @@ async function openTimesheetModal(tsId = null) {
 
     openModal('timesheetModal')
   }
+}
+
+// ── Tính phạm vi tuần hiện tại (ISO: T2–CN) ──
+function _getCurrentWeekRange() {
+  const now = new Date()
+  // Thứ trong tuần: 0=CN → chuyển sang T2=0..CN=6
+  const dow = (now.getDay() + 6) % 7
+  const mon = new Date(now); mon.setDate(now.getDate() - dow); mon.setHours(0,0,0,0)
+  const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  return { start: fmt(mon), end: fmt(sun) }
 }
 
 // Giữ lại hàm loadTsTasks để tương thích nơi khác gọi
@@ -3950,8 +4004,10 @@ $('tsForm').addEventListener('submit', async (e) => {
     loadTimesheets()
   } catch (e) {
     const errMsg = e.response?.data?.error || e.message || 'Lỗi không xác định'
-    // 409 with exists=true means it's approved, can't edit
-    if (e.response?.status === 409 && e.response?.data?.exists) {
+    // 422 week_limit — hiển thị cảnh báo nổi bật
+    if (e.response?.status === 422 && e.response?.data?.week_limit) {
+      toast('⏰ ' + errMsg, 'warning')
+    } else if (e.response?.status === 409 && e.response?.data?.exists) {
       toast('⚠️ ' + errMsg, 'warning')
     } else {
       toast('Lỗi: ' + errMsg, 'error')
