@@ -470,7 +470,7 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     if (user.role !== 'system_admin' && proj.admin_id !== user.id)
       return c.json({ error: 'Không có quyền chỉnh sửa dự án này' }, 403)
     const allowedFields = user.role === 'system_admin'
-      ? ['name','description','client','project_type','status','start_date','end_date','budget','contract_value','location','admin_id','leader_id','progress']
+      ? ['code','name','description','client','project_type','status','start_date','end_date','budget','contract_value','location','admin_id','leader_id','progress']
       : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress']
     const updates = allowedFields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = allowedFields.filter(f => data[f] !== undefined).map(f => data[f])
@@ -599,6 +599,73 @@ app.get('/api/projects/:id/categories', authMiddleware, async (c) => {
       ORDER BY c.created_at ASC
     `).bind(projectId).all()
     return c.json(categories.results)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/categories/bulk — tạo nhiều hạng mục cùng lúc
+app.post('/api/categories/bulk', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { project_id, categories } = await c.req.json()
+
+    if (!project_id) return c.json({ error: 'project_id required' }, 400)
+    if (!Array.isArray(categories) || categories.length === 0)
+      return c.json({ error: 'categories array required' }, 400)
+    if (categories.length > 200)
+      return c.json({ error: 'Tối đa 200 hạng mục mỗi lần' }, 400)
+
+    // Permission check
+    const proj = await db.prepare('SELECT admin_id FROM projects WHERE id = ?').bind(project_id).first() as any
+    if (!proj) return c.json({ error: 'Project not found' }, 404)
+    if (user.role !== 'system_admin' && proj.admin_id !== user.id) {
+      // Check if project member with leader role
+      const member = await db.prepare(
+        'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?'
+      ).bind(project_id, user.id).first() as any
+      if (!member || !['project_admin','project_leader'].includes(member.role))
+        return c.json({ error: 'Không có quyền thêm hạng mục' }, 403)
+    }
+
+    const results: any[] = []
+    const errors: any[] = []
+
+    for (let i = 0; i < categories.length; i++) {
+      const cat = categories[i]
+      if (!cat.name || !cat.name.trim()) {
+        errors.push({ row: i + 1, error: 'Tên hạng mục không được trống' })
+        continue
+      }
+      try {
+        const r = await db.prepare(
+          `INSERT INTO categories (project_id, name, code, description, discipline_code, phase, start_date, end_date, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(
+          project_id,
+          cat.name.trim(),
+          cat.code?.trim() || null,
+          cat.description?.trim() || null,
+          cat.discipline_code?.trim() || null,
+          cat.phase || 'basic_design',
+          cat.start_date || null,
+          cat.end_date || null,
+          user.id
+        ).run()
+        results.push({ row: i + 1, id: r.meta.last_row_id, name: cat.name.trim() })
+      } catch (rowErr: any) {
+        errors.push({ row: i + 1, name: cat.name, error: rowErr.message })
+      }
+    }
+
+    return c.json({
+      success: true,
+      created: results.length,
+      failed: errors.length,
+      results,
+      errors
+    }, 201)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1566,13 +1633,26 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       }
     }
 
-    const { regular_hours, overtime_hours, description, status } = data
+    const { task_id, work_date, regular_hours, overtime_hours, description, status } = data
     const updates: string[] = []
     const values: any[] = []
 
-    if (regular_hours !== undefined) { updates.push('regular_hours = ?'); values.push(regular_hours) }
-    if (overtime_hours !== undefined) { updates.push('overtime_hours = ?'); values.push(overtime_hours) }
-    if (description !== undefined) { updates.push('description = ?'); values.push(description) }
+    // task_id và work_date: chỉ admin/projAdmin hoặc owner ở trạng thái draft/rejected mới được sửa
+    const canEditContent = isAdmin || isProjAdmin || (isOwner && ['draft', 'rejected'].includes(ts.status))
+    if (canEditContent) {
+      // task_id: cho phép set null (xóa task) hoặc set id mới
+      if (task_id !== undefined) { updates.push('task_id = ?'); values.push(task_id || null) }
+      if (work_date !== undefined) { updates.push('work_date = ?'); values.push(work_date) }
+      if (regular_hours !== undefined) { updates.push('regular_hours = ?'); values.push(regular_hours) }
+      if (overtime_hours !== undefined) { updates.push('overtime_hours = ?'); values.push(overtime_hours) }
+      if (description !== undefined) { updates.push('description = ?'); values.push(description) }
+    } else {
+      // member thường không được sửa nội dung (chỉ submit/rút lại)
+      if (regular_hours !== undefined || overtime_hours !== undefined ||
+          description !== undefined || task_id !== undefined || work_date !== undefined) {
+        return c.json({ error: 'Không thể sửa nội dung timesheet đã được duyệt hoặc đang chờ duyệt' }, 403)
+      }
+    }
 
     if (status !== undefined) {
       if (isAdmin || isProjAdmin) {
@@ -1595,7 +1675,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       }
     }
 
-    if (!updates.length && status === undefined) {
+    if (!updates.length) {
       return c.json({ error: 'Không có gì để cập nhật' }, 400)
     }
     updates.push('updated_at = CURRENT_TIMESTAMP')
@@ -6755,11 +6835,65 @@ app.get('/api/analytics/timesheet', authMiddleware, adminOnly, async (c) => {
       GROUP BY ts.user_id ORDER BY total_hours DESC LIMIT 10
     `).bind(y).all()
 
+    // ── Task hours: actual (từ timesheet) vs planned (estimated_hours trong task) ──
+    // Chỉ lấy task có ít nhất 1 timesheet ghi nhận trong năm này
+    const taskHoursVsPlan = await db.prepare(`
+      SELECT
+        t.id                                                        AS task_id,
+        t.title                                                     AS task_title,
+        t.discipline_code,
+        t.status                                                    AS task_status,
+        t.priority,
+        t.estimated_hours                                           AS planned_hours,
+        t.actual_hours                                              AS logged_actual_hours,
+        p.code                                                      AS project_code,
+        p.name                                                      AS project_name,
+        COALESCE(u.full_name, '—')                                  AS assignee,
+        SUM(ts.regular_hours + ts.overtime_hours)                  AS ts_actual_hours,
+        COUNT(DISTINCT ts.work_date)                               AS days_logged,
+        COUNT(DISTINCT ts.user_id)                                 AS members_logged,
+        ROUND(
+          CASE WHEN t.estimated_hours > 0
+            THEN SUM(ts.regular_hours + ts.overtime_hours) * 100.0 / t.estimated_hours
+            ELSE NULL
+          END, 1
+        )                                                           AS pct_used
+      FROM timesheets ts
+      JOIN tasks t     ON t.id = ts.task_id
+      JOIN projects p  ON p.id = t.project_id
+      LEFT JOIN users u ON u.id = t.assigned_to
+      WHERE strftime('%Y', ts.work_date) = ?
+        AND ts.task_id IS NOT NULL
+      GROUP BY t.id
+      ORDER BY ts_actual_hours DESC
+      LIMIT 50
+    `).bind(y).all()
+
+    // ── Tổng hợp by project: actual vs planned ──
+    const projectHoursVsPlan = await db.prepare(`
+      SELECT
+        p.id          AS project_id,
+        p.code        AS project_code,
+        p.name        AS project_name,
+        SUM(DISTINCT t.estimated_hours)                            AS total_planned_hours,
+        SUM(ts.regular_hours + ts.overtime_hours)                  AS total_actual_hours,
+        COUNT(DISTINCT ts.task_id)                                 AS tasks_with_hours,
+        COUNT(DISTINCT t.id)                                       AS total_tasks_in_project
+      FROM timesheets ts
+      JOIN projects p ON p.id = ts.project_id
+      LEFT JOIN tasks t ON t.project_id = p.id AND t.id = ts.task_id
+      WHERE strftime('%Y', ts.work_date) = ?
+      GROUP BY p.id
+      ORDER BY total_actual_hours DESC
+    `).bind(y).all()
+
     return c.json({
       monthlyHours: monthlyHours.results,
       byDepartment: byDepartment.results,
       byStatus: byStatus.results,
-      topWorkers: topWorkers.results
+      topWorkers: topWorkers.results,
+      taskHoursVsPlan: taskHoursVsPlan.results,
+      projectHoursVsPlan: projectHoursVsPlan.results
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)

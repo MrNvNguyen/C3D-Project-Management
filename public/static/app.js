@@ -6,6 +6,8 @@ const API_BASE = ''
 let currentUser = null
 let authToken = null
 let allProjects = []
+let _projectViewMode = 'card'    // 'card' | 'list'
+let _allCategoriesForFilter = [] // unused legacy – kept for safety
 let allTasks = []
 let allUsers = []
 let allTimesheets = []
@@ -726,14 +728,21 @@ async function loadProjects() {
     allUsers = await api('/users')
     // Cập nhật cache role ngay sau khi load (my_project_role từ API)
     refreshProjectRoleCache()
+
+    // Luôn reset về card view khi vào trang
+    _projectViewMode = 'card'
+    const btnCard = $('btnViewCard')
+    const btnList = $('btnViewList')
+    if (btnCard) btnCard.classList.add('active')
+    if (btnList) btnList.classList.remove('active')
+
     renderProjectsGrid(allProjects)
 
-    // Fill project filter dropdowns across pages
-    const selects = ['taskProjectFilter', 'tsProjectFilter', 'costProjectFilter', 'ganttProjectSelect', 'tsProject', 'costProject']
+    // Fill project filter dropdowns across pages (plain selects: tsProject, costProject)
+    const selects = ['tsProject', 'costProject']
     selects.forEach(id => {
       const el = $(id)
       if (el) {
-        const existing = el.innerHTML
         if (!el.querySelector('option[value=""]')) el.innerHTML = '<option value="">-- Chọn dự án --</option>'
         else el.innerHTML = el.querySelector('option[value=""]').outerHTML
         allProjects.forEach(p => {
@@ -743,63 +752,202 @@ async function loadProjects() {
         })
       }
     })
+
+    // Build searchable comboboxes for project filters
+    const projItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` }))
+
+    // Timesheet project filter
+    createCombobox('tsProjectFilterCombobox', {
+      placeholder: 'Tất cả dự án',
+      items: projItems,
+      value: '',
+      minWidth: '190px',
+      onchange: () => loadTimesheets()
+    })
+
+    // Cost/Revenue project filter
+    createCombobox('costProjectFilterCombobox', {
+      placeholder: 'Tất cả dự án',
+      items: projItems,
+      value: '',
+      minWidth: '180px',
+      onchange: () => loadCostDashboard()
+    })
+
+    // Finance-by-project selector
+    createCombobox('finProjSelectCombobox', {
+      placeholder: '-- Chọn dự án --',
+      items: projItems,
+      value: '',
+      minWidth: '220px',
+      onchange: (val) => { if (val) loadFinanceProject() }
+    })
+
+    // Client filter combobox (unique clients from allProjects, sorted A-Z)
+    const uniqueClients = [...new Set(
+      allProjects.map(p => p.client).filter(c => c && c.trim())
+    )].sort((a, b) => a.localeCompare(b, 'vi'))
+    const clientItems = uniqueClients.map(c => ({ value: c, label: c }))
+    createCombobox('projectClientCombobox', {
+      placeholder: '🏢 Tất cả chủ đầu tư',
+      items: clientItems,
+      value: '',
+      minWidth: '190px',
+      onchange: () => filterProjects()
+    })
+
   } catch (e) { toast('Lỗi tải dự án: ' + e.message, 'error') }
 }
 
 function renderProjectsGrid(projects) {
   const grid = $('projectsGrid')
   if (!grid) return
-  grid.innerHTML = projects.map(p => {
-    const total = p.total_tasks || 0
-    const done = p.completed_tasks || 0
-    const pct = total > 0 ? Math.round((done / total) * 100) : p.progress || 0
-    const hasOverdue = p.overdue_tasks > 0
-    const typeColors = { building: '#0066CC', infrastructure: '#F59E0B', transport: '#8B5CF6', energy: '#EF4444' }
-    return `<div class="card hover:shadow-md transition-shadow cursor-pointer" data-project-id="${p.id}" onclick="openProjectDetail(${p.id})" style="position:relative">
-      <div class="flex justify-between items-start mb-3">
-        <div class="flex items-center gap-2">
-          <div class="w-10 h-10 rounded-lg flex items-center justify-center text-white text-xs font-bold" style="background:${typeColors[p.project_type]||'#0066CC'}">
-            ${p.code?.substring(0, 3)}
+
+  // Sắp xếp A-Z theo mã dự án (cả hai view)
+  const sorted = [...projects].sort((a, b) => (a.code || '').localeCompare(b.code || ''))
+
+  const typeColors = {
+    building:       '#0066CC',
+    infrastructure: '#F59E0B',
+    transport:      '#8B5CF6',
+    energy:         '#EF4444'
+  }
+
+  /* ── CARD VIEW (style cũ, sort A-Z theo mã) ──────── */
+  if (_projectViewMode === 'card') {
+    grid.className = 'card-view'
+    grid.innerHTML = sorted.map(p => {
+      const total = p.total_tasks || 0
+      const done  = p.completed_tasks || 0
+      const pct   = total > 0 ? Math.round((done / total) * 100) : (p.progress || 0)
+      const hasOverdue = p.overdue_tasks > 0
+      return `<div class="card hover:shadow-md transition-shadow cursor-pointer" data-project-id="${p.id}" onclick="openProjectDetail(${p.id})" style="position:relative">
+        <div class="flex justify-between items-start mb-3">
+          <div class="flex items-center gap-2">
+            <div class="w-10 h-10 rounded-lg flex items-center justify-center text-white text-xs font-bold" style="background:${typeColors[p.project_type]||'#0066CC'}">
+              ${p.code?.substring(0, 3)}
+            </div>
+            <div>
+              <h3 class="font-bold text-gray-800 text-sm leading-tight">${p.name}</h3>
+              <span class="text-xs text-gray-400">${p.code} • ${getProjectTypeName(p.project_type)}</span>
+            </div>
           </div>
-          <div>
-            <h3 class="font-bold text-gray-800 text-sm leading-tight">${p.name}</h3>
-            <span class="text-xs text-gray-400">${p.code} • ${getProjectTypeName(p.project_type)}</span>
+          ${getStatusBadge(p.status)}
+        </div>
+        ${p.client ? `<p class="text-xs text-gray-500 mb-2"><i class="fas fa-building mr-1"></i>${p.client}</p>` : ''}
+        <div class="space-y-2 mb-3">
+          <div class="flex justify-between text-xs text-gray-500">
+            <span><i class="fas fa-calendar mr-1"></i>${fmtDate(p.start_date)} → ${fmtDate(p.end_date)}</span>
+            <span class="font-medium ${hasOverdue ? 'text-red-600' : 'text-primary'}">${pct}%</span>
+          </div>
+          <div class="progress-bar"><div class="progress-fill ${hasOverdue ? 'danger' : ''}" style="width:${pct}%"></div></div>
+        </div>
+        <div class="flex items-center justify-between text-xs text-gray-500">
+          <div class="flex gap-3">
+            <span><i class="fas fa-tasks mr-1"></i>${done}/${total} task</span>
+            ${hasOverdue ? `<span class="text-red-500 font-bold"><i class="fas fa-exclamation-triangle mr-1"></i>${p.overdue_tasks} trễ</span>` : ''}
+          </div>
+          <div class="flex gap-2">
+            <span><i class="fas fa-users mr-1"></i>${p.member_count||0}</span>
+            ${p.contract_value != null && currentUser?.role === 'system_admin' ? `<span class="text-primary font-medium">${fmtMoney(p.contract_value)}</span>` : ''}
           </div>
         </div>
-        ${getStatusBadge(p.status)}
-      </div>
-      ${p.client ? `<p class="text-xs text-gray-500 mb-2"><i class="fas fa-building mr-1"></i>${p.client}</p>` : ''}
-      <div class="space-y-2 mb-3">
-        <div class="flex justify-between text-xs text-gray-500">
-          <span><i class="fas fa-calendar mr-1"></i>${fmtDate(p.start_date)} → ${fmtDate(p.end_date)}</span>
-          <span class="font-medium ${hasOverdue ? 'text-red-600' : 'text-primary'}">${pct}%</span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill ${hasOverdue ? 'danger' : ''}" style="width:${pct}%"></div></div>
-      </div>
-      <div class="flex items-center justify-between text-xs text-gray-500">
-        <div class="flex gap-3">
-          <span><i class="fas fa-tasks mr-1"></i>${done}/${total} task</span>
-          ${hasOverdue ? `<span class="text-red-500 font-bold"><i class="fas fa-exclamation-triangle mr-1"></i>${p.overdue_tasks} trễ</span>` : ''}
-        </div>
-        <div class="flex gap-2">
-          <span><i class="fas fa-users mr-1"></i>${p.member_count||0}</span>
-          ${p.contract_value != null && currentUser?.role === 'system_admin' ? `<span class="text-primary font-medium">${fmtMoney(p.contract_value)}</span>` : ''}
-        </div>
-      </div>
+      </div>`
+    }).join('') || `<div class="col-span-3 text-center py-12 text-gray-400">
+      <i class="fas fa-project-diagram text-5xl mb-3"></i><p>Chưa có dự án nào</p>
     </div>`
-  }).join('') || `<div class="col-span-3 text-center py-12 text-gray-400">
-    <i class="fas fa-project-diagram text-5xl mb-3"></i><p>Chưa có dự án nào</p>
-  </div>`
+
+  /* ── LIST / DETAIL VIEW (bảng cột, sort A-Z theo mã) */
+  } else {
+    grid.className = 'list-view'
+    if (!sorted.length) {
+      grid.innerHTML = `<div class="text-center py-16 text-gray-400">
+        <i class="fas fa-project-diagram text-5xl mb-3 block"></i><p>Chưa có dự án nào</p>
+      </div>`
+      return
+    }
+    const showMoney = currentUser?.role === 'system_admin'
+    const rows = sorted.map(p => {
+      const total = p.total_tasks || 0
+      const done  = p.completed_tasks || 0
+      const pct   = total > 0 ? Math.round((done / total) * 100) : (p.progress || 0)
+      const hasOverdue = p.overdue_tasks > 0
+      const color = typeColors[p.project_type] || '#0066CC'
+      return `
+      <tr onclick="openProjectDetail(${p.id})">
+        <td>
+          <div style="display:flex;align-items:center;gap:9px">
+            <div class="proj-tbl-icon" style="background:${color}">${p.code?.substring(0,3)}</div>
+            <div>
+              <div class="proj-tbl-name">${p.name}</div>
+              <div class="proj-tbl-sub">${p.code}</div>
+            </div>
+          </div>
+        </td>
+        <td style="white-space:nowrap;color:#6b7280">${getProjectTypeName(p.project_type)}</td>
+        <td style="color:#6b7280;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.client || '—'}</td>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div class="proj-tbl-progress-bar" style="flex:1">
+              <div class="proj-tbl-progress-fill${hasOverdue ? ' danger' : ''}" style="width:${pct}%"></div>
+            </div>
+            <span class="proj-tbl-pct" style="color:${hasOverdue ? '#ef4444' : '#00A651'}">${pct}%</span>
+          </div>
+        </td>
+        <td style="white-space:nowrap;text-align:center">
+          <span style="font-size:12px;color:#374151">${done}/${total}</span>
+          ${hasOverdue ? `<span style="color:#ef4444;font-size:11px;display:block;font-weight:600"><i class="fas fa-exclamation-triangle mr-1"></i>${p.overdue_tasks} trễ</span>` : ''}
+        </td>
+        <td style="white-space:nowrap;color:#6b7280;font-size:12px">${fmtDate(p.start_date)}</td>
+        <td style="white-space:nowrap;color:#6b7280;font-size:12px">${fmtDate(p.end_date)}</td>
+        <td style="text-align:center;color:#6b7280;font-size:12px"><i class="fas fa-users mr-1"></i>${p.member_count||0}</td>
+        ${showMoney ? `<td style="white-space:nowrap;color:#00A651;font-weight:600;font-size:12px">${p.contract_value != null ? fmtMoney(p.contract_value) : '—'}</td>` : ''}
+        <td>${getStatusBadge(p.status)}</td>
+      </tr>`
+    }).join('')
+
+    grid.innerHTML = `
+    <div class="proj-table-wrap">
+      <table class="proj-table">
+        <thead>
+          <tr>
+            <th>Tên dự án</th>
+            <th>Loại</th>
+            <th>Khách hàng</th>
+            <th style="min-width:140px">Tiến độ</th>
+            <th style="text-align:center">Tasks</th>
+            <th>Ngày bắt đầu</th>
+            <th>Ngày kết thúc</th>
+            <th style="text-align:center">Thành viên</th>
+            ${showMoney ? '<th>Giá trị HĐ</th>' : ''}
+            <th>Trạng thái</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`
+  }
+}
+
+function setProjectView(mode) {
+  _projectViewMode = mode
+  const btnCard = $('btnViewCard')
+  const btnList = $('btnViewList')
+  if (btnCard) { btnCard.classList.toggle('active', mode === 'card') }
+  if (btnList) { btnList.classList.toggle('active', mode === 'list') }
+  filterProjects()
 }
 
 function filterProjects() {
   const search = $('projectSearch').value.toLowerCase()
   const status = $('projectStatusFilter').value
   const type = $('projectTypeFilter').value
+  const client = _cbGetValue('projectClientCombobox')
   const filtered = allProjects.filter(p =>
     (!search || p.name.toLowerCase().includes(search) || p.code.toLowerCase().includes(search) || (p.client||'').toLowerCase().includes(search)) &&
     (!status || p.status === status) &&
-    (!type || p.project_type === type)
+    (!type || p.project_type === type) &&
+    (!client || (p.client || '') === client)
   )
   renderProjectsGrid(filtered)
 }
@@ -1040,6 +1188,13 @@ function openProjectModal(project = null) {
   $('projectModalTitle').textContent = project ? 'Chỉnh sửa dự án' : 'Tạo dự án mới'
   $('projectId').value = project?.id || ''
   $('projectCode').value = project?.code || ''
+  // Chỉ system_admin mới được đổi mã dự án
+  const codeField = $('projectCode')
+  const isAdmin = currentUser?.role === 'system_admin'
+  codeField.readOnly = project ? !isAdmin : false
+  codeField.style.background = (project && !isAdmin) ? '#f3f4f6' : ''
+  codeField.style.cursor    = (project && !isAdmin) ? 'not-allowed' : ''
+  codeField.title = (project && !isAdmin) ? 'Chỉ System Admin mới có thể thay đổi mã dự án' : ''
   $('projectName').value = project?.name || ''
   $('projectDesc').value = project?.description || ''
   $('projectClient').value = project?.client || ''
@@ -1049,7 +1204,7 @@ function openProjectModal(project = null) {
   $('projectContractValue').value = project?.contract_value || ''
   // Show/hide contract value field based on role
   const contractRow = document.getElementById('contractValueRow')
-  if (contractRow) contractRow.style.display = currentUser?.role === 'system_admin' ? '' : 'none'
+  if (contractRow) contractRow.style.display = isAdmin ? '' : 'none'
   $('projectStatus').value = project?.status || 'planning'
   $('projectLocation').value = project?.location || ''
 
@@ -1079,6 +1234,10 @@ $('projectForm').addEventListener('submit', async (e) => {
     closeModal('projectModal')
     toast(id ? 'Cập nhật dự án thành công' : 'Tạo dự án thành công')
     loadProjects()
+    // Nếu đang xem chi tiết dự án vừa sửa → refresh lại để hiện thông tin mới
+    if (id && $('page-project-detail')?.classList.contains('active')) {
+      openProjectDetail(parseInt(id))
+    }
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
 
@@ -1146,6 +1305,19 @@ function openCategoryModal(projectId, cat = null) {
   $('catStartDate').value = cat?.start_date || ''
   $('catEndDate').value = cat?.end_date || ''
   $('catDescription').value = cat?.description || ''
+
+  // Tab bar: ẩn khi edit, hiện khi tạo mới
+  const tabBar = document.getElementById('catTabBar')
+  if (cat) {
+    if (tabBar) tabBar.style.display = 'none'
+    switchCatTab('single')
+  } else {
+    if (tabBar) tabBar.style.display = ''
+    const tab = _catActiveTab || 'single'
+    switchCatTab(tab)
+    if (tab === 'bulk' && document.querySelectorAll('#catBulkBody tr').length === 0) catBulkReset(5)
+    if (tab === 'import') catClearImport()
+  }
   openModal('categoryModal')
 }
 
@@ -1189,8 +1361,264 @@ async function deleteCategory(id) {
 }
 
 // ================================================================
-// TASKS
+// CATEGORY MODAL — TAB SWITCHING / BULK / IMPORT
 // ================================================================
+
+// Ghi nhớ tab hiện tại
+let _catActiveTab = 'single'
+
+function switchCatTab(tab) {
+  _catActiveTab = tab
+  ;['single','bulk','import'].forEach(t => {
+    const btn  = document.getElementById(`catTab-${t}`)
+    const pane = document.getElementById(`catPane-${t}`)
+    if (!btn || !pane) return
+    const active = t === tab
+    pane.style.display = active ? '' : 'none'
+    btn.style.borderColor   = active ? '#00A651' : 'transparent'
+    btn.style.color         = active ? '#00A651'  : '#6b7280'
+    btn.style.fontWeight    = active ? '600'       : '400'
+  })
+}
+
+// ── BULK ADD ──────────────────────────────────────────────────────
+let _catBulkRows = 0
+
+function catBulkReset(n = 5) {
+  const tbody = document.getElementById('catBulkBody')
+  if (!tbody) return
+  tbody.innerHTML = ''
+  _catBulkRows = 0
+  for (let i = 0; i < n; i++) catBulkAddRow()
+}
+
+function catBulkAddRow() {
+  _catBulkRows++
+  const n = _catBulkRows
+  const tbody = document.getElementById('catBulkBody')
+  if (!tbody) return
+  const tr = document.createElement('tr')
+  tr.id = `catBulkRow-${n}`
+  tr.className = 'border-b border-gray-100 hover:bg-gray-50'
+  tr.innerHTML = `
+    <td class="py-1 px-2 text-gray-400 text-xs">${n}</td>
+    <td class="py-1 px-2">
+      <input type="text" class="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-primary"
+        placeholder="Tên hạng mục *" id="catBulkName-${n}">
+    </td>
+    <td class="py-1 px-2">
+      <input type="text" class="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-primary"
+        placeholder="Mã (tuỳ chọn)" id="catBulkCode-${n}" style="max-width:110px">
+    </td>
+    <td class="py-1 px-2">
+      <input type="text" class="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-primary"
+        placeholder="Mô tả" id="catBulkDesc-${n}">
+    </td>
+    <td class="py-1 px-2 text-center">
+      <button onclick="catBulkRemoveRow(${n})" class="text-red-400 hover:text-red-600 text-xs">
+        <i class="fas fa-times"></i>
+      </button>
+    </td>
+  `
+  tbody.appendChild(tr)
+  catBulkUpdateCount()
+  // Focus vào dòng mới thêm
+  const inp = document.getElementById(`catBulkName-${n}`)
+  if (inp) setTimeout(() => inp.focus(), 50)
+}
+
+function catBulkRemoveRow(n) {
+  const tr = document.getElementById(`catBulkRow-${n}`)
+  if (tr) tr.remove()
+  catBulkUpdateCount()
+}
+
+function catBulkUpdateCount() {
+  const rows = document.querySelectorAll('#catBulkBody tr')
+  const el = document.getElementById('catBulkCount')
+  if (el) el.textContent = `${rows.length} dòng`
+}
+
+async function submitCatBulk() {
+  const projectId = parseInt($('catProjectId').value)
+  const rows = document.querySelectorAll('#catBulkBody tr')
+  const categories = []
+  rows.forEach(tr => {
+    const id   = tr.id.replace('catBulkRow-', '')
+    const name = document.getElementById(`catBulkName-${id}`)?.value?.trim()
+    const code = document.getElementById(`catBulkCode-${id}`)?.value?.trim()
+    const desc = document.getElementById(`catBulkDesc-${id}`)?.value?.trim()
+    if (name) categories.push({ name, code: code || null, description: desc || null })
+  })
+  if (categories.length === 0) { toast('Nhập ít nhất 1 tên hạng mục', 'warning'); return }
+
+  const btn = document.querySelector('#catPane-bulk .btn-primary')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang lưu...' }
+  try {
+    const res = await api('/categories/bulk', { method: 'post', data: { project_id: projectId, categories } })
+    closeModal('categoryModal')
+    const msg = res.failed > 0
+      ? `Đã tạo ${res.created} hạng mục (${res.failed} lỗi)`
+      : `Đã tạo ${res.created} hạng mục thành công`
+    toast(msg, res.failed > 0 ? 'warning' : 'success')
+    openProjectDetail(projectId)
+  } catch (e) {
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save mr-1"></i>Lưu tất cả' }
+  }
+}
+
+// ── IMPORT EXCEL ──────────────────────────────────────────────────
+let _catBulkImportData = []   // [{code, name}] parsed từ file
+
+function catHandleDrop(e) {
+  e.preventDefault()
+  document.getElementById('catImportDropzone').style.borderColor = ''
+  const file = e.dataTransfer?.files?.[0]
+  if (file) catHandleFile(file)
+}
+
+function catHandleFile(file) {
+  if (!file) return
+  if (!file.name.match(/\.xlsx?$/i)) { toast('Chỉ hỗ trợ file .xlsx, .xls', 'error'); return }
+  const reader = new FileReader()
+  reader.onload = (ev) => {
+    try {
+      const wb = XLSX.read(ev.target.result, { type: 'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+      // Tự động detect header row
+      let dataStart = 0
+      if (rows.length > 0) {
+        const first = rows[0].map(v => String(v).toLowerCase().trim())
+        if (first.some(v => v.includes('mã') || v.includes('tên') || v.includes('code') || v.includes('name'))) {
+          dataStart = 1
+        }
+      }
+
+      _catBulkImportData = []
+      for (let i = dataStart; i < rows.length; i++) {
+        const row = rows[i]
+        // Cột A = mã, cột B = tên (theo template)
+        const code = String(row[0] ?? '').trim()
+        const name = String(row[1] ?? '').trim()
+        if (!name && !code) continue
+        _catBulkImportData.push({ code: code || null, name: name || code })
+      }
+
+      catRenderImportPreview()
+    } catch (err) {
+      toast('Lỗi đọc file: ' + err.message, 'error')
+    }
+  }
+  reader.readAsArrayBuffer(file)
+  // Reset file input để có thể chọn lại cùng file
+  document.getElementById('catImportFile').value = ''
+}
+
+function catRenderImportPreview() {
+  const preview = document.getElementById('catImportPreview')
+  const body    = document.getElementById('catImportBody')
+  const count   = document.getElementById('catImportCount')
+  const summary = document.getElementById('catImportSummary')
+  if (!preview || !body) return
+
+  if (_catBulkImportData.length === 0) {
+    preview.style.display = 'none'
+    return
+  }
+
+  body.innerHTML = _catBulkImportData.map((r, i) => {
+    const valid = r.name && r.name.trim()
+    const rowCls = valid ? '' : 'bg-red-50'
+    const icon = valid
+      ? '<span class="text-green-500"><i class="fas fa-check-circle"></i></span>'
+      : '<span class="text-red-400"><i class="fas fa-exclamation-circle" title="Thiếu tên"></i></span>'
+    return `<tr class="border-b border-gray-100 ${rowCls}">
+      <td class="py-1.5 px-3 text-gray-400">${i + 1}</td>
+      <td class="py-1.5 px-3 font-mono text-xs text-blue-600">${r.code || '<span class="text-gray-300">—</span>'}</td>
+      <td class="py-1.5 px-3 text-gray-800">${r.name || '<span class="text-red-400 italic">Trống</span>'}</td>
+      <td class="py-1.5 px-3 text-center">${icon}</td>
+    </tr>`
+  }).join('')
+
+  const valid = _catBulkImportData.filter(r => r.name?.trim()).length
+  const invalid = _catBulkImportData.length - valid
+  count.textContent = `${_catBulkImportData.length} dòng`
+  summary.innerHTML = `<span class="text-green-600"><i class="fas fa-check-circle mr-1"></i>${valid} hợp lệ</span>${invalid > 0 ? ` &nbsp;<span class="text-red-500"><i class="fas fa-exclamation-circle mr-1"></i>${invalid} bỏ qua (thiếu tên)</span>` : ''}`
+
+  const submitBtn = document.getElementById('catImportSubmitBtn')
+  if (submitBtn) {
+    submitBtn.disabled = valid === 0
+    submitBtn.innerHTML = `<i class="fas fa-file-import mr-1"></i>Import ${valid} hạng mục`
+  }
+  preview.style.display = ''
+}
+
+function catClearImport() {
+  _catBulkImportData = []
+  const preview = document.getElementById('catImportPreview')
+  if (preview) preview.style.display = 'none'
+  const fi = document.getElementById('catImportFile')
+  if (fi) fi.value = ''
+}
+
+async function submitCatImport() {
+  const projectId = parseInt($('catProjectId').value)
+  const categories = _catBulkImportData.filter(r => r.name?.trim())
+  if (categories.length === 0) { toast('Không có dữ liệu hợp lệ để import', 'warning'); return }
+
+  const btn = document.getElementById('catImportSubmitBtn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang import...' }
+  try {
+    const res = await api('/categories/bulk', { method: 'post', data: { project_id: projectId, categories } })
+    closeModal('categoryModal')
+    const msg = res.failed > 0
+      ? `Đã import ${res.created}/${categories.length} hạng mục (${res.failed} lỗi)`
+      : `✅ Đã import ${res.created} hạng mục thành công`
+    toast(msg, res.failed > 0 ? 'warning' : 'success')
+    openProjectDetail(projectId)
+  } catch (e) {
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+    if (btn) { btn.disabled = false; btn.innerHTML = `<i class="fas fa-file-import mr-1"></i>Import ${categories.length} hạng mục` }
+  }
+}
+
+// Tải template Excel cho user
+function downloadCatTemplate() {
+  if (typeof XLSX === 'undefined') { toast('Thư viện Excel chưa tải xong, thử lại sau', 'warning'); return }
+  const wb = XLSX.utils.book_new()
+  const data = [
+    ['Mã hạng mục', 'Tên hạng mục'],
+    ['ZZ', 'Tổng thể'],
+    ['AA', 'Kiến trúc'],
+    ['ES', 'Kết cấu'],
+    ['MEP', 'Hệ thống MEP'],
+    ['CT', 'Hạ tầng'],
+    ['', '(Thêm các dòng bên dưới...)']
+  ]
+  const ws = XLSX.utils.aoa_to_sheet(data)
+  ws['!cols'] = [{ wch: 16 }, { wch: 36 }]
+  // Style header row
+  ;['A1','B1'].forEach(cell => {
+    if (ws[cell]) ws[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: '00A651' } } }
+  })
+  XLSX.utils.book_append_sheet(wb, ws, 'Hang muc')
+  XLSX.writeFile(wb, 'Template_HangMuc.xlsx')
+}
+
+// Khởi tạo bulk table khi switch sang tab bulk lần đầu
+document.addEventListener('DOMContentLoaded', () => {
+  const bulkBtn = document.getElementById('catTab-bulk')
+  if (bulkBtn) {
+    const origClick = bulkBtn.onclick
+    bulkBtn.addEventListener('click', () => {
+      if (document.querySelectorAll('#catBulkBody tr').length === 0) catBulkReset(5)
+    })
+  }
+})
 async function loadTasks() {
   try {
     if (!allProjects.length) allProjects = await api('/projects')
@@ -1200,11 +1628,14 @@ async function loadTasks() {
     // Populate project role cache for current user
     refreshProjectRoleCache()
 
-    // Fill project filter
-    const pf = $('taskProjectFilter')
-    if (pf) {
-      pf.innerHTML = '<option value="">Tất cả dự án</option>' + allProjects.map(p => `<option value="${p.id}">${p.code}</option>`).join('')
-    }
+    // Build project combobox
+    createCombobox('taskProjectCombobox', {
+      placeholder: 'Tất cả dự án',
+      items: allProjects.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` })),
+      value: '',
+      minWidth: '180px',
+      onchange: (val) => onTaskProjectFilterChange(val)
+    })
 
     // Fill discipline filter
     const df = $('taskDisciplineFilter')
@@ -1212,38 +1643,253 @@ async function loadTasks() {
       df.innerHTML = '<option value="">Tất cả bộ môn</option>' + allDisciplines.map(d => `<option value="${d.code}">${d.code} - ${d.name}</option>`).join('')
     }
 
-    // Populate category filter (all categories from loaded tasks)
+    // Build category combobox (all categories from loaded tasks)
     updateTaskCategoryFilter()
 
     renderTasksTable(allTasks)
   } catch (e) { toast('Lỗi tải task: ' + e.message, 'error') }
 }
 
-// Rebuild category filter based on selected project (or all)
+// ================================================================
+// COMBOBOX ENGINE
+// ================================================================
+// Combobox state registry: id → { value, label, items, onchange }
+const _cbState = {}
+
+/**
+ * createCombobox(containerId, options)
+ *   containerId : ID of the placeholder <div> in HTML
+ *   options.placeholder : text shown when nothing selected (e.g. "Tất cả dự án")
+ *   options.items       : [{value, label}]
+ *   options.value       : initially selected value ('' = placeholder)
+ *   options.onchange    : function(value) called when selection changes
+ *   options.minWidth    : CSS min-width string (default '160px')
+ */
+function createCombobox(containerId, options = {}) {
+  const container = $(containerId)
+  if (!container) return
+
+  const id = containerId
+  const placeholder = options.placeholder || 'Chọn...'
+  const items = options.items || []
+  const initVal = options.value !== undefined ? String(options.value) : ''
+  const minWidth = options.minWidth || '160px'
+
+  _cbState[id] = {
+    value: initVal,
+    label: _cbLabelFor(items, initVal, placeholder),
+    items,
+    placeholder,
+    onchange: options.onchange || null
+  }
+
+  container.innerHTML = _cbHTML(id, placeholder, minWidth)
+  _cbRenderOptions(id, '')
+  _cbUpdateTrigger(id)
+}
+
+function _cbLabelFor(items, value, placeholder) {
+  if (!value) return placeholder
+  const found = items.find(i => String(i.value) === String(value))
+  return found ? found.label : placeholder
+}
+
+function _cbHTML(id, placeholder, minWidth) {
+  const triggerStyle = 'display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid #d1d5db;border-radius:8px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px;color:#374151;min-height:36px;user-select:none'
+  const panelStyle = 'display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:100%;width:max-content;max-width:320px;background:#fff;border:1px solid #d1d5db;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:9999;overflow:hidden'
+  const searchStyle = 'width:100%;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px 5px 28px;font-size:12px;outline:none;color:#374151;background:#f9fafb;box-sizing:border-box'
+  const optsStyle = 'max-height:220px;overflow-y:auto;padding:4px 0'
+  return '<div id="' + id + '_wrap" style="position:relative;min-width:' + minWidth + ';display:inline-block">'
+    + '<div style="' + triggerStyle + '" onclick="_cbToggle(\'' + id + '\')">'
+    + '<span id="' + id + '_label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9ca3af">' + placeholder + '</span>'
+    + '<span id="' + id + '_arrow" style="flex-shrink:0;font-size:10px;color:#9ca3af">&#9660;</span>'
+    + '</div>'
+    + '<div id="' + id + '_panel" style="' + panelStyle + '">'
+    + '<div style="padding:8px 8px 6px;border-bottom:1px solid #f0f0f0">'
+    + '<input id="' + id + '_search" type="text" placeholder="\uD83D\uDD0D T\u00ecm ki\u1EBFm..." style="' + searchStyle + '" oninput="_cbFilter(\'' + id + '\',this.value)" onclick="event.stopPropagation()" autocomplete="off">'
+    + '</div>'
+    + '<div id="' + id + '_opts" style="' + optsStyle + '"></div>'
+    + '</div></div>'
+}
+
+function _cbRenderOptions(id, query) {
+  const state = _cbState[id]
+  if (!state) return
+  const opts = $(id + '_opts')
+  if (!opts) return
+  const q = query.trim().toLowerCase()
+  const allItems = [{ value: '', label: state.placeholder }, ...state.items]
+  const filtered = allItems.filter(i => !q || i.label.toLowerCase().includes(q))
+  if (!filtered.length) {
+    opts.innerHTML = '<div style="padding:10px 12px;font-size:12px;color:#9ca3af;font-style:italic">Kh\u00f4ng t\u00ecm th\u1EA5y k\u1EBFt qu\u1EA3</div>'
+    return
+  }
+  opts.innerHTML = filtered.map(i => {
+    const isSel = String(i.value) === String(state.value)
+    const bg = isSel ? '#f0fdf4' : 'transparent'
+    const col = isSel ? '#00A651' : '#374151'
+    const fw = isSel ? '600' : '400'
+    const sv = String(i.value).replace(/'/g, '&#39;')
+    const sl = i.label.replace(/'/g, '&#39;')
+    return '<div style="padding:7px 12px;font-size:13px;cursor:pointer;display:flex;align-items:center;background:' + bg + ';color:' + col + ';font-weight:' + fw + '"'
+      + ' onmouseenter="this.style.background=\'#f0fdf4\';this.style.color=\'#00A651\'"'
+      + ' onmouseleave="this.style.background=\'' + bg + '\';this.style.color=\'' + col + '\'"'
+      + ' onclick="_cbSelect(\'' + id + '\',\'' + sv + '\',\'' + sl + '\')">'
+      + i.label
+      + (isSel ? '<span style="margin-left:auto;font-size:11px">&#10003;</span>' : '')
+      + '</div>'
+  }).join('')
+}
+
+function _cbUpdateTrigger(id) {
+  const state = _cbState[id]
+  if (!state) return
+  const lbl = $(id + '_label')
+  if (!lbl) return
+  const trigger = lbl.parentElement
+  if (!state.value) {
+    lbl.textContent = state.placeholder
+    lbl.style.color = '#9ca3af'
+    if (trigger) { trigger.style.borderColor = '#d1d5db'; trigger.style.boxShadow = '' }
+  } else {
+    lbl.textContent = state.label
+    lbl.style.color = '#374151'
+    if (trigger) { trigger.style.borderColor = '#00A651'; trigger.style.boxShadow = '0 0 0 2px rgba(0,166,81,0.10)' }
+  }
+}
+
+function _cbToggle(id) {
+  const panel = $(id + '_panel')
+  const arrow = $(id + '_arrow')
+  if (!panel) return
+  const isOpen = panel.style.display !== 'none'
+  // Close all other panels
+  document.querySelectorAll('[id$="_panel"]').forEach(p => {
+    if (p !== panel && p.style && p.style.display !== 'none') {
+      p.style.display = 'none'
+      const a = document.getElementById(p.id.replace('_panel', '_arrow'))
+      if (a) a.style.transform = ''
+    }
+  })
+  if (isOpen) {
+    panel.style.display = 'none'
+    if (arrow) arrow.style.transform = ''
+  } else {
+    panel.style.display = 'block'
+    if (arrow) arrow.style.transform = 'rotate(180deg)'
+    const search = $(id + '_search')
+    if (search) { search.value = ''; setTimeout(() => search.focus(), 30) }
+    _cbRenderOptions(id, '')
+  }
+}
+
+function _cbFilter(id, query) {
+  _cbRenderOptions(id, query)
+}
+
+function _cbSelect(id, value, label) {
+  const state = _cbState[id]
+  if (!state) return
+  state.value = value
+  state.label = value ? label : state.placeholder
+  _cbUpdateTrigger(id)
+  // Close panel
+  const panel = $(id + '_panel')
+  const arrow = $(id + '_arrow')
+  if (panel) panel.style.display = 'none'
+  if (arrow) arrow.style.transform = ''
+  // Trigger callback
+  if (state.onchange) state.onchange(value)
+}
+
+function _cbSetItems(id, items, keepValue = false) {
+  const state = _cbState[id]
+  if (!state) return
+  state.items = items
+  if (!keepValue || !items.find(i => String(i.value) === String(state.value))) {
+    state.value = ''
+    state.label = state.placeholder
+    _cbUpdateTrigger(id)
+  }
+  _cbRenderOptions(id, '')
+}
+
+function _cbGetValue(id) {
+  return _cbState[id]?.value || ''
+}
+
+// Close comboboxes when clicking outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('[id$="_wrap"]')) {
+    document.querySelectorAll('[id$="_panel"]').forEach(p => {
+      if (p.style && p.style.display !== 'none') {
+        p.style.display = 'none'
+        const a = document.getElementById(p.id.replace('_panel', '_arrow'))
+        if (a) a.style.transform = ''
+      }
+    })
+  }
+})
+
+
+// ================================================================
+// TASK FILTERS - combobox-powered
+// ================================================================
+
+// Called when project combobox selection changes
+function onTaskProjectFilterChange(projectId) {
+  updateTaskCategoryFilter(projectId)
+  filterTasks()
+}
+
+// Rebuild category combobox items based on selected project.
+// - No project selected → hide the category combobox entirely
+// - Project selected    → show combobox with only that project's categories
 function updateTaskCategoryFilter(selectedProjectId = '') {
-  const cf = $('taskCategoryFilter')
-  if (!cf) return
-  const prevVal = cf.value
-  // Collect unique categories from visible tasks
-  const tasksForProject = selectedProjectId
-    ? allTasks.filter(t => String(t.project_id) === String(selectedProjectId))
-    : allTasks
+  const wrapper = $('taskCategoryCombobox')
+  if (!wrapper) return
+
+  // ── No project selected: hide category filter ──────────────
+  if (!selectedProjectId) {
+    wrapper.style.display = 'none'
+    // Reset value so it doesn't silently filter
+    if (_cbState['taskCategoryCombobox']) {
+      _cbState['taskCategoryCombobox'].value = ''
+      _cbState['taskCategoryCombobox'].label = 'Tất cả hạng mục'
+      _cbUpdateTrigger('taskCategoryCombobox')
+    }
+    return
+  }
+
+  // ── Project selected: collect its categories ────────────────
+  const tasksForProject = allTasks.filter(t => String(t.project_id) === String(selectedProjectId))
   const catMap = {}
   tasksForProject.forEach(t => {
     if (t.category_id && t.category_name) catMap[t.category_id] = t.category_name
   })
-  const opts = Object.entries(catMap).map(([id, name]) => `<option value="${id}">${name}</option>`).join('')
-  cf.innerHTML = '<option value="">Tất cả hạng mục</option>' + opts
-  // Restore previous selection if still valid
-  if (prevVal && catMap[prevVal]) cf.value = prevVal
+  const items = Object.entries(catMap).map(([id, name]) => ({ value: id, label: name }))
+
+  // Keep previous category only if it still belongs to this project
+  const prevVal = _cbGetValue('taskCategoryCombobox')
+  const keepValue = !!catMap[prevVal]
+
+  if (wrapper.querySelector('[id$="_wrap"]')) {
+    // Combobox already rendered – just refresh items
+    _cbSetItems('taskCategoryCombobox', items, keepValue)
+  } else {
+    createCombobox('taskCategoryCombobox', {
+      placeholder: 'Tất cả hạng mục',
+      items,
+      value: keepValue ? prevVal : '',
+      minWidth: '180px',
+      onchange: () => filterTasks()
+    })
+  }
+
+  // Show the wrapper
+  wrapper.style.display = ''
 }
 
-// Called when project filter changes
-function onTaskProjectFilterChange() {
-  const projectId = $('taskProjectFilter').value
-  updateTaskCategoryFilter(projectId)
-  filterTasks()
-}
 
 function renderTasksTable(tasks) {
   const tbody = $('tasksTable')
@@ -1500,8 +2146,8 @@ function filterTasks() {
   const search   = $('taskSearch').value.toLowerCase()
   const status   = $('taskStatusFilter').value
   const priority = $('taskPriorityFilter').value
-  const project  = $('taskProjectFilter').value
-  const category = $('taskCategoryFilter')?.value || ''
+  const project  = _cbGetValue('taskProjectCombobox')
+  const category = _cbGetValue('taskCategoryCombobox')
   const phase    = $('taskPhaseFilter')?.value || ''
   const discipline = $('taskDisciplineFilter')?.value || ''
   const onlyOverdue = $('taskOverdueFilter').checked
@@ -1587,27 +2233,28 @@ async function openTaskModal(taskId = null, projectId = null) {
   $('taskModalTitle').textContent = taskId ? 'Chỉnh sửa Task' : 'Tạo Task mới'
   $('taskId').value = taskId || ''
 
-  // Xác định effective role: ưu tiên project-level nếu đang tạo task trong project cụ thể
   const effRoleForModal = projectId
     ? getEffectiveRoleForProject(projectId)
     : (taskId ? getEffectiveGlobalRole() : getEffectiveGlobalRole())
-  // isMember = chỉ là plain member (không có project-level quyền cao hơn)
   const isMember = !['system_admin','project_admin','project_leader'].includes(effRoleForModal)
-
-  // Fill projects
-  $('taskProject').innerHTML = '<option value="">-- Chọn dự án --</option>' +
-    allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
 
   // Fill disciplines
   $('taskDiscipline').innerHTML = '<option value="">-- Chọn bộ môn --</option>' +
     allDisciplines.map(d => `<option value="${d.code}">${d.code} - ${d.name}</option>`).join('')
 
-  // Fill assignees — mặc định hiển thị tất cả, sẽ được thu hẹp bên dưới khi có projectId
+  // Fill assignees
   $('taskAssignee').innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
     (allUsers || []).filter(u => u.is_active !== 0).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
 
-  // For member: disable admin-only fields
-  const adminOnlyFields = ['taskTitle','taskDesc','taskProject','taskCategory','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
+  // Khởi tạo combobox Dự án
+  const projItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} - ${p.name}` }))
+  _initTaskProjectCombobox(projItems, isMember)
+
+  // Khởi tạo combobox Hạng mục (rỗng, load sau khi chọn dự án)
+  _initTaskCategoryCombobox([], isMember, null)
+
+  // For member: disable non-combobox fields
+  const adminOnlyFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
   adminOnlyFields.forEach(id => { const el = $(id); if(el) el.disabled = isMember })
 
   if (taskId) {
@@ -1615,7 +2262,6 @@ async function openTaskModal(taskId = null, projectId = null) {
       const task = await api(`/tasks/${taskId}`)
       $('taskTitle').value = task.title || ''
       $('taskDesc').value = task.description || ''
-      $('taskProject').value = task.project_id || ''
       $('taskDiscipline').value = task.discipline_code || ''
       $('taskPhase').value = task.phase || 'basic_design'
       $('taskPriority').value = task.priority || 'medium'
@@ -1625,16 +2271,23 @@ async function openTaskModal(taskId = null, projectId = null) {
       $('taskEstHours').value = task.estimated_hours || 0
       $('taskProgress').value = task.progress || 0
       $('taskProgressLabel').textContent = task.progress || 0
-      // Load categories và assignees theo project, giữ nguyên giá trị assigned_to
+
+      // Set dự án trên combobox
+      if (task.project_id) {
+        const proj = allProjects.find(p => p.id === task.project_id)
+        if (proj) _cbSelect('taskProjectComboboxModal', String(proj.id), `${proj.code} - ${proj.name}`)
+        $('taskProject').value = task.project_id
+      }
+
+      // Load hạng mục rồi set giá trị
       await Promise.all([
-        loadTaskCategories(task.project_id, task.category_id),
+        _loadAndInitTaskCategoryCombobox(task.project_id, task.category_id, isMember),
         updateTaskAssigneeByProject(task.project_id, task.assigned_to)
       ])
     } catch (e) { toast('Lỗi tải task', 'error'); return }
   } else {
     $('taskTitle').value = ''
     $('taskDesc').value = ''
-    $('taskProject').value = projectId || ''
     $('taskDiscipline').value = ''
     $('taskPhase').value = 'basic_design'
     $('taskPriority').value = 'medium'
@@ -1645,9 +2298,13 @@ async function openTaskModal(taskId = null, projectId = null) {
     $('taskEstHours').value = ''
     $('taskProgress').value = 0
     $('taskProgressLabel').textContent = 0
+
     if (projectId) {
+      const proj = allProjects.find(p => p.id === projectId)
+      if (proj) _cbSelect('taskProjectComboboxModal', String(proj.id), `${proj.code} - ${proj.name}`)
+      $('taskProject').value = projectId
       await Promise.all([
-        loadTaskCategories(projectId),
+        _loadAndInitTaskCategoryCombobox(projectId, null, isMember),
         updateTaskAssigneeByProject(projectId)
       ])
     }
@@ -1656,40 +2313,97 @@ async function openTaskModal(taskId = null, projectId = null) {
   openModal('taskModal')
 }
 
-async function loadTaskCategories(projectId = null, selectedCategoryId = null) {
-  const projId = projectId || $('taskProject').value
-  const catSelect = $('taskCategory')
-  catSelect.innerHTML = '<option value="">-- Chọn hạng mục --</option>'
-  if (projId) {
-    try {
-      const cats = await api(`/projects/${projId}/categories`)
-      cats.forEach(c => {
-        const opt = document.createElement('option')
-        opt.value = c.id; opt.textContent = c.name
-        if (selectedCategoryId && c.id === selectedCategoryId) opt.selected = true
-        catSelect.appendChild(opt)
-      })
-    } catch (e) { /* silent */ }
+// ── Helpers cho combobox Dự án trong Task Modal ──────────────────
+function _initTaskProjectCombobox(items, locked) {
+  createCombobox('taskProjectComboboxModal', {
+    placeholder: '-- Chọn dự án --',
+    items,
+    minWidth: '100%',
+    onchange: async (val) => {
+      $('taskProject').value = val || ''
+      // Reset category combobox với loading spinner
+      const catDiv = document.getElementById('taskCategoryComboboxModal')
+      if (catDiv) catDiv.innerHTML = `<div style="padding:6px 10px;font-size:12px;color:#9ca3af"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</div>`
+      $('taskCategory').value = ''
+      if (val) {
+        await _loadAndInitTaskCategoryCombobox(parseInt(val), null, locked)
+        await updateTaskAssigneeByProject(parseInt(val))
+      } else {
+        _initTaskCategoryCombobox([], locked, null)
+      }
+    }
+  })
+  if (locked) _applyComboboxLock('taskProjectComboboxModal')
+}
+
+function _initTaskCategoryCombobox(items, locked, selectedId) {
+  createCombobox('taskCategoryComboboxModal', {
+    placeholder: '-- Chọn hạng mục --',
+    items,
+    value: selectedId ? String(selectedId) : '',
+    minWidth: '100%',
+    onchange: (val) => { $('taskCategory').value = val || '' }
+  })
+  if (selectedId) $('taskCategory').value = String(selectedId)
+  if (locked) _applyComboboxLock('taskCategoryComboboxModal')
+}
+
+async function _loadAndInitTaskCategoryCombobox(projectId, selectedCategoryId, locked) {
+  try {
+    const cats = await api(`/projects/${projectId}/categories`)
+    const items = cats.map(c => ({ value: String(c.id), label: c.name }))
+    _initTaskCategoryCombobox(items, locked, selectedCategoryId)
+  } catch (e) {
+    _initTaskCategoryCombobox([], locked, null)
   }
 }
+
+function _applyComboboxLock(containerId) {
+  const el = document.getElementById(containerId)
+  if (!el) return
+  // Sau khi createCombobox render xong, áp style lock
+  setTimeout(() => {
+    const trigger = el.querySelector('[data-cb-trigger]') || el.firstElementChild
+    if (trigger) {
+      trigger.style.pointerEvents = 'none'
+      trigger.style.opacity = '0.6'
+      trigger.style.background = '#f9fafb'
+      trigger.style.cursor = 'not-allowed'
+    }
+  }, 30)
+}
+
+// legacy shim — giữ để không break code cũ gọi loadTaskCategories()
+async function loadTaskCategories(projectId = null, selectedCategoryId = null) {
+  const projId = projectId || $('taskProject')?.value || ''
+  if (projId) await _loadAndInitTaskCategoryCombobox(parseInt(projId), selectedCategoryId, false)
+}
+
 
 $('taskForm').addEventListener('submit', async (e) => {
   e.preventDefault()
   const id = $('taskId').value
+
+  // Đọc từ combobox (ưu tiên), fallback sang hidden input
+  const projVal = _cbGetValue('taskProjectComboboxModal') || $('taskProject').value
+  const catVal  = _cbGetValue('taskCategoryComboboxModal') || $('taskCategory').value
+
+  if (!projVal) { toast('Vui lòng chọn dự án', 'warning'); return }
+
   const data = {
-    project_id: parseInt($('taskProject').value),
-    category_id: parseInt($('taskCategory').value) || null,
-    title: $('taskTitle').value,
-    description: $('taskDesc').value,
-    discipline_code: $('taskDiscipline').value || null,
-    phase: $('taskPhase').value,
-    priority: $('taskPriority').value,
-    status: $('taskStatus').value,
-    assigned_to: parseInt($('taskAssignee').value) || null,
-    start_date: $('taskStartDate').value || null,
-    due_date: $('taskDueDate').value || null,
-    estimated_hours: parseFloat($('taskEstHours').value) || 0,
-    progress: parseInt($('taskProgress').value) || 0
+    project_id:       parseInt(projVal),
+    category_id:      parseInt(catVal) || null,
+    title:            $('taskTitle').value,
+    description:      $('taskDesc').value,
+    discipline_code:  $('taskDiscipline').value || null,
+    phase:            $('taskPhase').value,
+    priority:         $('taskPriority').value,
+    status:           $('taskStatus').value,
+    assigned_to:      parseInt($('taskAssignee').value) || null,
+    start_date:       $('taskStartDate').value || null,
+    due_date:         $('taskDueDate').value || null,
+    estimated_hours:  parseFloat($('taskEstHours').value) || 0,
+    progress:         parseInt($('taskProgress').value) || 0
   }
   try {
     if (id) await api(`/tasks/${id}`, { method: 'put', data })
@@ -2598,54 +3312,80 @@ async function initTsFilterDropdowns() {
 
   // ------ Project dropdown — from /api/timesheets/projects ------
   try {
-    const projSel = $('tsProjectFilter')
-    if (projSel) {
-      const savedVal = projSel.value  // preserve current selection
-      const projects = await api('/timesheets/projects')
-      _tsProjectsCache = projects
-      // Backfill allProjects cache for other uses — nhưng cần refresh role cache
-      if (!allProjects.length) {
-        // timesheets/projects không có my_project_role, load từ /api/projects
-        try { allProjects = await api('/projects'); refreshProjectRoleCache() } catch(__) { allProjects = projects }
-      }
-      projSel.innerHTML = '<option value="">📁 Tất cả dự án</option>' +
-        projects.map(p => `<option value="${p.id}">${p.code} – ${p.name} (${p.total_hours || 0}h)</option>`).join('')
-      // Restore selection after rebuild
-      if (savedVal) projSel.value = savedVal
+    const savedVal = _cbGetValue('tsProjectFilterCombobox')
+    const projects = await api('/timesheets/projects')
+    _tsProjectsCache = projects
+    if (!allProjects.length) {
+      try { allProjects = await api('/projects'); refreshProjectRoleCache() } catch(__) { allProjects = projects }
+    }
+    const items = projects.map(p => ({ value: String(p.id), label: `${p.code} \u2013 ${p.name} (${p.total_hours || 0}h)` }))
+    if ($('tsProjectFilterCombobox')?.querySelector('[id$="_wrap"]')) {
+      _cbSetItems('tsProjectFilterCombobox', items, !!items.find(i => i.value === savedVal))
+    } else {
+      createCombobox('tsProjectFilterCombobox', {
+        placeholder: 'T\u1ea5t c\u1ea3 d\u1ef1 \u00e1n',
+        items,
+        value: savedVal || '',
+        minWidth: '190px',
+        onchange: () => loadTimesheets()
+      })
     }
   } catch (_) {
-    // fallback to allProjects cache
     if (!allProjects.length) { try { allProjects = await api('/projects') } catch(__) {} }
-    const projSel = $('tsProjectFilter')
-    if (projSel && projSel.options.length <= 1) {
-      projSel.innerHTML = '<option value="">📁 Tất cả dự án</option>' +
-        allProjects.map(p => `<option value="${p.id}">${p.code} – ${p.name}</option>`).join('')
+    const cbEl = $('tsProjectFilterCombobox')
+    if (cbEl && !cbEl.querySelector('[id$="_wrap"]')) {
+      createCombobox('tsProjectFilterCombobox', {
+        placeholder: 'T\u1ea5t c\u1ea3 d\u1ef1 \u00e1n',
+        items: allProjects.map(p => ({ value: String(p.id), label: `${p.code} \u2013 ${p.name}` })),
+        value: '',
+        minWidth: '190px',
+        onchange: () => loadTimesheets()
+      })
     }
-  }
+  } // end catch
 
   // ------ Member dropdown — from /api/timesheets/members (admin/projAdmin only) ------
   const tsUserWrap = $('tsUserFilterWrap')
-  const tsUserF    = $('tsUserFilter')
   const tsStatusW  = $('tsStatusFilterWrap')
 
-  if (canSeeAll && tsUserWrap && tsUserF) {
+  if (canSeeAll && tsUserWrap) {
     tsUserWrap.classList.remove('hidden'); tsUserWrap.classList.add('flex')
     try {
-      const savedUserId = tsUserF.value
+      const savedUserId = _cbGetValue('tsUserFilterCombobox')
       const members = await api('/timesheets/members')
       _tsMembersCache = members
       // Backfill allUsers cache
       if (!allUsers.length) allUsers = members
       const membersForFilter = isAdmin ? members : members.filter(m => m.role !== 'system_admin')
-      tsUserF.innerHTML = '<option value="">👤 Tất cả nhân viên</option>' +
-        membersForFilter.map(m => `<option value="${m.id}">${m.full_name} (${m.total_hours || 0}h)</option>`).join('')
-      // Restore selection
-      if (savedUserId) tsUserF.value = savedUserId
+      const items = membersForFilter.map(m => ({
+        value: String(m.id),
+        label: `${m.full_name}${m.total_hours ? ' (' + m.total_hours + 'h)' : ''}`
+      }))
+      if ($('tsUserFilterCombobox')?.querySelector('[id$="_wrap"]')) {
+        _cbSetItems('tsUserFilterCombobox', items, !!items.find(i => i.value === savedUserId))
+      } else {
+        createCombobox('tsUserFilterCombobox', {
+          placeholder: '👤 Tất cả nhân viên',
+          items,
+          value: savedUserId || '',
+          minWidth: '190px',
+          onchange: () => loadTimesheets()
+        })
+      }
     } catch (_) {
       if (!allUsers.length) { try { allUsers = await api('/users') } catch(__) {} }
       const usersForFilter = isAdmin ? allUsers : allUsers.filter(u => u.role !== 'system_admin')
-      tsUserF.innerHTML = '<option value="">👤 Tất cả nhân viên</option>' +
-        usersForFilter.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+      const items = usersForFilter.map(u => ({ value: String(u.id), label: u.full_name }))
+      const cbEl = $('tsUserFilterCombobox')
+      if (cbEl && !cbEl.querySelector('[id$="_wrap"]')) {
+        createCombobox('tsUserFilterCombobox', {
+          placeholder: '👤 Tất cả nhân viên',
+          items,
+          value: '',
+          minWidth: '190px',
+          onchange: () => loadTimesheets()
+        })
+      }
     }
     if (tsStatusW) { tsStatusW.classList.remove('hidden'); tsStatusW.classList.add('flex') }
   } else {
@@ -2681,8 +3421,8 @@ async function loadTimesheets() {
     // ------ Read current filter values ------
     const month     = $('tsMonthFilter')?.value   || ''
     const year      = $('tsYearFilter')?.value    || ''
-    const projectId = $('tsProjectFilter')?.value || ''
-    const memberId  = canSeeAll ? ($('tsUserFilter')?.value   || '') : ''
+    const projectId = _cbGetValue('tsProjectFilterCombobox')
+    const memberId  = canSeeAll ? (_cbGetValue('tsUserFilterCombobox') || '') : ''
     const status    = canSeeAll ? ($('tsStatusFilter')?.value || '') : ''
 
     // Build API URL
@@ -2841,17 +3581,19 @@ async function loadTimesheets() {
 
 // Convenience: click a row in the breakdown to quick-filter by that member/project
 function filterTsByMember(userId) {
-  const tsUserF = $('tsUserFilter')
-  if (!tsUserF) return
-  // userId can be a number or string
-  const opt = Array.from(tsUserF.options).find(o => String(o.value) === String(userId))
-  if (opt) { tsUserF.value = opt.value; loadTimesheets() }
+  if (!_cbState['tsUserFilterCombobox']) return
+  const item = _cbState['tsUserFilterCombobox'].items.find(i => String(i.value) === String(userId))
+  if (item) { _cbSelect('tsUserFilterCombobox', item.value, item.label); loadTimesheets() }
 }
 function filterTsByProject(projectId) {
-  const tsProj = $('tsProjectFilter')
-  if (!tsProj) return
-  const opt = Array.from(tsProj.options).find(o => String(o.value) === String(projectId))
-  if (opt) { tsProj.value = opt.value; loadTimesheets() }
+  const cbEl = $('tsProjectFilterCombobox')
+  if (!cbEl) return
+  if (_cbState['tsProjectFilterCombobox']) {
+    const item = _cbState['tsProjectFilterCombobox'].items.find(i => String(i.value) === String(projectId))
+    if (item) {
+      _cbSelect('tsProjectFilterCombobox', String(projectId), item.label)
+    }
+  }
 }
 
 // When navigating away (page change), reset init flag so dropdowns reload
@@ -2882,8 +3624,8 @@ function resetTimesheetFilters() {
   const now = new Date()
   const m = $('tsMonthFilter'); if (m) m.value = String(now.getMonth() + 1).padStart(2, '0')
   const y = $('tsYearFilter');  if (y) y.value  = String(now.getFullYear())
-  const p = $('tsProjectFilter'); if (p) p.value = ''
-  const u = $('tsUserFilter');    if (u) u.value = ''
+  const p = $('tsProjectFilterCombobox'); if (p && _cbState['tsProjectFilterCombobox']) { _cbSelect('tsProjectFilterCombobox', '', 'Tất cả dự án') }
+  if (_cbState['tsUserFilterCombobox']) _cbSelect('tsUserFilterCombobox', '', '👤 Tất cả nhân viên')
   const s = $('tsStatusFilter');  if (s) s.value = ''
   // Force re-populate dropdowns with latest data on next load
   _tsDropdownsInitialised = false
@@ -3005,78 +3747,178 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
   </td></tr>`
 }
 
+// ── Biến lưu trạng thái locked hiện tại của modal ────────────────────────────
+let _tsModalLocked = false
+
+// ── Khởi tạo combobox Dự án trong modal Timesheet ───────────────────────────
+function _initTsProjectCombobox(selectedProjId = '', locked = false) {
+  _tsModalLocked = locked   // lưu lại để closure onchange dùng đúng
+
+  const projItems = allProjects.map(p => ({
+    value: String(p.id),
+    label: `${p.code} – ${p.name}`
+  }))
+
+  createCombobox('tsProjectCombobox', {
+    placeholder: '🔍 Tìm & chọn dự án...',
+    items: projItems,
+    value: selectedProjId ? String(selectedProjId) : '',
+    minWidth: '100%',
+    onchange: async (val) => {
+      $('tsProjectHidden').value = val || ''
+      // Khi đổi dự án → reset task combobox rồi load lại
+      // Dùng _tsModalLocked (không phải biến locked bị capture cũ)
+      _initTsTaskCombobox([], null, _tsModalLocked)
+      if (val) await _loadAndInitTsTaskCombobox(val, null, _tsModalLocked)
+    }
+  })
+
+  // Disable trigger nếu locked
+  const wrap = $('tsProjectCombobox_wrap')
+  if (wrap) {
+    wrap.style.pointerEvents = locked ? 'none' : ''
+    wrap.style.opacity       = locked ? '0.6'  : ''
+  }
+
+  $('tsProjectHidden').value = selectedProjId ? String(selectedProjId) : ''
+}
+
+// ── Khởi tạo combobox Task ─────────────────────────────────────────────────
+function _initTsTaskCombobox(tasks = [], selectedTaskId = null, locked = false) {
+  // Chuẩn hoá selectedTaskId về string để so sánh chính xác
+  const selId = selectedTaskId != null ? String(selectedTaskId) : ''
+
+  // Giữ lại task đang được chọn dù status là completed/cancelled
+  const taskItems = tasks
+    .filter(t => !['completed', 'cancelled'].includes(t.status) || String(t.id) === selId)
+    .map(t => {
+      const statusIcons = { todo: '⬜', in_progress: '🔵', review: '🟡', completed: '✅', cancelled: '❌' }
+      const icon = statusIcons[t.status] || '⬜'
+      const disc = t.discipline_code ? ` [${t.discipline_code}]` : ''
+      return { value: String(t.id), label: `${icon}${disc} ${t.title}` }
+    })
+
+  createCombobox('tsTaskCombobox', {
+    placeholder: tasks.length ? '🔍 Tìm & chọn task...' : '— Không có task —',
+    items: taskItems,
+    value: selId,
+    minWidth: '100%',
+    onchange: (val) => {
+      $('tsTaskHidden').value = val || ''
+    }
+  })
+
+  // Disable trigger nếu locked
+  const wrap = $('tsTaskCombobox_wrap')
+  if (wrap) {
+    wrap.style.pointerEvents = locked ? 'none' : ''
+    wrap.style.opacity       = locked ? '0.6'  : ''
+  }
+
+  // Sync hidden input ngay khi khởi tạo (không chờ onchange)
+  $('tsTaskHidden').value = selId
+}
+
+// ── Load tasks từ API rồi khởi tạo combobox task ─────────────────────────────
+async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, locked = false) {
+  if (!projectId) { _initTsTaskCombobox([], null, locked); return }
+  const spinner = $('tsTaskLoadingSpinner')
+  if (spinner) spinner.style.display = 'inline'
+  try {
+    // Lấy tất cả task của project (không filter status ở đây — filter trong _initTsTaskCombobox)
+    const tasks = await api(`/tasks?project_id=${projectId}`)
+    _initTsTaskCombobox(tasks, selectedTaskId, locked)
+  } catch (e) {
+    _initTsTaskCombobox([], null, locked)
+  } finally {
+    if (spinner) spinner.style.display = 'none'
+  }
+}
+
 async function openTimesheetModal(tsId = null) {
   if (!allProjects.length) allProjects = await api('/projects')
 
   const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
+  const isProjAdmin = currentUser.role === 'project_admin' ||
+                      currentUser.role === 'project_leader' ||
+                      isAnyProjectLeaderOrAdmin()
 
   $('tsModalTitle').textContent = tsId ? 'Sửa Timesheet' : 'Thêm Timesheet'
   $('tsId').value = tsId || ''
 
-  const tsProj = $('tsProject')
-  tsProj.innerHTML = '<option value="">-- Chọn dự án --</option>' +
-    allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
-
   if (tsId) {
     const ts = allTimesheets.find(t => t.id === tsId)
-    if (ts) {
-      // Kiểm tra quyền sửa: member chỉ sửa draft/rejected của mình
-      const isOwner = ts.user_id === currentUser.id
-      if (!isAdmin && !isProjAdmin && !(isOwner && ['draft', 'rejected'].includes(ts.status))) {
-        toast('Bạn không có quyền sửa timesheet này', 'warning')
-        return
-      }
-      $('tsDate').value = ts.work_date || ''
-      $('tsProject').value = ts.project_id || ''
-      $('tsRegularHours').value = ts.regular_hours || 8
-      $('tsOvertimeHours').value = ts.overtime_hours || 0
-      $('tsDescription').value = ts.description || ''
-      await loadTsTasks(ts.project_id, ts.task_id)
+    if (!ts) { toast('Không tìm thấy timesheet', 'error'); return }
 
-      // Disable fields nếu đã submitted (project_admin/system_admin có thể sửa)
-      const locked = !isAdmin && !isProjAdmin && ts.status === 'submitted'
-      ;['tsDate','tsProject','tsRegularHours','tsOvertimeHours','tsDescription','tsTask'].forEach(id => {
-        const el = $(id); if (el) el.disabled = locked
-      })
+    // Kiểm tra quyền sửa
+    const isOwner = ts.user_id === currentUser.id
+    if (!isAdmin && !isProjAdmin && !(isOwner && ['draft', 'rejected'].includes(ts.status))) {
+      toast('Bạn không có quyền sửa timesheet này', 'warning')
+      return
     }
-  } else {
-    $('tsDate').value = today()
-    $('tsRegularHours').value = 8
-    $('tsOvertimeHours').value = 0
-    $('tsDescription').value = ''
-    $('tsTask').innerHTML = '<option value="">-- Chọn task --</option>'
-    ;['tsDate','tsProject','tsRegularHours','tsOvertimeHours','tsDescription','tsTask'].forEach(id => {
-      const el = $(id); if (el) el.disabled = false
-    })
-  }
 
-  openModal('timesheetModal')
+    // locked = chỉ khi member thường & timesheet đã submitted
+    const locked = !isAdmin && !isProjAdmin && ts.status === 'submitted'
+
+    $('tsDate').value             = ts.work_date || ''
+    $('tsDate').disabled          = locked
+    $('tsRegularHours').value     = ts.regular_hours  ?? 8
+    $('tsOvertimeHours').value    = ts.overtime_hours ?? 0
+    $('tsDescription').value      = ts.description    || ''
+    $('tsRegularHours').disabled  = locked
+    $('tsOvertimeHours').disabled = locked
+    $('tsDescription').disabled   = locked
+
+    // Khởi tạo project combobox (set _tsModalLocked = locked)
+    _initTsProjectCombobox(ts.project_id || '', locked)
+
+    // Mở modal trước để DOM đã render rồi mới fill task
+    openModal('timesheetModal')
+
+    // Load & init task combobox với task đang chọn sẵn + đúng locked
+    await _loadAndInitTsTaskCombobox(ts.project_id, ts.task_id, locked)
+
+  } else {
+    // ─── Thêm mới ────────────────────────────────────────────
+    $('tsDate').value             = today()
+    $('tsDate').disabled          = false
+    $('tsRegularHours').value     = 8
+    $('tsOvertimeHours').value    = 0
+    $('tsDescription').value      = ''
+    $('tsRegularHours').disabled  = false
+    $('tsOvertimeHours').disabled = false
+    $('tsDescription').disabled   = false
+
+    _initTsProjectCombobox('', false)
+    _initTsTaskCombobox([], null, false)
+
+    openModal('timesheetModal')
+  }
 }
 
+// Giữ lại hàm loadTsTasks để tương thích nơi khác gọi
 async function loadTsTasks(projectId = null, selectedTaskId = null) {
-  const projId = projectId || $('tsProject').value
-  const taskSel = $('tsTask')
-  taskSel.innerHTML = '<option value="">-- Không có task --</option>'
-  if (projId) {
-    try {
-      const tasks = await api(`/tasks?project_id=${projId}`)
-      tasks.forEach(t => {
-        const opt = document.createElement('option')
-        opt.value = t.id; opt.textContent = t.title
-        if (selectedTaskId && t.id === selectedTaskId) opt.selected = true
-        taskSel.appendChild(opt)
-      })
-    } catch (e) { /* silent */ }
-  }
+  const projId = projectId || _cbGetValue('tsProjectCombobox')
+  if (projId) await _loadAndInitTsTaskCombobox(projId, selectedTaskId, false)
 }
 
 $('tsForm').addEventListener('submit', async (e) => {
   e.preventDefault()
   const id = $('tsId').value
+
+  // Ưu tiên _cbGetValue (luôn đúng với state combobox hiện tại)
+  // fallback về hidden input nếu combobox chưa được tạo
+  const projId = _cbGetValue('tsProjectCombobox') || $('tsProjectHidden').value
+  const taskId = _cbGetValue('tsTaskCombobox')    || $('tsTaskHidden').value
+
+  if (!projId) {
+    toast('Vui lòng chọn dự án', 'warning')
+    return
+  }
+
   const data = {
-    project_id: parseInt($('tsProject').value),
-    task_id: parseInt($('tsTask').value) || null,
+    project_id: parseInt(projId),
+    task_id: parseInt(taskId) || null,
     work_date: $('tsDate').value,
     regular_hours: parseFloat($('tsRegularHours').value) || 0,
     overtime_hours: parseFloat($('tsOvertimeHours').value) || 0,
@@ -3169,15 +4011,25 @@ async function deleteTimesheet(id) {
 // ================================================================
 async function loadGantt() {
   if (!allProjects.length) allProjects = await api('/projects')
-  const sel = $('ganttProjectSelect')
-  if (sel) {
-    sel.innerHTML = '<option value="">-- Chọn dự án --</option>' +
-      allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
+  const sorted = [...allProjects].sort((a, b) => (a.code || '').localeCompare(b.code || ''))
+  const items = sorted.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` }))
+  const cbEl = $('ganttProjectSelectCombobox')
+  if (!cbEl) return
+  if (cbEl.querySelector('[id$="_wrap"]')) {
+    _cbSetItems('ganttProjectSelectCombobox', items, false)
+  } else {
+    createCombobox('ganttProjectSelectCombobox', {
+      placeholder: '-- Chọn dự án --',
+      items,
+      value: '',
+      minWidth: '240px',
+      onchange: () => renderGantt()
+    })
   }
 }
 
 async function renderGantt() {
-  const projectId = $('ganttProjectSelect').value
+  const projectId = _cbGetValue('ganttProjectSelectCombobox')
   if (!projectId) return
 
   try {
@@ -3273,9 +4125,19 @@ async function loadCostDashboard() {
   try {
     if (!allProjects.length) allProjects = await api('/projects')
 
-    // Fill project filters
-    const cpf = $('costProjectFilter')
-    if (cpf) cpf.innerHTML = '<option value="">Tất cả dự án</option>' + allProjects.map(p => `<option value="${p.id}">${p.code}</option>`).join('')
+    // Fill cost project combobox
+    const costProjItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` }))
+    if ($('costProjectFilterCombobox')?.querySelector('[id$="_wrap"]')) {
+      _cbSetItems('costProjectFilterCombobox', costProjItems, true)
+    } else {
+      createCombobox('costProjectFilterCombobox', {
+        placeholder: 'Tất cả dự án',
+        items: costProjItems,
+        value: '',
+        minWidth: '180px',
+        onchange: () => loadCostDashboard()
+      })
+    }
 
     // Fill analysis project dropdown
     const apf = $('analysisProjSel')
@@ -3413,7 +4275,7 @@ function renderCostMonthlyChart(data, sharedByProject) {
 
 async function loadCosts() {
   try {
-    const projectId = $('costProjectFilter')?.value
+    const projectId = _cbGetValue('costProjectFilterCombobox')
     const year = $('costYearFilter')?.value || new Date().getFullYear().toString()
     let costUrl = `/costs?year=${year}`
     let revUrl = `/revenues?year=${year}`
@@ -4699,12 +5561,16 @@ function renderProductivityPage(data) {
 async function loadFinanceProjectPage() {
   try {
     if (!allProjects.length) allProjects = await api('/projects')
-    const sel = $('finProjSelect')
-    if (sel && sel.options.length <= 1) {
-      allProjects.forEach(p => {
-        const opt = document.createElement('option')
-        opt.value = p.id; opt.textContent = p.code + ' - ' + p.name
-        sel.appendChild(opt)
+    const projItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` }))
+    if ($('finProjSelectCombobox')?.querySelector('[id$="_wrap"]')) {
+      _cbSetItems('finProjSelectCombobox', projItems, true)
+    } else {
+      createCombobox('finProjSelectCombobox', {
+        placeholder: '-- Chọn dự án --',
+        items: projItems,
+        value: '',
+        minWidth: '220px',
+        onchange: (val) => { if (val) loadFinanceProject() }
       })
     }
     // Init default date range for 'range' mode
@@ -4745,7 +5611,7 @@ function onFinMonthCheckChange() {
 }
 
 async function loadFinanceProject() {
-  const projectId = $('finProjSelect')?.value
+  const projectId = _cbGetValue('finProjSelectCombobox')
   if (!projectId) return
   const el = $('financeProjectContent')
   if (el) el.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i><p class="mt-2 text-sm">Đang tải...</p></div>'
@@ -6184,10 +7050,17 @@ async function openSharedCostModal(id = null) {
   $('scCostDate').value = new Date().toISOString().split('T')[0]
   $('scPreviewPanel').classList.add('hidden')
 
+  // Reset search + select-all button
+  const searchEl = $('scProjectSearch')
+  if (searchEl) searchEl.value = ''
+  const selAllBtn = $('scSelectAllBtn')
+  if (selAllBtn) { selAllBtn.innerHTML = '<i class="fas fa-check-square"></i> Chọn tất cả'; selAllBtn._allSelected = false }
+
   // Render project checkboxes
   const activeProjects = allProjects.filter(p => p.status !== 'cancelled')
   $('scProjectList').innerHTML = activeProjects.map(p => `
-    <label class="flex items-center gap-2 p-2 hover:bg-white rounded cursor-pointer border border-transparent hover:border-gray-200 transition-colors">
+    <label data-proj-id="${p.id}" data-proj-code="${p.code}" data-proj-name="${p.name}"
+      class="flex items-center gap-2 p-2 hover:bg-white rounded cursor-pointer border border-transparent hover:border-gray-200 transition-colors">
       <input type="checkbox" class="scProjectCheck" value="${p.id}" data-contract="${p.contract_value || 0}"
         onchange="updateSharedCostPreview()">
       <div class="flex-1 min-w-0">
@@ -6265,6 +7138,36 @@ function onAllocationBasisChange() {
   document.querySelectorAll('.scManualPctWrap').forEach(wrap => {
     wrap.classList.toggle('hidden', !isManual)
   })
+  updateSharedCostPreview()
+}
+
+// Lọc danh sách dự án trong modal chi phí chung theo search
+function filterScProjectList() {
+  const q = ($('scProjectSearch')?.value || '').trim().toLowerCase()
+  const labels = $('scProjectList')?.querySelectorAll('label[data-proj-id]')
+  if (!labels) return
+  labels.forEach(lbl => {
+    const code = (lbl.dataset.projCode || '').toLowerCase()
+    const name = (lbl.dataset.projName || '').toLowerCase()
+    lbl.style.display = (!q || code.includes(q) || name.includes(q)) ? '' : 'none'
+  })
+}
+
+// Toggle chọn tất cả / bỏ chọn tất cả (chỉ những dự án đang visible)
+function toggleSelectAllProjects() {
+  const btn = $('scSelectAllBtn')
+  const isAllSelected = btn?._allSelected
+  const visibleChecks = [...($('scProjectList')?.querySelectorAll('label[data-proj-id]') || [])]
+    .filter(lbl => lbl.style.display !== 'none')
+    .map(lbl => lbl.querySelector('.scProjectCheck'))
+    .filter(Boolean)
+  visibleChecks.forEach(chk => { chk.checked = !isAllSelected })
+  if (btn) {
+    btn._allSelected = !isAllSelected
+    btn.innerHTML = btn._allSelected
+      ? '<i class="fas fa-square"></i> Bỏ chọn tất cả'
+      : '<i class="fas fa-check-square"></i> Chọn tất cả'
+  }
   updateSharedCostPreview()
 }
 
@@ -6944,20 +7847,57 @@ async function renderTimesheetAnalyticsTab(force = false) {
   try {
     const year = getAnalyticsYear()
     const data = await api(`/analytics/timesheet?year=${year}`)
-    const monthly = data.monthlyHours || []
-    const byDept = data.byDepartment || []
-    const byStatus = data.byStatus || []
-    const topWorkers = data.topWorkers || []
+    const monthly        = data.monthlyHours       || []
+    const byDept         = data.byDepartment       || []
+    const byStatus       = data.byStatus           || []
+    const topWorkers     = data.topWorkers         || []
+    const taskVsPlan     = data.taskHoursVsPlan    || []
+    const projVsPlan     = data.projectHoursVsPlan || []
 
-    const totalHours = monthly.reduce((s,m)=>s+(m.regular||0)+(m.overtime||0),0)
-    const totalOT = monthly.reduce((s,m)=>s+(m.overtime||0),0)
+    const totalHours    = monthly.reduce((s,m)=>s+(m.regular||0)+(m.overtime||0),0)
+    const totalOT       = monthly.reduce((s,m)=>s+(m.overtime||0),0)
     const totalApproved = monthly.reduce((s,m)=>s+(m.approved_hours||0),0)
-    const approvalRate = totalHours > 0 ? pct(totalApproved, totalHours) : 0
+    const approvalRate  = totalHours > 0 ? pct(totalApproved, totalHours) : 0
+
+    // ── Tính toán tổng hợp task vs plan ──
+    const totalPlanned = taskVsPlan.reduce((s,t)=>s+(t.planned_hours||0), 0)
+    const totalActual  = taskVsPlan.reduce((s,t)=>s+(t.ts_actual_hours||0), 0)
+    const overBudgetCount  = taskVsPlan.filter(t => t.pct_used != null && t.pct_used > 100).length
+    const noPlanCount      = taskVsPlan.filter(t => !t.planned_hours || t.planned_hours === 0).length
 
     const statusLabel = { draft:'Nháp', submitted:'Đã nộp', approved:'Đã duyệt', rejected:'Từ chối' }
     const statusColor = { draft:'#6b7280', submitted:'#3b82f6', approved:'#00A651', rejected:'#ef4444' }
+    const taskStatusLabel = { todo:'Chờ làm', in_progress:'Đang làm', review:'Đang duyệt', completed:'Hoàn thành', cancelled:'Đã hủy' }
+
+    // ── Hàm render badge pct_used ──
+    function pctBadge(pct, planned) {
+      if (planned == null || planned === 0)
+        return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-500">Chưa ước tính</span>`
+      if (pct == null)
+        return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-500">—</span>`
+      const color = pct > 120 ? 'bg-red-100 text-red-700' : pct > 100 ? 'bg-orange-100 text-orange-700' : pct > 80 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-600'
+      const icon  = pct > 100 ? '⚠️' : '✅'
+      return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${color}">${icon} ${pct}%</span>`
+    }
+
+    // ── Progress bar inline ──
+    function progressBar(actual, planned) {
+      if (!planned || planned === 0) return `<span class="text-xs text-gray-400">—</span>`
+      const p = Math.min(Math.round(actual / planned * 100), 150)
+      const color = p > 120 ? '#ef4444' : p > 100 ? '#f97316' : p > 80 ? '#f59e0b' : '#00A651'
+      const display = Math.min(p, 100)
+      return `<div class="flex items-center gap-2 min-w-[100px]">
+        <div style="flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:visible;position:relative">
+          <div style="width:${display}%;height:100%;background:${color};border-radius:3px;position:relative">
+            ${p > 100 ? `<div style="position:absolute;right:-2px;top:-2px;width:10px;height:10px;background:${color};border-radius:50%;border:2px solid white"></div>` : ''}
+          </div>
+        </div>
+        <span style="font-size:11px;color:${color};font-weight:600;min-width:28px">${p}%</span>
+      </div>`
+    }
 
     el.innerHTML = `
+      <!-- ═══ KPI CARDS ═══ -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div class="kpi-card card"><div class="text-2xl font-bold text-gray-800">${fmtM(totalHours)}h</div><div class="text-xs text-gray-500 mt-1">Tổng giờ làm</div></div>
         <div class="kpi-card card"><div class="text-2xl font-bold text-orange-500">${fmtM(totalOT)}h</div><div class="text-xs text-gray-500 mt-1">Tổng giờ tăng ca</div></div>
@@ -6965,6 +7905,7 @@ async function renderTimesheetAnalyticsTab(force = false) {
         <div class="kpi-card card"><div class="text-2xl font-bold text-blue-600">${approvalRate}%</div><div class="text-xs text-gray-500 mt-1">Tỷ lệ phê duyệt</div></div>
       </div>
 
+      <!-- ═══ ROW 1: Giờ theo tháng + Trạng thái ═══ -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         <div class="card lg:col-span-2">
           <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-calendar-alt mr-2 text-blue-500"></i>Giờ làm theo tháng (${year})</h3>
@@ -6976,7 +7917,8 @@ async function renderTimesheetAnalyticsTab(force = false) {
         </div>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- ═══ ROW 2: Phòng ban + Top nhân sự ═══ -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <div class="card">
           <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-building mr-2 text-primary"></i>Giờ làm theo phòng ban</h3>
           <div style="height:240px"><canvas id="chartTsDept"></canvas></div>
@@ -6986,7 +7928,8 @@ async function renderTimesheetAnalyticsTab(force = false) {
           <div class="overflow-y-auto" style="max-height:240px">
             <table class="w-full text-sm">
               <thead class="sticky top-0 bg-white"><tr class="border-b text-xs text-gray-500 uppercase">
-                <th class="pb-2 text-left">#</th><th class="pb-2 text-left">Nhân sự</th><th class="pb-2 text-right">Tổng giờ</th><th class="pb-2 text-right">Tăng ca</th><th class="pb-2 text-right">Ngày làm</th>
+                <th class="pb-2 text-left">#</th><th class="pb-2 text-left">Nhân sự</th>
+                <th class="pb-2 text-right">Tổng giờ</th><th class="pb-2 text-right">Tăng ca</th><th class="pb-2 text-right">Ngày làm</th>
               </tr></thead>
               <tbody>
                 ${topWorkers.map((w,i)=>`
@@ -6996,19 +7939,176 @@ async function renderTimesheetAnalyticsTab(force = false) {
                     <td class="py-2 text-right font-semibold text-green-600">${(w.total_hours||0).toFixed(1)}h</td>
                     <td class="py-2 text-right text-orange-500">${(w.overtime_hours||0).toFixed(1)}h</td>
                     <td class="py-2 text-right text-gray-500">${w.days_worked||0}</td>
-                  </tr>
-                `).join('')}
+                  </tr>`).join('')}
               </tbody>
             </table>
           </div>
         </div>
       </div>
+
+      <!-- ═══ ROW 3: SECTION MỚI — Giờ thực tế vs Kế hoạch ═══ -->
+      <div class="card mb-6" style="border-top:3px solid #00A651">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+          <div>
+            <h3 class="font-bold text-gray-800 text-base">
+              <i class="fas fa-balance-scale mr-2 text-primary"></i>Giờ thực tế vs Kế hoạch theo Task (${year})
+            </h3>
+            <p class="text-xs text-gray-400 mt-0.5">So sánh tổng giờ đã chấm công với giờ ước tính ban đầu của từng task</p>
+          </div>
+          <!-- Tóm tắt nhanh -->
+          <div class="flex flex-wrap gap-3">
+            <div class="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+              <i class="fas fa-clock text-green-600 text-sm"></i>
+              <div><div class="text-xs text-gray-500">Tổng giờ thực tế</div><div class="font-bold text-green-600">${totalActual.toFixed(1)}h</div></div>
+            </div>
+            <div class="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+              <i class="fas fa-calendar-check text-blue-600 text-sm"></i>
+              <div><div class="text-xs text-gray-500">Tổng giờ kế hoạch</div><div class="font-bold text-blue-600">${totalPlanned.toFixed(1)}h</div></div>
+            </div>
+            <div class="flex items-center gap-2 ${overBudgetCount > 0 ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'} rounded-lg px-3 py-2">
+              <i class="fas fa-exclamation-triangle ${overBudgetCount > 0 ? 'text-red-500' : 'text-gray-400'} text-sm"></i>
+              <div><div class="text-xs text-gray-500">Vượt kế hoạch</div><div class="font-bold ${overBudgetCount > 0 ? 'text-red-600' : 'text-gray-500'}">${overBudgetCount} task</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chart so sánh actual vs planned (Top 15 task) -->
+        <div class="mb-5">
+          <h4 class="text-xs font-semibold text-gray-500 uppercase mb-2 flex items-center gap-1">
+            <i class="fas fa-chart-bar text-primary"></i> Biểu đồ so sánh Top 15 task (giờ)
+          </h4>
+          <div style="height:300px"><canvas id="chartTaskVsPlan"></canvas></div>
+        </div>
+
+        <!-- Tổng hợp theo dự án -->
+        ${projVsPlan.length ? `
+        <div class="mb-5">
+          <h4 class="text-xs font-semibold text-gray-500 uppercase mb-3 flex items-center gap-1">
+            <i class="fas fa-project-diagram text-accent"></i> Tổng hợp theo dự án
+          </h4>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            ${projVsPlan.map(p => {
+              const act = p.total_actual_hours || 0
+              const pln = p.total_planned_hours || 0
+              const ratio = pln > 0 ? Math.round(act / pln * 100) : null
+              const barColor = ratio == null ? '#6b7280' : ratio > 120 ? '#ef4444' : ratio > 100 ? '#f97316' : '#00A651'
+              const barW = ratio != null ? Math.min(ratio, 100) : 0
+              return `<div class="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                <div class="flex items-center justify-between mb-2">
+                  <div>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold text-white" style="background:#0066CC">${p.project_code}</span>
+                    <span class="text-xs text-gray-600 ml-1 font-medium">${p.project_name?.substring(0,22)}${p.project_name?.length>22?'…':''}</span>
+                  </div>
+                  ${ratio != null ? `<span class="text-xs font-bold" style="color:${barColor}">${ratio}%</span>` : '<span class="text-xs text-gray-400">—</span>'}
+                </div>
+                <div class="flex gap-4 text-xs text-gray-500 mb-2">
+                  <span><i class="fas fa-clock text-green-500 mr-1"></i>Thực tế: <b class="text-gray-800">${act.toFixed(1)}h</b></span>
+                  <span><i class="fas fa-calendar text-blue-400 mr-1"></i>KH: <b class="text-gray-800">${pln > 0 ? pln.toFixed(1)+'h' : '—'}</b></span>
+                </div>
+                ${ratio != null ? `
+                <div style="height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden">
+                  <div style="width:${barW}%;height:100%;background:${barColor};border-radius:3px;transition:width .4s"></div>
+                </div>` : ''}
+              </div>`
+            }).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- Bảng chi tiết task -->
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <h4 class="text-xs font-semibold text-gray-500 uppercase flex items-center gap-1">
+              <i class="fas fa-table text-gray-400"></i> Chi tiết từng task (${taskVsPlan.length} task có chấm công)
+            </h4>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-gray-400 flex items-center gap-1"><span class="w-3 h-3 rounded-full inline-block" style="background:#00A651"></span> ≤100% bình thường</span>
+              <span class="text-xs text-gray-400 flex items-center gap-1"><span class="w-3 h-3 rounded-full inline-block" style="background:#f97316"></span> 100–120% cảnh báo</span>
+              <span class="text-xs text-gray-400 flex items-center gap-1"><span class="w-3 h-3 rounded-full inline-block" style="background:#ef4444"></span> >120% vượt kế hoạch</span>
+            </div>
+          </div>
+          ${taskVsPlan.length === 0
+            ? `<div class="text-center py-8 text-gray-400 text-sm"><i class="fas fa-inbox text-3xl mb-2 block"></i>Chưa có task nào được chấm công trong năm ${year}</div>`
+            : `<div class="overflow-x-auto">
+              <table class="w-full text-xs">
+                <thead>
+                  <tr class="border-b-2 border-gray-200 bg-gray-50 text-gray-500 uppercase" style="font-size:10px">
+                    <th class="py-2 px-3 text-left">Task</th>
+                    <th class="py-2 px-3 text-left">Dự án</th>
+                    <th class="py-2 px-3 text-left">Người phụ trách</th>
+                    <th class="py-2 px-3 text-center">Trạng thái</th>
+                    <th class="py-2 px-3 text-right">Kế hoạch</th>
+                    <th class="py-2 px-3 text-right">Thực tế (TS)</th>
+                    <th class="py-2 px-3 text-right">Chênh lệch</th>
+                    <th class="py-2 px-3 text-center" style="min-width:140px">% Sử dụng</th>
+                    <th class="py-2 px-3 text-right">Ngày log</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${taskVsPlan.map(t => {
+                    const diff = (t.ts_actual_hours||0) - (t.planned_hours||0)
+                    const diffColor = t.planned_hours > 0
+                      ? (diff > 0 ? '#ef4444' : '#00A651')
+                      : '#9ca3af'
+                    const diffText = t.planned_hours > 0
+                      ? `${diff >= 0 ? '+' : ''}${diff.toFixed(1)}h`
+                      : '—'
+                    const rowBg = t.pct_used > 120 ? 'background:#fff5f5' : t.pct_used > 100 ? 'background:#fff8f0' : ''
+                    const taskStatusColors = {
+                      todo:'bg-gray-100 text-gray-600', in_progress:'bg-blue-100 text-blue-700',
+                      review:'bg-yellow-100 text-yellow-700', completed:'bg-green-100 text-green-700', cancelled:'bg-red-100 text-red-600'
+                    }
+                    return `<tr class="border-b border-gray-100 hover:bg-gray-50 transition" style="${rowBg}">
+                      <td class="py-2 px-3">
+                        <div class="font-medium text-gray-800" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.task_title}">${t.task_title}</div>
+                        ${t.discipline_code ? `<span class="text-gray-400">[${t.discipline_code}]</span>` : ''}
+                      </td>
+                      <td class="py-2 px-3">
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-white font-bold" style="background:#0066CC;font-size:10px">${t.project_code}</span>
+                      </td>
+                      <td class="py-2 px-3 text-gray-600" style="white-space:nowrap">${t.assignee||'—'}</td>
+                      <td class="py-2 px-3 text-center">
+                        <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${taskStatusColors[t.task_status]||'bg-gray-100 text-gray-600'}">
+                          ${taskStatusLabel[t.task_status]||t.task_status}
+                        </span>
+                      </td>
+                      <td class="py-2 px-3 text-right font-medium text-blue-600">
+                        ${t.planned_hours > 0 ? t.planned_hours.toFixed(1)+'h' : '<span class="text-gray-400">—</span>'}
+                      </td>
+                      <td class="py-2 px-3 text-right font-bold text-green-600">${(t.ts_actual_hours||0).toFixed(1)}h</td>
+                      <td class="py-2 px-3 text-right font-semibold" style="color:${diffColor}">${diffText}</td>
+                      <td class="py-2 px-3">${progressBar(t.ts_actual_hours||0, t.planned_hours)}</td>
+                      <td class="py-2 px-3 text-right text-gray-500">${t.days_logged||0}d · ${t.members_logged||0}người</td>
+                    </tr>`
+                  }).join('')}
+                </tbody>
+                <tfoot>
+                  <tr class="bg-gray-100 font-bold text-xs border-t-2 border-gray-300">
+                    <td class="py-2 px-3 text-gray-700" colspan="4">Tổng cộng (${taskVsPlan.length} tasks)</td>
+                    <td class="py-2 px-3 text-right text-blue-600">${totalPlanned.toFixed(1)}h</td>
+                    <td class="py-2 px-3 text-right text-green-600">${totalActual.toFixed(1)}h</td>
+                    <td class="py-2 px-3 text-right" style="color:${totalActual-totalPlanned>=0?'#ef4444':'#00A651'}">
+                      ${totalPlanned>0 ? `${totalActual-totalPlanned>=0?'+':''}${(totalActual-totalPlanned).toFixed(1)}h` : '—'}
+                    </td>
+                    <td class="py-2 px-3">
+                      ${totalPlanned > 0 ? progressBar(totalActual, totalPlanned) : '<span class="text-gray-400 text-xs">—</span>'}
+                    </td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>`
+          }
+        </div>
+      </div>
     `
 
-    destroyChart('tsMonthly'); destroyChart('tsStatus'); destroyChart('tsDept')
+    // ── Render charts ──
+    destroyChart('tsMonthly'); destroyChart('tsStatus'); destroyChart('tsDept'); destroyChart('taskVsPlan')
 
     const months = Array.from({length:12}, (_,i)=>String(i+1).padStart(2,'0'))
     const mMap = {}; monthly.forEach(m=>{ mMap[m.month] = m })
+
+    // Chart giờ theo tháng
     const ctxM = document.getElementById('chartTsMonthly')?.getContext('2d')
     if (ctxM) _analyticsCharts['tsMonthly'] = safeChart(ctxM, {
       type: 'bar',
@@ -7016,33 +8116,94 @@ async function renderTimesheetAnalyticsTab(force = false) {
         labels: months.map(m=>monthName(m)),
         datasets: [
           { label: 'Giờ thường', data: months.map(m=>+(mMap[m]?.regular||0).toFixed(1)), backgroundColor: '#00A651bb', borderRadius: 3 },
-          { label: 'Tăng ca', data: months.map(m=>+(mMap[m]?.overtime||0).toFixed(1)), backgroundColor: '#f59e0bbb', borderRadius: 3 }
+          { label: 'Tăng ca',    data: months.map(m=>+(mMap[m]?.overtime||0).toFixed(1)), backgroundColor: '#f59e0bbb', borderRadius: 3 }
         ]
       },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } },
-        scales: { x: { stacked: true, ticks: { font: { size: 10 } } }, y: { stacked: true, ticks: { font: { size: 10 } } } } }
+      options: { responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ labels:{ font:{ size:10 } } } },
+        scales:{ x:{ stacked:true, ticks:{ font:{ size:10 } } }, y:{ stacked:true, ticks:{ font:{ size:10 } } } } }
     })
 
+    // Chart trạng thái
     const ctxSt = document.getElementById('chartTsStatus')?.getContext('2d')
     if (ctxSt) _analyticsCharts['tsStatus'] = safeChart(ctxSt, {
       type: 'doughnut',
       data: {
         labels: (byStatus||[]).map(s=>statusLabel[s.status]||s.status),
-        datasets: [{ data: (byStatus||[]).map(s=>s.count), backgroundColor: (byStatus||[]).map(s=>statusColor[s.status]||'#6b7280') }]
+        datasets: [{ data:(byStatus||[]).map(s=>s.count), backgroundColor:(byStatus||[]).map(s=>statusColor[s.status]||'#6b7280') }]
       },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } } }
+      options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ font:{ size:10 } } } } }
     })
 
+    // Chart phòng ban
     const ctxDp = document.getElementById('chartTsDept')?.getContext('2d')
     if (ctxDp) _analyticsCharts['tsDept'] = safeChart(ctxDp, {
       type: 'bar',
       data: {
         labels: byDept.map(d=>d.department||'Chưa phân công'),
-        datasets: [{ label: 'Tổng giờ', data: byDept.map(d=>+(d.total_hours||0).toFixed(1)), backgroundColor: '#818cf8bb', borderRadius: 4 }]
+        datasets: [{ label:'Tổng giờ', data:byDept.map(d=>+(d.total_hours||0).toFixed(1)), backgroundColor:'#818cf8bb', borderRadius:4 }]
       },
-      options: { responsive: true, maintainAspectRatio: false, indexAxis: 'y', plugins: { legend: { display: false } },
-        scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } } }
+      options: { responsive:true, maintainAspectRatio:false, indexAxis:'y',
+        plugins:{ legend:{ display:false } },
+        scales:{ x:{ ticks:{ font:{ size:10 } } }, y:{ ticks:{ font:{ size:10 } } } } }
     })
+
+    // ── Chart task actual vs planned (top 15) ──
+    const top15 = taskVsPlan.slice(0, 15)
+    const ctxTV = document.getElementById('chartTaskVsPlan')?.getContext('2d')
+    if (ctxTV && top15.length > 0) {
+      const labels   = top15.map(t => t.task_title.length > 28 ? t.task_title.substring(0,26)+'…' : t.task_title)
+      const actuals  = top15.map(t => +(t.ts_actual_hours||0).toFixed(1))
+      const planneds = top15.map(t => +(t.planned_hours||0).toFixed(1))
+      // Bar color: xanh nếu ≤100%, cam nếu 100-120%, đỏ nếu >120%
+      const barColors = top15.map(t => {
+        if (!t.planned_hours || t.planned_hours === 0) return '#94a3b8'
+        const r = (t.ts_actual_hours||0) / t.planned_hours * 100
+        return r > 120 ? '#ef444499' : r > 100 ? '#f9731699' : '#00A65199'
+      })
+      _analyticsCharts['taskVsPlan'] = safeChart(ctxTV, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label:'Giờ thực tế (Timesheet)', data:actuals, backgroundColor:barColors, borderRadius:4, order:1 },
+            { label:'Giờ kế hoạch',            data:planneds, type:'line',
+              borderColor:'#0066CC', backgroundColor:'#0066CC22',
+              borderWidth:2, borderDash:[5,3], pointRadius:4, pointBackgroundColor:'#0066CC',
+              fill:false, tension:0, order:0 }
+          ]
+        },
+        options: {
+          responsive:true, maintainAspectRatio:false,
+          plugins:{
+            legend:{ position:'top', labels:{ font:{ size:11 } } },
+            tooltip:{ callbacks:{
+              afterLabel: (ctx) => {
+                const t = top15[ctx.dataIndex]
+                if (!t) return ''
+                if (ctx.datasetIndex === 0) {
+                  const diff = (t.ts_actual_hours||0) - (t.planned_hours||0)
+                  const pctU = t.pct_used != null ? ` (${t.pct_used}%)` : ''
+                  return t.planned_hours > 0
+                    ? `Chênh: ${diff>=0?'+':''}${diff.toFixed(1)}h${pctU}`
+                    : 'Chưa có kế hoạch'
+                }
+                return ''
+              }
+            }}
+          },
+          scales:{
+            x:{ ticks:{ font:{ size:10 }, maxRotation:35 } },
+            y:{ beginAtZero:true, ticks:{ font:{ size:10 }, callback: v => v+'h' } }
+          }
+        }
+      })
+    } else if (ctxTV) {
+      // Không có data
+      const parent = document.getElementById('chartTaskVsPlan').parentElement
+      if (parent) parent.innerHTML = `<div class="flex items-center justify-center h-full text-gray-400 text-sm"><i class="fas fa-inbox mr-2"></i>Chưa có task nào được chấm công</div>`
+    }
+
   } catch (e) {
     el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
   }
