@@ -716,9 +716,9 @@
               <option value="low">Thấp</option>
             </select>
             <!-- Project combobox filter -->
-            <div id="taskProjectCombobox"></div>
+            <div id="taskProjectCombobox" style="width:220px"></div>
             <!-- Category combobox: only visible when a project is selected -->
-            <div id="taskCategoryCombobox" style="display:none"></div>
+            <div id="taskCategoryCombobox" style="display:none;width:200px"></div>
             <select id="taskPhaseFilter" class="select-field" style="width:140px" onchange="filterTasks()">
               <option value="">Tất cả giai đoạn</option>
               <option value="basic_design">TKCS - Cơ sở</option>
@@ -858,12 +858,12 @@
             <!-- Project -->
             <div class="flex flex-col gap-0.5">
               <label class="text-xs text-gray-500 font-medium">Dự án</label>
-              <div id="tsProjectFilterCombobox"></div>
+              <div id="tsProjectFilterCombobox" style="width:200px"></div>
             </div>
             <!-- Member (admin only) -->
             <div id="tsUserFilterWrap" class="hidden flex-col gap-0.5">
               <label class="text-xs text-gray-500 font-medium">Nhân viên</label>
-              <div id="tsUserFilterCombobox"></div>
+              <div id="tsUserFilterCombobox" style="width:180px"></div>
             </div>
             <!-- Status (admin only) -->
             <div id="tsStatusFilterWrap" class="hidden flex-col gap-0.5">
@@ -939,7 +939,7 @@
             <h1 class="text-2xl font-bold text-gray-800">Tiến độ Gantt</h1>
             <p class="text-gray-500 text-sm">Timeline tổng quan tiến độ dự án</p>
           </div>
-          <div id="ganttProjectSelectCombobox"></div>
+          <div id="ganttProjectSelectCombobox" style="width:240px"></div>
         </div>
         <div class="card" id="ganttContainer">
           <div class="text-center text-gray-400 py-12">
@@ -1006,7 +1006,7 @@
             <button id="btnAddSharedCost" onclick="openSharedCostModal()" class="hidden btn-warning flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Thêm chi phí chung</button>
           </div>
           <div id="costFilter" class="flex gap-3 mb-4 flex-wrap items-center">
-            <div id="costProjectFilterCombobox"></div>
+            <div id="costProjectFilterCombobox" style="width:200px"></div>
             <div class="flex items-center gap-2">
               <select id="costYearFilter" class="select-field" style="width:100px" onchange="loadCostDashboard()">
                 <option value="2024">NTC 2024</option>
@@ -1454,10 +1454,8 @@
             <p class="text-gray-500 text-sm">Đánh giá hiệu suất và tiến độ của từng thành viên</p>
           </div>
           <div class="flex gap-2">
-            <select id="prodProjectFilter" class="select-field" style="width:200px" onchange="loadProductivity()">
-              <option value="">Tất cả dự án</option>
-            </select>
-            <select id="prodDaysFilter" class="select-field" style="width:130px" onchange="loadProductivity()">
+            <div id="prodProjectCombobox" style="width:260px;max-width:260px;position:relative"></div>
+            <select id="prodDaysFilter" class="select-field" style="width:130px" onchange="loadProductivity(true)">
               <option value="30" selected>30 ngày qua</option>
               <option value="60">60 ngày qua</option>
               <option value="90">90 ngày qua</option>
@@ -1530,7 +1528,7 @@
             <p class="text-gray-500 text-sm">Phân tích doanh thu, chi phí, lợi nhuận — theo toàn dự án hoặc kỳ bất kỳ</p>
           </div>
           <div class="flex flex-wrap gap-2 items-center">
-            <div id="finProjSelectCombobox"></div>
+            <div id="finProjSelectCombobox" style="width:220px"></div>
             <!-- Period mode selector -->
             <select id="finPeriodType" class="select-field text-sm" style="width:180px" onchange="onFinPeriodTypeChange()">
               <option value="all_time">🏗️ Toàn dự án</option>
@@ -2866,9 +2864,10 @@
     </div>
     <div class="space-y-4">
       <input type="hidden" id="memberProjectId">
-      <div>
+        <div>
         <label class="label">Nhân viên</label>
-        <select id="memberUserId" class="select-field"></select>
+        <div id="memberUserCombobox" style="position:relative"></div>
+        <input type="hidden" id="memberUserId">
       </div>
       <div>
         <label class="label">Vai trò trong dự án</label>

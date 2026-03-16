@@ -761,7 +761,7 @@ async function loadProjects() {
       placeholder: 'Tất cả dự án',
       items: projItems,
       value: '',
-      minWidth: '190px',
+      fullWidth: true,
       onchange: () => loadTimesheets()
     })
 
@@ -770,7 +770,7 @@ async function loadProjects() {
       placeholder: 'Tất cả dự án',
       items: projItems,
       value: '',
-      minWidth: '180px',
+      fullWidth: true,
       onchange: () => loadCostDashboard()
     })
 
@@ -779,7 +779,7 @@ async function loadProjects() {
       placeholder: '-- Chọn dự án --',
       items: projItems,
       value: '',
-      minWidth: '220px',
+      fullWidth: true,
       onchange: (val) => { if (val) loadFinanceProject() }
     })
 
@@ -792,7 +792,7 @@ async function loadProjects() {
       placeholder: '🏢 Tất cả chủ đầu tư',
       items: clientItems,
       value: '',
-      minWidth: '190px',
+      fullWidth: true,
       onchange: () => filterProjects()
     })
 
@@ -1242,16 +1242,36 @@ $('projectForm').addEventListener('submit', async (e) => {
 })
 
 // Members
-function openAddMemberModal(projectId) {
+async function openAddMemberModal(projectId) {
   $('memberProjectId').value = projectId
-  $('memberUserId').innerHTML = '<option value="">-- Chọn nhân viên --</option>' +
-    allUsers.map(u => `<option value="${u.id}">${u.full_name} (${getRoleLabel(u.role)})</option>`).join('')
+
+  // Ensure allUsers is loaded
+  if (!allUsers.length) {
+    try { allUsers = await api('/users') } catch(e) { toast('Lỗi tải danh sách nhân sự', 'error'); return }
+  }
+
+  // Build member list
+  const items = allUsers.map(u => ({ value: String(u.id), label: u.full_name + ' (' + getRoleLabel(u.role) + ')' }))
+
+  // Destroy old combobox instance and rebuild
+  const container = $('memberUserCombobox')
+  if (container) container.innerHTML = ''
+  if (_cbState['memberUserCombobox']) delete _cbState['memberUserCombobox']
+
+  createCombobox('memberUserCombobox', {
+    placeholder: '-- Chọn nhân viên --',
+    items,
+    fullWidth: true,
+    onchange: (val) => { $('memberUserId').value = val || '' }
+  })
+  $('memberUserId').value = ''
+
   openModal('addMemberModal')
 }
 
 async function addMemberToProject() {
   const projectId = $('memberProjectId').value
-  const userId = $('memberUserId').value
+  const userId = _cbGetValue('memberUserCombobox') || $('memberUserId').value
   const role = $('memberRole').value
   if (!userId) { toast('Chọn nhân viên', 'warning'); return }
   try {
@@ -1633,7 +1653,7 @@ async function loadTasks() {
       placeholder: 'Tất cả dự án',
       items: allProjects.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` })),
       value: '',
-      minWidth: '180px',
+      fullWidth: true,
       onchange: (val) => onTaskProjectFilterChange(val)
     })
 
@@ -1674,6 +1694,7 @@ function createCombobox(containerId, options = {}) {
   const items = options.items || []
   const initVal = options.value !== undefined ? String(options.value) : ''
   const minWidth = options.minWidth || '160px'
+  const fullWidth = options.fullWidth || false
 
   _cbState[id] = {
     value: initVal,
@@ -1683,7 +1704,7 @@ function createCombobox(containerId, options = {}) {
     onchange: options.onchange || null
   }
 
-  container.innerHTML = _cbHTML(id, placeholder, minWidth)
+  container.innerHTML = _cbHTML(id, placeholder, minWidth, fullWidth)
   _cbRenderOptions(id, '')
   _cbUpdateTrigger(id)
 }
@@ -1694,12 +1715,13 @@ function _cbLabelFor(items, value, placeholder) {
   return found ? found.label : placeholder
 }
 
-function _cbHTML(id, placeholder, minWidth) {
-  const triggerStyle = 'display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid #d1d5db;border-radius:8px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px;color:#374151;min-height:36px;user-select:none'
-  const panelStyle = 'display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:100%;width:max-content;max-width:320px;background:#fff;border:1px solid #d1d5db;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:9999;overflow:hidden'
+function _cbHTML(id, placeholder, minWidth, fullWidth) {
+  const triggerStyle = 'display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid #d1d5db;border-radius:8px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px;color:#374151;min-height:36px;user-select:none;box-sizing:border-box;width:100%'
+  const panelStyle = 'display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:100%;width:max-content;max-width:360px;background:#fff;border:1px solid #d1d5db;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:9999;overflow:hidden'
   const searchStyle = 'width:100%;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px 5px 28px;font-size:12px;outline:none;color:#374151;background:#f9fafb;box-sizing:border-box'
   const optsStyle = 'max-height:220px;overflow-y:auto;padding:4px 0'
-  return '<div id="' + id + '_wrap" style="position:relative;min-width:' + minWidth + ';display:inline-block">'
+  const wrapStyle = fullWidth ? 'position:relative;width:100%;display:block' : ('position:relative;min-width:' + minWidth + ';display:inline-block')
+  return '<div id="' + id + '_wrap" style="' + wrapStyle + '">'
     + '<div style="' + triggerStyle + '" onclick="_cbToggle(\'' + id + '\')">'
     + '<span id="' + id + '_label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9ca3af">' + placeholder + '</span>'
     + '<span id="' + id + '_arrow" style="flex-shrink:0;font-size:10px;color:#9ca3af">&#9660;</span>'
@@ -1881,7 +1903,7 @@ function updateTaskCategoryFilter(selectedProjectId = '') {
       placeholder: 'Tất cả hạng mục',
       items,
       value: keepValue ? prevVal : '',
-      minWidth: '180px',
+      fullWidth: true,
       onchange: () => filterTasks()
     })
   }
@@ -2318,7 +2340,7 @@ function _initTaskProjectCombobox(items, locked) {
   createCombobox('taskProjectComboboxModal', {
     placeholder: '-- Chọn dự án --',
     items,
-    minWidth: '100%',
+    fullWidth: true,
     onchange: async (val) => {
       $('taskProject').value = val || ''
       // Reset category combobox với loading spinner
@@ -2341,7 +2363,7 @@ function _initTaskCategoryCombobox(items, locked, selectedId) {
     placeholder: '-- Chọn hạng mục --',
     items,
     value: selectedId ? String(selectedId) : '',
-    minWidth: '100%',
+    fullWidth: true,
     onchange: (val) => { $('taskCategory').value = val || '' }
   })
   if (selectedId) $('taskCategory').value = String(selectedId)
@@ -3326,7 +3348,7 @@ async function initTsFilterDropdowns() {
         placeholder: 'T\u1ea5t c\u1ea3 d\u1ef1 \u00e1n',
         items,
         value: savedVal || '',
-        minWidth: '190px',
+        fullWidth: true,
         onchange: () => loadTimesheets()
       })
     }
@@ -3338,7 +3360,7 @@ async function initTsFilterDropdowns() {
         placeholder: 'T\u1ea5t c\u1ea3 d\u1ef1 \u00e1n',
         items: allProjects.map(p => ({ value: String(p.id), label: `${p.code} \u2013 ${p.name}` })),
         value: '',
-        minWidth: '190px',
+        fullWidth: true,
         onchange: () => loadTimesheets()
       })
     }
@@ -3368,7 +3390,7 @@ async function initTsFilterDropdowns() {
           placeholder: '👤 Tất cả nhân viên',
           items,
           value: savedUserId || '',
-          minWidth: '190px',
+          fullWidth: true,
           onchange: () => loadTimesheets()
         })
       }
@@ -3382,7 +3404,7 @@ async function initTsFilterDropdowns() {
           placeholder: '👤 Tất cả nhân viên',
           items,
           value: '',
-          minWidth: '190px',
+          fullWidth: true,
           onchange: () => loadTimesheets()
         })
       }
@@ -3763,7 +3785,7 @@ function _initTsProjectCombobox(selectedProjId = '', locked = false) {
     placeholder: '🔍 Tìm & chọn dự án...',
     items: projItems,
     value: selectedProjId ? String(selectedProjId) : '',
-    minWidth: '100%',
+    fullWidth: true,
     onchange: async (val) => {
       $('tsProjectHidden').value = val || ''
       // Khi đổi dự án → reset task combobox rồi load lại
@@ -3802,7 +3824,7 @@ function _initTsTaskCombobox(tasks = [], selectedTaskId = null, locked = false) 
     placeholder: tasks.length ? '🔍 Tìm & chọn task...' : '— Không có task —',
     items: taskItems,
     value: selId,
-    minWidth: '100%',
+    fullWidth: true,
     onchange: (val) => {
       $('tsTaskHidden').value = val || ''
     }
@@ -4078,7 +4100,7 @@ async function loadGantt() {
       placeholder: '-- Chọn dự án --',
       items,
       value: '',
-      minWidth: '240px',
+      fullWidth: true,
       onchange: () => renderGantt()
     })
   }
@@ -4190,7 +4212,7 @@ async function loadCostDashboard() {
         placeholder: 'Tất cả dự án',
         items: costProjItems,
         value: '',
-        minWidth: '180px',
+        fullWidth: true,
         onchange: () => loadCostDashboard()
       })
     }
@@ -5425,18 +5447,34 @@ function toggleWidget(id, visible) {
 let allProductivityData = []
 let prodSortKey = 'score'
 
-async function loadProductivity() {
+function _initProdProjectCombobox() {
+  const container = $('prodProjectCombobox')
+  if (!container) return
+
+  // Destroy old state and rebuild
+  container.innerHTML = ''
+  if (_cbState['prodProjectCombobox']) delete _cbState['prodProjectCombobox']
+
+  const items = allProjects.map(p => ({ value: String(p.id), label: p.code + ' – ' + p.name }))
+
+  createCombobox('prodProjectCombobox', {
+    placeholder: 'Tất cả dự án',
+    items,
+    fullWidth: true,
+    onchange: (_val) => { loadProductivity(true) }
+  })
+}
+
+async function loadProductivity(skipReinit = false) {
   try {
     if (!allProjects.length) allProjects = await api('/projects')
-    const pf = $('prodProjectFilter')
-    if (pf && pf.options.length <= 1) {
-      allProjects.forEach(p => {
-        const opt = document.createElement('option')
-        opt.value = p.id; opt.textContent = p.code + ' - ' + p.name
-        pf.appendChild(opt)
-      })
+
+    // Init/rebuild combobox on first call or when projects just loaded
+    if (!skipReinit || !_cbState['prodProjectCombobox']) {
+      _initProdProjectCombobox()
     }
-    const projectId = pf?.value || ''
+
+    const projectId = _cbGetValue('prodProjectCombobox') || ''
     const days = $('prodDaysFilter')?.value || '30'
     let url = `/productivity?days=${days}`
     if (projectId) url += `&project_id=${projectId}`
@@ -5625,7 +5663,7 @@ async function loadFinanceProjectPage() {
         placeholder: '-- Chọn dự án --',
         items: projItems,
         value: '',
-        minWidth: '220px',
+        fullWidth: true,
         onchange: (val) => { if (val) loadFinanceProject() }
       })
     }
