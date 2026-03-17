@@ -3437,6 +3437,10 @@ async function loadTimesheets() {
     const cleanupBtn = $('tsCleanupBtn')
     if (cleanupBtn) cleanupBtn.classList.toggle('hidden', !isAdmin)
 
+    // Show/hide bulk import button (chỉ system_admin)
+    const bulkImportBtn = $('tsBulkImportBtn')
+    if (bulkImportBtn) bulkImportBtn.classList.toggle('hidden', !isAdmin)
+
     // Populate dropdowns only on first load of this page
     await initTsFilterDropdowns()
 
@@ -3859,11 +3863,57 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
 
 async function openTimesheetModal(tsId = null) {
   if (!allProjects.length) allProjects = await api('/projects')
+  if (!allUsers.length)    allUsers    = await api('/users')
 
   const isAdmin     = currentUser.role === 'system_admin'
   const isProjAdmin = currentUser.role === 'project_admin' ||
                       currentUser.role === 'project_leader' ||
                       isAnyProjectLeaderOrAdmin()
+
+  // ── Hiện/ẩn hàng chọn nhân viên (chỉ system_admin) ──
+  const userRow = document.getElementById('tsUserRow')
+  if (userRow) userRow.style.display = isAdmin ? '' : 'none'
+
+  // ── Khởi tạo combobox nhân viên (chỉ admin, chỉ khi thêm mới) ──
+  if (isAdmin && !tsId) {
+    // Force re-init combobox mỗi lần mở modal
+    if (_cbState['tsUserCombobox']) delete _cbState['tsUserCombobox']
+    const items = allUsers.map(u => ({
+      value: String(u.id),
+      label: u.full_name || u.username,
+      sub: u.role ? (u.role === 'system_admin' ? 'System Admin' : u.role) : ''
+    }))
+    createCombobox('tsUserCombobox', {
+      placeholder: '🔍 Tìm nhân viên...',
+      items,
+      fullWidth: true,
+      onchange: (val) => {
+        $('tsTargetUserHidden').value = val
+        // Cập nhật gợi ý dự án đã khai báo theo nhân viên được chọn
+        _updateTsDateHint($('tsDate').value, null, val ? parseInt(val) : null)
+      }
+    })
+    // Default: chính mình
+    const selfUser = allUsers.find(u => u.id === currentUser.id)
+    const selfLabel = selfUser ? (selfUser.full_name || selfUser.username) : String(currentUser.id)
+    _cbSelect('tsUserCombobox', String(currentUser.id), selfLabel)
+    $('tsTargetUserHidden').value = String(currentUser.id)
+  } else if (isAdmin && tsId) {
+    // Khi sửa: hiển thị tên nhân viên nhưng không cho đổi
+    if (_cbState['tsUserCombobox']) delete _cbState['tsUserCombobox']
+    const ts = allTimesheets.find(t => t.id === tsId)
+    if (ts) {
+      const u = allUsers.find(u => u.id === ts.user_id)
+      const uLabel = u ? (u.full_name || u.username) : `#${ts.user_id}`
+      const items = [{ value: String(ts.user_id), label: uLabel }]
+      createCombobox('tsUserCombobox', { placeholder: '', items, fullWidth: true })
+      _cbSelect('tsUserCombobox', String(ts.user_id), uLabel)
+      $('tsTargetUserHidden').value = String(ts.user_id)
+      // Disable combobox khi sửa
+      const wrap = document.getElementById('tsUserCombobox')?.querySelector('[id$="_wrap"]')
+      if (wrap) { wrap.style.pointerEvents = 'none'; wrap.style.opacity = '0.6' }
+    }
+  }
 
   // ── Tính phạm vi tuần hiện tại (T2 → CN) ──
   const weekRange = _getCurrentWeekRange()
@@ -3964,7 +4014,8 @@ async function openTimesheetModal(tsId = null) {
     openModal('timesheetModal')
 
     // Hiển thị gợi ý dự án đã khai báo cho ngày hôm nay
-    _updateTsDateHint(today())
+    const targetUid = isAdmin ? (parseInt($('tsTargetUserHidden').value) || currentUser.id) : null
+    _updateTsDateHint(today(), null, targetUid)
   }
 }
 
@@ -3980,7 +4031,7 @@ function _getCurrentWeekRange() {
 }
 
 // ── Cập nhật gợi ý dự án đã khai báo cho ngày được chọn ──
-function _updateTsDateHint(selectedDate, excludeTimesheetId = null) {
+function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overrideUserId = null) {
   const hint      = document.getElementById('tsDateHint')
   const hintProjs = document.getElementById('tsDateHintProjects')
   if (!hint || !hintProjs) return
@@ -3988,7 +4039,7 @@ function _updateTsDateHint(selectedDate, excludeTimesheetId = null) {
   if (!selectedDate) { hint.style.display = 'none'; return }
 
   // Lọc timesheets cùng ngày, cùng user, loại trừ bản ghi đang sửa
-  const userId = currentUser.id
+  const userId = overrideUserId || currentUser.id
   const sameDay = allTimesheets.filter(t =>
     t.work_date === selectedDate &&
     t.user_id   === userId &&
@@ -4006,6 +4057,206 @@ function _updateTsDateHint(selectedDate, excludeTimesheetId = null) {
   hint.style.display = ''
 }
 
+// ══════════════════════════════════════════════════
+//  BULK IMPORT — Nhập tổng giờ theo năm (system_admin)
+// ══════════════════════════════════════════════════
+let _tsBulkRowCount = 0
+
+const _MONTHS = ['Th.1','Th.2','Th.3','Th.4','Th.5','Th.6',
+                 'Th.7','Th.8','Th.9','Th.10','Th.11','Th.12']
+
+async function openTsBulkModal() {
+  if (currentUser.role !== 'system_admin') return
+  if (!allProjects.length) allProjects = await api('/projects')
+  if (!allUsers.length)    allUsers    = await api('/users')
+
+  // Populate year select (current year ± 5)
+  const yearSel = $('tsBulkYear')
+  if (yearSel) {
+    const curYear = new Date().getFullYear()
+    yearSel.innerHTML = ''
+    for (let y = curYear + 1; y >= curYear - 5; y--) {
+      yearSel.innerHTML += `<option value="${y}" ${y === curYear ? 'selected' : ''}>${y}</option>`
+    }
+  }
+
+  // Init user combobox (force re-init)
+  if (_cbState && _cbState['tsBulkUserCombobox']) delete _cbState['tsBulkUserCombobox']
+  const userItems = allUsers.map(u => ({
+    value: String(u.id),
+    label: u.full_name || u.username,
+    sub: u.role || ''
+  }))
+  createCombobox('tsBulkUserCombobox', {
+    placeholder: '🔍 Tìm nhân viên...',
+    items: userItems,
+    fullWidth: true,
+    onchange: (val) => { $('tsBulkUserHidden').value = val }
+  })
+
+  // Reset to "cả năm" mode
+  const modeYearEl = $('tsBulkModeYear')
+  if (modeYearEl) modeYearEl.checked = true
+  const modeMonthEl = $('tsBulkModeMonth')
+  if (modeMonthEl) modeMonthEl.checked = false
+
+  // Tháng đại diện mặc định = 6
+  const repMonth = $('tsBulkRepMonth')
+  if (repMonth) repMonth.value = '6'
+
+  // Reset rows
+  _tsBulkRowCount = 0
+  const rowsEl = $('tsBulkRows')
+  if (rowsEl) rowsEl.innerHTML = ''
+
+  tsBulkModeChange()   // renders header + first row
+  openModal('tsBulkModal')
+}
+
+// Gọi mỗi khi đổi mode (year / month)
+function tsBulkModeChange() {
+  const mode = document.querySelector('input[name="tsBulkMode"]:checked')?.value || 'year'
+  const repMonthWrap = $('tsBulkRepMonthWrap')
+  if (repMonthWrap) repMonthWrap.style.display = mode === 'year' ? '' : 'none'
+
+  // Render header
+  _tsBulkRenderHeader(mode)
+
+  // Re-render existing rows under new mode
+  const rowsEl = $('tsBulkRows')
+  if (rowsEl) rowsEl.innerHTML = ''
+  _tsBulkRowCount = 0
+  _tsBulkAddRow()
+}
+
+function _tsBulkRenderHeader(mode) {
+  const hdr = $('tsBulkHeader')
+  if (!hdr) return
+  if (mode === 'month') {
+    hdr.className = 'grid gap-2 mb-1 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide'
+    hdr.style.gridTemplateColumns = '3fr 1.5fr 1.5fr 1.5fr 0.5fr'
+    hdr.innerHTML = `
+      <div>Dự án</div>
+      <div class="text-center">Tháng</div>
+      <div class="text-center">Giờ HC</div>
+      <div class="text-center">Giờ OT</div>
+      <div></div>`
+  } else {
+    hdr.className = 'grid gap-2 mb-1 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide'
+    hdr.style.gridTemplateColumns = '4fr 2fr 2fr 0.5fr'
+    hdr.innerHTML = `
+      <div>Dự án</div>
+      <div class="text-center">Tổng giờ HC (cả năm)</div>
+      <div class="text-center">Tổng giờ OT (cả năm)</div>
+      <div></div>`
+  }
+}
+
+function _tsBulkAddRow() {
+  _tsBulkRowCount++
+  const idx  = _tsBulkRowCount
+  const mode = document.querySelector('input[name="tsBulkMode"]:checked')?.value || 'year'
+
+  const projOptions = allProjects.map(p =>
+    `<option value="${p.id}">${p.code ? p.code + ' – ' : ''}${p.name}</option>`
+  ).join('')
+
+  const monthOptions = _MONTHS.map((m, i) =>
+    `<option value="${i+1}" ${(i+1) === new Date().getMonth()+1 ? 'selected' : ''}>${m}</option>`
+  ).join('')
+
+  const rowsEl = $('tsBulkRows')
+  if (!rowsEl) return
+  const div = document.createElement('div')
+  div.id = `tsBulkRow_${idx}`
+  div.className = 'grid gap-2 items-center'
+
+  if (mode === 'month') {
+    div.style.gridTemplateColumns = '3fr 1.5fr 1.5fr 1.5fr 0.5fr'
+    div.innerHTML = `
+      <select id="tsBulkProj_${idx}" class="input-field text-sm">
+        <option value="">-- Chọn dự án --</option>${projOptions}
+      </select>
+      <select id="tsBulkMonth_${idx}" class="input-field text-sm">${monthOptions}</select>
+      <input type="number" id="tsBulkReg_${idx}" class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
+      <input type="number" id="tsBulkOT_${idx}"  class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
+      <button type="button" onclick="_tsBulkRemoveRow(${idx})" class="text-red-400 hover:text-red-600 flex justify-center">
+        <i class="fas fa-times"></i>
+      </button>`
+  } else {
+    div.style.gridTemplateColumns = '4fr 2fr 2fr 0.5fr'
+    div.innerHTML = `
+      <select id="tsBulkProj_${idx}" class="input-field text-sm">
+        <option value="">-- Chọn dự án --</option>${projOptions}
+      </select>
+      <input type="number" id="tsBulkReg_${idx}" class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
+      <input type="number" id="tsBulkOT_${idx}"  class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
+      <button type="button" onclick="_tsBulkRemoveRow(${idx})" class="text-red-400 hover:text-red-600 flex justify-center">
+        <i class="fas fa-times"></i>
+      </button>`
+  }
+  rowsEl.appendChild(div)
+}
+
+function _tsBulkRemoveRow(idx) {
+  const el = $(`tsBulkRow_${idx}`)
+  if (el) el.remove()
+}
+
+async function _tsBulkSubmit() {
+  const userId = parseInt($('tsBulkUserHidden').value) || 0
+  if (!userId) { toast('Vui lòng chọn nhân viên', 'warning'); return }
+
+  const year = parseInt($('tsBulkYear').value)
+  if (!year) { toast('Vui lòng chọn năm', 'warning'); return }
+
+  const mode = document.querySelector('input[name="tsBulkMode"]:checked')?.value || 'year'
+
+  // Tháng đại diện (chỉ dùng khi mode = year), mặc định = 6
+  const repMonth = parseInt($('tsBulkRepMonth')?.value) || 6
+
+  // Collect rows
+  const entries = []
+  const rowsEl = $('tsBulkRows')
+  if (!rowsEl) return
+
+  rowsEl.querySelectorAll('[id^="tsBulkRow_"]').forEach(row => {
+    const idx      = row.id.replace('tsBulkRow_', '')
+    const projId   = parseInt($(`tsBulkProj_${idx}`)?.value) || 0
+    const regHours = parseFloat($(`tsBulkReg_${idx}`)?.value) || 0
+    const otHours  = parseFloat($(`tsBulkOT_${idx}`)?.value)  || 0
+    if (!projId) return
+    if (!regHours && !otHours) return
+
+    let month
+    if (mode === 'month') {
+      month = parseInt($(`tsBulkMonth_${idx}`)?.value) || new Date().getMonth() + 1
+    } else {
+      month = repMonth
+    }
+
+    const mm = String(month).padStart(2, '0')
+    const workDate = `${year}-${mm}-01`
+    entries.push({ project_id: projId, work_date: workDate, regular_hours: regHours, overtime_hours: otHours })
+  })
+
+  if (!entries.length) { toast('Vui lòng nhập ít nhất 1 dòng có giờ > 0', 'warning'); return }
+
+  // Mô tả rõ chế độ
+  const modeLabel = mode === 'month' ? 'theo tháng' : `cả năm (tháng ${repMonth})`
+
+  try {
+    const result = await api('/timesheets/bulk-import', {
+      method: 'post',
+      data: { user_id: userId, year, entries, mode }
+    })
+    toast(`✅ Đã lưu ${result.saved} bản ghi timesheet tổng hợp (${modeLabel})`, 'success')
+    closeModal('tsBulkModal')
+    loadTimesheets()
+  } catch (e) {
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
 // Giữ lại hàm loadTsTasks để tương thích nơi khác gọi
 async function loadTsTasks(projectId = null, selectedTaskId = null) {
   const projId = projectId || _cbGetValue('tsProjectCombobox')
@@ -4015,7 +4266,10 @@ async function loadTsTasks(projectId = null, selectedTaskId = null) {
 // Cập nhật gợi ý khi người dùng thay đổi ngày (chỉ khi đang thêm mới)
 $('tsDate').addEventListener('change', () => {
   if (!$('tsId').value) {   // chỉ khi thêm mới (tsId rỗng)
-    _updateTsDateHint($('tsDate').value)
+    const uid = currentUser.role === 'system_admin'
+      ? (parseInt($('tsTargetUserHidden').value) || currentUser.id)
+      : null
+    _updateTsDateHint($('tsDate').value, null, uid)
   }
 })
 
@@ -4040,6 +4294,14 @@ $('tsForm').addEventListener('submit', async (e) => {
     regular_hours: parseFloat($('tsRegularHours').value) || 0,
     overtime_hours: parseFloat($('tsOvertimeHours').value) || 0,
     description: $('tsDescription').value
+  }
+
+  // Nếu admin chọn nhân viên khác → truyền user_id
+  if (currentUser.role === 'system_admin') {
+    const targetUid = parseInt($('tsTargetUserHidden').value) || 0
+    if (targetUid && targetUid !== currentUser.id) {
+      data.user_id = targetUid
+    }
   }
   try {
     let result

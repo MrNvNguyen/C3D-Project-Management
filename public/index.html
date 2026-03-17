@@ -770,8 +770,12 @@
             <button id="tsBulkApproveBtn" onclick="bulkApproveTimesheets()" class="btn-secondary text-sm hidden" title="Duyệt tất cả timesheet đang chờ">
               <i class="fas fa-check-double mr-1"></i>Duyệt tất cả
             </button>
-            <button id="tsCleanupBtn" onclick="runTimesheetCleanup()" class="btn-secondary text-sm hidden text-amber-700 border-amber-300 hover:bg-amber-50" title="Xóa timesheet trùng lặp">
+            <button id=\"tsCleanupBtn\" onclick=\"runTimesheetCleanup()\" class=\"btn-secondary text-sm hidden text-amber-700 border-amber-300 hover:bg-amber-50\" title=\"Xóa timesheet trùng lặp\">
               <i class="fas fa-broom mr-1 text-amber-500"></i>Dọn duplicate
+            </button>
+            <!-- Nút nhập tổng giờ — chỉ system_admin -->
+            <button id="tsBulkImportBtn" onclick="openTsBulkModal()" class="btn-secondary text-sm hidden" title="Nhập tổng giờ theo năm cho nhân viên">
+              <i class="fas fa-layer-group mr-1 text-indigo-500"></i>Nhập tổng giờ
             </button>
             <button onclick="openTimesheetModal()" class="btn-primary flex items-center gap-2">
               <i class="fas fa-plus"></i>Thêm timesheet
@@ -2282,7 +2286,7 @@
 
 <!-- Timesheet Modal -->
 <div id="timesheetModal" class="modal-overlay" style="display:none">
-  <div class="modal p-6">
+  <div class="modal p-6" style="max-width:560px;width:100%">
     <div class="flex justify-between items-center mb-3">
       <h3 class="text-lg font-bold text-gray-800" id="tsModalTitle">Thêm Timesheet</h3>
       <button onclick="closeModal('timesheetModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
@@ -2298,6 +2302,12 @@
       <input type="hidden" id="tsId">
       <input type="hidden" id="tsProjectHidden">
       <input type="hidden" id="tsTaskHidden">
+      <input type="hidden" id="tsTargetUserHidden">
+      <!-- Chọn nhân viên — chỉ hiển thị cho system_admin -->
+      <div id="tsUserRow" style="display:none">
+        <label class="label"><i class="fas fa-user-tie text-indigo-500 mr-1"></i>Nhân viên <span class="text-red-500">*</span></label>
+        <div id="tsUserCombobox" style="width:100%"></div>
+      </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Ngày làm việc *</label>
@@ -2322,11 +2332,11 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Giờ hành chính</label>
-          <input type="number" id="tsRegularHours" class="input-field" value="8" min="0" max="24" step="0.5">
+          <input type="number" id="tsRegularHours" class="input-field" value="8" min="0" max="9999" step="0.5">
         </div>
         <div>
           <label class="label">Giờ tăng ca</label>
-          <input type="number" id="tsOvertimeHours" class="input-field" value="0" min="0" max="24" step="0.5">
+          <input type="number" id="tsOvertimeHours" class="input-field" value="0" min="0" max="9999" step="0.5">
         </div>
       </div>
       <div>
@@ -2338,6 +2348,73 @@
         <button type="submit" class="btn-primary">Lưu timesheet</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- Modal Nhập tổng giờ theo năm (system_admin) -->
+<div id="tsBulkModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:760px;width:100%">
+    <div class="flex justify-between items-center mb-3">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-layer-group text-indigo-500 mr-2"></i>Nhập tổng giờ theo năm</h3>
+      <button onclick="closeModal('tsBulkModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+
+    <!-- Row 1: Nhân viên + Năm -->
+    <div class="grid grid-cols-2 gap-4 mb-4">
+      <div>
+        <label class="label"><i class="fas fa-user mr-1 text-indigo-400"></i>Nhân viên <span class="text-red-500">*</span></label>
+        <div id="tsBulkUserCombobox" style="width:100%"></div>
+        <input type="hidden" id="tsBulkUserHidden">
+      </div>
+      <div>
+        <label class="label"><i class="fas fa-calendar mr-1 text-indigo-400"></i>Năm <span class="text-red-500">*</span></label>
+        <select id="tsBulkYear" class="input-field"></select>
+      </div>
+    </div>
+
+    <!-- Row 2: Chế độ nhập -->
+    <div class="flex items-center gap-4 mb-4 p-3 rounded-lg" style="background:#f8fafc;border:1px solid #e2e8f0">
+      <span class="text-sm font-medium text-gray-600">Chế độ nhập:</span>
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="radio" name="tsBulkMode" id="tsBulkModeYear" value="year" checked onchange="tsBulkModeChange()">
+        <span class="text-sm text-gray-700">🗓️ Cả năm (1 dòng/dự án)</span>
+      </label>
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="radio" name="tsBulkMode" id="tsBulkModeMonth" value="month" onchange="tsBulkModeChange()">
+        <span class="text-sm text-gray-700">📅 Theo từng tháng</span>
+      </label>
+
+      <!-- Tháng đại diện — chỉ hiện khi mode=year -->
+      <div id="tsBulkRepMonthWrap" class="flex items-center gap-2 ml-4">
+        <span class="text-sm text-gray-500">Tháng đại diện:</span>
+        <select id="tsBulkRepMonth" class="input-field text-sm" style="width:110px">
+          <option value="1">Tháng 1</option><option value="2">Tháng 2</option>
+          <option value="3">Tháng 3</option><option value="4">Tháng 4</option>
+          <option value="5">Tháng 5</option><option value="6" selected>Tháng 6</option>
+          <option value="7">Tháng 7</option><option value="8">Tháng 8</option>
+          <option value="9">Tháng 9</option><option value="10">Tháng 10</option>
+          <option value="11">Tháng 11</option><option value="12">Tháng 12</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Header cột -->
+    <div id="tsBulkHeader" class="grid gap-2 mb-1 px-1">
+      <!-- rendered by JS -->
+    </div>
+
+    <!-- Các dòng nhập liệu -->
+    <div id="tsBulkRows" class="space-y-2 mb-3 overflow-y-auto pr-1" style="max-height:320px">
+      <!-- JS sẽ render các dòng dự án ở đây -->
+    </div>
+
+    <button type="button" onclick="_tsBulkAddRow()" class="text-sm text-indigo-600 hover:text-indigo-800 mb-4 flex items-center gap-1">
+      <i class="fas fa-plus-circle"></i> Thêm dòng
+    </button>
+    <div class="flex justify-end gap-3 pt-2 border-t">
+      <button type="button" onclick="closeModal('tsBulkModal')" class="btn-secondary">Hủy</button>
+      <button type="button" onclick="_tsBulkSubmit()" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu tất cả</button>
+    </div>
   </div>
 </div>
 

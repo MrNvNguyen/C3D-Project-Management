@@ -1562,6 +1562,61 @@ function isWithinCurrentWeek(workDateStr: string): boolean {
   return workDate >= weekStart && workDate <= weekEnd
 }
 
+// ── POST /api/timesheets/bulk-import — Nhập tổng giờ theo năm/tháng (system_admin only) ──
+app.post('/api/timesheets/bulk-import', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db   = c.env.DB
+    const data = await c.req.json()
+    const { user_id, year, entries, mode } = data
+
+    if (!user_id || !year || !Array.isArray(entries) || !entries.length) {
+      return c.json({ error: 'user_id, year, entries required' }, 400)
+    }
+
+    let saved = 0
+    for (const entry of entries) {
+      const { project_id, work_date, regular_hours = 0, overtime_hours = 0 } = entry
+      if (!project_id) continue
+      if (!regular_hours && !overtime_hours) continue
+
+      // work_date phải được truyền từ frontend (01/<month>/<year>)
+      if (!work_date) continue
+
+      // Xác định mô tả từ work_date
+      const [wy, wm] = work_date.split('-')
+      const descLabel = mode === 'month'
+        ? `Tổng hợp giờ tháng ${parseInt(wm)}/${wy}`
+        : `Tổng hợp giờ năm ${wy}`
+
+      // Upsert: nếu đã tồn tại bản ghi cùng user/project/date → ghi đè giờ
+      const existing = await db.prepare(
+        `SELECT id FROM timesheets WHERE user_id = ? AND project_id = ? AND work_date = ? LIMIT 1`
+      ).bind(user_id, project_id, work_date).first() as any
+
+      if (existing) {
+        await db.prepare(
+          `UPDATE timesheets
+           SET regular_hours  = ?,
+               overtime_hours = ?,
+               description    = ?,
+               updated_at     = CURRENT_TIMESTAMP
+           WHERE id = ?`
+        ).bind(regular_hours, overtime_hours, descLabel, existing.id).run()
+      } else {
+        await db.prepare(
+          `INSERT INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'approved')`
+        ).bind(user_id, project_id, work_date, regular_hours, overtime_hours, descLabel).run()
+      }
+      saved++
+    }
+
+    return c.json({ success: true, saved })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 app.post('/api/timesheets', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
