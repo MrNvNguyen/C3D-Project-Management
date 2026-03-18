@@ -400,17 +400,26 @@ async function initApp() {
 async function loadDashboard() {
   try {
     const data = await api('/dashboard/stats')
-    const { stats, monthly_hours, project_progress, discipline_breakdown, member_productivity } = data
+    const { stats, monthly_hours, project_progress, discipline_breakdown, member_productivity,
+            task_status_breakdown, projects_near_deadline } = data
 
-    // Tổng dự án = planning + active + on_hold (không tính cancelled, completed, đã xóa)
+    // KPI row – tất cả role hiển thị giống nhau (layout member)
     $('kpiProjects').textContent = stats.total_projects
     $('kpiActiveProjects').textContent = stats.active_projects
     $('kpiTasks').textContent = stats.total_tasks
     $('kpiCompleted').textContent = stats.completed_tasks
     $('kpiOverdue').textContent = stats.overdue_tasks
     $('kpiRate').textContent = stats.completion_rate + '%'
-    if ($('kpiUsers')) $('kpiUsers').textContent = stats.total_users || 0
-    if ($('kpiAssets')) $('kpiAssets').textContent = stats.total_assets || 0
+
+    // KPI card 5 & 6: luôn dùng layout personal task (ẩn admin view)
+    if ($('kpiCard5Admin'))  $('kpiCard5Admin').style.display  = 'none'
+    if ($('kpiCard5Member')) $('kpiCard5Member').style.display = ''
+    if ($('kpiCard6Admin'))  $('kpiCard6Admin').style.display  = 'none'
+    if ($('kpiCard6Member')) $('kpiCard6Member').style.display = ''
+    if ($('kpiCard5Icon'))   $('kpiCard5Icon').className = 'fas fa-user-check text-emerald-600'
+    if ($('kpiCard6Icon'))   $('kpiCard6Icon').className = 'fas fa-calendar-check text-amber-600'
+    if ($('kpiMyTasksDone'))    $('kpiMyTasksDone').textContent    = stats.my_tasks_completed || 0
+    if ($('kpiMyTasksDueSoon')) $('kpiMyTasksDueSoon').textContent = stats.my_tasks_due_soon || 0
 
     // Overall progress bar
     const totalT = stats.total_tasks || 0
@@ -424,6 +433,32 @@ async function loadDashboard() {
       $('dashOverdueSummary').textContent = ov > 0 ? ov + ' task trễ hạn' : ''
     }
 
+    // Widget 1: Phân bổ task theo trạng thái
+    renderTaskStatusBars(task_status_breakdown, totalT)
+
+    // Widget 2: Nhân sự hoạt động tháng này
+    if ($('kpiActiveUsersMonth')) $('kpiActiveUsersMonth').textContent = stats.active_users_month || 0
+    if ($('kpiTotalUsersAll'))    $('kpiTotalUsersAll').textContent    = stats.total_users || 0
+    if ($('kpiTopContributor'))   $('kpiTopContributor').textContent   = stats.top_contributor_name || 'Chưa có dữ liệu'
+    if ($('kpiTopContributorHours')) {
+      $('kpiTopContributorHours').textContent = stats.top_contributor_hours
+        ? `${stats.top_contributor_hours} giờ trong tháng` : ''
+    }
+
+    // Widget 3: Dự án sắp đến hạn
+    renderProjectDeadlineList(projects_near_deadline)
+
+    // Widget 4: Task của tôi – luôn dùng layout member, ẩn admin widget
+    const w4Admin = $('dashWidget4Admin')
+    const w4Member = $('dashWidget4Member')
+    if (w4Admin)  w4Admin.style.display  = 'none'
+    if (w4Member) w4Member.style.display = ''
+    if ($('myTaskTotal'))      $('myTaskTotal').textContent      = stats.my_tasks_total     || 0
+    if ($('myTaskCompleted'))  $('myTaskCompleted').textContent  = stats.my_tasks_completed || 0
+    if ($('myTaskOverdue'))    $('myTaskOverdue').textContent    = stats.my_tasks_overdue   || 0
+    if ($('myTaskInProgress')) $('myTaskInProgress').textContent = stats.my_tasks_inprogress|| 0
+    if ($('myTaskDueSoon'))    $('myTaskDueSoon').textContent    = stats.my_tasks_due_soon  || 0
+
     renderProductivityChart(member_productivity)
     renderDisciplineChart(discipline_breakdown)
     renderHoursChart(monthly_hours)
@@ -432,6 +467,89 @@ async function loadDashboard() {
   } catch (e) {
     console.error('Dashboard error:', e)
   }
+}
+
+// Render horizontal stacked bars for task status breakdown
+function renderTaskStatusBars(breakdown, total) {
+  const el = $('taskStatusBars')
+  const legendEl = $('taskStatusLegend')
+  if (!el) return
+  const statusCfg = {
+    todo:        { label: 'Chờ xử lý',  color: '#94A3B8', bg: 'bg-slate-400' },
+    in_progress: { label: 'Đang làm',   color: '#3B82F6', bg: 'bg-blue-500' },
+    review:      { label: 'Đang duyệt', color: '#F59E0B', bg: 'bg-amber-400' },
+    completed:   { label: 'Hoàn thành', color: '#10B981', bg: 'bg-emerald-500' },
+    on_hold:     { label: 'Tạm dừng',   color: '#6B7280', bg: 'bg-gray-500' },
+  }
+  if (!breakdown?.length || !total) {
+    el.innerHTML = '<div class="text-xs text-gray-400 text-center py-2">Chưa có task</div>'
+    if (legendEl) legendEl.innerHTML = ''
+    return
+  }
+  const map = {}
+  breakdown.forEach(b => { map[b.status] = b.count })
+
+  el.innerHTML = Object.entries(statusCfg).map(([key, cfg]) => {
+    const cnt = map[key] || 0
+    const pct = total > 0 ? Math.round((cnt / total) * 100) : 0
+    return `<div>
+      <div class="flex justify-between text-xs mb-0.5">
+        <span class="text-gray-600 font-medium">${cfg.label}</span>
+        <span class="text-gray-500">${cnt} <span class="text-gray-400">(${pct}%)</span></span>
+      </div>
+      <div class="w-full bg-gray-100 rounded-full h-2">
+        <div class="h-2 rounded-full transition-all" style="width:${pct}%;background:${cfg.color}"></div>
+      </div>
+    </div>`
+  }).join('')
+
+  if (legendEl) {
+    legendEl.innerHTML = Object.entries(statusCfg).map(([key, cfg]) => {
+      const cnt = map[key] || 0
+      return `<span class="flex items-center gap-1 text-xs text-gray-500">
+        <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${cfg.color}"></span>
+        ${cfg.label}: <b class="text-gray-700">${cnt}</b>
+      </span>`
+    }).join('')
+  }
+}
+
+// Render list of projects nearing deadline
+function renderProjectDeadlineList(projects) {
+  const el = $('projectDeadlineList')
+  if (!el) return
+  if (!projects?.length) {
+    el.innerHTML = '<div class="text-xs text-green-600 text-center py-3"><i class="fas fa-check-circle mr-1"></i>Không có dự án sắp đến hạn</div>'
+    return
+  }
+  // So sánh theo ngày UTC để tránh lệch múi giờ gây NaN
+  const todayStr = new Date().toISOString().slice(0, 10) // "YYYY-MM-DD"
+  const todayUTC = new Date(todayStr + 'T00:00:00Z')
+
+  el.innerHTML = projects.map(p => {
+    if (!p.end_date) return ''
+    const dateStr = String(p.end_date).slice(0, 10) // lấy "YYYY-MM-DD"
+    const endUTC = new Date(dateStr + 'T00:00:00Z')
+    if (isNaN(endUTC.getTime())) return '' // bỏ qua nếu date không hợp lệ
+
+    const daysLeft = Math.round((endUTC - todayUTC) / (1000 * 60 * 60 * 24))
+    const isPast   = daysLeft < 0
+    const isUrgent = daysLeft >= 0 && daysLeft <= 7
+    const bgBadge  = isPast   ? 'bg-red-100 text-red-600'
+                   : isUrgent ? 'bg-orange-100 text-orange-600'
+                   :            'bg-amber-100 text-amber-600'
+    const label    = isPast           ? `${Math.abs(daysLeft)}d trễ`
+                   : daysLeft === 0   ? 'Hôm nay'
+                   :                   `${daysLeft}d còn`
+    const overdueIcon = p.overdue_tasks > 0 ? `<span class="text-red-500 ml-1">⚠ ${p.overdue_tasks} trễ</span>` : ''
+    return `<div class="flex items-center justify-between gap-2 py-1 border-b border-gray-50 last:border-0">
+      <div class="flex-1 min-w-0">
+        <p class="text-xs font-semibold text-gray-700 truncate">${p.code} – ${p.name}</p>
+        <p class="text-xs text-gray-400">${p.open_tasks || 0} task còn lại${overdueIcon}</p>
+      </div>
+      <span class="text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${bgBadge}">${label}</span>
+    </div>`
+  }).filter(Boolean).join('') || '<div class="text-xs text-green-600 text-center py-3"><i class="fas fa-check-circle mr-1"></i>Không có dự án sắp đến hạn</div>'
 }
 
 function destroyChart(id) {

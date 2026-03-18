@@ -4710,7 +4710,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     const completedTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE status IN ("completed","review")').first() as any
     // Quá hạn: loại trừ cả review + completed + cancelled
     const overdueTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE due_date < date("now") AND status NOT IN ("completed","review","cancelled")').first() as any
-    const totalUsers = await db.prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1').first() as any
+    const totalUsers = await db.prepare("SELECT COUNT(*) as count FROM users WHERE is_active = 1 AND role != 'system_admin'").first() as any
     const totalAssets = await db.prepare('SELECT COUNT(*) as count FROM assets WHERE status = "active"').first() as any
 
     // Monthly timesheet summary
@@ -4772,6 +4772,131 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       ORDER BY total_hours DESC
     `).all()
 
+    // ── Extra stats for secondary KPI widgets ──────────────────────────
+    const curYear  = new Date().getFullYear()
+    const curMonth = new Date().getMonth() + 1
+    const curMonthStr = String(curMonth).padStart(2, '0')
+    const curYearStr  = String(curYear)
+
+    // Doanh thu năm tài chính hiện tại (paid + partial)
+    const fySettings3 = await getFiscalYearSettings(db)
+    const { startDate: fyStartNow, endDate: fyEndNow } = getFiscalYearDateRange(curYear, fySettings3)
+    const revenueNow = await db.prepare(`
+      SELECT SUM(amount) as total
+      FROM project_revenues
+      WHERE revenue_date >= ? AND revenue_date <= ?
+        AND payment_status IN ('paid','partial')
+    `).bind(fyStartNow, fyEndNow).first() as any
+
+    // GTHĐ tổng tất cả dự án đang active
+    const contractTotal = await db.prepare(`
+      SELECT SUM(contract_value) as total FROM projects WHERE status != 'cancelled'
+    `).first() as any
+
+    // Tổng giờ làm tháng hiện tại (regular + overtime)
+    const hoursThisMonth = await db.prepare(`
+      SELECT SUM(regular_hours) as regular, SUM(IFNULL(overtime_hours,0)) as overtime
+      FROM timesheets
+      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+    `).bind(curYearStr, curMonthStr).first() as any
+
+    // Chi phí lương tháng hiện tại (từ monthly_labor_costs)
+    const laborThisMonth = await db.prepare(`
+      SELECT total_labor_cost FROM monthly_labor_costs WHERE year = ? AND month = ?
+    `).bind(curYear, curMonth).first() as any
+
+    // ── NEW Widget 1: Phân bổ task theo trạng thái (không bao gồm cancelled) ──
+    const taskStatusBreakdown = await db.prepare(`
+      SELECT status, COUNT(*) as count
+      FROM tasks WHERE status != 'cancelled'
+      GROUP BY status
+    `).all()
+
+    // ── NEW Widget 2: Nhân sự hoạt động tháng này + top contributor ──
+    const activeUsersMonth = await db.prepare(`
+      SELECT COUNT(DISTINCT user_id) as count FROM timesheets
+      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+    `).bind(curYearStr, curMonthStr).first() as any
+
+    const topContributor = await db.prepare(`
+      SELECT u.full_name, SUM(ts.regular_hours + ts.overtime_hours) as total_hours
+      FROM timesheets ts JOIN users u ON u.id = ts.user_id
+      WHERE strftime('%Y', ts.work_date) = ? AND strftime('%m', ts.work_date) = ?
+      GROUP BY ts.user_id ORDER BY total_hours DESC LIMIT 1
+    `).bind(curYearStr, curMonthStr).first() as any
+
+    // ── NEW Widget 3: Dự án sắp đến hạn (trong 30 ngày tới) & deadline đã qua ──
+    const projectsNearDeadline = await db.prepare(`
+      SELECT p.id, p.code, p.name,
+        date(p.end_date) as end_date,
+        p.status,
+        SUM(CASE WHEN t.status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as open_tasks,
+        SUM(CASE WHEN t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks
+      FROM projects p
+      LEFT JOIN tasks t ON t.project_id = p.id
+      WHERE p.status = 'active'
+        AND p.end_date IS NOT NULL
+        AND date(p.end_date) <= date('now', '+30 days')
+      GROUP BY p.id
+      ORDER BY p.end_date ASC
+      LIMIT 5
+    `).all()
+
+    // ── NEW Widget 4: Chi phí chung chưa phân bổ (tổng shared costs so với allocated) ──
+    const sharedCostSummary = await db.prepare(`
+      SELECT
+        COUNT(*) as total_entries,
+        SUM(amount) as total_amount
+      FROM shared_costs
+      WHERE year = ?
+    `).bind(curYear).first() as any
+
+    // Tổng đã phân bổ trong năm
+    const sharedAllocated = await db.prepare(`
+      SELECT SUM(sca.allocated_amount) as total_allocated
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      WHERE sc.year = ?
+    `).bind(curYear).first() as any
+
+    // ── Member personal task stats (for non-admin users) ─────────────────
+    const myTaskStats = await db.prepare(`
+      SELECT
+        COUNT(CASE WHEN status != 'cancelled' THEN 1 END) as total,
+        COUNT(CASE WHEN status IN ('completed','review') THEN 1 END) as completed,
+        COUNT(CASE WHEN due_date < date('now') AND status NOT IN ('completed','review','cancelled') THEN 1 END) as overdue,
+        COUNT(CASE WHEN status = 'in_progress' THEN 1 END) as in_progress,
+        COUNT(CASE WHEN due_date >= date('now') AND due_date <= date('now', '+7 days') AND status NOT IN ('completed','review','cancelled') THEN 1 END) as due_soon
+      FROM tasks
+      WHERE assigned_to = ?
+    `).bind(user.id).first() as any
+
+    // My recent active tasks (tasks cần làm ngay)
+    const myActiveTasks = await db.prepare(`
+      SELECT t.id, t.title, t.status, t.priority, t.due_date, t.progress,
+        p.code as project_code, p.name as project_name
+      FROM tasks t
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.assigned_to = ? AND t.status NOT IN ('completed','review','cancelled')
+      ORDER BY t.due_date ASC NULLS LAST
+      LIMIT 5
+    `).bind(user.id).all()
+
+    // Số dự án on-track (không có task trễ) vs at-risk (có ≥1 task trễ)
+    const projectHealth = await db.prepare(`
+      SELECT
+        SUM(CASE WHEN overdue_count = 0 THEN 1 ELSE 0 END) as on_track,
+        SUM(CASE WHEN overdue_count > 0 THEN 1 ELSE 0 END) as at_risk
+      FROM (
+        SELECT p.id,
+          SUM(CASE WHEN t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_count
+        FROM projects p
+        LEFT JOIN tasks t ON t.project_id = p.id
+        WHERE p.status = 'active'
+        GROUP BY p.id
+      )
+    `).first() as any
+
     return c.json({
       stats: {
         total_projects: totalProjects?.count || 0,
@@ -4781,12 +4906,38 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         overdue_tasks: overdueTasks?.count || 0,
         total_users: totalUsers?.count || 0,
         total_assets: totalAssets?.count || 0,
-        completion_rate: totalTasks?.count > 0 ? Math.round((completedTasks?.count / totalTasks?.count) * 100) : 0
+        completion_rate: totalTasks?.count > 0 ? Math.round((completedTasks?.count / totalTasks?.count) * 100) : 0,
+        // Extra stats for secondary widgets (legacy - kept for compat)
+        revenue_ytd:        revenueNow?.total       || 0,
+        contract_total:     contractTotal?.total    || 0,
+        hours_this_month:   (hoursThisMonth?.regular || 0) + (hoursThisMonth?.overtime || 0),
+        regular_this_month: hoursThisMonth?.regular  || 0,
+        overtime_this_month:hoursThisMonth?.overtime || 0,
+        labor_this_month:   laborThisMonth?.total_labor_cost || 0,
+        projects_on_track:  projectHealth?.on_track  || 0,
+        projects_at_risk:   projectHealth?.at_risk   || 0,
+        // NEW widget stats
+        active_users_month:   activeUsersMonth?.count || 0,
+        top_contributor_name: (topContributor as any)?.full_name || null,
+        top_contributor_hours:(topContributor as any)?.total_hours || 0,
+        shared_cost_total:    sharedCostSummary?.total_amount || 0,
+        shared_cost_allocated:sharedAllocated?.total_allocated || 0,
+        shared_cost_entries:  sharedCostSummary?.total_entries || 0,
+        // Member personal task stats
+        my_tasks_total:    myTaskStats?.total || 0,
+        my_tasks_completed:myTaskStats?.completed || 0,
+        my_tasks_overdue:  myTaskStats?.overdue || 0,
+        my_tasks_inprogress:myTaskStats?.in_progress || 0,
+        my_tasks_due_soon: myTaskStats?.due_soon || 0,
       },
       monthly_hours: monthlyHours.results,
       project_progress: projectProgress.results,
       discipline_breakdown: disciplineBreakdown.results,
-      member_productivity: memberProductivity.results
+      member_productivity: memberProductivity.results,
+      // NEW widget data
+      task_status_breakdown: taskStatusBreakdown.results,
+      projects_near_deadline: projectsNearDeadline.results,
+      my_active_tasks: myActiveTasks.results,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
