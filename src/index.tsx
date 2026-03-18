@@ -3790,6 +3790,85 @@ function fiscalMonthsSQLFilter(logicalMonths: number[], fyYear: number, settings
   return conditions.length === 1 ? conditions[0] : `(${conditions.join(' OR ')})`
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: tính chi phí lương realtime phân bổ theo dự án
+// Nếu có dateFrom/dateTo → lọc trong khoảng đó; không có → toàn bộ lịch sử
+// Trả về Map<projectId, { labor_cost, labor_hours }>
+// ─────────────────────────────────────────────────────────────────────────────
+async function computeRealtimeLaborByProject(
+  db: any,
+  otFactor: number,
+  dateFrom?: string,
+  dateTo?: string
+): Promise<Map<number, { labor_cost: number; labor_hours: number }>> {
+  const result = new Map<number, { labor_cost: number; labor_hours: number }>()
+
+  // 1. Lấy tất cả tháng có dữ liệu monthly_labor_costs trong phạm vi
+  let mlcRows: any
+  if (dateFrom && dateTo) {
+    // Chuyển dateFrom/dateTo thành year-month để so sánh
+    mlcRows = await db.prepare(`
+      SELECT year, month, total_labor_cost FROM monthly_labor_costs
+      WHERE (year * 100 + month) >= (CAST(strftime('%Y', ?) AS INTEGER) * 100 + CAST(strftime('%m', ?) AS INTEGER))
+        AND (year * 100 + month) <= (CAST(strftime('%Y', ?) AS INTEGER) * 100 + CAST(strftime('%m', ?) AS INTEGER))
+      ORDER BY year, month
+    `).bind(dateFrom, dateFrom, dateTo, dateTo).all()
+  } else {
+    mlcRows = await db.prepare(`
+      SELECT year, month, total_labor_cost FROM monthly_labor_costs
+      ORDER BY year, month
+    `).all()
+  }
+
+  const months: Array<{ year: number; month: number; pool: number }> =
+    (mlcRows.results as any[]).map((r: any) => ({
+      year: r.year, month: r.month, pool: r.total_labor_cost || 0
+    }))
+
+  if (months.length === 0) return result
+
+  // 2. Với mỗi tháng có pool > 0, tính tổng giờ công ty và giờ từng dự án
+  for (const { year: yInt, month: mInt, pool } of months) {
+    if (pool <= 0) continue
+    const y = String(yInt)
+    const m = String(mInt).padStart(2, '0')
+
+    // Tổng giờ quy đổi toàn công ty
+    const compRow = await db.prepare(`
+      SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+      FROM timesheets
+      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+    `).bind(otFactor, y, m).first() as any
+    const compEff = compRow?.comp_eff || 0
+    if (compEff <= 0) continue
+
+    const cph = pool / compEff  // cost per effective hour tháng này
+
+    // Giờ quy đổi từng dự án tháng này
+    const projRows = await db.prepare(`
+      SELECT project_id,
+        SUM(regular_hours + IFNULL(overtime_hours,0)) as raw_hours,
+        SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as eff_hours
+      FROM timesheets
+      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+      GROUP BY project_id
+    `).bind(otFactor, y, m).all()
+
+    for (const pr of (projRows.results as any[])) {
+      const pid = pr.project_id
+      const laborCost = Math.round((pr.eff_hours || 0) * cph)
+      const rawHours  = pr.raw_hours || 0
+      const prev = result.get(pid) || { labor_cost: 0, labor_hours: 0 }
+      result.set(pid, {
+        labor_cost:  prev.labor_cost  + laborCost,
+        labor_hours: prev.labor_hours + rawHours,
+      })
+    }
+  }
+
+  return result
+}
+
 async function computeMonthLaborCost(db: any, mInt: number, yInt: number, otFactor?: number) {
   const OVERTIME_FACTOR = otFactor !== undefined ? otFactor : await getOvertimeFactor(db)
   const m = String(mInt).padStart(2, '0')
@@ -6894,6 +6973,377 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       topProjectsByRevenue: topProjectsByRevenue.results,
       revenueByStatus: revenueByStatus.results,
       kpi
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Analytics: Financial By Project (per-project breakdown) ──────────
+// GET /api/analytics/financial-by-project?year=YYYY
+// Trả về tài chính chi tiết cho tất cả dự án: GTHĐ, doanh thu, chi phí, lợi nhuận
+app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const fySettings = await getFiscalYearSettings(db)
+    const { year } = c.req.query()
+    const fyYear = year ? parseInt(year) : new Date().getFullYear()
+    const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(fyYear, fySettings)
+    const fyLabel = getFiscalYearLabel(fyYear, fySettings)
+
+    // ── 1. Tất cả dự án (kể cả chưa có doanh thu/chi phí)
+    const projects = await db.prepare(`
+      SELECT id, code, name, status, project_type, contract_value, start_date, end_date, progress
+      FROM projects WHERE status != 'cancelled'
+      ORDER BY name ASC
+    `).all()
+
+    // ── 2. Doanh thu theo dự án (trong NTC)
+    const revRows = await db.prepare(`
+      SELECT project_id,
+        SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as revenue_collected,
+        SUM(CASE WHEN payment_status = 'paid' THEN amount ELSE 0 END) as revenue_paid,
+        SUM(CASE WHEN payment_status = 'partial' THEN amount ELSE 0 END) as revenue_partial,
+        SUM(CASE WHEN payment_status = 'pending' THEN amount ELSE 0 END) as revenue_pending,
+        SUM(amount) as revenue_total
+      FROM project_revenues
+      WHERE revenue_date >= ? AND revenue_date <= ?
+      GROUP BY project_id
+    `).bind(fyStart, fyEnd).all()
+
+    // ── 3. Chi phí trực tiếp theo dự án (non-salary, trong NTC)
+    const directCostRows = await db.prepare(`
+      SELECT project_id,
+        SUM(amount) as direct_cost,
+        SUM(CASE WHEN cost_type='equipment' THEN amount ELSE 0 END) as cost_equipment,
+        SUM(CASE WHEN cost_type='material' THEN amount ELSE 0 END) as cost_material,
+        SUM(CASE WHEN cost_type='travel' THEN amount ELSE 0 END) as cost_travel,
+        SUM(CASE WHEN cost_type='office' THEN amount ELSE 0 END) as cost_office,
+        SUM(CASE WHEN cost_type='other' THEN amount ELSE 0 END) as cost_other
+      FROM project_costs
+      WHERE cost_date >= ? AND cost_date <= ? AND cost_type != 'salary'
+      GROUP BY project_id
+    `).bind(fyStart, fyEnd).all()
+
+    // ── 4. Chi phí lương theo dự án (project_labor_costs trong NTC, fallback realtime)
+    const fySettings2 = fySettings
+    const fyEnd1Year = fySettings2.start_month === 1 ? fyYear : fyYear + 1
+    let laborWhere: string
+    let laborParams: any[]
+    if (fySettings2.start_month === 1) {
+      laborWhere = `year = ?`
+      laborParams = [fyYear]
+    } else {
+      laborWhere = `((year = ? AND month >= ?) OR (year = ? AND month < ?))`
+      laborParams = [fyYear, fySettings2.start_month, fyEnd1Year, fySettings2.start_month]
+    }
+    const laborCostRows = await db.prepare(`
+      SELECT project_id, SUM(total_labor_cost) as labor_cost, SUM(total_hours) as labor_hours
+      FROM project_labor_costs WHERE ${laborWhere}
+      GROUP BY project_id
+    `).bind(...laborParams).all()
+
+    // Fallback: nếu project_labor_costs trống → tính realtime từ timesheets + monthly_labor_costs
+    const OVERTIME_FACTOR_FIN = await getOvertimeFactor(db)
+    let laborMap: Record<number, any>
+    if ((laborCostRows.results as any[]).length > 0) {
+      laborMap = {}
+      ;(laborCostRows.results as any[]).forEach((r: any) => { laborMap[r.project_id] = r })
+    } else {
+      const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_FIN, fyStart, fyEnd)
+      laborMap = {}
+      rtMap.forEach((v, pid) => { laborMap[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
+    }
+    const sharedAllocRows = await db.prepare(`
+      SELECT sca.project_id, SUM(sca.allocated_amount) as shared_cost
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      WHERE sc.cost_date >= ? AND sc.cost_date <= ?
+      GROUP BY sca.project_id
+    `).bind(fyStart, fyEnd).all()
+
+    // ── 6. Build maps
+    const revMap: Record<number, any> = {}
+    ;(revRows.results as any[]).forEach((r: any) => { revMap[r.project_id] = r })
+    const directMap: Record<number, any> = {}
+    ;(directCostRows.results as any[]).forEach((r: any) => { directMap[r.project_id] = r })
+    // laborMap already built above (from cache or realtime)
+    const sharedMap: Record<number, any> = {}
+    ;(sharedAllocRows.results as any[]).forEach((r: any) => { sharedMap[r.project_id] = r })
+
+    // ── 7. Tổng hợp từng dự án
+    const projectData = (projects.results as any[]).map((p: any) => {
+      const rev    = revMap[p.id] || {}
+      const direct = directMap[p.id] || {}
+      const labor  = laborMap[p.id] || {}
+      const shared = sharedMap[p.id] || {}
+
+      const contractValue    = p.contract_value || 0
+      const revenueCollected = rev.revenue_collected || 0
+      const revenuePaid      = rev.revenue_paid || 0
+      const revenuePartial   = rev.revenue_partial || 0
+      const revenuePending   = rev.revenue_pending || 0
+      const revenueTotal     = rev.revenue_total || 0  // tất cả trạng thái
+      const directCost       = direct.direct_cost || 0
+      const laborCost        = labor.labor_cost || 0
+      const laborHours       = labor.labor_hours || 0
+      const sharedCost       = shared.shared_cost || 0
+      const totalCost        = directCost + laborCost + sharedCost
+      const profit           = revenueCollected - totalCost
+      const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
+      // Tỷ lệ doanh thu đã thu / GTHĐ
+      const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
+      // Tỷ lệ % từng khoản trên doanh thu đã thu (để thể hiện cơ cấu chi phí)
+      const pctDirect = revenueCollected > 0 ? Math.round((directCost / revenueCollected) * 100 * 10) / 10 : 0
+      const pctLabor  = revenueCollected > 0 ? Math.round((laborCost / revenueCollected) * 100 * 10) / 10 : 0
+      const pctShared = revenueCollected > 0 ? Math.round((sharedCost / revenueCollected) * 100 * 10) / 10 : 0
+      const pctCost   = revenueCollected > 0 ? Math.round((totalCost / revenueCollected) * 100 * 10) / 10 : 0
+
+      return {
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        status: p.status,
+        project_type: p.project_type,
+        progress: p.progress || 0,
+        contract_value: contractValue,
+        revenue_collected: revenueCollected,
+        revenue_paid: revenuePaid,
+        revenue_partial: revenuePartial,
+        revenue_pending: revenuePending,
+        revenue_total: revenueTotal,
+        direct_cost: directCost,
+        labor_cost: laborCost,
+        labor_hours: laborHours,
+        shared_cost: sharedCost,
+        total_cost: totalCost,
+        profit,
+        margin,
+        contract_progress: contractProgress,
+        pct_direct: pctDirect,
+        pct_labor: pctLabor,
+        pct_shared: pctShared,
+        pct_cost: pctCost,
+        cost_equipment: direct.cost_equipment || 0,
+        cost_material: direct.cost_material || 0,
+        cost_travel: direct.cost_travel || 0,
+        cost_office: direct.cost_office || 0,
+        cost_other: direct.cost_other || 0,
+      }
+    })
+
+    // ── 8. KPI tổng
+    const totals = projectData.reduce((acc: any, p: any) => {
+      acc.contract_value    += p.contract_value
+      acc.revenue_collected += p.revenue_collected
+      acc.revenue_pending   += p.revenue_pending
+      acc.revenue_total     += p.revenue_total
+      acc.direct_cost       += p.direct_cost
+      acc.labor_cost        += p.labor_cost
+      acc.shared_cost       += p.shared_cost
+      acc.total_cost        += p.total_cost
+      acc.profit            += p.profit
+      return acc
+    }, { contract_value:0, revenue_collected:0, revenue_pending:0, revenue_total:0,
+         direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
+
+    totals.margin = totals.revenue_collected > 0
+      ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
+    totals.contract_progress = totals.contract_value > 0
+      ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
+    totals.pct_cost = totals.revenue_collected > 0
+      ? Math.round((totals.total_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+    totals.pct_direct = totals.revenue_collected > 0
+      ? Math.round((totals.direct_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+    totals.pct_labor = totals.revenue_collected > 0
+      ? Math.round((totals.labor_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+    totals.pct_shared = totals.revenue_collected > 0
+      ? Math.round((totals.shared_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+
+    return c.json({
+      projects: projectData,
+      totals,
+      fiscal_year: fyYear,
+      fiscal_year_label: fyLabel,
+      fiscal_year_start: fyStart,
+      fiscal_year_end: fyEnd,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/analytics/financial-by-project-lifetime
+// Tài chính toàn vòng đời dự án (không lọc theo năm tài chính – lấy toàn bộ từ start_date đến end_date)
+app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    // ── 1. Tất cả dự án (kể cả chưa có doanh thu/chi phí)
+    const projects = await db.prepare(`
+      SELECT id, code, name, status, project_type, contract_value, start_date, end_date, progress
+      FROM projects WHERE status != 'cancelled'
+      ORDER BY name ASC
+    `).all()
+
+    // ── 2. Doanh thu theo dự án (TOÀN BỘ – không lọc ngày)
+    const revRows = await db.prepare(`
+      SELECT project_id,
+        SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as revenue_collected,
+        SUM(CASE WHEN payment_status = 'paid' THEN amount ELSE 0 END) as revenue_paid,
+        SUM(CASE WHEN payment_status = 'partial' THEN amount ELSE 0 END) as revenue_partial,
+        SUM(CASE WHEN payment_status = 'pending' THEN amount ELSE 0 END) as revenue_pending,
+        SUM(amount) as revenue_total,
+        MIN(revenue_date) as first_revenue_date,
+        MAX(revenue_date) as last_revenue_date
+      FROM project_revenues
+      GROUP BY project_id
+    `).all()
+
+    // ── 3. Chi phí trực tiếp theo dự án (TOÀN BỘ – không lọc ngày)
+    const directCostRows = await db.prepare(`
+      SELECT project_id,
+        SUM(amount) as direct_cost,
+        SUM(CASE WHEN cost_type='equipment' THEN amount ELSE 0 END) as cost_equipment,
+        SUM(CASE WHEN cost_type='material'  THEN amount ELSE 0 END) as cost_material,
+        SUM(CASE WHEN cost_type='travel'    THEN amount ELSE 0 END) as cost_travel,
+        SUM(CASE WHEN cost_type='office'    THEN amount ELSE 0 END) as cost_office,
+        SUM(CASE WHEN cost_type='other'     THEN amount ELSE 0 END) as cost_other
+      FROM project_costs
+      WHERE cost_type != 'salary'
+      GROUP BY project_id
+    `).all()
+
+    // ── 4. Chi phí lương theo dự án (TOÀN BỘ: project_labor_costs, fallback realtime)
+    const laborCostRowsLT = await db.prepare(`
+      SELECT project_id,
+        SUM(total_labor_cost) as labor_cost,
+        SUM(total_hours) as labor_hours
+      FROM project_labor_costs
+      GROUP BY project_id
+    `).all()
+
+    const OVERTIME_FACTOR_LT = await getOvertimeFactor(db)
+    let laborMapLT: Record<number, any>
+    if ((laborCostRowsLT.results as any[]).length > 0) {
+      laborMapLT = {}
+      ;(laborCostRowsLT.results as any[]).forEach((r: any) => { laborMapLT[r.project_id] = r })
+    } else {
+      // Fallback: tính realtime toàn bộ lịch sử (không lọc ngày)
+      const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_LT)
+      laborMapLT = {}
+      rtMap.forEach((v, pid) => { laborMapLT[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
+    }
+
+    // ── 5. Chi phí chung phân bổ (TOÀN BỘ)
+    const sharedAllocRows = await db.prepare(`
+      SELECT sca.project_id, SUM(sca.allocated_amount) as shared_cost
+      FROM shared_cost_allocations sca
+      GROUP BY sca.project_id
+    `).all()
+
+    // ── 6. Build maps
+    const revMap: Record<number, any> = {}
+    ;(revRows.results as any[]).forEach((r: any) => { revMap[r.project_id] = r })
+    const directMap: Record<number, any> = {}
+    ;(directCostRows.results as any[]).forEach((r: any) => { directMap[r.project_id] = r })
+    const laborMap = laborMapLT  // alias
+    const sharedMap: Record<number, any> = {}
+    ;(sharedAllocRows.results as any[]).forEach((r: any) => { sharedMap[r.project_id] = r })
+
+    // ── 7. Tổng hợp từng dự án
+    const projectData = (projects.results as any[]).map((p: any) => {
+      const rev    = revMap[p.id]    || {}
+      const direct = directMap[p.id] || {}
+      const labor  = laborMap[p.id]  || {}
+      const shared = sharedMap[p.id] || {}
+
+      const contractValue    = p.contract_value || 0
+      const revenueCollected = rev.revenue_collected || 0
+      const revenuePaid      = rev.revenue_paid      || 0
+      const revenuePartial   = rev.revenue_partial   || 0
+      const revenuePending   = rev.revenue_pending   || 0
+      const revenueTotal     = rev.revenue_total     || 0
+      const directCost       = direct.direct_cost    || 0
+      const laborCost        = labor.labor_cost       || 0
+      const laborHours       = labor.labor_hours      || 0
+      const sharedCost       = shared.shared_cost     || 0
+      const totalCost        = directCost + laborCost + sharedCost
+      const profit           = revenueCollected - totalCost
+      const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
+      const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
+      const pctDirect = revenueCollected > 0 ? Math.round((directCost / revenueCollected) * 100 * 10) / 10 : 0
+      const pctLabor  = revenueCollected > 0 ? Math.round((laborCost  / revenueCollected) * 100 * 10) / 10 : 0
+      const pctShared = revenueCollected > 0 ? Math.round((sharedCost / revenueCollected) * 100 * 10) / 10 : 0
+      const pctCost   = revenueCollected > 0 ? Math.round((totalCost  / revenueCollected) * 100 * 10) / 10 : 0
+
+      // Tính thời gian dự án
+      const startDate = p.start_date || ''
+      const endDate   = p.end_date   || ''
+
+      return {
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        status: p.status,
+        project_type: p.project_type,
+        progress: p.progress || 0,
+        start_date: startDate,
+        end_date: endDate,
+        contract_value: contractValue,
+        revenue_collected: revenueCollected,
+        revenue_paid: revenuePaid,
+        revenue_partial: revenuePartial,
+        revenue_pending: revenuePending,
+        revenue_total: revenueTotal,
+        direct_cost: directCost,
+        labor_cost: laborCost,
+        labor_hours: laborHours,
+        shared_cost: sharedCost,
+        total_cost: totalCost,
+        profit,
+        margin,
+        contract_progress: contractProgress,
+        pct_direct: pctDirect,
+        pct_labor:  pctLabor,
+        pct_shared: pctShared,
+        pct_cost:   pctCost,
+        cost_equipment: direct.cost_equipment || 0,
+        cost_material:  direct.cost_material  || 0,
+        cost_travel:    direct.cost_travel    || 0,
+        cost_office:    direct.cost_office    || 0,
+        cost_other:     direct.cost_other     || 0,
+      }
+    })
+
+    // ── 8. KPI tổng
+    const totals = projectData.reduce((acc: any, p: any) => {
+      acc.contract_value    += p.contract_value
+      acc.revenue_collected += p.revenue_collected
+      acc.revenue_pending   += p.revenue_pending
+      acc.revenue_total     += p.revenue_total
+      acc.direct_cost       += p.direct_cost
+      acc.labor_cost        += p.labor_cost
+      acc.shared_cost       += p.shared_cost
+      acc.total_cost        += p.total_cost
+      acc.profit            += p.profit
+      return acc
+    }, { contract_value:0, revenue_collected:0, revenue_pending:0, revenue_total:0,
+         direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
+
+    totals.margin = totals.revenue_collected > 0
+      ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
+    totals.contract_progress = totals.contract_value > 0
+      ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
+    totals.pct_cost   = totals.revenue_collected > 0 ? Math.round((totals.total_cost  / totals.revenue_collected) * 100 * 10) / 10 : 0
+    totals.pct_direct = totals.revenue_collected > 0 ? Math.round((totals.direct_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+    totals.pct_labor  = totals.revenue_collected > 0 ? Math.round((totals.labor_cost  / totals.revenue_collected) * 100 * 10) / 10 : 0
+    totals.pct_shared = totals.revenue_collected > 0 ? Math.round((totals.shared_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+
+    return c.json({
+      projects: projectData,
+      totals,
+      mode: 'lifetime',
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)

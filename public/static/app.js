@@ -1648,11 +1648,14 @@ async function loadTasks() {
     // Populate project role cache for current user
     refreshProjectRoleCache()
 
-    // Build project combobox
+    // Lưu lại giá trị filter đang chọn trước khi rebuild combobox
+    const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
+
+    // Build project combobox (restore giá trị cũ để không mất filter)
     createCombobox('taskProjectCombobox', {
       placeholder: 'Tất cả dự án',
       items: allProjects.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` })),
-      value: '',
+      value: prevProjectFilter,
       fullWidth: true,
       onchange: (val) => onTaskProjectFilterChange(val)
     })
@@ -1666,7 +1669,8 @@ async function loadTasks() {
     // Build category combobox (all categories from loaded tasks)
     updateTaskCategoryFilter()
 
-    renderTasksTable(allTasks)
+    // Áp lại filter hiện tại thay vì render toàn bộ
+    filterTasks()
   } catch (e) { toast('Lỗi tải task: ' + e.message, 'error') }
 }
 
@@ -4997,7 +5001,7 @@ async function createLaborForAnalysisProject(projId) {
   const year  = $('analysisYearSel')?.value
   if (!month || !year) { toast('Chưa chọn tháng/năm cụ thể để đồng bộ', 'warning'); return }
   try {
-    const res = await api(`/projects/${projId}/labor-costs/sync`, { method: 'POST', data: { month: parseInt(month), year: parseInt(year), force_recalculate: true } })
+    const res = await api(`/projects/${projId}/labor-costs/sync`, { method: 'POST', data: { month: parseInt(month), year: parseInt(year) } })
     toast(`Đồng bộ thành công: ${fmtMoney(res.data?.total_labor_cost)} ₫`, 'success')
     _lastAnalysisKey = '' // force re-fetch after sync
     loadCostAnalysis()
@@ -5206,6 +5210,12 @@ function renderCostTable() {
 
 async function openCostModal(mode, id = null) {
   if (!allProjects.length) allProjects = await api('/projects')
+  // Đảm bảo danh sách loại chi phí đã load
+  if (!allCostTypes.length) {
+    try { allCostTypes = await api('/cost-types') } catch(e) {}
+  }
+  _populateAllCostTypeDropdowns()
+
   $('costMode').value = mode
   $('costModalTitle').textContent = mode === 'cost' ? (id ? 'Sửa Chi phí' : 'Thêm Chi phí') : (id ? 'Sửa Doanh thu' : 'Thêm Doanh thu')
   $('costId').value = id || ''
@@ -5229,7 +5239,7 @@ async function openCostModal(mode, id = null) {
       $('costInvoice').value = item.invoice_number || ''
       $('costVendor').value = item.vendor || ''
       $('costNotes').value = item.notes || ''
-      if (mode === 'cost') $('costType').value = item.cost_type || 'other'
+      if (mode === 'cost') $('costType').value = item.cost_type || ''
       if (mode === 'revenue' && $('costPaymentStatus')) $('costPaymentStatus').value = item.payment_status || 'pending'
     }
   } else {
@@ -5240,7 +5250,8 @@ async function openCostModal(mode, id = null) {
     $('costInvoice').value = ''
     $('costVendor').value = ''
     $('costNotes').value = ''
-    if (mode === 'cost') $('costType').value = 'other'
+    // Chọn option đầu tiên mặc định
+    if (mode === 'cost' && $('costType').options.length) $('costType').selectedIndex = 0
     // Mặc định "Chờ thanh toán" khi tạo mới doanh thu
     if (mode === 'revenue' && $('costPaymentStatus')) $('costPaymentStatus').value = 'pending'
   }
@@ -6390,7 +6401,7 @@ async function syncLaborForFinProject(projectId, dateFrom, dateTo) {
     for (let y = fromYear; y <= toYear; y++) {
       const result = await api(`/projects/${projectId}/labor-costs/sync`, {
         method: 'POST',
-        data: { year: y, all_months: true, force_recalculate: true }
+        data: { year: y, all_months: true }
       })
       totalSynced += result.months_synced || 0
     }
@@ -6824,93 +6835,7 @@ function toggleLaborMonthlyTable() {
     : '<i class="fas fa-eye-slash mr-1"></i>Ẩn chi tiết'
 }
 
-// Create / sync project labor cost (Error 3 fix)
-async function createLaborCostForProject() {
-  const panel = $('createLaborCostPanel')
-  if (!panel) return
-  // Populate project selector
-  const sel = $('createLaborProjSel')
-  if (sel && sel.options.length <= 1 && allProjects.length) {
-    allProjects.forEach(p => {
-      const opt = document.createElement('option')
-      opt.value = p.id; opt.textContent = p.code + ' - ' + p.name
-      sel.appendChild(opt)
-    })
-  } else if (sel && sel.options.length <= 1) {
-    try {
-      const projs = await api('/projects')
-      projs.forEach(p => {
-        const opt = document.createElement('option')
-        opt.value = p.id; opt.textContent = p.code + ' - ' + p.name
-        sel.appendChild(opt)
-      })
-    } catch(e) {}
-  }
-  // Set default month/year from filters
-  const m = $('laborMonthFilter')?.value; const y = $('laborYearFilter')?.value
-  if ($('createLaborMonth') && m) $('createLaborMonth').value = parseInt(m)
-  if ($('createLaborYear') && y)  $('createLaborYear').value = y
-  panel.classList.remove('hidden')
-  panel.scrollIntoView({ behavior: 'smooth' })
-}
 
-async function doCreateLaborCost() {
-  const projId = $('createLaborProjSel')?.value
-  if (!projId) { toast('Vui lòng chọn dự án', 'warning'); return }
-  const month = $('createLaborMonth')?.value
-  const year  = $('createLaborYear')?.value
-  const force = $('createLaborForce')?.checked || false
-  const resultDiv = $('createLaborCostResult')
-
-  try {
-    // First check if exists
-    const checkRes = await api(`/projects/${projId}/labor-costs-check?month=${month}&year=${year}`)
-    if (checkRes.exists && !force) {
-      if (!confirm(`Chi phí lương tháng ${month}/${year} cho dự án này đã tồn tại (${fmtMoney(checkRes.data?.total_labor_cost)} ₫).\nBấm OK để tính lại (force), hoặc Hủy để giữ nguyên.`)) {
-        if (resultDiv) {
-          resultDiv.classList.remove('hidden')
-          resultDiv.innerHTML = `<span class="text-blue-700"><i class="fas fa-info-circle mr-1"></i>Giữ nguyên bản ghi hiện có: <strong>${fmtMoney(checkRes.data?.total_labor_cost)} ₫</strong></span>`
-        }
-        return
-      }
-      $('createLaborForce').checked = true
-    }
-
-    const body = { month: parseInt(month), year: parseInt(year), force_recalculate: force || checkRes.exists }
-    const res = await api(`/projects/${projId}/labor-costs/sync`, { method: 'POST', data: body })
-    toast(`${res.action === 'created' ? '✅ Đã tạo' : res.action === 'updated' ? '✅ Đã cập nhật' : '✅'} chi phí lương: ${fmtMoney(res.data?.total_labor_cost)} ₫`, 'success')
-
-    if (resultDiv) {
-      resultDiv.classList.remove('hidden')
-      const actionLabel = res.action === 'created' ? 'Đã tạo mới' : res.action === 'updated' ? 'Đã cập nhật' : 'Đã xử lý'
-      resultDiv.innerHTML = `<span class="text-green-700"><i class="fas fa-check-circle mr-1"></i>${actionLabel}: <strong>${fmtMoney(res.data?.total_labor_cost)} ₫</strong> | ${res.data?.total_hours}h × ${fmtMoney(res.data?.cost_per_hour)}/h</span>`
-    }
-
-    // Reload labor cost view
-    loadLaborCost()
-  } catch(e) {
-    toast('Lỗi: ' + e.message, 'error')
-    if (resultDiv) { resultDiv.classList.remove('hidden'); resultDiv.innerHTML = `<span class="text-red-600">Lỗi: ${e.message}</span>` }
-  }
-}
-
-async function cleanupProjectLaborDuplicates() {
-  const projId = $('createLaborProjSel')?.value || ''
-  const label = projId ? `dự án ID ${projId}` : 'tất cả dự án'
-  if (!confirm(`Xóa bản ghi chi phí lương trùng lặp cho ${label}?\n(Giữ bản ghi MIN id)`)) return
-  try {
-    let url = projId ? `/projects/${projId}/labor-costs/duplicates` : '/data-audit/fix-inconsistency'
-    let result
-    if (projId) {
-      result = await api(url, { method: 'DELETE' })
-      toast(`Đã xóa ${result.deleted_count} bản ghi trùng, còn lại ${result.remaining_records}`, 'success')
-    } else {
-      result = await api(url, { method: 'POST', data: { actions: ['dedup_all'] } })
-      toast(`Đã xóa ${result.rows_deleted} bản ghi trùng lặp`, 'success')
-    }
-    loadLaborCost()
-  } catch(e) { toast('Lỗi dọn trùng: ' + e.message, 'error') }
-}
 
 // ================================================================
 // COST TYPES PAGE
@@ -6921,14 +6846,30 @@ async function loadCostTypes() {
   try {
     allCostTypes = await api('/cost-types')
     renderCostTypesTable()
-    // Also update cost type dropdown in cost modal
-    const ctSel = $('costType')
-    if (ctSel && allCostTypes.length) {
-      ctSel.innerHTML = allCostTypes.filter(ct => ct.is_active).map(ct =>
-        `<option value="${ct.code}">${ct.name}</option>`
-      ).join('')
-    }
+    // Đồng bộ dropdown Loại chi phí cho CẢ 2 form: chi phí riêng (costType) và chi phí chung (scCostType)
+    _populateAllCostTypeDropdowns()
   } catch(e) { toast('Lỗi tải loại chi phí: ' + e.message, 'error') }
+}
+
+// Helper: populate tất cả dropdown loại chi phí từ allCostTypes
+function _populateAllCostTypeDropdowns(savedValue = null) {
+  const activeCostTypes = allCostTypes.filter(ct => ct.is_active)
+  const optionsHtml = activeCostTypes.map(ct =>
+    `<option value="${ct.code}">${ct.name}</option>`
+  ).join('')
+
+  // Form chi phí riêng (project_costs)
+  const ctSel = $('costType')
+  if (ctSel && activeCostTypes.length) {
+    ctSel.innerHTML = optionsHtml
+  }
+
+  // Form chi phí chung (shared_costs)
+  const scSel = $('scCostType')
+  if (scSel && activeCostTypes.length) {
+    scSel.innerHTML = optionsHtml
+    if (savedValue) scSel.value = savedValue
+  }
 }
 
 function renderCostTypesTable() {
@@ -7441,6 +7382,13 @@ function renderSharedCostTable() {
 async function openSharedCostModal(id = null) {
   if (!allProjects.length) allProjects = await api('/projects')
 
+  // Đảm bảo danh sách loại chi phí đã được load
+  if (!allCostTypes.length) {
+    try { allCostTypes = await api('/cost-types') } catch(e) {}
+  }
+  // Populate dropdown scCostType từ danh sách loại chi phí động
+  _populateAllCostTypeDropdowns()
+
   // Reset form
   $('sharedCostId').value = ''
   $('sharedCostForm').reset()
@@ -7482,7 +7430,8 @@ async function openSharedCostModal(id = null) {
     if (sc) {
       $('sharedCostId').value = sc.id
       $('scDescription').value = sc.description
-      $('scCostType').value = sc.cost_type || 'other'
+      // Populate dropdown trước, rồi set giá trị đã lưu
+      _populateAllCostTypeDropdowns(sc.cost_type || 'other')
       $('scAmount').value = sc.amount
       if (sc.cost_date) $('scCostDate').value = sc.cost_date
       if (sc.month) $('scMonth').value = sc.month
@@ -7751,6 +7700,7 @@ function switchAnalyticsTab(tab, force = false) {
   else if (tab === 'team') renderTeamTab(force)
   else if (tab === 'timesheet') renderTimesheetAnalyticsTab(force)
   else if (tab === 'financial' && currentUser?.role === 'system_admin') renderFinancialTab(force)
+  else if (tab === 'project-finance' && currentUser?.role === 'system_admin') renderProjectFinancialTab(force)
 }
 
 // ---- Helpers ----
@@ -8776,6 +8726,430 @@ async function renderFinancialTab(force = false) {
     })
   } catch (e) {
     el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
+  }
+}
+
+// ================================================================
+// TAB 7: PROJECT FINANCIAL DASHBOARD (Admin only)
+// ================================================================
+let _projFinCache = null
+let _projFinYear = null
+let _projFinMode = 'fiscal'   // 'fiscal' | 'lifetime'
+
+function _switchProjFinMode(mode) {
+  if (_projFinMode === mode) return
+  _projFinMode = mode
+  _projFinCache = null  // bust cache on mode switch
+  renderProjectFinancialTab(true)
+}
+
+async function renderProjectFinancialTab(force = false) {
+  const el = document.getElementById('analyticsProjectFinanceContent')
+  if (!el) return
+  const year = getAnalyticsYear()
+  const mode = _projFinMode
+
+  // Cache per year+mode
+  if (!force && _projFinCache && _projFinYear === year + '_' + mode) {
+    el.innerHTML = _projFinCache
+    _drawProjectFinCharts(_projFinData)
+    return
+  }
+
+  el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải dữ liệu tài chính dự án...</p></div>`
+  try {
+    const url = mode === 'lifetime'
+      ? `/analytics/financial-by-project-lifetime`
+      : `/analytics/financial-by-project?year=${year}`
+    const data = await api(url)
+    _projFinData = data
+    _projFinYear = year + '_' + mode
+    const projects = data.projects || []
+    const totals   = data.totals  || {}
+    const isLifetime = mode === 'lifetime'
+    const fyLabel  = isLifetime ? 'Toàn vòng đời dự án' : (data.fiscal_year_label || `NTC ${year}`)
+    const fyStart  = data.fiscal_year_start || ''
+    const fyEnd    = data.fiscal_year_end   || ''
+
+    // Sort: có doanh thu trước, sau đó có chi phí, cuối cùng là dự án trống
+    const sorted = [...projects].sort((a, b) => {
+      const scoreA = (a.revenue_total > 0 ? 2 : 0) + (a.total_cost > 0 ? 1 : 0)
+      const scoreB = (b.revenue_total > 0 ? 2 : 0) + (b.total_cost > 0 ? 1 : 0)
+      if (scoreB !== scoreA) return scoreB - scoreA
+      return b.revenue_collected - a.revenue_collected
+    })
+
+    // Chỉ lấy dự án có dữ liệu tài chính để vẽ chart
+    const activeProjs = sorted.filter(p => p.revenue_total > 0 || p.total_cost > 0)
+
+    const statusLabel = { active:'Đang chạy', planning:'Kế hoạch', on_hold:'Tạm dừng', completed:'Hoàn thành' }
+    const statusColor = { active:'badge-active', planning:'badge-planning', on_hold:'badge-on_hold', completed:'badge-completed' }
+
+    // Margin color helper
+    const marginColor = (m) => m >= 30 ? 'text-green-600' : m >= 10 ? 'text-blue-600' : m >= 0 ? 'text-yellow-600' : 'text-red-600'
+    const marginBg    = (m) => m >= 30 ? 'bg-green-100 text-green-700' : m >= 10 ? 'bg-blue-100 text-blue-700' : m >= 0 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'
+    const profitColor = (v) => v >= 0 ? 'text-blue-600' : 'text-red-500'
+
+    // Bar helper (width capped at 100%)
+    const bar = (pct, color) => `<div class="w-full bg-gray-100 rounded-full h-1.5 mt-1"><div class="h-1.5 rounded-full ${color}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div>`
+
+    // ── KPI summary row ─────────────────────────────────────────────
+    const kpiHtml = `
+      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
+        <div class="kpi-card" style="border-left-color:#6366f1">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng GTHĐ</div>
+          <div class="text-xl font-bold text-indigo-600">${fmtM(totals.contract_value)}</div>
+          <div class="text-xs text-gray-400 mt-1">Giá trị hợp đồng</div>
+        </div>
+        <div class="kpi-card" style="border-left-color:#10b981">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Doanh thu đã thu</div>
+          <div class="text-xl font-bold text-emerald-600">${fmtM(totals.revenue_collected)}</div>
+          <div class="text-xs text-gray-400 mt-1">${fmtM(totals.revenue_pending)} chờ thu</div>
+        </div>
+        <div class="kpi-card" style="border-left-color:#ef4444">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng chi phí</div>
+          <div class="text-xl font-bold text-red-500">${fmtM(totals.total_cost)}</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.pct_cost}% / doanh thu</div>
+        </div>
+        <div class="kpi-card" style="border-left-color:#3b82f6">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Lợi nhuận ròng</div>
+          <div class="text-xl font-bold ${profitColor(totals.profit)}">${fmtM(totals.profit)}</div>
+          <div class="text-xs text-gray-400 mt-1">Sau toàn bộ chi phí</div>
+        </div>
+        <div class="kpi-card" style="border-left-color:#8b5cf6">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Biên lợi nhuận</div>
+          <div class="text-xl font-bold ${marginColor(totals.margin)}">${totals.margin}%</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.margin>=30?'✅ Tốt':totals.margin>=10?'🟡 TB':'🔴 Thấp'}</div>
+        </div>
+        <div class="kpi-card" style="border-left-color:#f59e0b">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tiến độ GTHĐ</div>
+          <div class="text-xl font-bold text-amber-600">${totals.contract_progress}%</div>
+          <div class="text-xs text-gray-400 mt-1">Doanh thu / GTHĐ</div>
+        </div>
+      </div>
+    `
+
+    // ── Cơ cấu chi phí tổng ─────────────────────────────────────────
+    const costBreakdownHtml = `
+      <div class="card mb-6">
+        <h3 class="font-semibold text-gray-700 mb-4 text-sm">
+          <i class="fas fa-layer-group mr-2 text-purple-500"></i>Cơ cấu chi phí toàn công ty — ${fyLabel}
+        </h3>
+        <div class="grid grid-cols-3 md:grid-cols-3 gap-4">
+          <div class="text-center p-4 bg-blue-50 rounded-xl">
+            <div class="text-2xl font-bold text-blue-600">${fmtM(totals.direct_cost)}</div>
+            <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí trực tiếp</div>
+            <div class="text-xs text-blue-500 mt-0.5">${totals.pct_direct}% doanh thu</div>
+            ${bar(totals.pct_direct,'bg-blue-500')}
+          </div>
+          <div class="text-center p-4 bg-orange-50 rounded-xl">
+            <div class="text-2xl font-bold text-orange-600">${fmtM(totals.labor_cost)}</div>
+            <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí lương</div>
+            <div class="text-xs text-orange-500 mt-0.5">${totals.pct_labor}% doanh thu</div>
+            ${bar(totals.pct_labor,'bg-orange-500')}
+          </div>
+          <div class="text-center p-4 bg-yellow-50 rounded-xl">
+            <div class="text-2xl font-bold text-yellow-600">${fmtM(totals.shared_cost)}</div>
+            <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí chung</div>
+            <div class="text-xs text-yellow-600 mt-0.5">${totals.pct_shared}% doanh thu</div>
+            ${bar(totals.pct_shared,'bg-yellow-400')}
+          </div>
+        </div>
+      </div>
+    `
+
+    // ── 2 charts: Waterfall overview + Cost breakdown donut ─────────
+    const chartsHtml = activeProjs.length > 0 ? `
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3 text-sm">
+            <i class="fas fa-chart-bar mr-2 text-green-500"></i>GTHĐ · Doanh thu · Chi phí · Lợi nhuận
+          </h3>
+          <div style="height:280px"><canvas id="chartProjFinOverview"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3 text-sm">
+            <i class="fas fa-chart-bar mr-2 text-purple-500"></i>Biên lợi nhuận theo dự án (%)
+          </h3>
+          <div style="height:280px"><canvas id="chartProjFinMargin"></canvas></div>
+        </div>
+      </div>
+    ` : ''
+
+    // ── Bảng chi tiết per-project ────────────────────────────────────
+    const tableHtml = `
+      <div class="card">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-semibold text-gray-700 text-sm">
+            <i class="fas fa-table mr-2 text-gray-500"></i>Chi tiết tài chính từng dự án — ${fyLabel}
+          </h3>
+          <div class="flex items-center gap-2 text-xs text-gray-400">
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-500 inline-block"></span>Doanh thu đã thu</span>
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-400 inline-block"></span>Tổng chi phí</span>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm border-collapse">
+            <thead>
+              <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                <th class="text-left py-3 px-3 font-semibold border-b border-gray-200 min-w-[180px]">Dự án</th>
+                ${isLifetime ? `<th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Thời gian</th>` : ''}
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT đã thu</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT chờ thu</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP trực tiếp</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP lương</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP chung</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Tổng CP</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Lợi nhuận</th>
+                <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Biên LN</th>
+                <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 min-w-[120px]">Tiến độ GTHĐ</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sorted.map((p, idx) => {
+                const hasData = p.revenue_total > 0 || p.total_cost > 0
+                const rowBg = !hasData ? 'bg-gray-50 opacity-60' : idx % 2 === 0 ? '' : 'bg-gray-50/50'
+                const cProg = p.contract_value > 0 ? Math.min(100, p.contract_progress) : 0
+                const progColor = cProg >= 80 ? 'bg-green-500' : cProg >= 40 ? 'bg-blue-500' : 'bg-gray-300'
+                const timespan = (isLifetime && (p.start_date || p.end_date))
+                  ? `<div class="text-xs text-gray-400 whitespace-nowrap">${(p.start_date||'?').substring(0,7)} → ${(p.end_date||'?').substring(0,7)}</div>`
+                  : ''
+                return `
+                  <tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
+                    <td class="py-3 px-3">
+                      <div class="flex items-center gap-2">
+                        <div class="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                          style="background:${!hasData?'#d1d5db':p.margin>=30?'#00A651':p.margin>=10?'#3b82f6':p.margin>=0?'#f59e0b':'#ef4444'}">
+                          ${p.code?.substring(0,3)||'?'}
+                        </div>
+                        <div>
+                          <div class="font-semibold text-gray-800 text-xs leading-tight">${p.name}</div>
+                          <div class="flex items-center gap-1 mt-0.5">
+                            <span class="text-gray-400 text-xs">${p.code}</span>
+                            <span class="badge ${statusColor[p.status]||'badge-planning'} text-xs py-0 px-1.5" style="font-size:9px">${statusLabel[p.status]||p.status}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    ${isLifetime ? `<td class="py-3 px-3 text-center">${timespan||'<span class="text-gray-300 text-xs">—</span>'}</td>` : ''}
+                    <td class="py-3 px-3 text-right">
+                      <span class="font-semibold text-indigo-700">${p.contract_value > 0 ? fmtM(p.contract_value) : '<span class="text-gray-300">—</span>'}</span>
+                    </td>
+                    <td class="py-3 px-3 text-right">
+                      <span class="font-semibold text-emerald-600">${p.revenue_collected > 0 ? fmtM(p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
+                      ${p.revenue_collected > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400">${pct(p.revenue_collected, p.contract_value)}% GTHĐ</div>` : ''}
+                    </td>
+                    <td class="py-3 px-3 text-right">
+                      <span class="${p.revenue_pending > 0 ? 'text-amber-600 font-medium' : 'text-gray-300'}">${p.revenue_pending > 0 ? fmtM(p.revenue_pending) : '—'}</span>
+                    </td>
+                    <td class="py-3 px-3 text-right">
+                      <span class="${p.direct_cost > 0 ? 'text-blue-600' : 'text-gray-300'}">${p.direct_cost > 0 ? fmtM(p.direct_cost) : '—'}</span>
+                      ${p.direct_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_direct}%</div>` : ''}
+                    </td>
+                    <td class="py-3 px-3 text-right">
+                      <span class="${p.labor_cost > 0 ? 'text-orange-600' : 'text-gray-300'}">${p.labor_cost > 0 ? fmtM(p.labor_cost) : '—'}</span>
+                      ${p.labor_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_labor}%</div>` : ''}
+                    </td>
+                    <td class="py-3 px-3 text-right">
+                      <span class="${p.shared_cost > 0 ? 'text-yellow-600' : 'text-gray-300'}">${p.shared_cost > 0 ? fmtM(p.shared_cost) : '—'}</span>
+                      ${p.shared_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_shared}%</div>` : ''}
+                    </td>
+                    <td class="py-3 px-3 text-right">
+                      <span class="font-semibold text-red-500">${p.total_cost > 0 ? fmtM(p.total_cost) : '<span class="text-gray-300">—</span>'}</span>
+                      ${p.total_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_cost}%</div>` : ''}
+                    </td>
+                    <td class="py-3 px-3 text-right">
+                      ${(p.revenue_collected > 0 || p.total_cost > 0)
+                        ? `<span class="font-bold ${profitColor(p.profit)}">${fmtM(p.profit)}</span>`
+                        : '<span class="text-gray-300">—</span>'
+                      }
+                    </td>
+                    <td class="py-3 px-3 text-center">
+                      ${p.revenue_collected > 0
+                        ? `<span class="inline-block px-2 py-1 rounded-lg text-xs font-bold ${marginBg(p.margin)}">${p.margin}%</span>`
+                        : '<span class="text-gray-300 text-xs">—</span>'
+                      }
+                    </td>
+                    <td class="py-3 px-3">
+                      ${p.contract_value > 0 ? `
+                        <div class="flex items-center gap-1.5">
+                          <div class="flex-1 bg-gray-200 rounded-full h-2">
+                            <div class="h-2 rounded-full ${progColor}" style="width:${cProg}%"></div>
+                          </div>
+                          <span class="text-xs font-semibold text-gray-600 w-8 text-right">${p.contract_progress}%</span>
+                        </div>
+                      ` : '<span class="text-xs text-gray-300">Chưa có GTHĐ</span>'}
+                    </td>
+                  </tr>
+                `
+              }).join('')}
+            </tbody>
+            <!-- Totals row -->
+            <tfoot>
+              <tr class="bg-gray-100 font-bold text-sm border-t-2 border-gray-300">
+                <td class="py-3 px-3 text-gray-700" ${isLifetime ? '' : ''}><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
+                ${isLifetime ? `<td class="py-3 px-3 text-center text-gray-400 text-xs">—</td>` : ''}
+                <td class="py-3 px-3 text-right text-indigo-700">${fmtM(totals.contract_value)}</td>
+                <td class="py-3 px-3 text-right text-emerald-600">${fmtM(totals.revenue_collected)}</td>
+                <td class="py-3 px-3 text-right text-amber-600">${fmtM(totals.revenue_pending)}</td>
+                <td class="py-3 px-3 text-right text-blue-600">${fmtM(totals.direct_cost)}</td>
+                <td class="py-3 px-3 text-right text-orange-600">${fmtM(totals.labor_cost)}</td>
+                <td class="py-3 px-3 text-right text-yellow-600">${fmtM(totals.shared_cost)}</td>
+                <td class="py-3 px-3 text-right text-red-500">${fmtM(totals.total_cost)}</td>
+                <td class="py-3 px-3 text-right ${profitColor(totals.profit)}">${fmtM(totals.profit)}</td>
+                <td class="py-3 px-3 text-center">
+                  <span class="inline-block px-2 py-1 rounded-lg text-xs font-bold ${marginBg(totals.margin)}">${totals.margin}%</span>
+                </td>
+                <td class="py-3 px-3 text-center text-gray-500 text-xs">${totals.contract_progress}%</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    `
+
+    // ── Ghi chú & legend ─────────────────────────────────────────────
+    const legendHtml = `
+      <div class="card mt-4 bg-blue-50 border border-blue-100">
+        <div class="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
+          <span><strong>GTHĐ</strong>: Giá trị hợp đồng</span>
+          <span><strong>DT đã thu</strong>: Doanh thu trạng thái <em>paid + partial</em></span>
+          <span><strong>DT chờ thu</strong>: Doanh thu trạng thái <em>pending</em></span>
+          <span><strong>CP trực tiếp</strong>: Chi phí vật liệu, thiết bị, đi lại, văn phòng…</span>
+          <span><strong>CP lương</strong>: Từ bảng project_labor_costs (tính theo timesheet)</span>
+          <span><strong>CP chung</strong>: Chi phí chung phân bổ (điện, nước, văn phòng…)</span>
+          <span><strong>Biên LN</strong>: Lợi nhuận / Doanh thu đã thu × 100%</span>
+          <span><strong>Tiến độ GTHĐ</strong>: Tổng doanh thu (all status) / GTHĐ × 100%</span>
+          ${isLifetime ? `<span class="text-emerald-600 font-medium"><i class="fas fa-infinity mr-1"></i>Chế độ <em>Toàn vòng đời</em>: dữ liệu không lọc theo năm, tổng hợp từ lúc bắt đầu đến khi kết thúc dự án.</span>` : ''}
+        </div>
+      </div>
+    `
+
+    const html = `
+      <!-- Mode toggle bar -->
+      <div class="flex items-center gap-3 mb-4 flex-wrap">
+        <div class="inline-flex rounded-lg border border-gray-200 overflow-hidden text-xs font-medium shadow-sm">
+          <button onclick="_switchProjFinMode('fiscal')"
+            class="px-4 py-2 transition-colors ${mode==='fiscal'
+              ? 'bg-indigo-600 text-white'
+              : 'bg-white text-gray-600 hover:bg-gray-50'}">
+            <i class="fas fa-calendar-alt mr-1"></i>Theo năm tài chính
+          </button>
+          <button onclick="_switchProjFinMode('lifetime')"
+            class="px-4 py-2 transition-colors ${mode==='lifetime'
+              ? 'bg-emerald-600 text-white'
+              : 'bg-white text-gray-600 hover:bg-gray-50'}">
+            <i class="fas fa-infinity mr-1"></i>Toàn vòng đời dự án
+          </button>
+        </div>
+        ${isLifetime
+          ? `<span class="inline-flex items-center gap-1 text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1 rounded-full">
+               <i class="fas fa-infinity"></i> Toàn bộ lịch sử tài chính
+             </span>`
+          : `<span class="inline-flex items-center gap-1 text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200 px-3 py-1 rounded-full">
+               <i class="fas fa-calendar-alt"></i> ${fyLabel}
+               ${fyStart ? `<span class="text-indigo-400 ml-1">${fyStart} → ${fyEnd}</span>` : ''}
+             </span>`
+        }
+        <span class="text-xs text-gray-400">${projects.length} dự án · ${activeProjs.length} có dữ liệu tài chính</span>
+      </div>
+      ${kpiHtml}
+      ${costBreakdownHtml}
+      ${chartsHtml}
+      ${tableHtml}
+      ${legendHtml}
+    `
+
+    el.innerHTML = html
+    _projFinCache = html
+
+    // Draw charts after DOM update
+    requestAnimationFrame(() => _drawProjectFinCharts(data))
+
+  } catch(e) {
+    el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
+  }
+}
+
+let _projFinData = null
+
+function _drawProjectFinCharts(data) {
+  if (!data) return
+  const projects = (data.projects || []).filter(p => p.revenue_total > 0 || p.total_cost > 0)
+  if (!projects.length) return
+
+  // Limit to top 12 projects by revenue for readability
+  const top = [...projects].sort((a,b) => b.revenue_collected - a.revenue_collected).slice(0, 12)
+  const labels = top.map(p => p.code || p.name.substring(0,10))
+
+  // Chart 1: Overview grouped bar
+  destroyChart('projFinOverview')
+  const ctx1 = document.getElementById('chartProjFinOverview')?.getContext('2d')
+  if (ctx1) {
+    _analyticsCharts['projFinOverview'] = safeChart(ctx1, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'GTHĐ', data: top.map(p => p.contract_value), backgroundColor: '#818cf820', borderColor: '#818cf8', borderWidth: 1.5, borderRadius: 3 },
+          { label: 'DT đã thu', data: top.map(p => p.revenue_collected), backgroundColor: '#00A651bb', borderRadius: 3 },
+          { label: 'Tổng chi phí', data: top.map(p => p.total_cost), backgroundColor: '#ef4444bb', borderRadius: 3 },
+          { type: 'line', label: 'Lợi nhuận', data: top.map(p => p.profit),
+            borderColor: '#3b82f6', backgroundColor: '#3b82f620',
+            pointBackgroundColor: top.map(p => p.profit >= 0 ? '#3b82f6' : '#ef4444'),
+            pointRadius: 5, tension: 0.3, fill: false }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { font: { size: 10 }, boxWidth: 12 } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtMoney(ctx.raw)}` } }
+        },
+        scales: {
+          x: { ticks: { font: { size: 9 }, maxRotation: 35 } },
+          y: { ticks: { font: { size: 9 }, callback: v => fmtM(v) } }
+        }
+      }
+    })
+  }
+
+  // Chart 2: Margin bar chart (horizontal)
+  destroyChart('projFinMargin')
+  const ctx2 = document.getElementById('chartProjFinMargin')?.getContext('2d')
+  if (ctx2) {
+    const withMargin = top.filter(p => p.revenue_collected > 0)
+    const mLabels = withMargin.map(p => p.code || p.name.substring(0,10))
+    const mData   = withMargin.map(p => p.margin)
+    const mColors = mData.map(m => m >= 30 ? '#00A651' : m >= 10 ? '#3b82f6' : m >= 0 ? '#f59e0b' : '#ef4444')
+    _analyticsCharts['projFinMargin'] = safeChart(ctx2, {
+      type: 'bar',
+      data: {
+        labels: mLabels,
+        datasets: [{
+          label: 'Biên lợi nhuận (%)',
+          data: mData,
+          backgroundColor: mColors,
+          borderRadius: 4
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => `${ctx.raw}%` } }
+        },
+        scales: {
+          x: {
+            ticks: { font: { size: 9 }, callback: v => v + '%' },
+            grid: { color: '#f3f4f6' }
+          },
+          y: { ticks: { font: { size: 9 } } }
+        }
+      }
+    })
   }
 }
 

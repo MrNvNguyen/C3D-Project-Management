@@ -1796,52 +1796,6 @@
         <div class="card">
           <div class="flex items-center justify-between mb-4">
             <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết chi phí lương theo dự án (tính tự động, chỉ đọc)</h3>
-            <div class="flex gap-2">
-              <button onclick="createLaborCostForProject()" id="btnCreateProjectLaborCost"
-                class="btn-secondary text-xs flex items-center gap-1 border-green-400 text-green-700 hover:bg-green-50">
-                <i class="fas fa-plus-circle"></i>Tạo/Đồng bộ chi phí dự án
-              </button>
-              <button onclick="cleanupProjectLaborDuplicates()"
-                class="btn-secondary text-xs flex items-center gap-1 border-red-300 text-red-600 hover:bg-red-50">
-                <i class="fas fa-broom"></i>Dọn dữ liệu trùng
-              </button>
-            </div>
-          </div>
-          <!-- Create labor cost project selector (hidden by default) -->
-          <div id="createLaborCostPanel" class="hidden mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-            <p class="text-xs font-medium text-green-800 mb-2"><i class="fas fa-info-circle mr-1"></i>Tạo/đồng bộ chi phí lương cho dự án</p>
-            <div class="flex flex-wrap gap-2 items-end">
-              <div>
-                <label class="text-xs text-gray-600 block mb-1">Dự án</label>
-                <select id="createLaborProjSel" class="select-field text-sm" style="width:220px">
-                  <option value="">-- Chọn dự án --</option>
-                </select>
-              </div>
-              <div>
-                <label class="text-xs text-gray-600 block mb-1">Tháng</label>
-                <select id="createLaborMonth" class="select-field text-sm" style="width:110px">
-                  <option value="1">Tháng 1</option><option value="2">Tháng 2</option><option value="3">Tháng 3</option>
-                  <option value="4">Tháng 4</option><option value="5">Tháng 5</option><option value="6">Tháng 6</option>
-                  <option value="7">Tháng 7</option><option value="8">Tháng 8</option><option value="9">Tháng 9</option>
-                  <option value="10">Tháng 10</option><option value="11">Tháng 11</option><option value="12">Tháng 12</option>
-                </select>
-              </div>
-              <div>
-                <label class="text-xs text-gray-600 block mb-1">Năm</label>
-                <select id="createLaborYear" class="select-field text-sm" style="width:90px">
-                  <option value="2024">2024</option><option value="2025">2025</option>
-                  <option value="2026" selected>2026</option><option value="2027">2027</option>
-                </select>
-              </div>
-              <label class="inline-flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
-                <input type="checkbox" id="createLaborForce" class="rounded"> Tính lại (force_recalculate)
-              </label>
-              <button onclick="doCreateLaborCost()" class="btn-primary text-xs flex items-center gap-1">
-                <i class="fas fa-check"></i>Thực hiện
-              </button>
-              <button onclick="$('createLaborCostPanel').classList.add('hidden')" class="btn-secondary text-xs">Hủy</button>
-            </div>
-            <div id="createLaborCostResult" class="hidden mt-2 text-xs"></div>
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
@@ -2059,6 +2013,9 @@
           <button onclick="switchAnalyticsTab('financial')" id="tab-financial" class="analytics-tab flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all" id="tab-financial-btn">
             <i class="fas fa-chart-line"></i> Tài chính
           </button>
+          <button onclick="switchAnalyticsTab('project-finance')" id="tab-project-finance" class="analytics-tab flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all">
+            <i class="fas fa-building"></i> Tài chính dự án
+          </button>
         </div>
 
         <!-- Tab Content: Project Health -->
@@ -2089,6 +2046,11 @@
         <!-- Tab Content: Financial -->
         <div id="analytics-financial" class="analytics-content hidden">
           <div id="analyticsFinancialContent"><div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải...</p></div></div>
+        </div>
+
+        <!-- Tab Content: Project Finance Dashboard -->
+        <div id="analytics-project-finance" class="analytics-content hidden">
+          <div id="analyticsProjectFinanceContent"><div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải...</p></div></div>
         </div>
       </div>
       <!-- ========== END ANALYTICS PAGE ========== -->
@@ -2436,12 +2398,7 @@
         <div id="costTypeGroup">
           <label class="label">Loại chi phí *</label>
           <select id="costType" class="select-field" required>
-            <option value="salary">Lương nhân sự</option>
-            <option value="equipment">Thiết bị</option>
-            <option value="material">Vật liệu</option>
-            <option value="travel">Đi lại</option>
-            <option value="office">Văn phòng</option>
-            <option value="other">Khác</option>
+            <option value="">-- Đang tải... --</option>
           </select>
         </div>
       </div>
@@ -2514,11 +2471,7 @@
         <div>
           <label class="label">Loại chi phí</label>
           <select id="scCostType" class="select-field">
-            <option value="office">Văn phòng</option>
-            <option value="equipment">Thiết bị</option>
-            <option value="material">Vật liệu</option>
-            <option value="travel">Đi lại</option>
-            <option value="other">Khác</option>
+            <option value="">-- Đang tải... --</option>
           </select>
         </div>
         <div>
