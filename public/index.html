@@ -1106,8 +1106,7 @@
             <p class="text-gray-500 text-sm">Theo dõi tài chính dự án</p>
           </div>
           <div class="flex gap-2">
-            <button onclick="openCostModal('revenue')" class="btn-accent flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Doanh thu</button>
-            <button onclick="openCostModal('cost')" class="btn-primary flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Chi phí</button>
+            <button onclick="openCostModal()" class="btn-primary flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Chi phí</button>
           </div>
         </div>
 
@@ -2131,8 +2130,9 @@
             <select id="analyticsYear" onchange="reloadAnalytics()" class="select-field w-32">
               <option value="2023">2023</option>
               <option value="2024">2024</option>
-              <option value="2025" selected>2025</option>
+              <option value="2025">2025</option>
               <option value="2026">2026</option>
+              <option value="2027">2027</option>
             </select>
             <button onclick="exportAnalyticsPDF()" class="btn-secondary text-sm"><i class="fas fa-download mr-1"></i>Xuất PDF</button>
           </div>
@@ -3099,7 +3099,6 @@
     </div>
     <form id="costForm" class="space-y-4">
       <input type="hidden" id="costId">
-      <input type="hidden" id="costMode">
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Dự án *</label>
@@ -3136,18 +3135,7 @@
           <input type="text" id="costVendor" class="input-field" placeholder="Tên nhà cung cấp">
         </div>
       </div>
-      <!-- Payment status — chỉ hiện cho mode revenue -->
-      <div id="paymentStatusGroup" style="display:none">
-        <label class="label">Trạng thái thanh toán *</label>
-        <select id="costPaymentStatus" class="select-field">
-          <option value="pending">⏳ Chờ thanh toán</option>
-          <option value="partial">🔶 Thanh toán một phần</option>
-          <option value="paid">✅ Đã thanh toán</option>
-        </select>
-        <p class="text-xs text-amber-600 mt-1" id="paymentStatusHint">
-          ⚠️ Chỉ doanh thu <strong>Đã thanh toán</strong> hoặc <strong>TT một phần</strong> mới được tính vào doanh thu thực tế.
-        </p>
-      </div>
+
       <div>
         <label class="label">Ghi chú</label>
         <textarea id="costNotes" class="input-field" rows="2"></textarea>

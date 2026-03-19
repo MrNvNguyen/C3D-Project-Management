@@ -66,7 +66,7 @@ let _lastAnalysisKey = ''              // cache key: projId+periodType+month+yea
 // ================================================================
 const $ = id => document.getElementById(id)
 const fmt = (n) => new Intl.NumberFormat('vi-VN').format(n || 0)
-const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', maximumFractionDigits: 1 }).format(n || 0)
+const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0)
 const fmtDate = (d) => d ? dayjs(d).format('DD/MM/YYYY') : '-'
 const today = () => new Date().toISOString().split('T')[0]
 
@@ -5381,8 +5381,39 @@ function renderCostTable() {
   const tbody = $('costTableBody')
   if (!head || !tbody) return
 
-  if (currentCostTab === 'costs') {
+  if (currentCostTab === 'revenues') {
+    // ── Tab Doanh thu: chỉ xem, không có nút thêm/sửa/xóa ─────────────────
     head.innerHTML = `<tr class="text-left text-gray-500 border-b text-xs uppercase">
+      <th class="pb-3 pr-3">Dự án</th>
+      <th class="pb-3 pr-3">Mô tả</th>
+      <th class="pb-3 pr-3">Số HĐ</th>
+      <th class="pb-3 pr-3">Ngày TT</th>
+      <th class="pb-3 pr-3">Trạng thái</th>
+      <th class="pb-3 pr-3 text-right">Số tiền</th>
+      <th class="pb-3 pr-3 text-center">Nguồn</th>
+    </tr>`
+    const payColors  = { pending: 'badge-todo', processing: 'badge-in_progress', partial: 'badge-in_progress', paid: 'badge-completed', rejected: 'badge-canceled' }
+    const payLabels  = { pending: '⏳ Chờ TT', processing: '🔄 Đang xử lý', partial: '💰 TT một phần', paid: '✅ Đã TT', rejected: '❌ Từ chối' }
+    tbody.innerHTML = allRevenues.map(r => `
+      <tr class="table-row">
+        <td class="py-2 pr-3 text-sm font-medium">${r.project_code || '-'}</td>
+        <td class="py-2 pr-3 text-sm text-gray-700">${r.description}</td>
+        <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
+        <td class="py-2 pr-3 text-sm text-gray-500">${fmtDate(r.revenue_date)}</td>
+        <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
+        <td class="py-2 pr-3 text-sm text-right font-bold text-green-600">${fmt(r.amount)}</td>
+        <td class="py-2 pr-3 text-center">
+          <span class="text-xs text-blue-500 bg-blue-50 rounded px-2 py-0.5 whitespace-nowrap">
+            <i class="fas fa-sync-alt mr-1"></i>Tình trạng TT
+          </span>
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="7" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
+    return
+  }
+
+  // ── Tab Chi phí riêng ───────────────────────────────────────────────────
+  head.innerHTML = `<tr class="text-left text-gray-500 border-b text-xs uppercase">
       <th class="pb-3 pr-3">Dự án</th>
       <th class="pb-3 pr-3">Loại</th>
       <th class="pb-3 pr-3">Mô tả</th>
@@ -5391,7 +5422,7 @@ function renderCostTable() {
       <th class="pb-3 pr-3 text-right">Số tiền</th>
       <th class="pb-3">Thao tác</th>
     </tr>`
-    tbody.innerHTML = allCosts.map(c => `
+  tbody.innerHTML = allCosts.map(c => `
       <tr class="table-row">
         <td class="py-2 pr-3 text-sm font-medium">${c.project_code || '-'}</td>
         <td class="py-2 pr-3"><span class="badge" style="background:#fef3c7;color:#92400e">${getCostTypeName(c.cost_type)}</span></td>
@@ -5401,44 +5432,15 @@ function renderCostTable() {
         <td class="py-2 pr-3 text-sm text-right font-bold text-red-600">${fmt(c.amount)}</td>
         <td class="py-2">
           <div class="flex gap-1">
-            <button onclick="openCostModal('cost', ${c.id})" class="btn-secondary text-xs px-2 py-1"><i class="fas fa-edit"></i></button>
+            <button onclick="openCostModal(${c.id})" class="btn-secondary text-xs px-2 py-1"><i class="fas fa-edit"></i></button>
             <button onclick="deleteCostItem('cost', ${c.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm"><i class="fas fa-trash"></i></button>
           </div>
         </td>
       </tr>
     `).join('') || '<tr><td colspan="7" class="text-center py-6 text-gray-400">Không có dữ liệu chi phí</td></tr>'
-  } else {
-    head.innerHTML = `<tr class="text-left text-gray-500 border-b text-xs uppercase">
-      <th class="pb-3 pr-3">Dự án</th>
-      <th class="pb-3 pr-3">Mô tả</th>
-      <th class="pb-3 pr-3">Số HĐ</th>
-      <th class="pb-3 pr-3">Ngày</th>
-      <th class="pb-3 pr-3">Thanh toán</th>
-      <th class="pb-3 pr-3 text-right">Số tiền</th>
-      <th class="pb-3">Thao tác</th>
-    </tr>`
-    const paymentColors = { pending: 'badge-todo', partial: 'badge-review', paid: 'badge-completed' }
-    const paymentLabels = { pending: 'Chờ TT', partial: 'TT một phần', paid: 'Đã TT' }
-    tbody.innerHTML = allRevenues.map(r => `
-      <tr class="table-row">
-        <td class="py-2 pr-3 text-sm font-medium">${r.project_code || '-'}</td>
-        <td class="py-2 pr-3 text-sm text-gray-700">${r.description}</td>
-        <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
-        <td class="py-2 pr-3 text-sm text-gray-500">${fmtDate(r.revenue_date)}</td>
-        <td class="py-2 pr-3"><span class="badge ${paymentColors[r.payment_status]||'badge-todo'}">${paymentLabels[r.payment_status]||r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right font-bold text-green-600">${fmt(r.amount)}</td>
-        <td class="py-2">
-          <div class="flex gap-1">
-            <button onclick="openCostModal('revenue', ${r.id})" class="btn-secondary text-xs px-2 py-1"><i class="fas fa-edit"></i></button>
-            <button onclick="deleteCostItem('revenue', ${r.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm"><i class="fas fa-trash"></i></button>
-          </div>
-        </td>
-      </tr>
-    `).join('') || '<tr><td colspan="7" class="text-center py-6 text-gray-400">Không có dữ liệu doanh thu</td></tr>'
-  }
 }
 
-async function openCostModal(mode, id = null) {
+async function openCostModal(id = null) {
   if (!allProjects.length) allProjects = await api('/projects')
   // Đảm bảo danh sách loại chi phí đã load
   if (!allCostTypes.length) {
@@ -5446,31 +5448,26 @@ async function openCostModal(mode, id = null) {
   }
   _populateAllCostTypeDropdowns()
 
-  $('costMode').value = mode
-  $('costModalTitle').textContent = mode === 'cost' ? (id ? 'Sửa Chi phí' : 'Thêm Chi phí') : (id ? 'Sửa Doanh thu' : 'Thêm Doanh thu')
+  $('costMode').value = 'cost'
+  $('costModalTitle').textContent = id ? 'Sửa Chi phí' : 'Thêm Chi phí'
   $('costId').value = id || ''
 
   const typeGroup = $('costTypeGroup')
-  typeGroup.style.display = mode === 'cost' ? 'block' : 'none'
-
-  // Hiện/ẩn trường trạng thái thanh toán (chỉ cho revenue)
-  const payGroup = $('paymentStatusGroup')
-  if (payGroup) payGroup.style.display = mode === 'revenue' ? 'block' : 'none'
+  typeGroup.style.display = 'block'
 
   $('costProject').innerHTML = '<option value="">-- Chọn dự án --</option>' + allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
 
   if (id) {
-    const item = mode === 'cost' ? allCosts.find(c => c.id === id) : allRevenues.find(r => r.id === id)
+    const item = allCosts.find(c => c.id === id)
     if (item) {
       $('costProject').value = item.project_id || ''
       $('costDescription').value = item.description || ''
       $('costAmount').value = item.amount || ''
-      $('costDate').value = item.cost_date || item.revenue_date || ''
+      $('costDate').value = item.cost_date || ''
       $('costInvoice').value = item.invoice_number || ''
       $('costVendor').value = item.vendor || ''
       $('costNotes').value = item.notes || ''
-      if (mode === 'cost') $('costType').value = item.cost_type || ''
-      if (mode === 'revenue' && $('costPaymentStatus')) $('costPaymentStatus').value = item.payment_status || 'pending'
+      $('costType').value = item.cost_type || ''
     }
   } else {
     $('costProject').value = ''
@@ -5480,10 +5477,7 @@ async function openCostModal(mode, id = null) {
     $('costInvoice').value = ''
     $('costVendor').value = ''
     $('costNotes').value = ''
-    // Chọn option đầu tiên mặc định
-    if (mode === 'cost' && $('costType').options.length) $('costType').selectedIndex = 0
-    // Mặc định "Chờ thanh toán" khi tạo mới doanh thu
-    if (mode === 'revenue' && $('costPaymentStatus')) $('costPaymentStatus').value = 'pending'
+    if ($('costType').options.length) $('costType').selectedIndex = 0
   }
 
   openModal('costModal')
@@ -5492,28 +5486,19 @@ async function openCostModal(mode, id = null) {
 $('costForm').addEventListener('submit', async (e) => {
   e.preventDefault()
   const id = $('costId').value
-  const mode = $('costMode').value
   const data = {
     project_id: parseInt($('costProject').value),
     description: $('costDescription').value,
     amount: parseFloat($('costAmount').value),
-    cost_date: $('costDate').value,        // for costs
-    revenue_date: $('costDate').value,     // for revenues (same field, different key)
+    cost_date: $('costDate').value,
     invoice_number: $('costInvoice').value,
-    notes: $('costNotes').value
-  }
-  if (mode === 'cost') {
-    data.cost_type = $('costType').value
-    data.vendor = $('costVendor').value
-  }
-  if (mode === 'revenue') {
-    // Gửi trạng thái thanh toán — bắt buộc cho revenue
-    data.payment_status = $('costPaymentStatus')?.value || 'pending'
+    notes: $('costNotes').value,
+    cost_type: $('costType').value,
+    vendor: $('costVendor').value
   }
   try {
-    const endpoint = mode === 'cost' ? '/costs' : '/revenues'
-    if (id) await api(`${endpoint}/${id}`, { method: 'put', data })
-    else await api(endpoint, { method: 'post', data })
+    if (id) await api(`/costs/${id}`, { method: 'put', data })
+    else await api('/costs', { method: 'post', data })
     closeModal('costModal')
     toast('Lưu thành công')
     loadCostDashboard()
@@ -5523,8 +5508,7 @@ $('costForm').addEventListener('submit', async (e) => {
 async function deleteCostItem(type, id) {
   if (!confirm('Xóa mục này?')) return
   try {
-    const endpoint = type === 'cost' ? `/costs/${id}` : `/revenues/${id}`
-    await api(endpoint, { method: 'delete' })
+    await api(`/costs/${id}`, { method: 'delete' })
     toast('Đã xóa')
     loadCostDashboard()
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
@@ -7905,6 +7889,12 @@ function getAnalyticsYear() {
 }
 
 async function loadAnalytics() {
+  // Set năm mặc định = năm hiện tại nếu chưa chọn
+  const sel = document.getElementById('analyticsYear')
+  if (sel && !sel.dataset.initialized) {
+    sel.value = new Date().getFullYear().toString()
+    sel.dataset.initialized = '1'
+  }
   switchAnalyticsTab(_analyticsActiveTab)
 }
 
@@ -10313,6 +10303,7 @@ function renderPaymentStatus(payments) {
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Ngày TT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Trạng thái</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Hóa đơn</th>
+          <th class="py-2 px-3 text-center text-gray-600 font-semibold">Doanh thu</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold"></th>
         </tr>
       </thead>
@@ -10345,6 +10336,14 @@ function renderPaymentStatus(payments) {
         <td class="py-2 px-3 text-center text-xs text-gray-500">
           ${p.invoice_number ? `<div class="font-mono">${p.invoice_number}</div>` : '—'}
           ${p.invoice_date ? `<div class="text-gray-400">${p.invoice_date}</div>` : ''}
+        </td>
+        <td class="py-2 px-3 text-center">
+          ${p.revenue_synced
+            ? `<span class="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5" title="Đã tự động tạo doanh thu trong Chi phí & Doanh thu">
+                <i class="fas fa-sync-alt text-emerald-500"></i> Đã đồng bộ
+               </span>`
+            : `<span class="text-xs text-gray-300">—</span>`
+          }
         </td>
         <td class="py-2 px-3 text-center whitespace-nowrap">
           <button onclick="editPayment(${p.id})" class="text-blue-500 hover:text-blue-700 mr-2" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
@@ -10443,12 +10442,20 @@ async function savePayment(e) {
     notes:           $('paymentNotes').value.trim()
   }
   try {
+    const syncStatuses = ['paid', 'partial']
+    const willSync = syncStatuses.includes(payload.status) && (payload.paid_amount || 0) > 0
     if (id) {
-      await api(`/legal/payments/${id}`, { method: 'PUT', data: payload })
-      toast('Đã cập nhật đợt thanh toán', 'success')
+      const res = await api(`/legal/payments/${id}`, { method: 'PUT', data: payload })
+      const msg = willSync
+        ? 'Đã cập nhật & đồng bộ doanh thu ✓'
+        : 'Đã cập nhật đợt thanh toán'
+      toast(msg, 'success', 4000)
     } else {
-      await api(`/legal/${projectId}/payments`, { method: 'POST', data: payload })
-      toast('Đã thêm đợt thanh toán', 'success')
+      const res = await api(`/legal/${projectId}/payments`, { method: 'POST', data: payload })
+      const msg = willSync
+        ? 'Đã thêm đợt TT & tự động tạo doanh thu ✓'
+        : 'Đã thêm đợt thanh toán'
+      toast(msg, 'success', 4000)
     }
     closeModal('paymentModal')
     await loadLegalProject(_legalCurrentProjectId)
@@ -10459,10 +10466,16 @@ async function savePayment(e) {
 }
 
 async function deletePayment(id) {
-  if (!confirm('Xóa đợt thanh toán này?')) return
+  // Kiểm tra có revenue liên kết không
+  const payment = (_legalOverviewData?.payments || []).find(p => p.id === id)
+  const hasRevenue = payment?.revenue_synced || payment?.revenue_id
+  const confirmMsg = hasRevenue
+    ? 'Xóa đợt thanh toán này?\n⚠️ Bản ghi doanh thu liên kết trong "Chi phí & Doanh thu" cũng sẽ bị xóa.'
+    : 'Xóa đợt thanh toán này?'
+  if (!confirm(confirmMsg)) return
   try {
     await api(`/legal/payments/${id}`, { method: 'DELETE' })
-    toast('Đã xóa đợt thanh toán')
+    toast(hasRevenue ? 'Đã xóa đợt TT & doanh thu liên kết' : 'Đã xóa đợt thanh toán', 'success')
     await loadLegalProject(_legalCurrentProjectId)
   } catch(err) {
     toast('Lỗi xóa: ' + err.message, 'error')

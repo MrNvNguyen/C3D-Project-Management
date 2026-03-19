@@ -2274,38 +2274,7 @@ app.delete('/api/costs/:id', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-app.put('/api/revenues/:id', authMiddleware, adminOnly, async (c) => {
-  try {
-    const db = c.env.DB
-    const id = parseInt(c.req.param('id'))
-    const data = await c.req.json()
-    // Accept cost_date as fallback for revenue_date (frontend uses shared form field)
-    if (!data.revenue_date && data.cost_date) data.revenue_date = data.cost_date
-    if (data.revenue_date === 'null' || data.revenue_date === '') data.revenue_date = null
-    const fields = ['description', 'amount', 'currency', 'revenue_date', 'invoice_number', 'payment_status', 'notes']
-    const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
-    const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
-    updates.push('updated_at = CURRENT_TIMESTAMP')
-    values.push(id)
-    await db.prepare(`UPDATE project_revenues SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
-    return c.json({ success: true })
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-app.delete('/api/revenues/:id', authMiddleware, adminOnly, async (c) => {
-  try {
-    const db = c.env.DB
-    const id = parseInt(c.req.param('id'))
-    await db.prepare('DELETE FROM project_revenues WHERE id = ?').bind(id).run()
-    return c.json({ success: true })
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-// Revenue routes
+// Revenue routes (read-only — doanh thu chỉ được tạo tự động từ Tình trạng thanh toán)
 app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
@@ -2328,27 +2297,6 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
     query += ' ORDER BY pr.revenue_date DESC'
     const result = await db.prepare(query).bind(...params).all()
     return c.json(result.results)
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-app.post('/api/revenues', authMiddleware, adminOnly, async (c) => {
-  try {
-    const db = c.env.DB
-    const user = c.get('user') as any
-    const data = await c.req.json()
-    const { project_id, description, amount, currency, revenue_date, cost_date, invoice_number, payment_status, notes } = data
-    // Accept cost_date as fallback for revenue_date (frontend shared form)
-    const finalRevenueDate = (revenue_date && revenue_date !== 'null') ? revenue_date : (cost_date && cost_date !== 'null' ? cost_date : null)
-
-    const result = await db.prepare(
-      `INSERT INTO project_revenues (project_id, description, amount, currency, revenue_date, invoice_number, payment_status, notes, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(project_id, description, amount, currency || 'VND',
-      finalRevenueDate, invoice_number || null, payment_status || 'pending', notes || null, user.id).run()
-
-    return c.json({ success: true, id: result.meta.last_row_id }, 201)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -5614,7 +5562,9 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
 
     // ── Lọc theo khoảng ngày (dateFrom → dateTo) ──────────────────────────
     const costDateFilter = `AND cost_date >= '${dateFrom}' AND cost_date <= '${dateTo}'`
-    const revDateFilter  = `AND revenue_date >= '${dateFrom}' AND revenue_date <= '${dateTo}'`
+    // Revenue: khi all_time không giới hạn dateTo (bao gồm cả thanh toán tương lai đã ghi nhận)
+    const revDateTo = periodMode === 'all_time' ? '9999-12-31' : dateTo
+    const revDateFilter  = `AND revenue_date >= '${dateFrom}' AND revenue_date <= '${revDateTo}'`
 
     // ── Other costs ──────────────────────────────────────────────────────
     const otherCosts = await db.prepare(
@@ -7920,10 +7870,11 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
       'SELECT * FROM legal_letter_config WHERE project_id = ?'
     ).bind(projectId).first()
 
-    // Payments summary
+    // Payments summary (kèm trạng thái sync revenue)
     const payments = await c.env.DB.prepare(
       `SELECT pr.*, u.full_name as created_by_name,
-              li.stt as item_stt, li.title as item_title
+              li.stt as item_stt, li.title as item_title,
+              CASE WHEN pr.revenue_id IS NOT NULL THEN 1 ELSE 0 END as revenue_synced
        FROM payment_requests pr
        LEFT JOIN users u ON u.id = pr.created_by
        LEFT JOIN legal_items li ON li.id = pr.legal_item_id
@@ -8303,7 +8254,73 @@ app.get('/api/legal/:projectId/letters/preview-number', authMiddleware, async (c
 
 // ===================================================
 // MODULE: E. TÌNH TRẠNG THANH TOÁN (Payment Requests)
+// Auto-sync với project_revenues khi status = paid | partial
 // ===================================================
+
+// ── Helper: map payment status → revenue payment_status ──────────────────────
+function paymentStatusToRevenue(status: string): string {
+  if (status === 'paid') return 'paid'
+  if (status === 'partial') return 'partial'
+  return 'pending'
+}
+
+// ── Helper: tạo hoặc cập nhật revenue từ payment request ─────────────────────
+async function syncPaymentToRevenue(
+  db: D1Database,
+  payment: {
+    id: number, project_id: number, description: string,
+    paid_amount: number, currency: string,
+    paid_date: string | null, invoice_number: string | null,
+    payment_phase: string | null, status: string,
+    revenue_id: number | null, notes: string | null
+  },
+  userId: number
+): Promise<number | null> {
+  const shouldSync = payment.status === 'paid' || payment.status === 'partial'
+  const syncAmount = payment.paid_amount || 0
+
+  // Nếu không cần sync → xóa revenue cũ nếu có
+  if (!shouldSync || syncAmount <= 0) {
+    if (payment.revenue_id) {
+      await db.prepare('DELETE FROM project_revenues WHERE id = ?').bind(payment.revenue_id).run()
+      await db.prepare('UPDATE payment_requests SET revenue_id = NULL WHERE id = ?').bind(payment.id).run()
+    }
+    return null
+  }
+
+  const revenueDesc = payment.payment_phase
+    ? `[${payment.payment_phase}] ${payment.description}`
+    : payment.description
+  const revenueStatus = paymentStatusToRevenue(payment.status)
+  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Tình trạng thanh toán]${payment.notes ? '\n' + payment.notes : ''}`
+
+  if (payment.revenue_id) {
+    // Cập nhật revenue đã có
+    await db.prepare(`
+      UPDATE project_revenues
+      SET description = ?, amount = ?, currency = ?, revenue_date = ?,
+          invoice_number = ?, payment_status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(
+      revenueDesc, syncAmount, payment.currency || 'VND',
+      payment.paid_date || null, payment.invoice_number || null,
+      revenueStatus, revenueNotes, payment.revenue_id
+    ).run()
+    return payment.revenue_id
+  } else {
+    // Tạo revenue mới
+    const result = await db.prepare(`
+      INSERT INTO project_revenues
+        (project_id, description, amount, currency, revenue_date, invoice_number, payment_status, notes, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).bind(
+      payment.project_id, revenueDesc, syncAmount, payment.currency || 'VND',
+      payment.paid_date || null, payment.invoice_number || null,
+      revenueStatus, revenueNotes, userId
+    ).run()
+    return result.meta.last_row_id as number
+  }
+}
 
 // GET /api/legal/:projectId/payments — list all payment requests
 app.get('/api/legal/:projectId/payments', authMiddleware, async (c) => {
@@ -8311,10 +8328,12 @@ app.get('/api/legal/:projectId/payments', authMiddleware, async (c) => {
   try {
     const rows = await c.env.DB.prepare(`
       SELECT pr.*, u.full_name as created_by_name,
-             li.stt as item_stt, li.title as item_title
+             li.stt as item_stt, li.title as item_title,
+             rv.id as revenue_synced_id
       FROM payment_requests pr
       LEFT JOIN users u ON u.id = pr.created_by
       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+      LEFT JOIN project_revenues rv ON rv.id = pr.revenue_id
       WHERE pr.project_id = ?
       ORDER BY pr.created_at DESC
     `).bind(projectId).all()
@@ -8334,6 +8353,8 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
             paid_amount, paid_date, invoice_number, invoice_date, payment_phase,
             legal_item_id, notes } = data
     if (!description) return c.json({ error: 'description required' }, 400)
+
+    // Insert payment request
     const result = await c.env.DB.prepare(`
       INSERT INTO payment_requests
         (project_id, legal_item_id, request_number, description, request_date, amount, currency,
@@ -8346,7 +8367,24 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
       invoice_number || null, invoice_date || null, payment_phase || null,
       notes || null, user.id
     ).run()
-    return c.json({ id: result.meta.last_row_id, success: true })
+    const paymentId = result.meta.last_row_id as number
+
+    // Auto-sync revenue nếu cần
+    const revenueId = await syncPaymentToRevenue(c.env.DB, {
+      id: paymentId, project_id: projectId, description,
+      paid_amount: paid_amount || 0, currency: currency || 'VND',
+      paid_date: paid_date || null, invoice_number: invoice_number || null,
+      payment_phase: payment_phase || null, status: status || 'pending',
+      revenue_id: null, notes: notes || null
+    }, user.id)
+
+    // Lưu revenue_id vào payment nếu có
+    if (revenueId) {
+      await c.env.DB.prepare('UPDATE payment_requests SET revenue_id = ? WHERE id = ?')
+        .bind(revenueId, paymentId).run()
+    }
+
+    return c.json({ id: paymentId, revenue_id: revenueId, success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -8355,8 +8393,16 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
 // PUT /api/legal/payments/:id — update payment request
 app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
   const id = parseInt(c.req.param('id'))
+  const user = c.get('user') as any
   try {
     const data = await c.req.json()
+
+    // Lấy payment hiện tại để có đủ thông tin sync
+    const current = await c.env.DB.prepare(
+      'SELECT * FROM payment_requests WHERE id = ?'
+    ).bind(id).first() as any
+    if (!current) return c.json({ error: 'not found' }, 404)
+
     const fields = ['description', 'request_number', 'request_date', 'amount', 'currency',
                     'status', 'paid_amount', 'paid_date', 'invoice_number', 'invoice_date',
                     'payment_phase', 'legal_item_id', 'notes']
@@ -8372,17 +8418,51 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
     updates.push('updated_at = CURRENT_TIMESTAMP')
     values.push(id)
     await c.env.DB.prepare(`UPDATE payment_requests SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
-    return c.json({ success: true })
+
+    // Merge current + new data để sync
+    const merged = { ...current, ...Object.fromEntries(fields.map(f => [f, data[f] !== undefined ? (data[f] === '' ? null : data[f]) : current[f]])) }
+
+    // Auto-sync revenue
+    const revenueId = await syncPaymentToRevenue(c.env.DB, {
+      id, project_id: current.project_id,
+      description: merged.description,
+      paid_amount: merged.paid_amount || 0,
+      currency: merged.currency || 'VND',
+      paid_date: merged.paid_date || null,
+      invoice_number: merged.invoice_number || null,
+      payment_phase: merged.payment_phase || null,
+      status: merged.status || 'pending',
+      revenue_id: current.revenue_id || null,
+      notes: merged.notes || null
+    }, user.id)
+
+    // Cập nhật revenue_id
+    await c.env.DB.prepare('UPDATE payment_requests SET revenue_id = ? WHERE id = ?')
+      .bind(revenueId || null, id).run()
+
+    return c.json({ success: true, revenue_id: revenueId })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
 })
 
-// DELETE /api/legal/payments/:id — delete payment request
+// DELETE /api/legal/payments/:id — delete payment request + xóa revenue liên kết
 app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
   const id = parseInt(c.req.param('id'))
   try {
+    // Lấy revenue_id trước khi xóa
+    const payment = await c.env.DB.prepare(
+      'SELECT revenue_id FROM payment_requests WHERE id = ?'
+    ).bind(id).first() as any
+
     await c.env.DB.prepare('DELETE FROM payment_requests WHERE id = ?').bind(id).run()
+
+    // Xóa revenue đã sync nếu có
+    if (payment?.revenue_id) {
+      await c.env.DB.prepare('DELETE FROM project_revenues WHERE id = ?')
+        .bind(payment.revenue_id).run()
+    }
+
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
