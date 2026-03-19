@@ -5845,6 +5845,20 @@ function confirmDeleteUser(id, name) {
 // ================================================================
 // PROFILE
 // ================================================================
+function switchGuideTab(tab) {
+  // Update tab buttons
+  document.querySelectorAll('.guide-tab-btn').forEach(btn => {
+    const isActive = btn.id === `guideTab-${tab}`
+    btn.className = isActive
+      ? 'guide-tab-btn active flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-primary bg-primary text-white transition-all'
+      : 'guide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all'
+  })
+  // Show/hide panels
+  document.querySelectorAll('.guide-panel').forEach(panel => {
+    panel.classList.toggle('hidden', panel.id !== `guidePanel-${tab}`)
+  })
+}
+
 async function loadProfile() {
   try {
     const user = await api('/auth/me')
