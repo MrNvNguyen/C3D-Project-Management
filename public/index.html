@@ -1795,14 +1795,29 @@
                   <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">4</div>
                   <div class="flex-1">
                     <p class="font-semibold text-gray-800">Nhấn <strong>Lưu</strong></p>
-                    <p class="text-sm text-gray-500 mt-1">Timesheet được ghi lại và quản lý có thể xem ngay. Nếu làm nhiều dự án trong ngày → tạo <strong>nhiều timesheet riêng</strong> cho mỗi dự án.</p>
+                    <p class="text-sm text-gray-500 mt-1">Timesheet được lưu với trạng thái <span class="badge badge-todo">Nháp</span>. Nếu làm nhiều dự án trong ngày → tạo <strong>nhiều timesheet riêng</strong> cho mỗi dự án.</p>
                   </div>
                 </div>
                 <div class="flex gap-4">
                   <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">5</div>
                   <div class="flex-1">
-                    <p class="font-semibold text-gray-800">Kiểm tra timesheet đã nộp</p>
-                    <p class="text-sm text-gray-500 mt-1">Dùng bộ lọc tháng/năm và tên nhân viên để xem lại lịch sử đã khai báo. Có thể <strong>sửa hoặc xóa</strong> nếu nhập sai.</p>
+                    <p class="font-semibold text-gray-800">Nhấn nút <i class="fas fa-paper-plane text-blue-500"></i> <strong>Gửi duyệt</strong></p>
+                    <p class="text-sm text-gray-500 mt-1">Trong cột <strong>Thao tác</strong>, nhấn nút <span class="inline-flex items-center gap-1 bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded"><i class="fas fa-paper-plane text-xs"></i> Gửi</span> để nộp timesheet cho quản lý xét duyệt. Trạng thái sẽ chuyển từ <span class="badge badge-todo">Nháp</span> → <span class="badge badge-review">Chờ duyệt</span>.</p>
+                    <div class="mt-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                      <i class="fas fa-info-circle mr-1"></i> Chỉ timesheet ở trạng thái <strong>Nháp</strong> mới có nút Gửi duyệt. Sau khi gửi, bạn không thể sửa cho đến khi quản lý duyệt hoặc từ chối.
+                    </div>
+                  </div>
+                </div>
+                <div class="flex gap-4">
+                  <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">6</div>
+                  <div class="flex-1">
+                    <p class="font-semibold text-gray-800">Kiểm tra kết quả duyệt</p>
+                    <p class="text-sm text-gray-500 mt-1">Theo dõi trạng thái timesheet:</p>
+                    <div class="mt-2 flex flex-wrap gap-2 text-xs">
+                      <span class="badge badge-review">⏳ Chờ duyệt</span>
+                      <span class="badge badge-completed">✅ Đã duyệt</span>
+                      <span class="badge badge-overdue">❌ Từ chối → sửa lại và gửi lại</span>
+                    </div>
                   </div>
                 </div>
               </div>
