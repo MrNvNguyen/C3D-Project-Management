@@ -43,13 +43,45 @@
     /* ================================================================
        SIDEBAR
     ================================================================ */
-    .sidebar { width: 260px; background: linear-gradient(180deg, #00A651 0%, #006e36 100%); min-height: 100vh; position: fixed; left: 0; top: 0; z-index: 100; transition: transform 0.3s; }
+    .sidebar { width: 260px; background: linear-gradient(180deg, #00A651 0%, #006e36 100%); min-height: 100vh; position: fixed; left: 0; top: 0; z-index: 100; transition: width 0.25s ease, transform 0.25s ease; overflow: hidden; }
     .sidebar.collapsed { transform: translateX(-260px); }
-    .main-content { margin-left: 260px; transition: margin 0.3s; min-height: 100vh; }
+    .sidebar.mini { width: 64px; }
+    .main-content { margin-left: 260px; transition: margin 0.25s ease; min-height: 100vh; }
     .main-content.expanded { margin-left: 0; }
-    .nav-item { display: flex; align-items: center; padding: 10px 20px; color: rgba(255,255,255,0.8); cursor: pointer; transition: all 0.2s; border-radius: 8px; margin: 2px 10px; font-size: 13px; }
+    .main-content.mini-sidebar { margin-left: 64px; }
+    .nav-item { display: flex; align-items: center; padding: 10px 14px; color: rgba(255,255,255,0.8); cursor: pointer; transition: all 0.2s; border-radius: 8px; margin: 2px 8px; font-size: 13px; white-space: nowrap; position: relative; }
     .nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.2); color: #fff; }
-    .nav-item i { width: 20px; margin-right: 10px; flex-shrink: 0; }
+    .nav-item i { width: 20px; text-align: center; margin-right: 10px; flex-shrink: 0; font-size: 14px; }
+    /* Mini mode: nav-item */
+    .sidebar.mini .nav-item { padding: 10px; justify-content: center; margin: 2px 6px; }
+    .sidebar.mini .nav-item i { margin-right: 0; }
+    .sidebar.mini .nav-item span { display: none; }
+    .sidebar.mini .sidebar-section { display: none; }
+    .sidebar.mini .nav-item:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: calc(100% + 10px);
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(0,0,0,0.85);
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      white-space: nowrap;
+      z-index: 9999;
+      pointer-events: none;
+    }
+    /* Sidebar header in mini mode */
+    .sidebar-logo-full { display: flex; align-items: center; gap: 12px; transition: opacity 0.2s; }
+    .sidebar.mini .sidebar-logo-full .logo-text { display: none; }
+    .sidebar.mini .sidebar-logo-full { justify-content: center; }
+    /* Sidebar toggle btn */
+    .sidebar-toggle-btn { position: absolute; bottom: 72px; right: -13px; width: 26px; height: 26px; background: #fff; border: 2px solid #00A651; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 200; box-shadow: 0 2px 8px rgba(0,0,0,0.15); transition: transform 0.25s; color: #00A651; font-size: 11px; }
+    .sidebar.mini .sidebar-toggle-btn { transform: rotate(180deg); right: -13px; }
+    /* User info in mini mode */
+    .sidebar.mini .sidebar-user-info { display: none; }
+    .sidebar.mini .sidebar-user-mini { display: flex !important; }
 
     /* ================================================================
        CARDS & KPI CARDS — fixed padding in px
@@ -102,6 +134,10 @@
     .subtask-row { transition: background 0.15s; }
     .subtask-toggle i { transition: transform 0.2s ease; }
     .subtask-toggle.expanded i { transform: rotate(90deg); }
+    /* Legal task panel hover effects */
+    .subtask-row-legal:hover { background: #f5f3ff !important; }
+    .subtask-row-legal:hover .st-actions { opacity: 1 !important; }
+    .subtask-row-legal:last-child { border-bottom: none !important; }
     /* ── Chat UI ──────────────────────────────────── */
     .chat-wrap { display:flex; flex-direction:column; height:500px; }
     .chat-messages { flex:1; overflow-y:auto; padding:16px; scroll-behavior:smooth; background:#f9fafb; }
@@ -146,6 +182,9 @@
     .select-field:focus { border-color: #00A651; }
     .label { display: block; font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 4px; }
     .sidebar-section { padding: 8px 10px 4px; color: rgba(255,255,255,0.5); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+    /* Mini divider line between groups */
+    .sidebar.mini .sidebar-section-divider { display: block !important; height: 1px; background: rgba(255,255,255,0.15); margin: 6px 10px; }
+    .sidebar-section-divider { display: none; }
     .top-bar { background: white; height: 60px; display: flex; align-items: center; padding: 0 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); position: sticky; top: 0; z-index: 50; }
     .gantt-bar { height: 24px; border-radius: 4px; position: relative; min-width: 4px; }
     .gantt-today { position: absolute; top: 0; bottom: 0; width: 2px; background: red; z-index: 10; }
@@ -169,7 +208,9 @@
     }
     @media (max-width: 767px) {
       .sidebar { transform: translateX(-260px); }
-      .main-content { margin-left: 0; }
+      .sidebar.mini { transform: translateX(-64px); }
+      .main-content { margin-left: 0 !important; }
+      .sidebar-toggle-btn { display: none; }
       .chart-container-fixed { height: 220px; }
       .chart-container-lg { height: 250px; }
       .chart-container-sm { height: 180px; }
@@ -284,80 +325,92 @@
 <div id="mainApp" style="display:none">
   <!-- Sidebar -->
   <div class="sidebar" id="sidebar">
-    <div class="p-4 border-b border-green-700">
-      <div class="flex items-center gap-3">
-        <img src="https://onecadvn.com/Upload/images/logo/logo.png" alt="OneCad" class="h-10 filter brightness-0 invert" onerror="this.style.display='none'">
-        <div>
+    <!-- Header -->
+    <div class="p-4 border-b border-green-700" style="min-height:72px">
+      <div class="sidebar-logo-full">
+        <img src="https://onecadvn.com/Upload/images/logo/logo.png" alt="OneCad" class="h-10 filter brightness-0 invert flex-shrink-0" onerror="this.style.display='none'">
+        <div class="logo-text">
           <div class="text-white font-bold text-lg leading-tight">OneCad BIM</div>
           <div class="text-green-200 text-xs">Project Management</div>
         </div>
       </div>
     </div>
-    
-    <nav class="py-4" id="sidebarNav">
+
+    <nav class="py-4 overflow-y-auto" id="sidebarNav" style="height:calc(100vh - 72px - 68px)">
       <div class="sidebar-section">Tổng quan</div>
-      <div class="nav-item active" onclick="navigate('dashboard')">
+      <div class="nav-item active" onclick="navigate('dashboard')" data-tooltip="Dashboard">
         <i class="fas fa-tachometer-alt"></i><span>Dashboard</span>
       </div>
-      <div class="nav-item" onclick="navigate('productivity')">
+      <div class="nav-item" onclick="navigate('productivity')" data-tooltip="Năng suất nhân sự">
         <i class="fas fa-chart-bar"></i><span>Năng suất nhân sự</span>
       </div>
 
+      <div class="sidebar-section-divider"></div>
       <div class="sidebar-section mt-3">Quản lý dự án</div>
-      <div class="nav-item" onclick="navigate('projects')">
+      <div class="nav-item" onclick="navigate('projects')" data-tooltip="Dự án">
         <i class="fas fa-project-diagram"></i><span>Dự án</span>
       </div>
-      <div class="nav-item" onclick="navigate('tasks')">
+      <div class="nav-item" onclick="navigate('tasks')" data-tooltip="Công việc">
         <i class="fas fa-tasks"></i><span>Công việc</span>
       </div>
-      <div class="nav-item" onclick="navigate('timesheet')">
+      <div class="nav-item" onclick="navigate('timesheet')" data-tooltip="Timesheet">
         <i class="fas fa-clock"></i><span>Timesheet</span>
       </div>
-      <div class="nav-item" onclick="navigate('gantt')">
+      <div class="nav-item" onclick="navigate('gantt')" data-tooltip="Tiến độ Gantt">
         <i class="fas fa-chart-gantt"></i><span>Tiến độ Gantt</span>
       </div>
 
       <div id="adminNav" style="display:none">
+        <div class="sidebar-section-divider"></div>
+        <div class="sidebar-section mt-3">Pháp lý & Hợp đồng</div>
+        <div class="nav-item" onclick="navigate('legal')" data-tooltip="Hồ Sơ Pháp Lý">
+          <i class="fas fa-file-contract"></i><span>Hồ Sơ Pháp Lý</span>
+        </div>
+
+        <div class="sidebar-section-divider"></div>
         <div class="sidebar-section mt-3">Quản lý tài chính</div>
-        <div class="nav-item" onclick="navigate('costs')">
+        <div class="nav-item" onclick="navigate('costs')" data-tooltip="Chi phí & Doanh thu">
           <i class="fas fa-coins"></i><span>Chi phí & Doanh thu</span>
         </div>
-        <div class="nav-item" onclick="navigate('finance-project')">
+        <div class="nav-item" onclick="navigate('finance-project')" data-tooltip="Tài chính dự án">
           <i class="fas fa-chart-line"></i><span>Tài chính dự án</span>
         </div>
-        <div class="nav-item" onclick="navigate('labor-cost')">
+        <div class="nav-item" onclick="navigate('labor-cost')" data-tooltip="Chi phí lương">
           <i class="fas fa-calculator"></i><span>Chi phí lương</span>
         </div>
-        <div class="nav-item" onclick="navigate('cost-types')">
+        <div class="nav-item" onclick="navigate('cost-types')" data-tooltip="Loại chi phí">
           <i class="fas fa-tags"></i><span>Loại chi phí</span>
         </div>
 
-        <div class="sidebar-section mt-3">Tài sản & Nhân sự</div>
-        <div class="nav-item" onclick="navigate('assets')">
-          <i class="fas fa-laptop"></i><span>Tài sản</span>
-        </div>
-        <div class="nav-item" onclick="navigate('users')">
-          <i class="fas fa-users"></i><span>Nhân sự</span>
-        </div>
-
         <div class="sidebar-section mt-3">Hệ thống</div>
-        <div class="nav-item" onclick="navigate('analytics')">
+        <div class="nav-item" onclick="navigate('analytics')" data-tooltip="Báo cáo & Phân tích">
           <i class="fas fa-chart-pie"></i><span>Báo cáo & Phân tích</span>
         </div>
-        <div class="nav-item" onclick="navigate('system-config')">
+        <div class="nav-item" onclick="navigate('system-config')" data-tooltip="Cấu hình hệ thống">
           <i class="fas fa-sliders-h"></i><span>Cấu hình hệ thống</span>
+        </div>
+
+        <div class="sidebar-section mt-3">Tài sản & Nhân sự</div>
+        <div class="nav-item" onclick="navigate('assets')" data-tooltip="Tài sản">
+          <i class="fas fa-laptop"></i><span>Tài sản</span>
+        </div>
+        <div class="nav-item" onclick="navigate('users')" data-tooltip="Nhân sự">
+          <i class="fas fa-users"></i><span>Nhân sự</span>
         </div>
       </div>
 
+      <div class="sidebar-section-divider"></div>
       <div class="sidebar-section mt-3">Cá nhân</div>
-      <div class="nav-item" onclick="navigate('profile')">
+      <div class="nav-item" onclick="navigate('profile')" data-tooltip="Hồ sơ & Cài đặt">
         <i class="fas fa-user-cog"></i><span>Hồ sơ & Cài đặt</span>
       </div>
     </nav>
 
-    <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-green-700">
-      <div class="flex items-center gap-3">
-        <div class="w-9 h-9 rounded-full bg-green-200 flex items-center justify-center text-green-800 font-bold text-sm" id="sidebarAvatar">A</div>
+    <!-- User footer -->
+    <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-green-700" style="height:68px">
+      <!-- Full mode: name + role + logout -->
+      <div class="flex items-center gap-3 sidebar-user-info">
+        <div class="w-9 h-9 rounded-full bg-green-200 flex items-center justify-center text-green-800 font-bold text-sm flex-shrink-0" id="sidebarAvatar">A</div>
         <div class="flex-1 min-w-0">
           <div class="text-white text-sm font-medium truncate" id="sidebarName">Admin</div>
           <div class="text-green-300 text-xs" id="sidebarRole">System Admin</div>
@@ -366,7 +419,16 @@
           <i class="fas fa-sign-out-alt"></i>
         </button>
       </div>
+      <!-- Mini mode: just avatar centered -->
+      <div class="justify-center sidebar-user-mini" style="display:none" title="Đăng xuất" onclick="logout()">
+        <div class="w-9 h-9 rounded-full bg-green-200 flex items-center justify-center text-green-800 font-bold text-sm cursor-pointer" id="sidebarAvatarMini">A</div>
+      </div>
     </div>
+
+    <!-- Toggle button (expand/collapse) -->
+    <button class="sidebar-toggle-btn" id="sidebarToggleBtn" onclick="toggleSidebarMini()" title="Thu gọn sidebar">
+      <i class="fas fa-chevron-left" id="sidebarToggleIcon"></i>
+    </button>
   </div>
 
   <!-- Main Content -->
@@ -734,6 +796,7 @@
               <option value="infrastructure">Hạ tầng</option>
               <option value="transport">Giao thông</option>
               <option value="energy">Năng lượng</option>
+              <option value="hydraulic">Thủy lợi</option>
             </select>
             <!-- Client filter combobox -->
             <div id="projectClientCombobox" class="relative" style="min-width:190px"></div>
@@ -2137,6 +2200,111 @@
       </div>
       <!-- ========== END ANALYTICS PAGE ========== -->
 
+      <!-- ========== HỒ SƠ PHÁP LÝ PAGE ========== -->
+      <div id="page-legal" class="page">
+        <!-- Header -->
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+          <div>
+            <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-file-contract text-primary mr-2"></i>Hồ Sơ Pháp Lý Dự Án</h2>
+            <p class="text-gray-500 text-sm mt-0.5">Theo dõi hợp đồng, phụ lục, nghiệm thu, thanh toán và văn bản gửi đi</p>
+          </div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <select id="legalProjectSelect" class="select-field" style="min-width:220px" onchange="onLegalProjectChange()">
+              <option value="">-- Chọn dự án --</option>
+            </select>
+            <button onclick="openLegalLetterModal()" id="btnAddLetter" class="btn-accent hidden" style="display:none">
+              <i class="fas fa-paper-plane mr-1"></i>Gửi văn bản
+            </button>
+            <button onclick="openLegalDocModal()" id="btnAddDoc" class="btn-primary hidden" style="display:none">
+              <i class="fas fa-file-plus mr-1"></i>Thêm tài liệu
+            </button>
+            <button onclick="openLegalLetterConfig()" id="btnLetterConfig" class="btn-secondary hidden" title="Cấu hình đánh số" style="display:none">
+              <i class="fas fa-cog"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- KPI Summary -->
+        <div id="legalKPIRow" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5" style="display:none">
+          <div class="kpi-card">
+            <div class="text-xs text-gray-500 mb-1">Tổng hạng mục</div>
+            <div class="text-2xl font-bold text-gray-800" id="legalKpiTotal">0</div>
+          </div>
+          <div class="kpi-card" style="border-left-color:#00A651">
+            <div class="text-xs text-gray-500 mb-1">Đã hoàn thành</div>
+            <div class="text-2xl font-bold text-green-600" id="legalKpiDone">0</div>
+          </div>
+          <div class="kpi-card" style="border-left-color:#0066CC">
+            <div class="text-xs text-gray-500 mb-1">Văn bản gửi đi</div>
+            <div class="text-2xl font-bold text-blue-600" id="legalKpiLetters">0</div>
+          </div>
+          <div class="kpi-card" style="border-left-color:#FF6B00">
+            <div class="text-xs text-gray-500 mb-1">Tài liệu đính kèm</div>
+            <div class="text-2xl font-bold text-orange-500" id="legalKpiDocs">0</div>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div id="legalTabs" class="flex gap-2 mb-4" style="display:none">
+          <button class="tab-btn active" id="ltab-stages" onclick="switchLegalTab('stages')"><i class="fas fa-list-ol mr-1"></i>Theo dõi hồ sơ</button>
+          <button class="tab-btn" id="ltab-letters" onclick="switchLegalTab('letters')"><i class="fas fa-paper-plane mr-1"></i>Văn bản gửi đi</button>
+          <button class="tab-btn" id="ltab-docs" onclick="switchLegalTab('docs')"><i class="fas fa-paperclip mr-1"></i>Tài liệu đính kèm</button>
+          <button class="tab-btn" id="ltab-payments" onclick="switchLegalTab('payments')"><i class="fas fa-money-check-alt mr-1"></i>Tình trạng thanh toán</button>
+        </div>
+
+        <!-- Tab: Stages / Items -->
+        <div id="legalTabStages">
+          <div id="legalStagesContainer">
+            <div class="card text-center py-16 text-gray-400">
+              <i class="fas fa-file-contract text-5xl mb-4 opacity-30"></i>
+              <p class="font-medium">Chọn dự án để xem hồ sơ pháp lý</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Outgoing Letters -->
+        <div id="legalTabLetters" style="display:none">
+          <div class="card">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-paper-plane text-blue-500 mr-2"></i>Danh sách văn bản gửi đi</h3>
+              <button onclick="openLegalLetterModal()" class="btn-accent text-sm"><i class="fas fa-plus mr-1"></i>Tạo văn bản</button>
+            </div>
+            <div id="legalLettersTable">
+              <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Documents -->
+        <div id="legalTabDocs" style="display:none">
+          <div class="card">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-paperclip text-orange-500 mr-2"></i>Tài liệu đính kèm</h3>
+              <button onclick="openLegalDocModal()" class="btn-primary text-sm"><i class="fas fa-plus mr-1"></i>Thêm tài liệu</button>
+            </div>
+            <div id="legalDocsTable">
+              <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: E. Tình trạng thanh toán -->
+        <div id="legalTabPayments" style="display:none">
+          <div class="card">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-money-check-alt text-emerald-600 mr-2"></i>E. Tình trạng thanh toán</h3>
+              <button onclick="openPaymentModal()" class="btn-primary text-sm"><i class="fas fa-plus mr-1"></i>Thêm đợt thanh toán</button>
+            </div>
+            <!-- Summary cards -->
+            <div id="paymentSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+            <div id="legalPaymentsTable">
+              <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- ========== END HỒ SƠ PHÁP LÝ PAGE ========== -->
+
       </div><!-- End Pages -->
       </div><!-- End max-width wrapper -->
 
@@ -2144,7 +2312,455 @@
   </div><!-- End Main Content -->
 </div><!-- End Main App -->
 
+<!-- ========== LEGAL MODALS ========== -->
+
+<!-- Modal: Add/Edit Legal Item -->
+<div id="legalItemModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:540px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="legalItemModalTitle"><i class="fas fa-edit text-primary mr-2"></i>Hạng mục pháp lý</h3>
+      <button onclick="closeModal('legalItemModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="legalItemForm" class="space-y-4" onsubmit="saveLegalItem(event)">
+      <input type="hidden" id="legalItemId">
+      <input type="hidden" id="legalItemStageId">
+      <input type="hidden" id="legalItemParentId">
+      <input type="hidden" id="legalItemProjectId">
+      <input type="hidden" id="legalItemStt">
+      <!-- STT hiển thị tự động, không nhập tay -->
+      <div class="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 flex items-center gap-2" id="legalItemSttPreview" style="display:none!important">
+        <i class="fas fa-sort-numeric-up text-blue-400 text-sm"></i>
+        <span class="text-xs text-blue-500">STT tự động:</span>
+        <span class="font-bold text-blue-700 font-mono" id="legalItemSttPreviewVal">–</span>
+      </div>
+      <div class="grid grid-cols-1 gap-3">
+        <div>
+          <label class="label">Loại</label>
+          <select id="legalItemType" class="select-field">
+            <option value="task">Công việc</option>
+            <option value="document">Văn bản / Tài liệu</option>
+            <option value="group">Nhóm</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="label">Tên hạng mục *</label>
+        <input type="text" id="legalItemTitle" class="input-field" placeholder="Tên hạng mục công việc" required>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Hạn thực hiện</label>
+          <input type="date" id="legalItemDueDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="legalItemStatus" class="select-field">
+            <option value="pending">Chưa thực hiện</option>
+            <option value="in_progress">Đang thực hiện</option>
+            <option value="completed">Đã hoàn thành</option>
+            <option value="na">Không áp dụng</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="label">Ghi chú</label>
+        <textarea id="legalItemNotes" class="input-field" rows="2" placeholder="Ghi chú, gửi CĐT ngày..."></textarea>
+      </div>
+      <div class="flex gap-3 justify-end pt-2">
+        <button type="button" onclick="closeModal('legalItemModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Outgoing Letter -->
+<div id="legalLetterModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:560px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="legalLetterModalTitle"><i class="fas fa-paper-plane text-blue-500 mr-2"></i>Văn bản gửi đi</h3>
+      <button onclick="closeModal('legalLetterModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="legalLetterForm" class="space-y-4" onsubmit="saveLegalLetter(event)">
+      <input type="hidden" id="legalLetterId">
+      <input type="hidden" id="legalLetterProjectId">
+      <!-- Preview số -->
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center gap-3">
+        <i class="fas fa-hashtag text-blue-500 text-lg"></i>
+        <div class="flex-1">
+          <div class="text-xs text-blue-500 font-semibold">Số văn bản (tự động theo loại)</div>
+          <div class="font-bold text-blue-700 text-lg font-mono" id="legalLetterNumberPreview">...</div>
+          <div class="text-xs text-gray-400 mt-0.5">Định dạng: <span class="font-mono">STT-MÃ LOẠI/OneCAD-BIM(Số hiệu dự án)</span></div>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Loại văn bản *</label>
+          <select id="legalLetterType" class="select-field">
+            <option value="cv">Công văn (CV)</option>
+            <option value="bc">Báo cáo (BC)</option>
+            <option value="bb">Biên bản (BB)</option>
+            <option value="tb">Thông báo (TB)</option>
+            <option value="qd">Quyết định (QĐ)</option>
+            <option value="tt">Tờ trình (TT)</option>
+            <option value="kh">Kế hoạch (KH)</option>
+            <option value="yc">Yêu cầu (YC)</option>
+            <option value="pl">Phụ lục (PL)</option>
+            <option value="contract">Hợp đồng</option>
+            <option value="appendix">Phụ lục HĐ</option>
+            <option value="acceptance">Biên bản nghiệm thu</option>
+            <option value="payment">Thanh toán</option>
+            <option value="other">Văn bản khác (VB)</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Trích yếu / Nội dung *</label>
+          <input type="text" id="legalLetterSubject" class="input-field" placeholder="VD: Báo cáo kết quả mô hình BIM" required>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Người/Cơ quan nhận</label>
+          <input type="text" id="legalLetterRecipient" class="input-field" placeholder="VD: CĐT, TVGS...">
+        </div>
+        <div>
+          <label class="label">Ngày gửi</label>
+          <input type="date" id="legalLetterSentDate" class="input-field">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Hạng mục liên quan</label>
+          <select id="legalLetterItemId" class="select-field">
+            <option value="">-- Chọn hạng mục --</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="legalLetterStatus" class="select-field">
+            <option value="draft">Nháp</option>
+            <option value="sent">Đã gửi</option>
+            <option value="acknowledged">Đã xác nhận</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="label">Ghi chú</label>
+        <textarea id="legalLetterNotes" class="input-field" rows="2"></textarea>
+      </div>
+      <div class="flex gap-3 justify-end pt-2">
+        <button type="button" onclick="closeModal('legalLetterModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-accent"><i class="fas fa-paper-plane mr-1"></i>Tạo văn bản</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Legal Document -->
+<div id="legalDocModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:540px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="legalDocModalTitle"><i class="fas fa-paperclip text-orange-500 mr-2"></i>Tài liệu đính kèm</h3>
+      <button onclick="closeModal('legalDocModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="legalDocForm" class="space-y-4" onsubmit="saveLegalDoc(event)">
+      <input type="hidden" id="legalDocId">
+      <input type="hidden" id="legalDocProjectId">
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Loại tài liệu</label>
+          <select id="legalDocType" class="select-field">
+            <option value="contract">Hợp đồng</option>
+            <option value="appendix">Phụ lục hợp đồng</option>
+            <option value="acceptance">Biên bản nghiệm thu</option>
+            <option value="payment">Thanh toán</option>
+            <option value="cv">Công văn (CV)</option>
+            <option value="bc">Báo cáo (BC)</option>
+            <option value="bb">Biên bản (BB)</option>
+            <option value="tb">Thông báo (TB)</option>
+            <option value="qd">Quyết định (QĐ)</option>
+            <option value="tt">Tờ trình (TT)</option>
+            <option value="kh">Kế hoạch (KH)</option>
+            <option value="yc">Yêu cầu (YC)</option>
+            <option value="pl">Phụ lục (PL)</option>
+            <option value="other">Văn bản khác (VB)</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Ngày ký/ban hành</label>
+          <input type="date" id="legalDocSignedDate" class="input-field">
+        </div>
+      </div>
+      <div>
+        <label class="label">Tên tài liệu *</label>
+        <input type="text" id="legalDocTitle" class="input-field" placeholder="VD: Hợp đồng số 01/2025/HĐ-OC" required>
+      </div>
+      <div>
+        <label class="label">Hạng mục liên quan</label>
+        <select id="legalDocItemId" class="select-field">
+          <option value="">-- Chọn hạng mục --</option>
+        </select>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Tên file</label>
+          <input type="text" id="legalDocFileName" class="input-field" placeholder="VD: HopDong_2025.pdf">
+        </div>
+        <div>
+          <label class="label">Link / URL</label>
+          <input type="text" id="legalDocFileUrl" class="input-field" placeholder="https://drive.google.com/...">
+        </div>
+      </div>
+      <div>
+        <label class="label">Ghi chú</label>
+        <textarea id="legalDocNotes" class="input-field" rows="2"></textarea>
+      </div>
+      <div class="flex gap-3 justify-end pt-2">
+        <button type="button" onclick="closeModal('legalDocModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: E. Tình trạng thanh toán - Thêm/Sửa đợt thanh toán -->
+<div id="paymentModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:600px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="paymentModalTitle"><i class="fas fa-money-check-alt text-emerald-600 mr-2"></i>Thêm đợt thanh toán</h3>
+      <button onclick="closeModal('paymentModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="paymentForm" class="space-y-4" onsubmit="savePayment(event)">
+      <input type="hidden" id="paymentId">
+      <input type="hidden" id="paymentProjectId">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Đợt thanh toán</label>
+          <input type="text" id="paymentPhase" class="input-field" placeholder="VD: Đợt 1, Tạm ứng, Quyết toán">
+        </div>
+        <div>
+          <label class="label">Số đề nghị thanh toán</label>
+          <input type="text" id="paymentRequestNumber" class="input-field" placeholder="VD: ĐN-01/2025">
+        </div>
+      </div>
+      <div>
+        <label class="label">Nội dung thanh toán <span class="text-red-500">*</span></label>
+        <input type="text" id="paymentDescription" class="input-field" placeholder="VD: Thanh toán tạm ứng 30% hợp đồng BIM" required>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ngày đề nghị</label>
+          <input type="date" id="paymentRequestDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="paymentStatus" class="select-field">
+            <option value="pending">⏳ Chờ thanh toán</option>
+            <option value="processing">🔄 Đang xử lý</option>
+            <option value="partial">💰 TT một phần</option>
+            <option value="paid">✅ Đã thanh toán</option>
+            <option value="rejected">❌ Từ chối</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Số tiền đề nghị (VND)</label>
+          <input type="number" id="paymentAmount" class="input-field" placeholder="0" min="0" step="1000">
+        </div>
+        <div>
+          <label class="label">Số tiền đã thanh toán (VND)</label>
+          <input type="number" id="paymentPaidAmount" class="input-field" placeholder="0" min="0" step="1000">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ngày thanh toán thực tế</label>
+          <input type="date" id="paymentPaidDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Hạng mục liên quan</label>
+          <select id="paymentLegalItemId" class="select-field">
+            <option value="">-- Chọn hạng mục --</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Số hóa đơn</label>
+          <input type="text" id="paymentInvoiceNumber" class="input-field" placeholder="VD: HD-001/2025">
+        </div>
+        <div>
+          <label class="label">Ngày hóa đơn</label>
+          <input type="date" id="paymentInvoiceDate" class="input-field">
+        </div>
+      </div>
+      <div>
+        <label class="label">Ghi chú</label>
+        <textarea id="paymentNotes" class="input-field" rows="2"></textarea>
+      </div>
+      <div class="flex gap-3 justify-end pt-2">
+        <button type="button" onclick="closeModal('paymentModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Letter Config -->
+<div id="legalLetterConfigModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:500px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-cog text-primary mr-2"></i>Cấu hình số văn bản dự án</h3>
+      <button onclick="closeModal('legalLetterConfigModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="legalLetterConfigForm" class="space-y-4" onsubmit="saveLegalLetterConfig(event)">
+      <input type="hidden" id="legalConfigProjectId">
+
+      <!-- Format info box -->
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <i class="fas fa-info-circle text-blue-500"></i>
+          <span class="text-sm font-semibold text-blue-700">Quy tắc đánh số văn bản</span>
+        </div>
+        <div class="font-mono text-blue-800 text-sm font-bold mb-1">STT-LOẠI/OneCAD-BIM(Số hiệu dự án)</div>
+        <div class="text-xs text-blue-600">
+          Ví dụ: <span class="font-mono font-bold" id="legalConfigPreview">01-CV/OneCAD-BIM(V06TV08)</span>
+        </div>
+        <ul class="text-xs text-blue-600 mt-2 space-y-1">
+          <li><span class="font-semibold">STT</span>: Số thứ tự theo loại (01, 02, 03...)</li>
+          <li><span class="font-semibold">LOẠI</span>: CV / BC / BB / TB / QĐ / HĐ ...</li>
+          <li><span class="font-semibold">Số hiệu dự án</span>: Cấu hình bên dưới</li>
+        </ul>
+      </div>
+
+      <!-- Project code letter -->
+      <div>
+        <label class="label">Số hiệu dự án <span class="text-red-400">*</span>
+          <span class="text-xs text-gray-400 font-normal ml-1">(dùng trong số văn bản)</span>
+        </label>
+        <input type="text" id="legalConfigCodeLetter" class="input-field font-mono"
+          placeholder="VD: TS.C08, BBT-MMC-BHH1" maxlength="30"
+          oninput="updateLegalConfigPreview()">
+        <p class="text-xs text-gray-400 mt-1">Thay đổi sẽ cập nhật tất cả văn bản tạo mới từ giờ trở đi</p>
+      </div>
+
+      <!-- Thống kê văn bản hiện có -->
+      <div class="bg-gray-50 rounded-lg p-3 text-sm text-gray-600" id="legalConfigStats">
+        <div class="flex items-center gap-2 text-gray-500 text-xs">
+          <i class="fas fa-chart-bar"></i>
+          <span id="legalConfigStatsText">Đang tải thống kê...</span>
+        </div>
+      </div>
+
+      <div class="flex gap-3 justify-end pt-2">
+        <button type="button" onclick="closeModal('legalLetterConfigModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu cấu hình</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Legal Item Task -->
+<div id="legalItemTaskModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:500px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="legalItemTaskModalTitle"><i class="fas fa-check-circle text-green-500 mr-2"></i>Tạo task</h3>
+      <button onclick="closeModal('legalItemTaskModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="legalItemTaskForm" class="space-y-3" onsubmit="saveLegalItemTask(event)">
+      <input type="hidden" id="legalItemTaskId">
+      <input type="hidden" id="legalItemTaskLegalItemId">
+      <div>
+        <label class="label">Tên task *</label>
+        <input type="text" id="legalItemTaskTitle" class="input-field" placeholder="VD: Soạn thảo công văn tham gia thương thảo" required>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Ưu tiên</label>
+          <select id="legalItemTaskPriority" class="select-field">
+            <option value="low">Thấp</option>
+            <option value="medium" selected>Trung bình</option>
+            <option value="high">Cao</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="legalItemTaskStatus" class="select-field">
+            <option value="todo">Chưa làm</option>
+            <option value="in_progress">Đang làm</option>
+            <option value="done">Hoàn thành</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Hạn hoàn thành</label>
+          <input type="date" id="legalItemTaskDueDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Giờ ước tính</label>
+          <input type="number" id="legalItemTaskHours" class="input-field" placeholder="0" min="0" step="0.5">
+        </div>
+      </div>
+      <div>
+        <label class="label">Mô tả</label>
+        <textarea id="legalItemTaskDesc" class="input-field" rows="2" placeholder="Mô tả công việc..."></textarea>
+      </div>
+      <div class="flex gap-3 justify-end pt-2">
+        <button type="button" onclick="closeModal('legalItemTaskModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu task</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Legal Item Subtask -->
+<div id="legalItemSubtaskModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:460px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="legalItemSubtaskModalTitle"><i class="fas fa-list-check text-indigo-500 mr-2"></i>Thêm subtask</h3>
+      <button onclick="closeModal('legalItemSubtaskModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="legalItemSubtaskForm" class="space-y-3" onsubmit="saveLegalItemSubtask(event)">
+      <input type="hidden" id="legalItemSubtaskId">
+      <input type="hidden" id="legalItemSubtaskTaskId">
+      <div>
+        <label class="label">Tên subtask *</label>
+        <input type="text" id="legalItemSubtaskTitle" class="input-field" placeholder="VD: Thu thập thông tin gói thầu" required>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Ưu tiên</label>
+          <select id="legalItemSubtaskPriority" class="select-field">
+            <option value="low">Thấp</option>
+            <option value="medium" selected>Trung bình</option>
+            <option value="high">Cao</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="legalItemSubtaskStatus" class="select-field">
+            <option value="todo">Chưa làm</option>
+            <option value="in_progress">Đang làm</option>
+            <option value="done">Hoàn thành</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="label">Hạn hoàn thành</label>
+        <input type="date" id="legalItemSubtaskDueDate" class="input-field">
+      </div>
+      <div class="flex gap-3 justify-end pt-2">
+        <button type="button" onclick="closeModal('legalItemSubtaskModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu subtask</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ========== MODALS ========== -->
+
 
 <!-- Project Modal -->
 <div id="projectModal" class="modal-overlay" style="display:none">
@@ -2165,6 +2781,17 @@
           <input type="text" id="projectName" class="input-field" placeholder="Tên đầy đủ của dự án" required>
         </div>
       </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Số hiệu văn bản dự án
+            <span class="text-xs text-gray-400 font-normal ml-1">(dùng làm ký hiệu văn bản gửi đi)</span>
+          </label>
+          <input type="text" id="projectCodeLetter" class="input-field" placeholder="VD: BBT-MMC-BHH1">
+        </div>
+        <div id="projectCodeLetterPreview" class="flex items-end pb-1">
+          <p class="text-xs text-gray-400 italic">Số văn bản sẽ có dạng: <span id="letterPreviewSample" class="font-mono font-bold text-blue-600">01-CV/OneCAD-BIM(BBT-MMC-BHH1)</span></p>
+        </div>
+      </div>
       <div>
         <label class="label">Mô tả</label>
         <textarea id="projectDesc" class="input-field" rows="2" placeholder="Mô tả ngắn về dự án"></textarea>
@@ -2181,6 +2808,7 @@
             <option value="infrastructure">Hạ tầng</option>
             <option value="transport">Giao thông</option>
             <option value="energy">Năng lượng</option>
+            <option value="hydraulic">Thủy lợi</option>
           </select>
         </div>
       </div>

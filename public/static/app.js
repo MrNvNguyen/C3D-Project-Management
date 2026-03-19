@@ -204,7 +204,7 @@ function isOverdue(task) {
 }
 
 function getProjectTypeName(t) {
-  const m = { building: 'Công trình', infrastructure: 'Hạ tầng', transport: 'Giao thông', energy: 'Năng lượng' }
+  const m = { building: 'Công trình', infrastructure: 'Hạ tầng', transport: 'Giao thông', energy: 'Năng lượng', hydraulic: 'Thủy lợi' }
   return m[t] || t
 }
 
@@ -288,7 +288,8 @@ function navigate(page) {
     costs: 'Chi phí & Doanh thu', assets: 'Tài sản', users: 'Nhân sự', profile: 'Hồ sơ',
     productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
     'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí',
-    'system-config': 'Cấu hình hệ thống', analytics: 'Báo cáo & Phân tích'
+    'system-config': 'Cấu hình hệ thống', analytics: 'Báo cáo & Phân tích',
+    legal: 'Hồ Sơ Pháp Lý Dự Án'
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
@@ -307,13 +308,65 @@ function navigate(page) {
   else if (page === 'cost-types') loadCostTypes()
   else if (page === 'system-config') loadSystemConfig()
   else if (page === 'analytics') loadAnalytics()
+  else if (page === 'legal') loadLegal()
 
   closeAllDropdowns()
 }
 
 function toggleSidebar() {
-  $('sidebar').classList.toggle('collapsed')
-  $('mainContent').classList.toggle('expanded')
+  const sidebar = $('sidebar')
+  const mainContent = $('mainContent')
+  // Nếu đang mini → mở full trước
+  if (sidebar.classList.contains('mini')) {
+    sidebar.classList.remove('mini')
+    mainContent.classList.remove('mini-sidebar')
+    localStorage.setItem('sidebar_state', 'full')
+    return
+  }
+  sidebar.classList.toggle('collapsed')
+  mainContent.classList.toggle('expanded')
+  localStorage.setItem('sidebar_state', sidebar.classList.contains('collapsed') ? 'collapsed' : 'full')
+}
+
+function toggleSidebarMini() {
+  const sidebar = $('sidebar')
+  const mainContent = $('mainContent')
+  const isMini = sidebar.classList.contains('mini')
+  const btn = $('sidebarToggleBtn')
+
+  if (isMini) {
+    // Mở rộng lại
+    sidebar.classList.remove('mini')
+    mainContent.classList.remove('mini-sidebar')
+    if (btn) btn.title = 'Thu gọn sidebar'
+    localStorage.setItem('sidebar_state', 'full')
+  } else {
+    // Thu gọn sang mini
+    sidebar.classList.remove('collapsed')
+    mainContent.classList.remove('expanded')
+    sidebar.classList.add('mini')
+    mainContent.classList.add('mini-sidebar')
+    if (btn) btn.title = 'Mở rộng sidebar'
+    localStorage.setItem('sidebar_state', 'mini')
+  }
+  // Sync avatar mini
+  const avatarMini = $('sidebarAvatarMini')
+  const avatar = $('sidebarAvatar')
+  if (avatarMini && avatar) avatarMini.textContent = avatar.textContent
+}
+
+// Khôi phục trạng thái sidebar khi load
+function restoreSidebarState() {
+  const state = localStorage.getItem('sidebar_state')
+  if (state === 'mini') {
+    $('sidebar').classList.add('mini')
+    $('mainContent').classList.add('mini-sidebar')
+    const btn = $('sidebarToggleBtn')
+    if (btn) btn.title = 'Mở rộng sidebar'
+  } else if (state === 'collapsed') {
+    $('sidebar').classList.add('collapsed')
+    $('mainContent').classList.add('expanded')
+  }
 }
 
 function toggleNotifications() {
@@ -360,6 +413,12 @@ async function initApp() {
   $('topbarAvatar').textContent = initials
   $('topbarName').textContent = currentUser.full_name
   $('topbarRole').textContent = getRoleLabel(currentUser.role)
+  // Sync mini avatar
+  const avatarMini = $('sidebarAvatarMini')
+  if (avatarMini) avatarMini.textContent = initials
+
+  // Khôi phục trạng thái sidebar đã lưu
+  restoreSidebarState()
 
   // Chỉ system_admin mới được tạo dự án mới
   if (currentUser.role === 'system_admin') {
@@ -928,7 +987,8 @@ function renderProjectsGrid(projects) {
     building:       '#0066CC',
     infrastructure: '#F59E0B',
     transport:      '#8B5CF6',
-    energy:         '#EF4444'
+    energy:         '#EF4444',
+    hydraulic:      '#06B6D4'
   }
 
   /* ── CARD VIEW (style cũ, sort A-Z theo mã) ──────── */
@@ -1314,6 +1374,15 @@ function openProjectModal(project = null) {
   codeField.style.cursor    = (project && !isAdmin) ? 'not-allowed' : ''
   codeField.title = (project && !isAdmin) ? 'Chỉ System Admin mới có thể thay đổi mã dự án' : ''
   $('projectName').value = project?.name || ''
+  $('projectCodeLetter').value = project?.project_code_letter || ''
+  // Update preview sample
+  const updateLetterPreview = () => {
+    const cl = $('projectCodeLetter').value.trim() || $('projectCode').value.trim() || 'MÃ-DỰ-ÁN'
+    $('letterPreviewSample').textContent = `01-CV/OneCAD-BIM(${cl})`
+  }
+  updateLetterPreview()
+  $('projectCodeLetter').oninput = updateLetterPreview
+  $('projectCode').addEventListener('input', updateLetterPreview)
   $('projectDesc').value = project?.description || ''
   $('projectClient').value = project?.client || ''
   $('projectType').value = project?.project_type || 'building'
@@ -1338,6 +1407,7 @@ $('projectForm').addEventListener('submit', async (e) => {
   const id = $('projectId').value
   const data = {
     code: $('projectCode').value, name: $('projectName').value,
+    project_code_letter: $('projectCodeLetter').value.trim() || $('projectCode').value.trim(),
     description: $('projectDesc').value, client: $('projectClient').value,
     project_type: $('projectType').value, status: $('projectStatus').value,
     start_date: $('projectStartDate').value, end_date: $('projectEndDate').value,
@@ -2367,7 +2437,20 @@ async function updateTaskAssigneeByProject(projectId = null, preserveValue = nul
     members.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
 
   // Khôi phục giá trị đã chọn trước đó (khi edit task)
-  if (preserveValue) assigneeSelect.value = preserveValue
+  if (preserveValue != null && preserveValue !== '') {
+    assigneeSelect.value = String(preserveValue)
+    // Nếu vẫn không match (user không có trong list) → thêm option ẩn để giữ giá trị
+    if (assigneeSelect.value !== String(preserveValue)) {
+      const u = (allUsers || []).find(u => u.id == preserveValue)
+      if (u) {
+        const opt = document.createElement('option')
+        opt.value = String(u.id)
+        opt.textContent = u.full_name
+        assigneeSelect.appendChild(opt)
+        assigneeSelect.value = String(preserveValue)
+      }
+    }
+  }
 }
 
 async function openTaskModal(taskId = null, projectId = null) {
@@ -2416,18 +2499,20 @@ async function openTaskModal(taskId = null, projectId = null) {
       $('taskProgress').value = task.progress || 0
       $('taskProgressLabel').textContent = task.progress || 0
 
-      // Set dự án trên combobox
+      // Set dự án trên combobox - set flag trước để onchange giữ nguyên assignee
       if (task.project_id) {
         const proj = allProjects.find(p => p.id === task.project_id)
+        _taskModalPreserveAssignee = task.assigned_to || null  // set flag trước khi trigger onchange
         if (proj) _cbSelect('taskProjectComboboxModal', String(proj.id), `${proj.code} - ${proj.name}`)
         $('taskProject').value = task.project_id
       }
 
-      // Load hạng mục rồi set giá trị
-      await Promise.all([
-        _loadAndInitTaskCategoryCombobox(task.project_id, task.category_id, isMember),
-        updateTaskAssigneeByProject(task.project_id, task.assigned_to)
-      ])
+      // Load hạng mục và assignee sau khi set project
+      // Không dùng Promise.all vì _cbSelect đã trigger onchange async
+      // Gọi trực tiếp để đảm bảo await đầy đủ
+      await _loadAndInitTaskCategoryCombobox(task.project_id, task.category_id, isMember)
+      await updateTaskAssigneeByProject(task.project_id, task.assigned_to)
+      _taskModalPreserveAssignee = null  // Xóa flag sau khi đã load xong
     } catch (e) { toast('Lỗi tải task', 'error'); return }
   } else {
     $('taskTitle').value = ''
@@ -2458,6 +2543,8 @@ async function openTaskModal(taskId = null, projectId = null) {
 }
 
 // ── Helpers cho combobox Dự án trong Task Modal ──────────────────
+let _taskModalPreserveAssignee = null  // Giữ assigned_to khi đang load edit mode
+
 function _initTaskProjectCombobox(items, locked) {
   createCombobox('taskProjectComboboxModal', {
     placeholder: '-- Chọn dự án --',
@@ -2465,6 +2552,8 @@ function _initTaskProjectCombobox(items, locked) {
     fullWidth: true,
     onchange: async (val) => {
       $('taskProject').value = val || ''
+      // Nếu flag đang được set (đang init edit mode) → bỏ qua onchange, để openTaskModal tự handle
+      if (_taskModalPreserveAssignee !== null) return
       // Reset category combobox với loading spinner
       const catDiv = document.getElementById('taskCategoryComboboxModal')
       if (catDiv) catDiv.innerHTML = `<div style="padding:6px 10px;font-size:12px;color:#9ca3af"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</div>`
@@ -2554,7 +2643,13 @@ $('taskForm').addEventListener('submit', async (e) => {
     else await api('/tasks', { method: 'post', data })
     closeModal('taskModal')
     toast(id ? 'Cập nhật task thành công' : 'Tạo task thành công')
-    loadTasks()
+
+    // Nếu đang xem chi tiết dự án → reload lại để cập nhật realtime
+    if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
+      await openProjectDetail(window._currentProjectDetailId)
+    } else {
+      loadTasks()
+    }
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
 
@@ -2562,7 +2657,15 @@ function confirmDeleteTask(id, title) {
   showConfirmDelete(
     'Xóa Task',
     `Bạn có chắc muốn xóa task "<strong>${title}</strong>"? Hành động này không thể hoàn tác.`,
-    async () => { await api(`/tasks/${id}`, { method: 'delete' }); toast('Đã xóa task'); loadTasks() }
+    async () => {
+      await api(`/tasks/${id}`, { method: 'delete' })
+      toast('Đã xóa task')
+      if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
+        await openProjectDetail(window._currentProjectDetailId)
+      } else {
+        loadTasks()
+      }
+    }
   )
 }
 
@@ -2571,7 +2674,11 @@ async function deleteTask(id) {
   try {
     await api(`/tasks/${id}`, { method: 'delete' })
     toast('Đã xóa task')
-    loadTasks()
+    if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
+      await openProjectDetail(window._currentProjectDetailId)
+    } else {
+      loadTasks()
+    }
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 
@@ -3348,6 +3455,11 @@ $('subtaskForm').addEventListener('submit', async (e) => {
     // Also refresh task detail if it's open
     const detailModal = $('taskDetailModal')
     if (detailModal && detailModal.style.display !== 'none') openTaskDetail(taskId)
+
+    // Nếu đang xem chi tiết dự án → reload lại tiến độ / danh sách task
+    if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
+      await openProjectDetail(window._currentProjectDetailId)
+    }
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
 
@@ -7831,7 +7943,7 @@ function fmtM(n) {
 function pct(a, b) { return b > 0 ? Math.round(a / b * 100) : 0 }
 function monthName(m) { return ['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12'][parseInt(m)-1] || m }
 
-function destroyChart(key) {
+function destroyAnalyticsChart(key) {
   if (_analyticsCharts[key]) { try { _analyticsCharts[key].destroy() } catch(e){} delete _analyticsCharts[key] }
 }
 
@@ -7937,8 +8049,8 @@ async function renderHealthTab(force = false) {
     `
 
     // Draw charts
-    destroyChart('healthDist')
-    destroyChart('healthBars')
+    destroyAnalyticsChart('healthDist')
+    destroyAnalyticsChart('healthBars')
 
     const ctxDist = document.getElementById('chartHealthDist')?.getContext('2d')
     if (ctxDist) {
@@ -8050,7 +8162,7 @@ async function renderPerformanceTab(force = false) {
       </div>
     `
 
-    destroyChart('perfTasks'); destroyChart('perfHours')
+    destroyAnalyticsChart('perfTasks'); destroyAnalyticsChart('perfHours')
     const top10 = [...projects].sort((a,b) => (b.total_tasks||0) - (a.total_tasks||0)).slice(0, 10)
 
     const ctxT = document.getElementById('chartPerfTasks')?.getContext('2d')
@@ -8137,7 +8249,7 @@ async function renderTasksTab(force = false) {
       </div>
     `
 
-    destroyChart('taskStatus'); destroyChart('taskPriority'); destroyChart('taskPhase'); destroyChart('taskDiscipline'); destroyChart('taskTrend')
+    destroyAnalyticsChart('taskStatus'); destroyAnalyticsChart('taskPriority'); destroyAnalyticsChart('taskPhase'); destroyAnalyticsChart('taskDiscipline'); destroyAnalyticsChart('taskTrend')
 
     const ctxS = document.getElementById('chartTaskStatus')?.getContext('2d')
     if (ctxS) _analyticsCharts['taskStatus'] = safeChart(ctxS, {
@@ -8269,7 +8381,7 @@ async function renderTeamTab(force = false) {
       </div>
     `
 
-    destroyChart('teamTopHours'); destroyChart('teamTaskRate')
+    destroyAnalyticsChart('teamTopHours'); destroyAnalyticsChart('teamTaskRate')
     const top10 = members.slice(0, 10)
 
     const ctxH = document.getElementById('chartTeamTopHours')?.getContext('2d')
@@ -8569,7 +8681,7 @@ async function renderTimesheetAnalyticsTab(force = false) {
     `
 
     // ── Render charts ──
-    destroyChart('tsMonthly'); destroyChart('tsStatus'); destroyChart('tsDept'); destroyChart('taskVsPlan')
+    destroyAnalyticsChart('tsMonthly'); destroyAnalyticsChart('tsStatus'); destroyAnalyticsChart('tsDept'); destroyAnalyticsChart('taskVsPlan')
 
     const months = Array.from({length:12}, (_,i)=>String(i+1).padStart(2,'0'))
     const mMap = {}; monthly.forEach(m=>{ mMap[m.month] = m })
@@ -8803,7 +8915,7 @@ async function renderFinancialTab(force = false) {
       </div>
     `
 
-    destroyChart('finMonthly'); destroyChart('finCostType'); destroyChart('finRevStatus')
+    destroyAnalyticsChart('finMonthly'); destroyAnalyticsChart('finCostType'); destroyAnalyticsChart('finRevStatus')
 
     // Monthly chart dùng label T1..T12 từ NTC
     const monthLabels = monthly.map(m => m.month || m.month_key)
@@ -9202,7 +9314,7 @@ function _drawProjectFinCharts(data) {
   const labels = top.map(p => p.code || p.name.substring(0,10))
 
   // Chart 1: Overview grouped bar
-  destroyChart('projFinOverview')
+  destroyAnalyticsChart('projFinOverview')
   const ctx1 = document.getElementById('chartProjFinOverview')?.getContext('2d')
   if (ctx1) {
     _analyticsCharts['projFinOverview'] = safeChart(ctx1, {
@@ -9234,7 +9346,7 @@ function _drawProjectFinCharts(data) {
   }
 
   // Chart 2: Margin bar chart (horizontal)
-  destroyChart('projFinMargin')
+  destroyAnalyticsChart('projFinMargin')
   const ctx2 = document.getElementById('chartProjFinMargin')?.getContext('2d')
   if (ctx2) {
     const withMargin = top.filter(p => p.revenue_collected > 0)
@@ -9277,3 +9389,1472 @@ function _drawProjectFinCharts(data) {
 function exportAnalyticsPDF() {
   window.print()
 }
+
+
+// ================================================================
+// MODULE: HỒ SƠ PHÁP LÝ DỰ ÁN
+// ================================================================
+
+let _legalCurrentProjectId = null
+let _legalOverviewData = null
+let _legalCurrentTab = 'stages'
+
+const LEGAL_STATUS_LABELS = {
+  pending: 'Chưa thực hiện',
+  in_progress: 'Đang thực hiện',
+  completed: 'Đã hoàn thành',
+  na: 'Không áp dụng'
+}
+const LEGAL_STATUS_COLORS = {
+  pending: 'badge-todo',
+  in_progress: 'badge-in_progress',
+  completed: 'badge-completed',
+  na: 'badge-cancelled'
+}
+const LEGAL_DOC_TYPE_LABELS = {
+  contract:   'Hợp đồng',
+  appendix:   'Phụ lục HĐ',
+  acceptance: 'Nghiệm thu',
+  payment:    'Thanh toán',
+  cv:         'Công văn (CV)',
+  bc:         'Báo cáo (BC)',
+  bb:         'Biên bản (BB)',
+  tb:         'Thông báo (TB)',
+  qd:         'Quyết định (QĐ)',
+  tt:         'Tờ trình (TT)',
+  kh:         'Kế hoạch (KH)',
+  yc:         'Yêu cầu (YC)',
+  pl:         'Phụ lục (PL)',
+  other:      'Văn bản khác (VB)'
+}
+const LEGAL_LETTER_STATUS_LABELS = {
+  draft: 'Nháp',
+  sent: 'Đã gửi',
+  acknowledged: 'Đã xác nhận'
+}
+const LEGAL_LETTER_STATUS_COLORS = {
+  draft: 'badge-todo',
+  sent: 'badge-in_progress',
+  acknowledged: 'badge-completed'
+}
+const STAGE_COLORS = {
+  A: { bg: '#eff6ff', border: '#3b82f6', text: '#1d4ed8', icon: 'fa-clipboard-list' },
+  B: { bg: '#fdf4ff', border: '#a855f7', text: '#7e22ce', icon: 'fa-handshake' },
+  C: { bg: '#fff7ed', border: '#f97316', text: '#c2410c', icon: 'fa-file-signature' },
+  D: { bg: '#f0fdf4', border: '#22c55e', text: '#15803d', icon: 'fa-check-double' },
+  E: { bg: '#ecfdf5', border: '#10b981', text: '#065f46', icon: 'fa-money-check-alt' }
+}
+
+const PAYMENT_STATUS_LABELS = {
+  pending:    '⏳ Chờ thanh toán',
+  processing: '🔄 Đang xử lý',
+  partial:    '💰 TT một phần',
+  paid:       '✅ Đã thanh toán',
+  rejected:   '❌ Từ chối'
+}
+const PAYMENT_STATUS_COLORS = {
+  pending:    'badge-todo',
+  processing: 'badge-in_progress',
+  partial:    'badge-in_progress',
+  paid:       'badge-completed',
+  rejected:   'badge-cancelled'
+}
+
+// ── Navigate to Legal page ───────────────────────────────────────────────────
+async function loadLegal() {
+  // Populate project select
+  const sel = $('legalProjectSelect')
+  if (sel && allProjects.length === 0) {
+    try { allProjects = (await api('/projects')).projects || [] } catch(e) {}
+  }
+  if (sel) {
+    const cur = sel.value
+    sel.innerHTML = '<option value="">-- Chọn dự án --</option>'
+    allProjects.forEach(p => {
+      const opt = document.createElement('option')
+      opt.value = p.id
+      opt.textContent = `[${p.code}] ${p.name}`
+      sel.appendChild(opt)
+    })
+    if (cur) sel.value = cur
+  }
+
+  // If project already selected, reload
+  if (_legalCurrentProjectId) {
+    await loadLegalProject(_legalCurrentProjectId)
+  }
+}
+
+async function onLegalProjectChange() {
+  const sel = $('legalProjectSelect')
+  const projectId = parseInt(sel.value)
+  if (!projectId) {
+    _legalCurrentProjectId = null
+    $('legalStagesContainer').innerHTML = `<div class="card text-center py-16 text-gray-400">
+      <i class="fas fa-file-contract text-5xl mb-4 opacity-30"></i>
+      <p class="font-medium">Chọn dự án để xem hồ sơ pháp lý</p>
+    </div>`
+    $('legalKPIRow').style.display = 'none'
+    $('legalTabs').style.display = 'none'
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig'].forEach(id => { if($(id)) $(id).style.display='none' })
+    return
+  }
+  await loadLegalProject(projectId)
+}
+
+async function loadLegalProject(projectId) {
+  _legalCurrentProjectId = projectId
+  try {
+    // Auto-init if first time
+    await api(`/legal/init/${projectId}`, { method: 'POST' })
+    // Load overview
+    const data = await api(`/legal/${projectId}/overview`)
+    _legalOverviewData = data
+
+    // Show controls
+    $('legalKPIRow').style.display = ''
+    $('legalTabs').style.display = ''
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig'].forEach(id => { if($(id)) $(id).style.display='' })
+
+    // Render KPI
+    let totalItems = 0, doneItems = 0
+    ;(data.stages || []).forEach(stage => {
+      stage.items.forEach(item => {
+        totalItems++
+        if (item.status === 'completed') doneItems++
+        ;(item.children || []).forEach(ch => {
+          totalItems++
+          if (ch.status === 'completed') doneItems++
+        })
+      })
+    })
+    $('legalKpiTotal').textContent = totalItems
+    $('legalKpiDone').textContent = doneItems
+    $('legalKpiLetters').textContent = (data.letters || []).length
+    $('legalKpiDocs').textContent = (data.documents || []).length
+
+    // Render current tab
+    renderLegalTab(_legalCurrentTab)
+
+  } catch(e) {
+    toast('Lỗi tải dữ liệu pháp lý: ' + e.message, 'error')
+  }
+}
+
+function switchLegalTab(tab) {
+  _legalCurrentTab = tab
+  ;['stages','letters','docs','payments'].forEach(t => {
+    const btn = $('ltab-' + t)
+    const panel = $('legalTab' + t.charAt(0).toUpperCase() + t.slice(1))
+    if (btn) btn.classList.toggle('active', t === tab)
+    if (panel) panel.style.display = t === tab ? '' : 'none'
+  })
+  renderLegalTab(tab)
+}
+
+function renderLegalTab(tab) {
+  if (!_legalOverviewData) return
+  if (tab === 'stages') renderLegalStages(_legalOverviewData.stages || [])
+  else if (tab === 'letters') renderLegalLetters(_legalOverviewData.letters || [])
+  else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
+  else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
+}
+
+// ── Render Stages Table ──────────────────────────────────────────────────────
+// Lưu trạng thái collapse từng giai đoạn (mặc định mở)
+const _stageCollapseState = {}
+
+function renderLegalStages(stages) {
+  const container = $('legalStagesContainer')
+  if (!stages || stages.length === 0) {
+    container.innerHTML = '<div class="card text-center py-8 text-gray-400">Chưa có dữ liệu</div>'
+    return
+  }
+
+  let html = ''
+  stages.forEach(stage => {
+    const sc = STAGE_COLORS[stage.code] || { bg:'#f9fafb', border:'#6b7280', text:'#374151', icon:'fa-folder' }
+    const totalInStage = stage.items.reduce((a, it) => a + 1 + (it.children?.length||0), 0)
+    const doneInStage  = stage.items.reduce((a, it) => {
+      let d = it.status === 'completed' ? 1 : 0
+      d += (it.children||[]).filter(c => c.status === 'completed').length
+      return a + d
+    }, 0)
+    const pct      = totalInStage > 0 ? Math.round(doneInStage/totalInStage*100) : 0
+    const barCol   = pct === 100 ? '#10b981' : pct >= 50 ? '#3b82f6' : sc.border
+    const isOpen   = _stageCollapseState[stage.id] !== false   // mặc định mở
+    const bodyId   = `stageBody_${stage.id}`
+    const chevId   = `stageChev_${stage.id}`
+
+    // Badge tóm tắt khi thu gọn
+    const pendingCount    = totalInStage - doneInStage
+    const inProgressCount = stage.items.reduce((a,it) => {
+      let c = it.status === 'in_progress' ? 1 : 0
+      c += (it.children||[]).filter(ch => ch.status === 'in_progress').length
+      return a + c
+    }, 0)
+
+    html += `
+    <div class="mb-4" style="border-radius:12px;border:1px solid ${isOpen?sc.border+'55':'#e5e7eb'};background:#fff;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);transition:border-color .2s">
+
+      <!-- ══ HEADER (click to collapse) ══ -->
+      <div onclick="toggleStageCollapse(${stage.id})"
+        style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:${isOpen ? sc.bg : '#f9fafb'};cursor:pointer;user-select:none;border-left:4px solid ${sc.border};transition:background .2s">
+
+        <!-- Stage badge -->
+        <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:#fff;background:${sc.border}">
+          ${stage.code}
+        </div>
+
+        <!-- Name + progress -->
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${stage.name}</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <div style="width:120px;height:5px;background:#e5e7eb;border-radius:10px;overflow:hidden">
+              <div style="width:${pct}%;height:100%;background:${barCol};border-radius:10px;transition:width .4s"></div>
+            </div>
+            <span style="font-size:11px;font-weight:700;color:${barCol}">${pct}%</span>
+            <span style="font-size:11px;color:#9ca3af">${doneInStage}/${totalInStage} hoàn thành</span>
+            ${!isOpen && inProgressCount > 0 ? `<span style="font-size:10px;font-weight:600;color:#2563eb;background:#dbeafe;padding:1px 7px;border-radius:10px">${inProgressCount} đang làm</span>` : ''}
+            ${!isOpen && pendingCount > 0 && pendingCount < totalInStage ? `<span style="font-size:10px;font-weight:600;color:#64748b;background:#f1f5f9;padding:1px 7px;border-radius:10px">${pendingCount} còn lại</span>` : ''}
+          </div>
+        </div>
+
+        <!-- Right controls -->
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0" onclick="event.stopPropagation()">
+          <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
+            style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 10px;cursor:pointer" title="Thêm hạng mục">
+            <i class="fas fa-plus" style="font-size:9px"></i> Thêm
+          </button>
+          <!-- Chevron collapse -->
+          <button id="${chevId}" onclick="event.stopPropagation();toggleStageCollapse(${stage.id})"
+            style="width:32px;height:32px;border-radius:8px;border:1px solid #e5e7eb;background:${isOpen?'#eef2ff':'#f9fafb'};color:${isOpen?'#6366f1':'#9ca3af'};cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s" title="${isOpen?'Thu gọn':'Mở rộng'}">
+            <i id="${chevId}_icon" class="fas fa-chevron-up" style="font-size:11px;transition:transform .25s;transform:rotate(${isOpen?'0':'180'}deg)"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- ══ BODY (collapsible) ══ -->
+      <div id="${bodyId}" style="display:${isOpen?'block':'none'}">
+        <table class="w-full" style="font-size:13px">
+          <thead>
+            <tr style="background:${sc.bg}">
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:110px">Hạn</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:140px">Trạng thái</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:150px">Ghi chú</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
+            </tr>
+          </thead>
+          <tbody>`
+
+    stage.items.forEach(item => {
+      const rowBg = item.status === 'completed' ? '#f0fdf4' : (item.status === 'in_progress' ? '#eff6ff' : '#fff')
+      html += renderLegalItemRow(item, sc, rowBg, false, stage.id)
+      ;(item.children || []).forEach(child => {
+        html += renderLegalItemRow(child, sc, rowBg, true, stage.id)
+      })
+    })
+
+    html += `
+          </tbody>
+        </table>
+        <div style="padding:8px 16px;border-top:1px solid #f3f4f6;display:flex;justify-content:flex-end">
+          <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
+            style="font-size:12px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+            <i class="fas fa-plus-circle" style="font-size:11px"></i> Thêm hạng mục vào giai đoạn này
+          </button>
+        </div>
+      </div><!-- /body -->
+    </div><!-- /stage card -->`
+  })
+
+  // Nút expand/collapse tất cả
+  html = `
+  <div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:10px">
+    <button onclick="collapseAllStages()"
+      style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:4px 12px;cursor:pointer">
+      <i class="fas fa-compress-alt" style="font-size:10px"></i> Thu gọn tất cả
+    </button>
+    <button onclick="expandAllStages()"
+      style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 12px;cursor:pointer">
+      <i class="fas fa-expand-alt" style="font-size:10px"></i> Mở rộng tất cả
+    </button>
+  </div>` + html
+
+  container.innerHTML = html
+}
+
+// ── Toggle một giai đoạn ──────────────────────────────────────────────────────
+function toggleStageCollapse(stageId) {
+  const bodyId  = `stageBody_${stageId}`
+  const chevId  = `stageChev_${stageId}`
+  const body     = document.getElementById(bodyId)
+  const chevBtn  = document.getElementById(chevId)
+  const chevIcon = document.getElementById(`${chevId}_icon`)
+  if (!body) return
+
+  const isOpen = body.style.display !== 'none'
+  if (isOpen) {
+    body.style.display = 'none'
+    _stageCollapseState[stageId] = false
+    if (chevIcon) chevIcon.style.transform = 'rotate(180deg)'
+    if (chevBtn)  { chevBtn.style.background = '#f9fafb'; chevBtn.style.color = '#9ca3af'; chevBtn.title = 'Mở rộng' }
+    const header = body.previousElementSibling
+    if (header) header.style.background = '#f9fafb'
+  } else {
+    body.style.display = 'block'
+    _stageCollapseState[stageId] = true
+    if (chevIcon) chevIcon.style.transform = 'rotate(0deg)'
+    if (chevBtn)  { chevBtn.style.background = '#eef2ff'; chevBtn.style.color = '#6366f1'; chevBtn.title = 'Thu gọn' }
+    const header = body.previousElementSibling
+    if (header) header.style.background = ''  // reset về màu stage
+  }
+}
+
+// ── Thu gọn/mở rộng tất cả ───────────────────────────────────────────────────
+function collapseAllStages() {
+  document.querySelectorAll('[id^="stageBody_"]').forEach(body => {
+    const stageId = body.id.replace('stageBody_', '')
+    if (body.style.display !== 'none') toggleStageCollapse(stageId)
+  })
+}
+function expandAllStages() {
+  document.querySelectorAll('[id^="stageBody_"]').forEach(body => {
+    const stageId = body.id.replace('stageBody_', '')
+    if (body.style.display === 'none') toggleStageCollapse(stageId)
+  })
+}
+
+function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
+  const statusBadge = `<span class="badge ${LEGAL_STATUS_COLORS[item.status]||'badge-todo'}">${LEGAL_STATUS_LABELS[item.status]||item.status}</span>`
+  const checkIcon = item.status === 'completed'
+    ? `<i class="fas fa-check-circle text-green-500 mr-1"></i>`
+    : (item.item_type === 'document' ? `<i class="fas fa-file-alt text-blue-400 mr-1"></i>` : `<i class="fas fa-tasks text-gray-400 mr-1"></i>`)
+  const indent = isChild ? 'pl-6' : 'font-semibold'
+  const sttStyle = isChild ? 'color:#6b7280;padding-left:20px' : 'font-weight:700'
+
+  return `
+  <tr style="background:${item.status==='completed'?'#f0fdf4':'#fff'};border-bottom:1px solid #f3f4f6" class="table-row">
+    <td class="py-2 px-3 text-gray-500 text-xs" style="${sttStyle}">
+      <div class="flex items-center gap-1">
+        <span>${item.stt}</span>
+        <div class="flex flex-col opacity-0 group-hover:opacity-100" style="line-height:1">
+          <button onclick="reorderLegalItem(${item.id},'up')" class="text-gray-300 hover:text-gray-600 leading-none" title="Lên" style="font-size:9px;padding:0"><i class="fas fa-caret-up"></i></button>
+          <button onclick="reorderLegalItem(${item.id},'down')" class="text-gray-300 hover:text-gray-600 leading-none" title="Xuống" style="font-size:9px;padding:0"><i class="fas fa-caret-down"></i></button>
+        </div>
+      </div>
+    </td>
+    <td class="py-2 px-3 ${indent}" colspan="4">
+      <div class="flex items-center gap-2">
+        ${checkIcon}
+        <span>${item.title}</span>
+      </div>
+    </td>
+    <td class="py-2 px-3 text-xs text-gray-500" style="display:none">${item.due_date ? fmtDate(item.due_date) : '-'}</td>
+    <td class="py-2 px-3" style="display:none">${statusBadge}</td>
+    <td class="py-2 px-3 text-xs text-gray-400" style="display:none">${item.notes||''}</td>
+    <td class="py-2 px-3 text-center">
+      <div class="flex items-center justify-center gap-1 flex-wrap">
+        <button onclick="reorderLegalItem(${item.id},'up')" class="text-gray-400 hover:text-gray-600 p-1" title="Lên"><i class="fas fa-arrow-up text-xs"></i></button>
+        <button onclick="reorderLegalItem(${item.id},'down')" class="text-gray-400 hover:text-gray-600 p-1" title="Xuống"><i class="fas fa-arrow-down text-xs"></i></button>
+        ${!isChild ? `<button onclick="openAddLegalItem(${stageId}, ${item.id}, ${_legalCurrentProjectId})" class="text-blue-500 hover:text-blue-700 p-1" title="Thêm sub-hạng mục"><i class="fas fa-indent text-xs"></i></button>` : ''}
+        <button onclick="openEditLegalItem(${JSON.stringify(item).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
+        <button onclick="deleteLegalItem(${item.id})" class="text-red-400 hover:text-red-600 p-1" title="Xóa"><i class="fas fa-trash text-xs"></i></button>
+        <button id="taskToggleBtn_${item.id}" onclick="toggleLegalItemTasks(${item.id}, this)"
+          style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:5px;padding:3px 7px;cursor:pointer"
+          title="Xem / Quản lý tasks">
+          <i class="fas fa-layer-group" style="font-size:9px"></i> Tasks
+        </button>
+      </div>
+    </td>
+  </tr>
+  <tr id="legalTaskPanelRow_${item.id}" style="display:table-row">
+    <td colspan="6" style="padding:0;border-bottom:1px solid #eef0f3">
+      <div id="legalTaskPanel_${item.id}" style="display:none" data-is-child="${isChild?1:0}"></div>
+    </td>
+  </tr>`
+}
+
+// ── Render Letters Table ─────────────────────────────────────────────────────
+function renderLegalLetters(letters) {
+  const container = $('legalLettersTable')
+  if (!letters || letters.length === 0) {
+    container.innerHTML = '<div class="text-center py-8 text-gray-400"><i class="fas fa-paper-plane text-3xl mb-3 opacity-30"></i><p>Chưa có văn bản gửi đi</p></div>'
+    return
+  }
+  const letterTypeColors = {
+    cv:'#0066CC', bc:'#0891b2', bb:'#059669', tb:'#7c3aed',
+    qd:'#dc2626', tt:'#ea580c', kh:'#16a34a', yc:'#ca8a04',
+    pl:'#9333ea', contract:'#3b82f6', appendix:'#a855f7',
+    acceptance:'#22c55e', payment:'#f97316', other:'#6b7280'
+  }
+  let html = `<div class="overflow-x-auto">
+  <table class="w-full" style="font-size:13px">
+    <thead><tr class="bg-gray-50">
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Số văn bản</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Loại</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Trích yếu</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Hạng mục</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Người nhận</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Ngày gửi</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Trạng thái</th>
+      <th class="py-2 px-3 text-center text-xs font-semibold text-gray-500 uppercase">Thao tác</th>
+    </tr></thead>
+    <tbody>`
+
+  letters.forEach(l => {
+    const statusBadge = `<span class="badge ${LEGAL_LETTER_STATUS_COLORS[l.status]||'badge-todo'}">${LEGAL_LETTER_STATUS_LABELS[l.status]||l.status}</span>`
+    const ltColor = letterTypeColors[l.letter_type] || '#6b7280'
+    const ltLabel = LEGAL_DOC_TYPE_LABELS[l.letter_type] || 'Công văn (CV)'
+    html += `<tr class="table-row border-b border-gray-100">
+      <td class="py-2 px-3">
+        <span class="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded">${l.letter_number}</span>
+      </td>
+      <td class="py-2 px-3">
+        <span class="badge" style="background:${ltColor}22;color:${ltColor}">${ltLabel}</span>
+      </td>
+      <td class="py-2 px-3 font-medium text-gray-800 max-w-xs">${l.subject}</td>
+      <td class="py-2 px-3 text-xs text-gray-500">${l.item_title||'-'}</td>
+      <td class="py-2 px-3 text-xs text-gray-500">${l.recipient||'-'}</td>
+      <td class="py-2 px-3 text-xs text-gray-500">${l.sent_date ? fmtDate(l.sent_date) : '-'}</td>
+      <td class="py-2 px-3">${statusBadge}</td>
+      <td class="py-2 px-3 text-center">
+        <div class="flex items-center justify-center gap-1">
+          <button onclick="openEditLegalLetter(${JSON.stringify(l).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
+          <button onclick="deleteLegalLetter(${l.id})" class="text-red-400 hover:text-red-600 p-1" title="Xóa"><i class="fas fa-trash text-xs"></i></button>
+        </div>
+      </td>
+    </tr>`
+  })
+
+  html += '</tbody></table></div>'
+  container.innerHTML = html
+}
+
+// ── Render Documents Table ───────────────────────────────────────────────────
+function renderLegalDocs(docs) {
+  const container = $('legalDocsTable')
+  if (!docs || docs.length === 0) {
+    container.innerHTML = '<div class="text-center py-8 text-gray-400"><i class="fas fa-paperclip text-3xl mb-3 opacity-30"></i><p>Chưa có tài liệu đính kèm</p></div>'
+    return
+  }
+  const docTypeColors = {
+    contract:   '#3b82f6',
+    appendix:   '#a855f7',
+    acceptance: '#22c55e',
+    payment:    '#f97316',
+    cv:         '#0066CC',
+    bc:         '#0891b2',
+    bb:         '#059669',
+    tb:         '#7c3aed',
+    qd:         '#dc2626',
+    tt:         '#ea580c',
+    kh:         '#16a34a',
+    yc:         '#ca8a04',
+    pl:         '#9333ea',
+    other:      '#6b7280'
+  }
+  let html = `<div class="overflow-x-auto">
+  <table class="w-full" style="font-size:13px">
+    <thead><tr class="bg-gray-50">
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Loại</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Tên tài liệu</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Hạng mục</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Ngày ký</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">File / Link</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Ghi chú</th>
+      <th class="py-2 px-3 text-center text-xs font-semibold text-gray-500 uppercase">Thao tác</th>
+    </tr></thead>
+    <tbody>`
+
+  docs.forEach(d => {
+    const color = docTypeColors[d.doc_type] || '#6b7280'
+    const typeLabel = LEGAL_DOC_TYPE_LABELS[d.doc_type] || d.doc_type
+    const fileLink = d.file_url
+      ? `<a href="${d.file_url}" target="_blank" class="text-blue-600 hover:underline text-xs"><i class="fas fa-external-link-alt mr-1"></i>${d.file_name||'Xem'}</a>`
+      : (d.file_name ? `<span class="text-gray-500 text-xs"><i class="fas fa-file mr-1"></i>${d.file_name}</span>` : '-')
+
+    html += `<tr class="table-row border-b border-gray-100">
+      <td class="py-2 px-3">
+        <span class="badge" style="background:${color}22;color:${color}">${typeLabel}</span>
+      </td>
+      <td class="py-2 px-3 font-medium text-gray-800">${d.title}</td>
+      <td class="py-2 px-3 text-xs text-gray-500">${d.item_title||'-'}</td>
+      <td class="py-2 px-3 text-xs text-gray-500">${d.signed_date ? fmtDate(d.signed_date) : '-'}</td>
+      <td class="py-2 px-3">${fileLink}</td>
+      <td class="py-2 px-3 text-xs text-gray-400 max-w-xs truncate">${d.notes||'-'}</td>
+      <td class="py-2 px-3 text-center">
+        <div class="flex items-center justify-center gap-1">
+          <button onclick="openEditLegalDoc(${JSON.stringify(d).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
+          <button onclick="deleteLegalDoc(${d.id})" class="text-red-400 hover:text-red-600 p-1" title="Xóa"><i class="fas fa-trash text-xs"></i></button>
+        </div>
+      </td>
+    </tr>`
+  })
+
+  html += '</tbody></table></div>'
+  container.innerHTML = html
+}
+
+// ── Item Modal (Add / Edit) ──────────────────────────────────────────────────
+function openAddLegalItem(stageId, parentId, projectId) {
+  $('legalItemId').value = ''
+  $('legalItemStageId').value = stageId
+  $('legalItemParentId').value = parentId || ''
+  $('legalItemProjectId').value = projectId
+  $('legalItemStt').value = ''
+  $('legalItemTitle').value = ''
+  $('legalItemType').value = 'task'
+  $('legalItemDueDate').value = ''
+  $('legalItemStatus').value = 'pending'
+  $('legalItemNotes').value = ''
+  $('legalItemModalTitle').innerHTML = parentId
+    ? '<i class="fas fa-indent text-primary mr-2"></i>Thêm sub-hạng mục'
+    : '<i class="fas fa-plus text-primary mr-2"></i>Thêm hạng mục'
+  // Preview STT tự động
+  _previewAutoStt(stageId, parentId)
+  openModal('legalItemModal')
+}
+
+function _previewAutoStt(stageId, parentId) {
+  const prev = $('legalItemSttPreviewVal')
+  if (!prev) return
+  const stages = _legalOverviewData?.stages || []
+  if (!parentId) {
+    const stage = stages.find(s => s.id === parseInt(stageId))
+    const count = (stage?.items || []).length
+    prev.textContent = String(count + 1)
+  } else {
+    let parentStt = '1'
+    let childCount = 0
+    stages.forEach(s => {
+      s.items.forEach(it => {
+        if (it.id === parseInt(parentId)) {
+          parentStt = it.stt
+          childCount = (it.children || []).length
+        }
+      })
+    })
+    prev.textContent = `${parentStt}.${childCount + 1}`
+  }
+}
+
+function openEditLegalItem(item) {
+  if (typeof item === 'string') item = JSON.parse(item)
+  $('legalItemId').value = item.id
+  $('legalItemStageId').value = item.stage_id
+  $('legalItemParentId').value = item.parent_id || ''
+  $('legalItemProjectId').value = item.project_id
+  $('legalItemStt').value = item.stt
+  $('legalItemTitle').value = item.title
+  $('legalItemType').value = item.item_type || 'task'
+  $('legalItemDueDate').value = item.due_date || ''
+  $('legalItemStatus').value = item.status || 'pending'
+  $('legalItemNotes').value = item.notes || ''
+  $('legalItemModalTitle').innerHTML = '<i class="fas fa-edit text-primary mr-2"></i>Chỉnh sửa hạng mục'
+  const prev = $('legalItemSttPreviewVal')
+  if (prev) prev.textContent = item.stt
+  openModal('legalItemModal')
+}
+
+async function saveLegalItem(e) {
+  e.preventDefault()
+  const id = $('legalItemId').value
+  const projectId = parseInt($('legalItemProjectId').value)
+  const body = {
+    stage_id: parseInt($('legalItemStageId').value),
+    parent_id: $('legalItemParentId').value ? parseInt($('legalItemParentId').value) : null,
+    title: $('legalItemTitle').value.trim(),
+    item_type: $('legalItemType').value,
+    due_date: $('legalItemDueDate').value || null,
+    status: $('legalItemStatus').value,
+    notes: $('legalItemNotes').value.trim() || null
+  }
+  try {
+    if (id) {
+      await api(`/legal/items/${id}`, { method: 'PUT', data: body })
+      toast('Đã cập nhật hạng mục')
+    } else {
+      const res = await api(`/legal/${projectId}/items`, { method: 'POST', data: body })
+      toast(`Đã thêm hạng mục STT: ${res.stt}`)
+    }
+    closeModal('legalItemModal')
+    await loadLegalProject(projectId)
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+async function reorderLegalItem(id, direction) {
+  try {
+    await api(`/legal/items/${id}/reorder`, { method: 'POST', data: { direction } })
+    await loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi đổi thứ tự: ' + err.message, 'error')
+  }
+}
+
+async function deleteLegalItem(id) {
+  if (!confirm('Xóa hạng mục này? Các sub-hạng mục bên trong cũng sẽ bị xóa.')) return
+  try {
+    await api(`/legal/items/${id}`, { method: 'DELETE' })
+    toast('Đã xóa hạng mục')
+    await loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi xóa: ' + err.message, 'error')
+  }
+}
+
+// ── Letter Modal ─────────────────────────────────────────────────────────────
+function _populateLegalItemSelect(selectId) {
+  const sel = $(selectId)
+  sel.innerHTML = '<option value="">-- Chọn hạng mục --</option>'
+  if (!_legalOverviewData?.stages) return
+  _legalOverviewData.stages.forEach(stage => {
+    stage.items.forEach(item => {
+      const opt = document.createElement('option')
+      opt.value = item.id
+      opt.textContent = `[${stage.code}] ${item.stt} - ${item.title}`
+      sel.appendChild(opt)
+      ;(item.children||[]).forEach(ch => {
+        const copt = document.createElement('option')
+        copt.value = ch.id
+        copt.textContent = `  → ${ch.stt} - ${ch.title}`
+        sel.appendChild(copt)
+      })
+    })
+  })
+}
+
+async function openLegalLetterModal() {
+  if (!_legalCurrentProjectId) { toast('Vui lòng chọn dự án trước', 'warning'); return }
+  $('legalLetterId').value = ''
+  $('legalLetterProjectId').value = _legalCurrentProjectId
+  $('legalLetterType').value = 'cv'
+  $('legalLetterSubject').value = ''
+  $('legalLetterRecipient').value = ''
+  $('legalLetterSentDate').value = today()
+  $('legalLetterStatus').value = 'draft'
+  $('legalLetterNotes').value = ''
+  _populateLegalItemSelect('legalLetterItemId')
+  $('legalLetterModalTitle').innerHTML = '<i class="fas fa-paper-plane text-blue-500 mr-2"></i>Tạo văn bản gửi đi'
+  // Cập nhật preview khi đổi loại văn bản
+  $('legalLetterType').onchange = () => previewLetterNumber()
+  await previewLetterNumber()
+  openModal('legalLetterModal')
+}
+
+async function openEditLegalLetter(letter) {
+  if (typeof letter === 'string') letter = JSON.parse(letter)
+  $('legalLetterId').value = letter.id
+  $('legalLetterProjectId').value = letter.project_id
+  $('legalLetterType').value = letter.letter_type || 'cv'
+  $('legalLetterSubject').value = letter.subject
+  $('legalLetterRecipient').value = letter.recipient || ''
+  $('legalLetterSentDate').value = letter.sent_date || ''
+  $('legalLetterStatus').value = letter.status || 'draft'
+  $('legalLetterNotes').value = letter.notes || ''
+  _populateLegalItemSelect('legalLetterItemId')
+  $('legalLetterItemId').value = letter.legal_item_id || ''
+  $('legalLetterNumberPreview').textContent = letter.letter_number
+  $('legalLetterModalTitle').innerHTML = '<i class="fas fa-edit text-blue-500 mr-2"></i>Chỉnh sửa văn bản'
+  openModal('legalLetterModal')
+}
+
+async function previewLetterNumber() {
+  if (!_legalCurrentProjectId) return
+  const letterId = $('legalLetterId').value
+  if (letterId) return // editing – keep existing number
+  const letterType = $('legalLetterType').value || 'cv'
+  try {
+    const res = await api(`/legal/${_legalCurrentProjectId}/letters/preview-number?type=${letterType}`)
+    $('legalLetterNumberPreview').textContent = res.number
+  } catch(e) {}
+}
+
+async function saveLegalLetter(e) {
+  e.preventDefault()
+  const id = $('legalLetterId').value
+  const projectId = parseInt($('legalLetterProjectId').value)
+  const body = {
+    letter_type: $('legalLetterType').value || 'cv',
+    subject: $('legalLetterSubject').value.trim(),
+    recipient: $('legalLetterRecipient').value.trim() || null,
+    sent_date: $('legalLetterSentDate').value || null,
+    status: $('legalLetterStatus').value,
+    notes: $('legalLetterNotes').value.trim() || null,
+    legal_item_id: $('legalLetterItemId').value ? parseInt($('legalLetterItemId').value) : null
+  }
+  try {
+    if (id) {
+      await api(`/legal/letters/${id}`, { method: 'PUT', data: body })
+      toast('Đã cập nhật văn bản')
+    } else {
+      const res = await api(`/legal/${projectId}/letters`, { method: 'POST', data: body })
+      toast(`Đã tạo văn bản số: ${res.letter_number}`, 'success', 4000)
+    }
+    closeModal('legalLetterModal')
+    await loadLegalProject(projectId)
+    if (_legalCurrentTab !== 'letters') switchLegalTab('letters')
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+async function deleteLegalLetter(id) {
+  if (!confirm('Xóa văn bản này?')) return
+  try {
+    await api(`/legal/letters/${id}`, { method: 'DELETE' })
+    toast('Đã xóa văn bản')
+    await loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi xóa: ' + err.message, 'error')
+  }
+}
+
+// ── Document Modal ────────────────────────────────────────────────────────────
+async function openLegalDocModal() {
+  if (!_legalCurrentProjectId) { toast('Vui lòng chọn dự án trước', 'warning'); return }
+  $('legalDocId').value = ''
+  $('legalDocProjectId').value = _legalCurrentProjectId
+  $('legalDocTitle').value = ''
+  $('legalDocType').value = 'contract'
+  $('legalDocSignedDate').value = ''
+  $('legalDocFileName').value = ''
+  $('legalDocFileUrl').value = ''
+  $('legalDocNotes').value = ''
+  _populateLegalItemSelect('legalDocItemId')
+  $('legalDocModalTitle').innerHTML = '<i class="fas fa-paperclip text-orange-500 mr-2"></i>Thêm tài liệu đính kèm'
+  openModal('legalDocModal')
+}
+
+async function openEditLegalDoc(doc) {
+  if (typeof doc === 'string') doc = JSON.parse(doc)
+  $('legalDocId').value = doc.id
+  $('legalDocProjectId').value = doc.project_id
+  $('legalDocTitle').value = doc.title
+  $('legalDocType').value = doc.doc_type || 'other'
+  $('legalDocSignedDate').value = doc.signed_date || ''
+  $('legalDocFileName').value = doc.file_name || ''
+  $('legalDocFileUrl').value = doc.file_url || ''
+  $('legalDocNotes').value = doc.notes || ''
+  _populateLegalItemSelect('legalDocItemId')
+  $('legalDocItemId').value = doc.legal_item_id || ''
+  $('legalDocModalTitle').innerHTML = '<i class="fas fa-edit text-orange-500 mr-2"></i>Chỉnh sửa tài liệu'
+  openModal('legalDocModal')
+}
+
+async function saveLegalDoc(e) {
+  e.preventDefault()
+  const id = $('legalDocId').value
+  const projectId = parseInt($('legalDocProjectId').value)
+  const body = {
+    title: $('legalDocTitle').value.trim(),
+    doc_type: $('legalDocType').value,
+    signed_date: $('legalDocSignedDate').value || null,
+    file_name: $('legalDocFileName').value.trim() || null,
+    file_url: $('legalDocFileUrl').value.trim() || null,
+    notes: $('legalDocNotes').value.trim() || null,
+    legal_item_id: $('legalDocItemId').value ? parseInt($('legalDocItemId').value) : null
+  }
+  try {
+    if (id) {
+      await api(`/legal/documents/${id}`, { method: 'PUT', data: body })
+      toast('Đã cập nhật tài liệu')
+    } else {
+      await api(`/legal/${projectId}/documents`, { method: 'POST', data: body })
+      toast('Đã thêm tài liệu')
+    }
+    closeModal('legalDocModal')
+    await loadLegalProject(projectId)
+    if (_legalCurrentTab !== 'docs') switchLegalTab('docs')
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+async function deleteLegalDoc(id) {
+  if (!confirm('Xóa tài liệu này?')) return
+  try {
+    await api(`/legal/documents/${id}`, { method: 'DELETE' })
+    toast('Đã xóa tài liệu')
+    await loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi xóa: ' + err.message, 'error')
+  }
+}
+
+// ── Letter Config Modal ──────────────────────────────────────────────────────
+async function openLegalLetterConfig() {
+  if (!_legalCurrentProjectId) return
+  const proj = allProjects.find(p => p.id == _legalCurrentProjectId)
+  $('legalConfigProjectId').value = _legalCurrentProjectId
+  // Dùng project_code_letter của dự án (ưu tiên) hoặc code
+  const codeLetter = proj?.project_code_letter || proj?.code || ''
+  $('legalConfigCodeLetter').value = codeLetter
+  updateLegalConfigPreview()
+
+  // Load thống kê văn bản
+  try {
+    const res = await api(`/legal/${_legalCurrentProjectId}/letters`)
+    const letters = res.letters || []
+    const total = letters.length
+    const byType = {}
+    letters.forEach(l => { byType[l.letter_type] = (byType[l.letter_type] || 0) + 1 })
+    const TYPE_SHORT = {cv:'CV',bc:'BC',bb:'BB',tb:'TB',qd:'QĐ',tt:'TT',kh:'KH',yc:'YC',pl:'PL',contract:'HĐ',appendix:'PLHĐ',acceptance:'BBNT',payment:'TT',other:'VB'}
+    const typeSummary = Object.entries(byType).map(([t,n]) => `${TYPE_SHORT[t]||t.toUpperCase()}: ${n}`).join(' · ')
+    $('legalConfigStatsText').textContent = total > 0
+      ? `Đã tạo ${total} văn bản${typeSummary ? ' (' + typeSummary + ')' : ''}`
+      : 'Chưa có văn bản nào'
+  } catch(e) {
+    $('legalConfigStatsText').textContent = 'Không thể tải thống kê'
+  }
+
+  openModal('legalLetterConfigModal')
+}
+
+function updateLegalConfigPreview() {
+  const code = $('legalConfigCodeLetter')?.value.trim() || 'MÃ-DỰ-ÁN'
+  const el = $('legalConfigPreview')
+  if (el) el.textContent = `01-CV/OneCAD-BIM(${code})`
+}
+
+async function saveLegalLetterConfig(e) {
+  e.preventDefault()
+  const projectId = parseInt($('legalConfigProjectId').value)
+  const codeLetter = $('legalConfigCodeLetter').value.trim()
+  if (!codeLetter) {
+    toast('Vui lòng nhập số hiệu dự án', 'warning')
+    return
+  }
+  try {
+    // Cập nhật project_code_letter qua API dự án
+    await api(`/projects/${projectId}`, { method: 'PUT', data: { project_code_letter: codeLetter } })
+    // Cập nhật local cache
+    const proj = allProjects.find(p => p.id == projectId)
+    if (proj) proj.project_code_letter = codeLetter
+    toast(`Đã cập nhật số hiệu dự án: ${codeLetter}`, 'success')
+    closeModal('legalLetterConfigModal')
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+// ── E. Payment Status Tab ────────────────────────────────────────────────────
+function renderPaymentStatus(payments) {
+  const container = $('legalPaymentsTable')
+  const summaryEl = $('paymentSummaryCards')
+  if (!container) return
+
+  // Summary cards
+  const total = payments.length
+  const totalAmount = payments.reduce((s, p) => s + (p.amount || 0), 0)
+  const paidAmount = payments.reduce((s, p) => s + (p.paid_amount || 0), 0)
+  const pending = payments.filter(p => p.status === 'pending' || p.status === 'processing').length
+  const paid = payments.filter(p => p.status === 'paid').length
+
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
+        <div class="text-2xl font-bold text-blue-700">${total}</div>
+        <div class="text-xs text-blue-500 mt-1">Tổng đợt TT</div>
+      </div>
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
+        <div class="text-sm font-bold text-amber-700">${fmtMoney(totalAmount)}</div>
+        <div class="text-xs text-amber-500 mt-1">Tổng đề nghị</div>
+      </div>
+      <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
+        <div class="text-sm font-bold text-emerald-700">${fmtMoney(paidAmount)}</div>
+        <div class="text-xs text-emerald-500 mt-1">Đã thanh toán</div>
+      </div>
+      <div class="bg-rose-50 border border-rose-200 rounded-xl p-3 text-center">
+        <div class="text-2xl font-bold text-rose-700">${pending}</div>
+        <div class="text-xs text-rose-500 mt-1">Chờ xử lý</div>
+      </div>
+    `
+  }
+
+  if (!payments.length) {
+    container.innerHTML = `<div class="text-center py-12 text-gray-400">
+      <i class="fas fa-money-check-alt text-4xl mb-3 opacity-30"></i>
+      <p class="font-medium">Chưa có đợt thanh toán nào</p>
+      <p class="text-sm mt-1">Nhấn "+ Thêm đợt thanh toán" để tạo mới</p>
+    </div>`
+    return
+  }
+
+  // Progress bar overall
+  const progressPct = totalAmount > 0 ? Math.min(100, Math.round(paidAmount / totalAmount * 100)) : 0
+  const progressColor = progressPct >= 100 ? '#10b981' : progressPct >= 50 ? '#3b82f6' : '#f97316'
+
+  let html = `
+    <div class="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+      <div class="flex justify-between text-sm mb-1">
+        <span class="text-gray-600 font-medium">Tiến độ thanh toán</span>
+        <span class="font-bold" style="color:${progressColor}">${progressPct}%</span>
+      </div>
+      <div class="w-full bg-gray-200 rounded-full h-2">
+        <div class="h-2 rounded-full transition-all" style="width:${progressPct}%;background:${progressColor}"></div>
+      </div>
+      <div class="flex justify-between text-xs text-gray-400 mt-1">
+        <span>Đã TT: ${fmtMoney(paidAmount)}</span>
+        <span>Tổng ĐN: ${fmtMoney(totalAmount)}</span>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-gray-200 bg-gray-50">
+          <th class="py-2 px-3 text-left text-gray-600 font-semibold">Đợt TT</th>
+          <th class="py-2 px-3 text-left text-gray-600 font-semibold">Nội dung</th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Số tiền ĐN</th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT</th>
+          <th class="py-2 px-3 text-center text-gray-600 font-semibold">Ngày TT</th>
+          <th class="py-2 px-3 text-center text-gray-600 font-semibold">Trạng thái</th>
+          <th class="py-2 px-3 text-center text-gray-600 font-semibold">Hóa đơn</th>
+          <th class="py-2 px-3 text-center text-gray-600 font-semibold"></th>
+        </tr>
+      </thead>
+      <tbody>
+  `
+
+  payments.forEach((p, idx) => {
+    const statusLabel = PAYMENT_STATUS_LABELS[p.status] || p.status
+    const statusClass = PAYMENT_STATUS_COLORS[p.status] || 'badge-todo'
+    const rowBg = idx % 2 === 0 ? '' : 'style="background:#f9fafb"'
+    const paidPct = (p.amount || 0) > 0 ? Math.min(100, Math.round((p.paid_amount || 0) / p.amount * 100)) : 0
+    html += `
+      <tr class="border-b border-gray-100 hover:bg-blue-50/30 transition-colors" ${rowBg}>
+        <td class="py-2 px-3">
+          <span class="font-semibold text-gray-700">${p.payment_phase || '—'}</span>
+          ${p.request_number ? `<div class="text-xs text-gray-400 mt-0.5">${p.request_number}</div>` : ''}
+        </td>
+        <td class="py-2 px-3">
+          <div class="text-gray-800">${p.description}</div>
+          ${p.item_title ? `<div class="text-xs text-gray-400 mt-0.5"><i class="fas fa-link mr-1"></i>${p.item_stt ? '['+p.item_stt+'] ' : ''}${p.item_title}</div>` : ''}
+          ${p.notes ? `<div class="text-xs text-gray-400 mt-0.5 italic">${p.notes}</div>` : ''}
+        </td>
+        <td class="py-2 px-3 text-right font-mono text-gray-700">${fmtMoney(p.amount || 0)}</td>
+        <td class="py-2 px-3 text-right">
+          <div class="font-mono text-emerald-700">${fmtMoney(p.paid_amount || 0)}</div>
+          ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}
+        </td>
+        <td class="py-2 px-3 text-center text-gray-600 text-xs">${p.paid_date ? p.paid_date : '—'}</td>
+        <td class="py-2 px-3 text-center"><span class="badge ${statusClass} text-xs">${statusLabel}</span></td>
+        <td class="py-2 px-3 text-center text-xs text-gray-500">
+          ${p.invoice_number ? `<div class="font-mono">${p.invoice_number}</div>` : '—'}
+          ${p.invoice_date ? `<div class="text-gray-400">${p.invoice_date}</div>` : ''}
+        </td>
+        <td class="py-2 px-3 text-center whitespace-nowrap">
+          <button onclick="editPayment(${p.id})" class="text-blue-500 hover:text-blue-700 mr-2" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
+          <button onclick="deletePayment(${p.id})" class="text-red-400 hover:text-red-600" title="Xóa"><i class="fas fa-trash"></i></button>
+        </td>
+      </tr>
+    `
+  })
+
+  html += '</tbody></table></div>'
+  container.innerHTML = html
+}
+
+async function openPaymentModal() {
+  if (!_legalCurrentProjectId) return
+  $('paymentModalTitle').innerHTML = '<i class="fas fa-money-check-alt text-emerald-600 mr-2"></i>Thêm đợt thanh toán'
+  $('paymentId').value = ''
+  $('paymentProjectId').value = _legalCurrentProjectId
+  $('paymentPhase').value = ''
+  $('paymentRequestNumber').value = ''
+  $('paymentDescription').value = ''
+  $('paymentRequestDate').value = new Date().toISOString().slice(0,10)
+  $('paymentStatus').value = 'pending'
+  $('paymentAmount').value = ''
+  $('paymentPaidAmount').value = ''
+  $('paymentPaidDate').value = ''
+  $('paymentInvoiceNumber').value = ''
+  $('paymentInvoiceDate').value = ''
+  $('paymentNotes').value = ''
+  // populate legal item select
+  _populatePaymentItemSelect(null)
+  openModal('paymentModal')
+}
+
+async function editPayment(id) {
+  if (!_legalOverviewData) return
+  const payment = (_legalOverviewData.payments || []).find(p => p.id === id)
+  if (!payment) return
+  $('paymentModalTitle').innerHTML = '<i class="fas fa-edit text-blue-500 mr-2"></i>Chỉnh sửa đợt thanh toán'
+  $('paymentId').value = payment.id
+  $('paymentProjectId').value = payment.project_id
+  $('paymentPhase').value = payment.payment_phase || ''
+  $('paymentRequestNumber').value = payment.request_number || ''
+  $('paymentDescription').value = payment.description || ''
+  $('paymentRequestDate').value = payment.request_date || ''
+  $('paymentStatus').value = payment.status || 'pending'
+  $('paymentAmount').value = payment.amount || ''
+  $('paymentPaidAmount').value = payment.paid_amount || ''
+  $('paymentPaidDate').value = payment.paid_date || ''
+  $('paymentInvoiceNumber').value = payment.invoice_number || ''
+  $('paymentInvoiceDate').value = payment.invoice_date || ''
+  $('paymentNotes').value = payment.notes || ''
+  _populatePaymentItemSelect(payment.legal_item_id)
+  openModal('paymentModal')
+}
+
+function _populatePaymentItemSelect(selectedId) {
+  const sel = $('paymentLegalItemId')
+  if (!sel) return
+  sel.innerHTML = '<option value="">-- Chọn hạng mục --</option>'
+  if (!_legalOverviewData?.stages) return
+  _legalOverviewData.stages.forEach(stage => {
+    stage.items.forEach(item => {
+      const opt = document.createElement('option')
+      opt.value = item.id
+      opt.textContent = `[${stage.code}] ${item.stt} - ${item.title}`
+      if (item.id === selectedId) opt.selected = true
+      sel.appendChild(opt)
+      ;(item.children || []).forEach(child => {
+        const copt = document.createElement('option')
+        copt.value = child.id
+        copt.textContent = `  └ ${item.stt}.${child.stt} - ${child.title}`
+        if (child.id === selectedId) copt.selected = true
+        sel.appendChild(copt)
+      })
+    })
+  })
+}
+
+async function savePayment(e) {
+  e.preventDefault()
+  const id = $('paymentId').value
+  const projectId = parseInt($('paymentProjectId').value)
+  const payload = {
+    description:     $('paymentDescription').value.trim(),
+    payment_phase:   $('paymentPhase').value.trim(),
+    request_number:  $('paymentRequestNumber').value.trim(),
+    request_date:    $('paymentRequestDate').value || null,
+    status:          $('paymentStatus').value,
+    amount:          parseFloat($('paymentAmount').value) || 0,
+    paid_amount:     parseFloat($('paymentPaidAmount').value) || 0,
+    paid_date:       $('paymentPaidDate').value || null,
+    invoice_number:  $('paymentInvoiceNumber').value.trim(),
+    invoice_date:    $('paymentInvoiceDate').value || null,
+    legal_item_id:   parseInt($('paymentLegalItemId').value) || null,
+    notes:           $('paymentNotes').value.trim()
+  }
+  try {
+    if (id) {
+      await api(`/legal/payments/${id}`, { method: 'PUT', data: payload })
+      toast('Đã cập nhật đợt thanh toán', 'success')
+    } else {
+      await api(`/legal/${projectId}/payments`, { method: 'POST', data: payload })
+      toast('Đã thêm đợt thanh toán', 'success')
+    }
+    closeModal('paymentModal')
+    await loadLegalProject(_legalCurrentProjectId)
+    if (_legalCurrentTab !== 'payments') switchLegalTab('payments')
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+async function deletePayment(id) {
+  if (!confirm('Xóa đợt thanh toán này?')) return
+  try {
+    await api(`/legal/payments/${id}`, { method: 'DELETE' })
+    toast('Đã xóa đợt thanh toán')
+    await loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi xóa: ' + err.message, 'error')
+  }
+}
+
+// ── End Legal Module ─────────────────────────────────────────────────────────
+
+// ===================================================
+// LEGAL ITEM TASKS & SUBTASKS MODULE
+// ===================================================
+
+// Cache tasks theo item id
+const _legalItemTasksCache = {}
+
+// ── Toggle trạng thái task nhanh (click vào vòng tròn) ───────────────────────
+async function toggleLegalTaskStatus(taskId, currentStatus, itemId) {
+  const next = { todo:'in_progress', in_progress:'done', done:'todo', completed:'todo' }
+  const newStatus = next[currentStatus] || 'todo'
+  try {
+    await api(`/tasks/${taskId}`, { method: 'PUT', data: { status: newStatus } })
+    await loadLegalItemTasks(itemId)
+  } catch(e) { toast('Lỗi cập nhật trạng thái', 'error') }
+}
+
+// ── Mở rộng/thu gọn panel tasks của 1 hạng mục ──────────────────────────────
+async function toggleLegalItemTasks(itemId, btn) {
+  const panel = $(`legalTaskPanel_${itemId}`)
+  if (!panel) return
+  const isOpen = panel.style.display !== 'none'
+  if (isOpen) {
+    panel.style.display = 'none'
+    btn.style.background = '#eef2ff'
+    btn.style.color = '#6366f1'
+    btn.style.borderColor = '#c7d2fe'
+    btn.innerHTML = '<i class="fas fa-layer-group" style="font-size:9px"></i> Tasks'
+    btn.title = 'Xem / Quản lý tasks'
+    return
+  }
+  panel.style.display = 'block'
+  btn.style.background = '#6366f1'
+  btn.style.color = '#fff'
+  btn.style.borderColor = '#6366f1'
+  btn.innerHTML = '<i class="fas fa-chevron-up" style="font-size:9px"></i> Thu gọn'
+  btn.title = 'Thu gọn tasks'
+  await loadLegalItemTasks(itemId)
+}
+
+async function loadLegalItemTasks(itemId) {
+  const panel = $(`legalTaskPanel_${itemId}`)
+  if (!panel) return
+  panel.innerHTML = '<div class="py-2 px-3 text-xs text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</div>'
+  try {
+    const tasks = await api(`/legal/items/${itemId}/tasks`)
+    _legalItemTasksCache[itemId] = tasks
+    renderLegalItemTasks(itemId, tasks)
+  } catch(e) {
+    panel.innerHTML = `<div class="py-2 px-3 text-xs text-red-400">Lỗi tải tasks</div>`
+  }
+}
+
+function renderLegalItemTasks(itemId, tasks) {
+  const panel = $(`legalTaskPanel_${itemId}`)
+  if (!panel) return
+
+  const isChild = panel.dataset.isChild === '1'
+  const leftPad = isChild ? '48px' : '20px'  // align với title column
+
+  const PRIORITY_META = {
+    low:    { color:'#10b981', bg:'#ecfdf5', label:'Thấp',      icon:'fa-arrow-down' },
+    medium: { color:'#f59e0b', bg:'#fffbeb', label:'TB',         icon:'fa-minus' },
+    high:   { color:'#ef4444', bg:'#fef2f2', label:'Cao',        icon:'fa-arrow-up' }
+  }
+  const STATUS_META = {
+    todo:       { color:'#64748b', bg:'#f1f5f9', label:'Chưa làm',  dot:'#94a3b8' },
+    in_progress:{ color:'#2563eb', bg:'#dbeafe', label:'Đang làm',  dot:'#3b82f6' },
+    done:       { color:'#059669', bg:'#d1fae5', label:'Xong',      dot:'#10b981' },
+    completed:  { color:'#059669', bg:'#d1fae5', label:'Xong',      dot:'#10b981' }
+  }
+
+  const done  = tasks.filter(t => t.status === 'done' || t.status === 'completed').length
+  const total = tasks.length
+  const pct   = total > 0 ? Math.round(done / total * 100) : 0
+  const barCol = pct === 100 ? '#10b981' : pct >= 50 ? '#3b82f6' : '#f59e0b'
+
+  // ── Header ──
+  let html = `
+  <div style="background:#f8fafc;border-top:2px solid #e2e8f0;padding-left:${leftPad}">
+    <div style="display:flex;align-items:center;gap:10px;padding:7px 14px 7px 0;border-bottom:1px solid #e8ecf0">
+      <span style="font-size:10px;font-weight:800;color:#6366f1;letter-spacing:.8px;text-transform:uppercase">
+        <i class="fas fa-layer-group" style="margin-right:4px;font-size:9px"></i>TASKS
+      </span>
+      <span style="font-size:11px;font-weight:700;color:#6366f1;background:#eef2ff;border-radius:20px;padding:1px 8px">${total}</span>
+      ${total > 0 ? `
+      <div style="display:flex;align-items:center;gap:5px">
+        <div style="width:70px;height:5px;background:#e5e7eb;border-radius:10px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${barCol};border-radius:10px;transition:width .4s"></div>
+        </div>
+        <span style="font-size:10px;font-weight:700;color:${barCol}">${done}/${total} · ${pct}%</span>
+      </div>` : ''}
+      <div style="flex:1"></div>
+      <button onclick="openLegalItemTaskModal(${itemId})"
+        style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#fff;background:linear-gradient(135deg,#6366f1,#818cf8);border:none;border-radius:6px;padding:4px 12px;cursor:pointer;box-shadow:0 1px 4px rgba(99,102,241,.35)">
+        <i class="fas fa-plus" style="font-size:9px"></i>Thêm task
+      </button>
+    </div>
+
+    <!-- Task list -->
+    <div style="padding:8px 14px 10px 0" id="taskList_${itemId}">`
+
+  if (total === 0) {
+    html += `
+    <div style="text-align:center;padding:14px 0;color:#9ca3af">
+      <i class="fas fa-clipboard-list" style="font-size:18px;opacity:.35;display:block;margin-bottom:6px"></i>
+      <span style="font-size:11px">Chưa có task — nhấn <b style="color:#6366f1">+ Thêm task</b></span>
+    </div>`
+  } else {
+    tasks.forEach((task, idx) => {
+      const pm   = PRIORITY_META[task.priority] || PRIORITY_META.medium
+      const sm   = STATUS_META[task.status]     || STATUS_META.todo
+      const isDone      = task.status === 'done' || task.status === 'completed'
+      const subTotal    = task.subtask_count || 0
+      const subDone     = task.subtask_done_count || 0
+      const subPct      = subTotal > 0 ? Math.round(subDone / subTotal * 100) : 0
+      const subBarCol   = subPct === 100 ? '#10b981' : '#6366f1'
+      const expandId    = `taskExpand_${task.id}`
+      const hasDetail   = (task.subtasks && task.subtasks.length > 0) || task.description
+
+      html += `
+      <!-- Task card #${idx+1} -->
+      <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)">
+
+        <!-- ── Compact header row ── -->
+        <div style="display:flex;align-items:center;gap:7px;padding:7px 10px;border-left:3px solid ${pm.color};cursor:pointer"
+             onclick="toggleTaskCard('${expandId}', this)">
+
+          <!-- Status circle (click stops propagation) -->
+          <button onclick="event.stopPropagation();toggleLegalTaskStatus(${task.id},'${task.status}',${itemId})"
+            style="flex-shrink:0;width:20px;height:20px;border-radius:50%;border:2px solid ${sm.dot};background:${isDone?sm.dot:'#fff'};display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .2s"
+            title="Click để đổi trạng thái">
+            ${isDone ? '<i class="fas fa-check" style="color:#fff;font-size:8px"></i>' : ''}
+          </button>
+
+          <!-- Title -->
+          <span style="flex:1;font-size:12px;font-weight:${isDone?'400':'600'};color:${isDone?'#9ca3af':'#1f2937'};${isDone?'text-decoration:line-through':''};min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title="${task.title}">${task.title}</span>
+
+          <!-- Meta badges (compact) -->
+          <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
+            <span style="font-size:10px;font-weight:600;color:${pm.color};background:${pm.bg};padding:2px 6px;border-radius:4px;white-space:nowrap">
+              <i class="fas ${pm.icon}" style="font-size:8px"></i> ${pm.label}
+            </span>
+            <span style="font-size:10px;font-weight:600;color:${sm.color};background:${sm.bg};padding:2px 6px;border-radius:4px;white-space:nowrap">${sm.label}</span>
+            ${task.due_date ? `<span style="font-size:10px;color:#9ca3af;white-space:nowrap"><i class="fas fa-calendar-alt" style="font-size:8px;color:#d1d5db;margin-right:2px"></i>${fmtDate(task.due_date)}</span>` : ''}
+            ${subTotal > 0 ? `<span style="font-size:10px;font-weight:600;color:${subBarCol};background:${subPct===100?'#d1fae5':'#ede9fe'};padding:2px 6px;border-radius:4px;white-space:nowrap"><i class="fas fa-check-double" style="font-size:8px;margin-right:2px"></i>${subDone}/${subTotal}</span>` : ''}
+          </div>
+
+          <!-- Action buttons -->
+          <div style="display:flex;gap:3px;flex-shrink:0" onclick="event.stopPropagation()">
+            <button onclick="openLegalItemSubtaskModal(${task.id})"
+              style="width:26px;height:26px;border-radius:6px;border:1px solid #e0e7ff;background:#eef2ff;color:#6366f1;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Thêm subtask">
+              <i class="fas fa-plus" style="font-size:9px"></i>
+            </button>
+            <button onclick="openLegalItemTaskModal(${itemId}, ${JSON.stringify(task).replace(/"/g,'&quot;')})"
+              style="width:26px;height:26px;border-radius:6px;border:1px solid #d1fae5;background:#ecfdf5;color:#059669;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Sửa task">
+              <i class="fas fa-pen" style="font-size:9px"></i>
+            </button>
+            <button onclick="deleteLegalItemTask(${task.id}, ${itemId})"
+              style="width:26px;height:26px;border-radius:6px;border:1px solid #fee2e2;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Xóa task">
+              <i class="fas fa-trash" style="font-size:9px"></i>
+            </button>
+            <!-- Expand toggle -->
+            <button id="chevron_${task.id}"
+              style="width:26px;height:26px;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb;color:#9ca3af;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s" title="Mở rộng / Thu gọn">
+              <i class="fas fa-chevron-down" style="font-size:9px;transition:transform .25s"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- ── Expandable detail section ── -->
+        <div id="${expandId}" style="display:none;overflow:hidden">
+          ${subTotal > 0 ? `
+          <!-- Subtask mini progress -->
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 10px 4px 38px;background:#fafafa;border-top:1px solid #f3f4f6">
+            <span style="font-size:10px;color:#6b7280;white-space:nowrap"><i class="fas fa-check-double" style="font-size:9px;color:#6366f1;margin-right:3px"></i>${subDone}/${subTotal} subtask</span>
+            <div style="flex:1;height:4px;background:#e5e7eb;border-radius:10px">
+              <div style="width:${subPct}%;height:100%;background:${subBarCol};border-radius:10px;transition:width .4s"></div>
+            </div>
+            <span style="font-size:10px;font-weight:700;color:${subBarCol}">${subPct}%</span>
+          </div>` : ''}
+          ${task.description ? `
+          <div style="padding:6px 10px 6px 38px;background:#fafafa;border-top:1px solid #f3f4f6">
+            <span style="font-size:11px;color:#6b7280;font-style:italic">${task.description}</span>
+          </div>` : ''}
+          ${task.subtasks && task.subtasks.length > 0 ? renderLegalSubtasksList(task.id, task.subtasks) : ''}
+          <!-- Add subtask -->
+          <div style="padding:5px 10px 7px 38px;border-top:1px dashed #f0f0f0;background:#fafafa">
+            <button onclick="openLegalItemSubtaskModal(${task.id})"
+              style="font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;padding:0;display:inline-flex;align-items:center;gap:4px">
+              <i class="fas fa-plus-circle" style="font-size:10px"></i> Thêm subtask
+            </button>
+          </div>
+        </div>
+
+      </div>`
+    })
+  }
+
+  html += `</div></div>`
+  panel.innerHTML = html
+}
+
+// ── Toggle expand/collapse task card ─────────────────────────────────────────
+function toggleTaskCard(expandId, headerEl) {
+  const detail  = document.getElementById(expandId)
+  const taskId  = expandId.replace('taskExpand_', '')
+  const chevron = document.getElementById(`chevron_${taskId}`)
+  if (!detail) return
+  const isOpen = detail.style.display !== 'none'
+  if (isOpen) {
+    detail.style.display = 'none'
+    if (chevron) chevron.querySelector('i').style.transform = 'rotate(0deg)'
+    if (chevron) { chevron.style.background = '#f9fafb'; chevron.style.color = '#9ca3af' }
+  } else {
+    detail.style.display = 'block'
+    if (chevron) chevron.querySelector('i').style.transform = 'rotate(180deg)'
+    if (chevron) { chevron.style.background = '#eef2ff'; chevron.style.color = '#6366f1'; chevron.style.borderColor = '#c7d2fe' }
+  }
+}
+
+function renderLegalSubtasksList(taskId, subtasks) {
+  const ST_META = {
+    todo:       { color:'#64748b', bg:'#f1f5f9', dot:'#94a3b8', label:'Chưa làm' },
+    in_progress:{ color:'#2563eb', bg:'#dbeafe', dot:'#3b82f6', label:'Đang làm' },
+    done:       { color:'#059669', bg:'#d1fae5', dot:'#10b981', label:'Xong'      }
+  }
+  let html = `<div style="background:#f8fafc;border-top:1px solid #f0f0f0;padding:4px 10px 2px 38px">`
+  subtasks.forEach((st, i) => {
+    const m      = ST_META[st.status] || ST_META.todo
+    const isDone = st.status === 'done'
+    html += `
+    <div id="lst_${st.id}" class="subtask-row-legal"
+      style="display:flex;align-items:center;gap:8px;padding:5px 2px;${i < subtasks.length-1 ? 'border-bottom:1px dashed #f0f0f0' : ''}">
+      <button onclick="toggleSubtaskDoneLegal(${st.id},'${st.status}',${taskId})"
+        style="flex-shrink:0;width:15px;height:15px;border-radius:3px;border:1.5px solid ${m.dot};background:${isDone?m.dot:'#fff'};display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s" title="Đánh dấu xong">
+        ${isDone ? '<i class="fas fa-check" style="color:#fff;font-size:7px"></i>' : ''}
+      </button>
+      <span style="flex:1;font-size:11px;color:${isDone?'#9ca3af':'#374151'};${isDone?'text-decoration:line-through':''};min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${st.title}">${st.title}</span>
+      <span style="flex-shrink:0;font-size:9px;font-weight:600;color:${m.color};background:${m.bg};padding:1px 6px;border-radius:10px">${m.label}</span>
+      <div class="st-actions" style="display:flex;gap:2px;opacity:0;transition:opacity .15s;flex-shrink:0">
+        <button onclick="openLegalItemSubtaskModal(${taskId},${JSON.stringify(st).replace(/"/g,'&quot;')})"
+          style="width:20px;height:20px;border-radius:4px;border:none;background:#e0e7ff;color:#6366f1;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Sửa">
+          <i class="fas fa-pen" style="font-size:7px"></i>
+        </button>
+        <button onclick="deleteLegalItemSubtask(${st.id},${taskId})"
+          style="width:20px;height:20px;border-radius:4px;border:none;background:#fee2e2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Xóa">
+          <i class="fas fa-trash" style="font-size:7px"></i>
+        </button>
+      </div>
+    </div>`
+  })
+  html += `</div>`
+  return html
+}
+
+// ── Toggle done nhanh cho subtask ────────────────────────────────────────────
+async function toggleSubtaskDoneLegal(subtaskId, currentStatus, taskId) {
+  const newStatus = currentStatus === 'done' ? 'todo' : 'done'
+  try {
+    await api(`/subtasks/${subtaskId}`, { method: 'PUT', data: { status: newStatus } })
+    // Reload tasks panel
+    const task = Object.values(_legalItemTasksCache).flat().find((t) => t.id === taskId)
+    if (task) await loadLegalItemTasks(task.legal_item_id)
+  } catch(e) {}
+}
+
+// ── Modal Task ────────────────────────────────────────────────────────────────
+function openLegalItemTaskModal(itemId, task = null) {
+  $('legalItemTaskLegalItemId').value = itemId
+  $('legalItemTaskId').value = task?.id || ''
+  $('legalItemTaskTitle').value = task?.title || ''
+  $('legalItemTaskPriority').value = task?.priority || 'medium'
+  $('legalItemTaskStatus').value = task?.status || 'todo'
+  $('legalItemTaskDueDate').value = task?.due_date || ''
+  $('legalItemTaskHours').value = task?.estimated_hours || ''
+  $('legalItemTaskDesc').value = task?.description || ''
+  $('legalItemTaskModalTitle').innerHTML = task
+    ? '<i class="fas fa-edit text-green-500 mr-2"></i>Chỉnh sửa task'
+    : '<i class="fas fa-plus text-green-500 mr-2"></i>Tạo task mới'
+  openModal('legalItemTaskModal')
+}
+
+async function saveLegalItemTask(e) {
+  e.preventDefault()
+  const itemId = parseInt($('legalItemTaskLegalItemId').value)
+  const id = $('legalItemTaskId').value
+  const body = {
+    title: $('legalItemTaskTitle').value.trim(),
+    priority: $('legalItemTaskPriority').value,
+    status: $('legalItemTaskStatus').value,
+    due_date: $('legalItemTaskDueDate').value || null,
+    estimated_hours: parseFloat($('legalItemTaskHours').value) || 0,
+    description: $('legalItemTaskDesc').value.trim() || null
+  }
+  try {
+    if (id) {
+      await api(`/tasks/${id}`, { method: 'PUT', data: body })
+      toast('Đã cập nhật task')
+    } else {
+      await api(`/legal/items/${itemId}/tasks`, { method: 'POST', data: body })
+      toast('Đã tạo task mới')
+    }
+    closeModal('legalItemTaskModal')
+    await loadLegalItemTasks(itemId)
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+async function deleteLegalItemTask(taskId, itemId) {
+  if (!confirm('Xóa task này?')) return
+  try {
+    await api(`/tasks/${taskId}`, { method: 'DELETE' })
+    toast('Đã xóa task')
+    await loadLegalItemTasks(itemId)
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+// ── Modal Subtask ─────────────────────────────────────────────────────────────
+function openLegalItemSubtaskModal(taskId, subtask = null) {
+  $('legalItemSubtaskTaskId').value = taskId
+  $('legalItemSubtaskId').value = subtask?.id || ''
+  $('legalItemSubtaskTitle').value = subtask?.title || ''
+  $('legalItemSubtaskPriority').value = subtask?.priority || 'medium'
+  $('legalItemSubtaskStatus').value = subtask?.status || 'todo'
+  $('legalItemSubtaskDueDate').value = subtask?.due_date || ''
+  $('legalItemSubtaskModalTitle').innerHTML = subtask
+    ? '<i class="fas fa-edit text-indigo-500 mr-2"></i>Chỉnh sửa subtask'
+    : '<i class="fas fa-plus text-indigo-500 mr-2"></i>Thêm subtask mới'
+  openModal('legalItemSubtaskModal')
+}
+
+async function saveLegalItemSubtask(e) {
+  e.preventDefault()
+  const taskId = parseInt($('legalItemSubtaskTaskId').value)
+  const id = $('legalItemSubtaskId').value
+  const body = {
+    title: $('legalItemSubtaskTitle').value.trim(),
+    priority: $('legalItemSubtaskPriority').value,
+    status: $('legalItemSubtaskStatus').value,
+    due_date: $('legalItemSubtaskDueDate').value || null
+  }
+  try {
+    if (id) {
+      await api(`/subtasks/${id}`, { method: 'PUT', data: body })
+      toast('Đã cập nhật subtask')
+    } else {
+      await api(`/tasks/${taskId}/subtasks`, { method: 'POST', data: body })
+      toast('Đã thêm subtask')
+    }
+    closeModal('legalItemSubtaskModal')
+    // Reload panel của legal item chứa task này
+    const allItems = Object.keys(_legalItemTasksCache)
+    for (const itemId of allItems) {
+      const tasks = _legalItemTasksCache[itemId] || []
+      if (tasks.some((t) => t.id === taskId)) {
+        await loadLegalItemTasks(parseInt(itemId))
+        break
+      }
+    }
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+async function deleteLegalItemSubtask(subtaskId, taskId) {
+  if (!confirm('Xóa subtask này?')) return
+  try {
+    await api(`/subtasks/${subtaskId}`, { method: 'DELETE' })
+    toast('Đã xóa subtask')
+    const allItems = Object.keys(_legalItemTasksCache)
+    for (const itemId of allItems) {
+      const tasks = _legalItemTasksCache[itemId] || []
+      if (tasks.some((t) => t.id === taskId)) {
+        await loadLegalItemTasks(parseInt(itemId))
+        break
+      }
+    }
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+// ── End Legal Item Tasks Module ───────────────────────────────────────────────

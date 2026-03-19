@@ -443,16 +443,16 @@ app.post('/api/projects', authMiddleware, async (c) => {
     }
 
     const data = await c.req.json()
-    const { code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, location, admin_id, leader_id } = data
+    const { code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, location, admin_id, leader_id, project_code_letter } = data
 
     if (!code || !name) return c.json({ error: 'Code and name required' }, 400)
 
     const result = await db.prepare(
-      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, location, admin_id, leader_id, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, location, admin_id, leader_id, project_code_letter, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(code, name, description || null, client || null, project_type || 'building', status || 'planning',
       start_date || null, end_date || null, budget || 0, contract_value || 0, location || null,
-      admin_id || user.id, leader_id || null, user.id).run()
+      admin_id || user.id, leader_id || null, project_code_letter || code, user.id).run()
 
     return c.json({ success: true, id: result.meta.last_row_id }, 201)
   } catch (e: any) {
@@ -472,8 +472,8 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     if (user.role !== 'system_admin' && proj.admin_id !== user.id)
       return c.json({ error: 'Không có quyền chỉnh sửa dự án này' }, 403)
     const allowedFields = user.role === 'system_admin'
-      ? ['code','name','description','client','project_type','status','start_date','end_date','budget','contract_value','location','admin_id','leader_id','progress']
-      : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress']
+      ? ['code','name','description','client','project_type','status','start_date','end_date','budget','contract_value','location','admin_id','leader_id','progress','project_code_letter']
+      : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress','project_code_letter']
     const updates = allowedFields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = allowedFields.filter(f => data[f] !== undefined).map(f => data[f])
     if (!updates.length) return c.json({ error: 'Nothing to update' }, 400)
@@ -865,14 +865,14 @@ app.post('/api/tasks', authMiddleware, async (c) => {
     const db = c.env.DB
     const user = c.get('user') as any
     const data = await c.req.json()
-    const { project_id, category_id, title, description, discipline_code, phase, priority, status, assigned_to, start_date, due_date, estimated_hours } = data
+    const { project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, start_date, due_date, estimated_hours } = data
 
     if (!project_id || !title) return c.json({ error: 'project_id and title required' }, 400)
 
     const result = await db.prepare(
-      `INSERT INTO tasks (project_id, category_id, title, description, discipline_code, phase, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(project_id, category_id || null, title, description || null, discipline_code || null,
+      `INSERT INTO tasks (project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(project_id, category_id || null, legal_item_id || null, title, description || null, discipline_code || null,
       phase || 'basic_design', priority || 'medium', status || 'todo',
       assigned_to || null, user.id, start_date || null, due_date || null, estimated_hours || 0).run()
 
@@ -7711,6 +7711,679 @@ app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) =>
     })
 
     return c.json({ projects: scored })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ===================================================
+// MODULE: HỒ SƠ PHÁP LÝ DỰ ÁN (Legal Documents)
+// ===================================================
+
+// ── Default stages & items template ─────────────────────────────────────────
+const DEFAULT_LEGAL_STAGES = [
+  {
+    code: 'A', name: 'Giai đoạn chuẩn bị gói thầu', sort_order: 1,
+    items: [
+      { stt: '1', title: 'Yêu cầu lập đề cương dự toán', item_type: 'group', children: [
+        { stt: '1.1', title: 'Dự toán chi phí', item_type: 'task' },
+        { stt: '1.2', title: 'Đề cương nhiệm vụ', item_type: 'task' },
+      ]},
+    ]
+  },
+  {
+    code: 'B', name: 'Giai đoạn tham gia gói thầu', sort_order: 2,
+    items: [
+      { stt: '1', title: 'Yêu cầu chuẩn bị hồ sơ năng lực nhà thầu', item_type: 'group', children: [
+        { stt: '1.1', title: 'Xin tên gói thầu, các thông tin liên quan nếu có', item_type: 'task' },
+        { stt: '1.2', title: 'Thư ngỏ', item_type: 'document' },
+        { stt: '1.3', title: 'Thư cam kết thực hiện', item_type: 'document' },
+      ]},
+    ]
+  },
+  {
+    code: 'C', name: 'Giai đoạn ký hợp đồng và thực hiện gói thầu', sort_order: 3,
+    items: [
+      { stt: '1', title: 'Thư mời thương thảo hợp đồng', item_type: 'group', children: [
+        { stt: '1.1', title: 'Công văn tham gia thương thảo hợp đồng', item_type: 'document' },
+        { stt: '1.2', title: 'Thương thảo hợp đồng', item_type: 'task' },
+        { stt: '1.3', title: 'Dự thảo hợp đồng', item_type: 'document' },
+      ]},
+      { stt: '2', title: 'Ký hợp đồng', item_type: 'document', children: [
+        { stt: '2.1', title: 'Bảo lãnh tạm ứng (Nếu có)', item_type: 'document' },
+        { stt: '2.2', title: 'Đơn đề nghị tạm ứng', item_type: 'document' },
+        { stt: '2.3', title: 'Quyết định thành lập tổ chuyên gia thực hiện gói thầu', item_type: 'document' },
+        { stt: '2.4', title: 'Công văn cho phép tổ chuyên gia tiếp cận hồ sơ gói thầu', item_type: 'document' },
+      ]},
+      { stt: '3', title: 'Thực hiện dự án', item_type: 'group', children: [
+        { stt: '3.1', title: 'Phê duyệt kế hoạch thực hiện BIM (BEP)', item_type: 'document' },
+        { stt: '3.2', title: 'Báo cáo triển khai BIM hàng tuần', item_type: 'task' },
+        { stt: '3.3', title: 'Họp phối hợp BIM', item_type: 'task' },
+        { stt: '3.4', title: 'Báo cáo kết quả và nộp sản phẩm', item_type: 'document' },
+      ]},
+    ]
+  },
+  {
+    code: 'D', name: 'Giai đoạn nghiệm thu', sort_order: 4,
+    items: [
+      { stt: '1', title: 'Biên bản nghiệm thu hoàn thành sản phẩm tư vấn', item_type: 'document', children: [] },
+      { stt: '2', title: 'Mẫu số 3A - Xác định khối lượng công việc hoàn thành', item_type: 'document', children: [] },
+      { stt: '3', title: 'Giấy đề nghị thanh toán', item_type: 'document', children: [] },
+    ]
+  },
+]
+
+// ── Helper: init default stages for a project ────────────────────────────────
+async function initLegalStagesForProject(db: D1Database, projectId: number, createdBy: number) {
+  // Check if already initialized
+  const existing = await db.prepare('SELECT id FROM legal_stages WHERE project_id = ?').bind(projectId).first()
+  if (existing) return { skipped: true }
+
+  for (const stage of DEFAULT_LEGAL_STAGES) {
+    const stageResult = await db.prepare(
+      'INSERT INTO legal_stages (project_id, code, name, sort_order) VALUES (?,?,?,?)'
+    ).bind(projectId, stage.code, stage.name, stage.sort_order).run()
+    const stageId = stageResult.meta.last_row_id
+
+    let sortOrder = 0
+    for (const item of stage.items) {
+      sortOrder++
+      const parentResult = await db.prepare(
+        `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, sort_order, created_by)
+         VALUES (?,?,NULL,?,?,?,?,?)`
+      ).bind(projectId, stageId, item.stt, item.title, item.item_type, sortOrder, createdBy).run()
+      const parentId = parentResult.meta.last_row_id
+
+      if (item.children && item.children.length > 0) {
+        let childSort = 0
+        for (const child of item.children) {
+          childSort++
+          await db.prepare(
+            `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, sort_order, created_by)
+             VALUES (?,?,?,?,?,?,?,?)`
+          ).bind(projectId, stageId, parentId, child.stt, child.title, child.item_type, childSort, createdBy).run()
+        }
+      }
+    }
+  }
+
+  // Default letter config
+  await db.prepare(
+    `INSERT OR IGNORE INTO legal_letter_config (project_id, prefix) VALUES (?,?)`
+  ).bind(projectId, 'OC').run()
+
+  return { initialized: true }
+}
+
+// ── Mã hiệu loại văn bản (dùng trong số văn bản) ────────────────────────────
+const LETTER_TYPE_CODE: Record<string, string> = {
+  cv: 'CV', bc: 'BC', bb: 'BB', tb: 'TB', qd: 'QĐ',
+  tt: 'TT', kh: 'KH', yc: 'YC', pl: 'PL',
+  contract: 'HĐ', appendix: 'PLHĐ', acceptance: 'BBNT',
+  payment: 'TT', other: 'VB'
+}
+
+// ── Helper: generate next letter number ─────────────────────────────────────
+// Format mới: {STT:02d}-{MÃ LOẠI}/OneCAD-BIM({SỐ HIỆU DỰ ÁN})
+// Ví dụ: 01-CV/OneCAD-BIM(TS.C08)
+// STT đếm theo project + loại văn bản, KHÔNG reset hàng năm
+async function generateLetterNumber(
+  db: D1Database,
+  projectId: number,
+  letterType: string,
+  _year?: number   // giữ tham số cho tương thích, không dùng nữa
+): Promise<{ number: string, seq: number, typeSeq: number }> {
+  // Get project — prefer project_code_letter
+  const proj = await db.prepare('SELECT code, project_code_letter FROM projects WHERE id = ?').bind(projectId).first() as any
+  const projCode = (proj?.project_code_letter && proj.project_code_letter.trim() !== '')
+    ? proj.project_code_letter.trim()
+    : (proj?.code || `P${projectId}`)
+
+  const typeCode = LETTER_TYPE_CODE[letterType] || letterType.toUpperCase()
+
+  // Số thứ tự theo project + loại, không reset năm
+  const lastRow = await db.prepare(
+    `SELECT MAX(letter_type_seq) as max_seq FROM outgoing_letters WHERE project_id = ? AND letter_type = ?`
+  ).bind(projectId, letterType).first() as any
+  const typeSeq = (lastRow?.max_seq || 0) + 1
+
+  // Số thứ tự tổng trong project (dùng cho letter_seq legacy)
+  const lastTotal = await db.prepare(
+    `SELECT MAX(letter_seq) as max_seq FROM outgoing_letters WHERE project_id = ?`
+  ).bind(projectId).first() as any
+  const seq = (lastTotal?.max_seq || 0) + 1
+
+  // Format: 01-CV/OneCAD-BIM(TS.C08)
+  const sttStr = String(typeSeq).padStart(2, '0')
+  const number = `${sttStr}-${typeCode}/OneCAD-BIM(${projCode})`
+
+  return { number, seq, typeSeq }
+}
+
+// ── Init project legal ────────────────────────────────────────────────────────
+app.post('/api/legal/init/:projectId', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const projectId = parseInt(c.req.param('projectId'))
+  try {
+    const result = await initLegalStagesForProject(c.env.DB, projectId, user.id)
+    return c.json(result)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Get all stages + items for a project ─────────────────────────────────────
+app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  try {
+    const stages = await c.env.DB.prepare(
+      'SELECT * FROM legal_stages WHERE project_id = ? ORDER BY sort_order'
+    ).bind(projectId).all()
+
+    const items = await c.env.DB.prepare(
+      `SELECT li.*, u.full_name as created_by_name
+       FROM legal_items li
+       LEFT JOIN users u ON u.id = li.created_by
+       WHERE li.project_id = ? ORDER BY li.stage_id, li.sort_order`
+    ).bind(projectId).all()
+
+    // Build tree per stage
+    const stagesWithItems = (stages.results as any[]).map(stage => {
+      const stageItems = (items.results as any[]).filter(i => i.stage_id === stage.id)
+      const parents = stageItems.filter(i => !i.parent_id)
+      const tree = parents.map(p => ({
+        ...p,
+        children: stageItems.filter(c => c.parent_id === p.id)
+      }))
+      return { ...stage, items: tree }
+    })
+
+    // Letters summary
+    const letters = await c.env.DB.prepare(
+      `SELECT ol.*, li.title as item_title, u.full_name as created_by_name
+       FROM outgoing_letters ol
+       LEFT JOIN legal_items li ON li.id = ol.legal_item_id
+       LEFT JOIN users u ON u.id = ol.created_by
+       WHERE ol.project_id = ? ORDER BY ol.letter_year DESC, ol.letter_seq DESC`
+    ).bind(projectId).all()
+
+    // Documents summary
+    const docs = await c.env.DB.prepare(
+      `SELECT ld.*, li.title as item_title
+       FROM legal_documents ld
+       LEFT JOIN legal_items li ON li.id = ld.legal_item_id
+       WHERE ld.project_id = ? ORDER BY ld.created_at DESC`
+    ).bind(projectId).all()
+
+    // Config
+    const config = await c.env.DB.prepare(
+      'SELECT * FROM legal_letter_config WHERE project_id = ?'
+    ).bind(projectId).first()
+
+    // Payments summary
+    const payments = await c.env.DB.prepare(
+      `SELECT pr.*, u.full_name as created_by_name,
+              li.stt as item_stt, li.title as item_title
+       FROM payment_requests pr
+       LEFT JOIN users u ON u.id = pr.created_by
+       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+       WHERE pr.project_id = ? ORDER BY pr.created_at DESC`
+    ).bind(projectId).all()
+
+    return c.json({ stages: stagesWithItems, letters: letters.results, documents: docs.results, config, payments: payments.results })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── CRUD Legal Items ──────────────────────────────────────────────────────────
+app.post('/api/legal/:projectId/items', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const projectId = parseInt(c.req.param('projectId'))
+  const body = await c.req.json()
+  try {
+    const stageId = body.stage_id
+    const parentId = body.parent_id || null
+
+    // Đếm số item cha/con hiện có để tính sort_order + auto stt
+    const siblings = await c.env.DB.prepare(
+      `SELECT id, stt, sort_order FROM legal_items
+       WHERE stage_id = ? AND parent_id IS ?
+       ORDER BY sort_order, id`
+    ).bind(stageId, parentId).all()
+    const siblingsArr = siblings.results as any[]
+    const sortOrder = siblingsArr.length + 1  // thêm vào cuối
+
+    // Tính STT tự động
+    let autoStt: string
+    if (!parentId) {
+      // Item cha: đếm tất cả item cha trong stage này
+      autoStt = String(sortOrder)
+    } else {
+      // Item con: tìm STT của cha → "{parentStt}.{childIdx}"
+      const parent = await c.env.DB.prepare(
+        `SELECT stt FROM legal_items WHERE id = ?`
+      ).bind(parentId).first() as any
+      const parentStt = parent?.stt || '1'
+      autoStt = `${parentStt}.${sortOrder}`
+    }
+
+    const result = await c.env.DB.prepare(
+      `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      projectId, stageId, parentId,
+      autoStt, body.title, body.item_type || 'task',
+      body.due_date || null, body.status || 'pending',
+      body.notes || null, sortOrder, user.id
+    ).run()
+    return c.json({ id: result.meta.last_row_id, stt: autoStt, success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.put('/api/legal/items/:id', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const body = await c.req.json()
+  try {
+    // stt do hệ thống quản lý tự động, chỉ cập nhật các field nội dung
+    await c.env.DB.prepare(
+      `UPDATE legal_items SET title=?, item_type=?, due_date=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(body.title, body.item_type, body.due_date || null, body.status, body.notes || null, id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.delete('/api/legal/items/:id', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  if (!(['system_admin','project_admin','project_leader'] as string[]).includes(user.role)) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+  const id = parseInt(c.req.param('id'))
+  try {
+    // Lấy thông tin item trước khi xóa để recalculate
+    const item = await c.env.DB.prepare('SELECT stage_id, parent_id FROM legal_items WHERE id = ?').bind(id).first() as any
+    await c.env.DB.prepare('DELETE FROM legal_items WHERE id = ?').bind(id).run()
+    // Recalculate stt + sort_order của các items cùng cấp sau khi xóa
+    if (item) {
+      await recalculateSiblingsStt(c.env.DB, item.stage_id, item.parent_id)
+    }
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Helper: recalculate STT sau khi xóa/reorder ─────────────────────────────
+async function recalculateSiblingsStt(db: D1Database, stageId: number, parentId: number | null) {
+  const siblings = await db.prepare(
+    `SELECT id, parent_id FROM legal_items WHERE stage_id = ? AND parent_id IS ? ORDER BY sort_order, id`
+  ).bind(stageId, parentId).all()
+  const arr = siblings.results as any[]
+  for (let i = 0; i < arr.length; i++) {
+    const newSortOrder = i + 1
+    let newStt: string
+    if (!parentId) {
+      newStt = String(newSortOrder)
+    } else {
+      // Lấy stt của parent
+      const parent = await db.prepare('SELECT stt FROM legal_items WHERE id = ?').bind(parentId).first() as any
+      newStt = `${parent?.stt || '1'}.${newSortOrder}`
+    }
+    await db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?').bind(newStt, newSortOrder, arr[i].id).run()
+    // Nếu item cha bị renumber, cập nhật cả các item con
+    if (!parentId) {
+      const children = await db.prepare(
+        `SELECT id FROM legal_items WHERE parent_id = ? ORDER BY sort_order, id`
+      ).bind(arr[i].id).all()
+      const childArr = children.results as any[]
+      for (let j = 0; j < childArr.length; j++) {
+        await db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?')
+          .bind(`${newStt}.${j+1}`, j+1, childArr[j].id).run()
+      }
+    }
+  }
+}
+
+// ── Reorder item (move up / move down) ────────────────────────────────────────
+app.post('/api/legal/items/:id/reorder', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const { direction } = await c.req.json()  // 'up' | 'down'
+  try {
+    const item = await c.env.DB.prepare(
+      'SELECT id, stage_id, parent_id, sort_order FROM legal_items WHERE id = ?'
+    ).bind(id).first() as any
+    if (!item) return c.json({ error: 'Not found' }, 404)
+
+    const siblings = await c.env.DB.prepare(
+      `SELECT id, sort_order FROM legal_items WHERE stage_id = ? AND parent_id IS ? ORDER BY sort_order, id`
+    ).bind(item.stage_id, item.parent_id).all()
+    const arr = siblings.results as any[]
+    const idx = arr.findIndex((s: any) => s.id === id)
+    if (idx === -1) return c.json({ error: 'Not found in siblings' }, 404)
+
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (swapIdx < 0 || swapIdx >= arr.length) return c.json({ success: true, noChange: true })
+
+    // Swap sort_order giữa 2 items
+    const aId = arr[idx].id,  bId = arr[swapIdx].id
+    const aOrd = arr[idx].sort_order, bOrd = arr[swapIdx].sort_order
+    await c.env.DB.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(bOrd, aId).run()
+    await c.env.DB.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(aOrd, bId).run()
+
+    // Recalculate stt cho toàn bộ siblings sau khi swap
+    await recalculateSiblingsStt(c.env.DB, item.stage_id, item.parent_id)
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Tasks gắn với Legal Item ──────────────────────────────────────────────────
+// GET /api/legal/items/:itemId/tasks — lấy tasks + subtasks của 1 hạng mục
+app.get('/api/legal/items/:itemId/tasks', authMiddleware, async (c) => {
+  const itemId = parseInt(c.req.param('itemId'))
+  try {
+    const tasks = await c.env.DB.prepare(
+      `SELECT t.*, u.full_name as assignee_name,
+        (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id) as subtask_count,
+        (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id AND st.status = 'done') as subtask_done_count
+       FROM tasks t
+       LEFT JOIN users u ON u.id = t.assigned_to
+       WHERE t.legal_item_id = ?
+       ORDER BY t.created_at ASC`
+    ).bind(itemId).all()
+
+    // Load subtasks for each task
+    const taskArr = tasks.results as any[]
+    const result = []
+    for (const task of taskArr) {
+      const subs = await c.env.DB.prepare(
+        `SELECT st.*, u.full_name as assignee_name
+         FROM subtasks st LEFT JOIN users u ON u.id = st.assigned_to
+         WHERE st.task_id = ? ORDER BY st.created_at ASC`
+      ).bind(task.id).all()
+      result.push({ ...task, subtasks: subs.results })
+    }
+    return c.json(result)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/legal/items/:itemId/tasks — tạo task gắn với hạng mục
+app.post('/api/legal/items/:itemId/tasks', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const itemId = parseInt(c.req.param('itemId'))
+  const body = await c.req.json()
+  try {
+    // Lấy project_id từ legal_item
+    const item = await c.env.DB.prepare('SELECT project_id FROM legal_items WHERE id = ?').bind(itemId).first() as any
+    if (!item) return c.json({ error: 'Legal item not found' }, 404)
+
+    const result = await c.env.DB.prepare(
+      `INSERT INTO tasks (project_id, legal_item_id, title, description, priority, status, assigned_to, assigned_by, due_date, estimated_hours)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      item.project_id, itemId,
+      body.title, body.description || null,
+      body.priority || 'medium', body.status || 'todo',
+      body.assigned_to || null, user.id,
+      body.due_date || null, body.estimated_hours || 0
+    ).run()
+    return c.json({ id: result.meta.last_row_id, success: true }, 201)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── CRUD Legal Documents ──────────────────────────────────────────────────────
+app.get('/api/legal/:projectId/documents', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT ld.*, li.title as item_title, u.full_name as created_by_name
+       FROM legal_documents ld
+       LEFT JOIN legal_items li ON li.id = ld.legal_item_id
+       LEFT JOIN users u ON u.id = ld.created_by
+       WHERE ld.project_id = ? ORDER BY ld.created_at DESC`
+    ).bind(projectId).all()
+    return c.json({ documents: rows.results })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.post('/api/legal/:projectId/documents', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const projectId = parseInt(c.req.param('projectId'))
+  const body = await c.req.json()
+  try {
+    const result = await c.env.DB.prepare(
+      `INSERT INTO legal_documents (project_id, legal_item_id, doc_type, title, file_name, file_url, signed_date, notes, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      projectId, body.legal_item_id || null, body.doc_type || 'other',
+      body.title, body.file_name || null, body.file_url || null,
+      body.signed_date || null, body.notes || null, user.id
+    ).run()
+    return c.json({ id: result.meta.last_row_id, success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.put('/api/legal/documents/:id', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const body = await c.req.json()
+  try {
+    await c.env.DB.prepare(
+      `UPDATE legal_documents SET title=?, doc_type=?, legal_item_id=?, signed_date=?, notes=?, file_name=?, file_url=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(body.title, body.doc_type, body.legal_item_id || null, body.signed_date || null, body.notes || null, body.file_name || null, body.file_url || null, id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.delete('/api/legal/documents/:id', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  try {
+    await c.env.DB.prepare('DELETE FROM legal_documents WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Outgoing Letters ─────────────────────────────────────────────────────────
+app.get('/api/legal/:projectId/letters', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT ol.*, li.title as item_title, u.full_name as created_by_name
+       FROM outgoing_letters ol
+       LEFT JOIN legal_items li ON li.id = ol.legal_item_id
+       LEFT JOIN users u ON u.id = ol.created_by
+       WHERE ol.project_id = ? ORDER BY ol.letter_year DESC, ol.letter_seq DESC`
+    ).bind(projectId).all()
+    return c.json({ letters: rows.results })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.post('/api/legal/:projectId/letters', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const projectId = parseInt(c.req.param('projectId'))
+  const body = await c.req.json()
+  try {
+    const year = body.sent_date ? parseInt(body.sent_date.split('-')[0]) : new Date().getFullYear()
+    const letterType = body.letter_type || 'cv'
+    const { number, seq, typeSeq } = await generateLetterNumber(c.env.DB, projectId, letterType, year)
+    const result = await c.env.DB.prepare(
+      `INSERT INTO outgoing_letters (project_id, legal_item_id, letter_number, letter_seq, letter_year, letter_type, letter_type_seq, subject, recipient, sent_date, status, notes, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      projectId, body.legal_item_id || null, number, seq, year,
+      letterType, typeSeq,
+      body.subject, body.recipient || null,
+      body.sent_date || null, body.status || 'draft',
+      body.notes || null, user.id
+    ).run()
+    return c.json({ id: result.meta.last_row_id, letter_number: number, success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.put('/api/legal/letters/:id', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const body = await c.req.json()
+  try {
+    await c.env.DB.prepare(
+      `UPDATE outgoing_letters SET subject=?, recipient=?, sent_date=?, status=?, notes=?, legal_item_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(body.subject, body.recipient || null, body.sent_date || null, body.status, body.notes || null, body.legal_item_id || null, id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.delete('/api/legal/letters/:id', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  if (!['system_admin','project_admin','project_leader'].includes(user.role)) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+  const id = parseInt(c.req.param('id'))
+  try {
+    await c.env.DB.prepare('DELETE FROM outgoing_letters WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Letter Config ─────────────────────────────────────────────────────────────
+app.get('/api/legal/:projectId/config', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const config = await c.env.DB.prepare('SELECT * FROM legal_letter_config WHERE project_id = ?').bind(projectId).first()
+  return c.json({ config: config || { prefix: 'OC', include_project_code: 1, seq_reset_yearly: 1 } })
+})
+
+app.put('/api/legal/:projectId/config', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const body = await c.req.json()
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO legal_letter_config (project_id, prefix, include_project_code, seq_reset_yearly)
+       VALUES (?,?,?,?)
+       ON CONFLICT(project_id) DO UPDATE SET prefix=excluded.prefix, include_project_code=excluded.include_project_code, seq_reset_yearly=excluded.seq_reset_yearly, updated_at=CURRENT_TIMESTAMP`
+    ).bind(projectId, body.prefix || 'OC', body.include_project_code ? 1 : 0, body.seq_reset_yearly ? 1 : 0).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Preview next letter number ────────────────────────────────────────────────
+app.get('/api/legal/:projectId/letters/preview-number', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const letterType = c.req.query('type') || 'cv'
+  try {
+    const { number } = await generateLetterNumber(c.env.DB, projectId, letterType)
+    return c.json({ number })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ===================================================
+// MODULE: E. TÌNH TRẠNG THANH TOÁN (Payment Requests)
+// ===================================================
+
+// GET /api/legal/:projectId/payments — list all payment requests
+app.get('/api/legal/:projectId/payments', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  try {
+    const rows = await c.env.DB.prepare(`
+      SELECT pr.*, u.full_name as created_by_name,
+             li.stt as item_stt, li.title as item_title
+      FROM payment_requests pr
+      LEFT JOIN users u ON u.id = pr.created_by
+      LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+      WHERE pr.project_id = ?
+      ORDER BY pr.created_at DESC
+    `).bind(projectId).all()
+    return c.json({ payments: rows.results })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/legal/:projectId/payments — create payment request
+app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  try {
+    const data = await c.req.json()
+    const { description, request_number, request_date, amount, currency, status,
+            paid_amount, paid_date, invoice_number, invoice_date, payment_phase,
+            legal_item_id, notes } = data
+    if (!description) return c.json({ error: 'description required' }, 400)
+    const result = await c.env.DB.prepare(`
+      INSERT INTO payment_requests
+        (project_id, legal_item_id, request_number, description, request_date, amount, currency,
+         status, paid_amount, paid_date, invoice_number, invoice_date, payment_phase, notes, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).bind(
+      projectId, legal_item_id || null, request_number || null, description,
+      request_date || null, amount || 0, currency || 'VND',
+      status || 'pending', paid_amount || 0, paid_date || null,
+      invoice_number || null, invoice_date || null, payment_phase || null,
+      notes || null, user.id
+    ).run()
+    return c.json({ id: result.meta.last_row_id, success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PUT /api/legal/payments/:id — update payment request
+app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  try {
+    const data = await c.req.json()
+    const fields = ['description', 'request_number', 'request_date', 'amount', 'currency',
+                    'status', 'paid_amount', 'paid_date', 'invoice_number', 'invoice_date',
+                    'payment_phase', 'legal_item_id', 'notes']
+    const updates: string[] = []
+    const values: any[] = []
+    fields.forEach(f => {
+      if (data[f] !== undefined) {
+        updates.push(`${f} = ?`)
+        values.push(data[f] === '' ? null : data[f])
+      }
+    })
+    if (!updates.length) return c.json({ error: 'no fields' }, 400)
+    updates.push('updated_at = CURRENT_TIMESTAMP')
+    values.push(id)
+    await c.env.DB.prepare(`UPDATE payment_requests SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// DELETE /api/legal/payments/:id — delete payment request
+app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  try {
+    await c.env.DB.prepare('DELETE FROM payment_requests WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
