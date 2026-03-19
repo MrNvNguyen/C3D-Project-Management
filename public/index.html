@@ -404,6 +404,9 @@
       <div class="nav-item" onclick="navigate('profile')" data-tooltip="Hồ sơ & Cài đặt">
         <i class="fas fa-user-cog"></i><span>Hồ sơ & Cài đặt</span>
       </div>
+      <div class="nav-item" onclick="openGuideModal()" data-tooltip="Hướng dẫn sử dụng">
+        <i class="fas fa-book-open"></i><span>Hướng dẫn sử dụng</span>
+      </div>
     </nav>
 
     <!-- User footer -->
@@ -4100,5 +4103,331 @@
     })
   })
 </script>
+
+<!-- ========== MODAL HƯỚNG DẪN SỬ DỤNG (Sidebar shortcut) ========== -->
+<div id="guideModal" class="fixed inset-0 z-[9999] hidden" onclick="if(event.target===this)closeGuideModal()">
+  <!-- Backdrop -->
+  <div class="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
+  <!-- Panel - slide from right -->
+  <div id="guideModalPanel" class="absolute right-0 top-0 h-full w-full max-w-2xl bg-white shadow-2xl flex flex-col transform translate-x-full transition-transform duration-300 ease-out">
+    <!-- Header -->
+    <div class="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-primary to-green-700 flex-shrink-0">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center">
+          <i class="fas fa-book-open text-white text-lg"></i>
+        </div>
+        <div>
+          <h2 class="text-lg font-bold text-white">Hướng dẫn sử dụng</h2>
+          <p class="text-xs text-green-100">Dành cho thành viên (Member)</p>
+        </div>
+      </div>
+      <button onclick="closeGuideModal()" class="w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 flex items-center justify-center text-white transition-colors">
+        <i class="fas fa-times text-lg"></i>
+      </button>
+    </div>
+
+    <!-- Tab nav -->
+    <div class="flex gap-2 px-6 py-3 border-b border-gray-100 flex-shrink-0 overflow-x-auto">
+      <button onclick="switchMGuideTab('task')" id="mGuideTab-task"
+        class="mguide-tab-btn active-mguide flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-primary bg-primary text-white transition-all whitespace-nowrap">
+        <i class="fas fa-tasks"></i> Cập nhật công việc
+      </button>
+      <button onclick="switchMGuideTab('subtask')" id="mGuideTab-subtask"
+        class="mguide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all whitespace-nowrap">
+        <i class="fas fa-sitemap"></i> Tạo Subtask
+      </button>
+      <button onclick="switchMGuideTab('timesheet')" id="mGuideTab-timesheet"
+        class="mguide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all whitespace-nowrap">
+        <i class="fas fa-clock"></i> Khai báo Timesheet
+      </button>
+      <button onclick="switchMGuideTab('tips')" id="mGuideTab-tips"
+        class="mguide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all whitespace-nowrap">
+        <i class="fas fa-lightbulb"></i> Mẹo & Lưu ý
+      </button>
+    </div>
+
+    <!-- Content scrollable -->
+    <div class="flex-1 overflow-y-auto px-6 py-5">
+
+      <!-- Panel: Cập nhật công việc -->
+      <div id="mGuidePanel-task" class="mguide-panel">
+        <div class="card border-l-4 border-primary">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center"><i class="fas fa-tasks text-primary text-lg"></i></div>
+            <div>
+              <h3 class="font-bold text-gray-800 text-lg">Cập nhật trạng thái công việc</h3>
+              <p class="text-sm text-gray-500">Báo cáo tiến độ task được giao mỗi ngày</p>
+            </div>
+          </div>
+          <div class="space-y-4">
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm">1</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Vào menu <span class="bg-gray-100 px-2 py-0.5 rounded text-primary font-mono text-sm">Công việc</span></p>
+                <p class="text-sm text-gray-500 mt-1">Từ sidebar trái → click <strong>Công việc</strong>. Hệ thống hiển thị toàn bộ task được giao cho bạn.</p>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm">2</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Tìm task của mình</p>
+                <p class="text-sm text-gray-500 mt-1">Dùng ô <strong>🔍 Tìm kiếm task</strong> → gõ tên task hoặc từ khoá. Hoặc dùng bộ lọc <strong>Trạng thái</strong> để lọc nhóm (VD: chỉ xem "Đang thực hiện").</p>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm">3</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Click vào task → Đổi trạng thái</p>
+                <p class="text-sm text-gray-500 mt-1">Nhấn vào tên task để mở chi tiết. Tại trường <strong>Trạng thái</strong>, chọn:</p>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <span class="badge badge-todo">⬜ Chưa làm</span>
+                  <span class="badge badge-in_progress">🔵 Đang thực hiện</span>
+                  <span class="badge badge-review">🟡 Chờ duyệt</span>
+                  <span class="badge badge-completed">✅ Hoàn thành</span>
+                </div>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm">4</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Cập nhật % tiến độ (tuỳ chọn)</p>
+                <p class="text-sm text-gray-500 mt-1">Điền <strong>% hoàn thành</strong> (0–100) để quản lý theo dõi mức độ chi tiết. VD: thiết kế xong bản thảo → 40%.</p>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm">5</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Nhấn <strong>Lưu</strong></p>
+                <p class="text-sm text-gray-500 mt-1">Quản lý thấy cập nhật ngay trên Dashboard và Timeline.</p>
+              </div>
+            </div>
+          </div>
+          <div class="mt-5 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+            <i class="fas fa-exclamation-triangle mr-2 text-amber-500"></i>
+            <strong>Lưu ý:</strong> Nên cập nhật trạng thái <strong>mỗi ngày</strong> để quản lý nắm tình hình kịp thời.
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel: Tạo Subtask -->
+      <div id="mGuidePanel-subtask" class="mguide-panel hidden">
+        <div class="card border-l-4 border-accent">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-9 h-9 rounded-lg bg-green-100 flex items-center justify-center"><i class="fas fa-sitemap text-accent text-lg"></i></div>
+            <div>
+              <h3 class="font-bold text-gray-800 text-lg">Tạo Subtask để báo cáo công việc</h3>
+              <p class="text-sm text-gray-500">Chia nhỏ công việc lớn thành các bước cụ thể</p>
+            </div>
+          </div>
+          <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+            <i class="fas fa-info-circle mr-2 text-blue-500"></i>
+            <strong>Subtask</strong> là công việc con trong task lớn. VD: "Thiết kế mặt bằng tầng 1" → Phác thảo → Vẽ chi tiết → Kiểm tra → Xuất bản vẽ.
+          </div>
+          <div class="space-y-4">
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center font-bold text-sm">1</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Mở task cần thêm subtask</p>
+                <p class="text-sm text-gray-500 mt-1">Vào <strong>Công việc</strong> → click tên task để mở modal chi tiết.</p>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center font-bold text-sm">2</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Tìm mục <strong>"Subtask"</strong> trong chi tiết task</p>
+                <p class="text-sm text-gray-500 mt-1">Kéo xuống phần <strong>Danh sách Subtask</strong> → nhấn <span class="bg-primary text-white text-xs px-2 py-0.5 rounded"><i class="fas fa-plus mr-1"></i>Thêm subtask</span>.</p>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center font-bold text-sm">3</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Điền thông tin subtask</p>
+                <ul class="mt-2 space-y-1 text-sm text-gray-600 list-none">
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-accent mt-0.5 flex-shrink-0"></i><span><strong>Tên subtask:</strong> Mô tả ngắn gọn (VD: "Vẽ mặt bằng tầng 1 bản thảo")</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-accent mt-0.5 flex-shrink-0"></i><span><strong>Người thực hiện:</strong> Chọn tên mình hoặc người được giao</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-accent mt-0.5 flex-shrink-0"></i><span><strong>Deadline:</strong> Ngày dự kiến hoàn thành</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-accent mt-0.5 flex-shrink-0"></i><span><strong>Trạng thái:</strong> Ban đầu thường là "Chưa làm"</span></li>
+                </ul>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center font-bold text-sm">4</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Cập nhật subtask theo tiến độ thực tế</p>
+                <p class="text-sm text-gray-500 mt-1">Mỗi khi hoàn thành một bước → đổi trạng thái sang <strong>"Hoàn thành"</strong>. Tiến độ task cha tự động tính.</p>
+              </div>
+            </div>
+          </div>
+          <div class="mt-5 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
+            <i class="fas fa-lightbulb mr-2 text-green-500"></i>
+            <strong>Mẹo:</strong> Chia subtask theo từng buổi (sáng/chiều) giúp quản lý thấy tiến độ chi tiết và dễ hỗ trợ khi bị tắc.
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel: Khai báo Timesheet -->
+      <div id="mGuidePanel-timesheet" class="mguide-panel hidden">
+        <div class="card border-l-4 border-yellow-400">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-9 h-9 rounded-lg bg-yellow-100 flex items-center justify-center"><i class="fas fa-clock text-yellow-600 text-lg"></i></div>
+            <div>
+              <h3 class="font-bold text-gray-800 text-lg">Khai báo Timesheet nộp quản lý</h3>
+              <p class="text-sm text-gray-500">Ghi lại số giờ làm việc theo từng dự án mỗi ngày</p>
+            </div>
+          </div>
+          <div class="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+            <i class="fas fa-info-circle mr-2 text-yellow-500"></i>
+            <strong>Timesheet</strong> là bảng chấm công theo dự án. Khai báo hàng ngày để quản lý tính chi phí nhân công và đánh giá năng suất.
+          </div>
+          <div class="space-y-4">
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">1</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Vào menu <span class="bg-gray-100 px-2 py-0.5 rounded text-primary font-mono text-sm">Timesheet</span></p>
+                <p class="text-sm text-gray-500 mt-1">Từ sidebar trái → click <strong>Timesheet</strong> trong nhóm Quản lý dự án.</p>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">2</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Nhấn <span class="bg-primary text-white text-xs px-2 py-0.5 rounded"><i class="fas fa-plus mr-1"></i>Thêm Timesheet</span></p>
+                <p class="text-sm text-gray-500 mt-1">Click nút xanh <strong>"+ Thêm Timesheet"</strong> ở góc trên phải.</p>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">3</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Điền thông tin timesheet</p>
+                <ul class="mt-2 space-y-1 text-sm text-gray-600 list-none">
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Ngày làm việc:</strong> Mặc định hôm nay</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Dự án:</strong> Chọn dự án đã làm trong ngày</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ thường:</strong> Giờ làm bình thường (VD: 8)</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ OT:</strong> Giờ làm thêm ngoài giờ (nếu có)</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Mô tả:</strong> Tóm tắt đã làm gì (VD: "Vẽ mặt cắt A-A, kiểm tra bản vẽ kết cấu")</span></li>
+                </ul>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">4</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Nhấn <strong>Lưu</strong></p>
+                <p class="text-sm text-gray-500 mt-1">Timesheet lưu với trạng thái <span class="badge badge-todo">Nháp</span>. Làm nhiều dự án → tạo nhiều timesheet riêng.</p>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">5</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Nhấn nút <i class="fas fa-paper-plane text-blue-500"></i> <strong>Gửi duyệt</strong></p>
+                <p class="text-sm text-gray-500 mt-1">Trong cột <strong>Thao tác</strong>, nhấn <span class="inline-flex items-center gap-1 bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded"><i class="fas fa-paper-plane text-xs"></i> Gửi</span> để nộp cho quản lý duyệt. Trạng thái: <span class="badge badge-todo">Nháp</span> → <span class="badge badge-review">Chờ duyệt</span>.</p>
+                <div class="mt-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                  <i class="fas fa-info-circle mr-1"></i> Chỉ timesheet <strong>Nháp</strong> mới có nút Gửi duyệt. Sau khi gửi không thể sửa cho đến khi quản lý xử lý.
+                </div>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-500 text-white flex items-center justify-center font-bold text-sm">6</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Kiểm tra kết quả duyệt</p>
+                <div class="mt-2 flex flex-wrap gap-2 text-xs">
+                  <span class="badge badge-review">⏳ Chờ duyệt</span>
+                  <span class="badge badge-completed">✅ Đã duyệt</span>
+                  <span class="badge badge-overdue">❌ Từ chối → sửa lại và gửi lại</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="mt-5 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+            <i class="fas fa-exclamation-triangle mr-2 text-amber-500"></i>
+            <strong>Quan trọng:</strong> Khai báo timesheet <strong>trước 18:00 mỗi ngày</strong>.
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel: Mẹo & Lưu ý -->
+      <div id="mGuidePanel-tips" class="mguide-panel hidden">
+        <div class="grid grid-cols-1 gap-4">
+          <div class="card border-l-4 border-blue-400">
+            <h4 class="font-bold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-traffic-light text-blue-500"></i> Quy tắc cập nhật trạng thái</h4>
+            <div class="space-y-2 text-sm">
+              <div class="flex items-center gap-3 p-2 bg-gray-50 rounded"><span class="badge badge-todo whitespace-nowrap">Chưa làm</span><span class="text-gray-600">Task mới, chưa bắt đầu</span></div>
+              <div class="flex items-center gap-3 p-2 bg-gray-50 rounded"><span class="badge badge-in_progress whitespace-nowrap">Đang làm</span><span class="text-gray-600">Đã bắt đầu, còn trong quá trình</span></div>
+              <div class="flex items-center gap-3 p-2 bg-gray-50 rounded"><span class="badge badge-review whitespace-nowrap">Chờ duyệt</span><span class="text-gray-600">Đã xong, đợi quản lý kiểm tra</span></div>
+              <div class="flex items-center gap-3 p-2 bg-gray-50 rounded"><span class="badge badge-completed whitespace-nowrap">Hoàn thành</span><span class="text-gray-600">Được duyệt, kết thúc task</span></div>
+            </div>
+          </div>
+          <div class="card border-l-4 border-green-400">
+            <h4 class="font-bold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-star text-green-500"></i> Thói quen làm việc tốt</h4>
+            <ul class="space-y-2 text-sm text-gray-600">
+              <li class="flex items-start gap-2"><i class="fas fa-check text-green-500 mt-0.5 flex-shrink-0"></i><span>Cập nhật trạng thái task <strong>mỗi sáng</strong> khi bắt đầu và <strong>mỗi chiều</strong> trước khi kết thúc</span></li>
+              <li class="flex items-start gap-2"><i class="fas fa-check text-green-500 mt-0.5 flex-shrink-0"></i><span>Khai báo timesheet <strong>ngay trong ngày</strong>, không để dồn</span></li>
+              <li class="flex items-start gap-2"><i class="fas fa-check text-green-500 mt-0.5 flex-shrink-0"></i><span>Dùng subtask để <strong>chia nhỏ</strong> task lớn hơn 1 ngày</span></li>
+              <li class="flex items-start gap-2"><i class="fas fa-check text-green-500 mt-0.5 flex-shrink-0"></i><span>Chuyển sang <strong>"Chờ duyệt"</strong> ngay khi xong — không để quản lý phải hỏi</span></li>
+            </ul>
+          </div>
+          <div class="card border-l-4 border-red-400">
+            <h4 class="font-bold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-question-circle text-red-500"></i> Khi gặp vấn đề</h4>
+            <ul class="space-y-2 text-sm text-gray-600">
+              <li class="flex items-start gap-2"><i class="fas fa-angle-right text-red-400 mt-0.5 flex-shrink-0"></i><span><strong>Task bị tắc:</strong> Đổi sang "Chờ duyệt", ghi lý do trong subtask để quản lý hỗ trợ</span></li>
+              <li class="flex items-start gap-2"><i class="fas fa-angle-right text-red-400 mt-0.5 flex-shrink-0"></i><span><strong>Deadline không kịp:</strong> Báo quản lý sớm — đừng chờ đến ngày hết hạn</span></li>
+              <li class="flex items-start gap-2"><i class="fas fa-angle-right text-red-400 mt-0.5 flex-shrink-0"></i><span><strong>Timesheet sai:</strong> Timesheet → tìm bản ghi → <i class="fas fa-edit"></i> sửa hoặc <i class="fas fa-trash"></i> xóa</span></li>
+              <li class="flex items-start gap-2"><i class="fas fa-angle-right text-red-400 mt-0.5 flex-shrink-0"></i><span><strong>Không thấy task:</strong> Kiểm tra bộ lọc Trạng thái/Dự án — thử xoá hết bộ lọc</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /panel -->
+</div><!-- /modal -->
+
+<style>
+  .mguide-panel.hidden { display: none; }
+  .mguide-tab-btn.active-mguide { border-color: var(--primary, #00A651) !important; background: var(--primary, #00A651) !important; color: #fff !important; }
+</style>
+
+<script>
+function openGuideModal() {
+  const modal = document.getElementById('guideModal');
+  const panel = document.getElementById('guideModalPanel');
+  modal.classList.remove('hidden');
+  // trigger slide-in animation
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      panel.style.transform = 'translateX(0)';
+    });
+  });
+  document.body.style.overflow = 'hidden';
+}
+function closeGuideModal() {
+  const modal = document.getElementById('guideModal');
+  const panel = document.getElementById('guideModalPanel');
+  panel.style.transform = 'translateX(100%)';
+  setTimeout(() => {
+    modal.classList.add('hidden');
+    document.body.style.overflow = '';
+  }, 300);
+}
+function switchMGuideTab(tab) {
+  // Update tab buttons
+  document.querySelectorAll('.mguide-tab-btn').forEach(btn => {
+    btn.classList.remove('active-mguide', 'border-primary', 'bg-primary', 'text-white');
+    btn.classList.add('border-gray-200', 'text-gray-600');
+  });
+  const activeBtn = document.getElementById('mGuideTab-' + tab);
+  if (activeBtn) {
+    activeBtn.classList.add('active-mguide');
+    activeBtn.classList.remove('border-gray-200', 'text-gray-600');
+  }
+  // Update panels
+  document.querySelectorAll('.mguide-panel').forEach(p => p.classList.add('hidden'));
+  const activePanel = document.getElementById('mGuidePanel-' + tab);
+  if (activePanel) activePanel.classList.remove('hidden');
+}
+// Close on Escape key
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeGuideModal();
+});
+</script>
+
 </body>
 </html>
