@@ -70,6 +70,18 @@ const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', curr
 const fmtDate = (d) => d ? dayjs(d).format('DD/MM/YYYY') : '-'
 const today = () => new Date().toISOString().split('T')[0]
 
+// SQLite lưu CURRENT_TIMESTAMP dạng UTC không có 'Z' suffix
+// Thêm 'Z' để dayjs parse đúng UTC rồi convert sang giờ local (Asia/Ho_Chi_Minh = UTC+7)
+const parseUTC = (ts) => {
+  if (!ts) return null
+  // Nếu đã có timezone info (có Z, +, T...Z) thì dùng thẳng
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(ts)) return dayjs(ts)
+  // Nếu có dấu space (SQLite format "2026-03-20 10:44:00") → thêm Z
+  const normalized = ts.includes('T') ? ts + 'Z' : ts.replace(' ', 'T') + 'Z'
+  return dayjs(normalized)
+}
+const fmtTs = (ts, fmt = 'DD/MM HH:mm') => ts ? parseUTC(ts).format(fmt) : '-'
+
 function api(endpoint, options = {}) {
   const headers = { 'Content-Type': 'application/json' }
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`
@@ -195,16 +207,7 @@ function getAssetCategoryName(c) {
 }
 
 function getCostTypeName(t) {
-  const m = {
-    salary: 'Lương nhân sự',
-    equipment: 'Thiết bị',
-    material: 'Vật liệu',
-    travel: 'Đi lại',
-    office: 'Văn phòng',
-    transport: 'Vận chuyển',
-    depreciation: 'Khấu hao tài sản',
-    other: 'Khác'
-  }
+  const m = { salary: 'Lương', equipment: 'Thiết bị', material: 'Vật liệu', travel: 'Đi lại', office: 'Văn phòng', other: 'Khác' }
   return m[t] || t
 }
 
@@ -294,8 +297,7 @@ function navigate(page) {
   const breadcrumbs = {
     dashboard: 'Dashboard', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
     tasks: 'Công việc', timesheet: 'Timesheet', gantt: 'Tiến độ Gantt',
-    costs: 'Chi phí & Doanh thu', assets: 'Tài sản', depreciation: 'Khấu hao tài sản',
-    users: 'Nhân sự', profile: 'Hồ sơ',
+    costs: 'Chi phí & Doanh thu', assets: 'Tài sản', users: 'Nhân sự', profile: 'Hồ sơ',
     productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
     'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí',
     'system-config': 'Cấu hình hệ thống', analytics: 'Báo cáo & Phân tích',
@@ -310,7 +312,6 @@ function navigate(page) {
   else if (page === 'gantt') loadGantt()
   else if (page === 'costs') loadCostDashboard()
   else if (page === 'assets') loadAssets()
-  else if (page === 'depreciation') loadDepreciation()
   else if (page === 'users') loadUsers()
   else if (page === 'profile') loadProfile()
   else if (page === 'productivity') loadProductivity()
@@ -804,7 +805,7 @@ async function loadNotifications() {
             <div class="flex-1 min-w-0">
               <p class="text-sm font-medium text-gray-800">${icon} ${n.title}</p>
               <p class="text-xs text-gray-500 truncate">${n.message}</p>
-              <p class="text-xs text-gray-400 mt-1">${dayjs(n.created_at).format('DD/MM HH:mm')}</p>
+              <p class="text-xs text-gray-400 mt-1">${fmtTs(n.created_at)}</p>
             </div>
           </div>
         </div>`
@@ -1168,8 +1169,7 @@ async function openProjectDetail(id, openChatTab = false) {
     // Cập nhật cache để các hàm khác dùng đúng role trong project này
     _projectRoleCache[id] = effectiveRole
 
-    // Project Leader không được sửa thông tin dự án, chỉ system_admin và project_admin
-    const canEdit = ['system_admin', 'project_admin'].includes(effectiveRole)
+    const canEdit = ['system_admin', 'project_admin', 'project_leader'].includes(effectiveRole)
     const canDelete = currentUser.role === 'system_admin'
     const canManageMembers = ['system_admin', 'project_admin'].includes(currentUser.role) ||
       ['project_admin', 'project_leader'].includes(myProjectRole)
@@ -1299,7 +1299,7 @@ async function openProjectDetail(id, openChatTab = false) {
         <div id="projPanel-tasks" class="p-4">
           <div class="flex justify-between items-center mb-3">
             <span class="text-xs text-gray-500">Tổng ${tasks.length} task • ${done} hoàn thành • ${overdue > 0 ? `<span class="text-red-500">${overdue} trễ hạn</span>` : '0 trễ hạn'}</span>
-            <button onclick="openTaskModal(null, ${project.id})" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Tạo task</button>
+            ${canEdit ? `<button onclick="openTaskModal(null, ${project.id})" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Tạo task</button>` : ''}
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-xs">
@@ -1497,10 +1497,23 @@ async function updateMemberRole(projectId, userId, newRole) {
     await api(`/projects/${projectId}/members/${userId}`, { method: 'put', data: { role: newRole } })
     const roleNames = { member: 'Thành viên', project_leader: 'Trưởng dự án', project_admin: 'Quản lý dự án' }
     toast(`Đã cập nhật vai trò thành "${roleNames[newRole] || newRole}"`)
-    // Không cần reload toàn trang, dropdown đã hiển thị giá trị mới
+
+    // CRITICAL: Xóa cache allProjects để buộc reload lần sau
+    // Nếu không, _projectRoleCache giữ role cũ → filter task bị sai
+    allProjects = []
+
+    // Nếu user bị đổi role chính là currentUser đang đăng nhập
+    // → cần reload lại allProjects + tasks ngay lập tức để cập nhật quyền
+    if (currentUser && userId === currentUser.id) {
+      allProjects = await api('/projects')   // refresh projects + my_project_role
+      refreshProjectRoleCache()               // cập nhật lại cache quyền
+      if (typeof filterTasks === 'function') filterTasks()  // re-render task list nếu đang ở trang tasks
+    }
+
+    // Reload project detail để cập nhật dropdown UI
+    openProjectDetail(projectId)
   } catch (e) {
     toast('Lỗi cập nhật vai trò: ' + (e.response?.data?.error || e.message), 'error')
-    // Reload lại để reset dropdown về giá trị cũ
     openProjectDetail(projectId)
   }
 }
@@ -1848,14 +1861,6 @@ async function loadTasks() {
     // Populate project role cache for current user
     refreshProjectRoleCache()
 
-    // Hiện nút Tạo task cho tất cả user (kể cả member)
-    const btnNewTask = $('btnNewTask')
-    if (btnNewTask) {
-      btnNewTask.style.display = ''
-      btnNewTask.innerHTML = '<i class="fas fa-plus"></i>Tạo task mới'
-      btnNewTask.title = ''
-    }
-
     // Lưu lại giá trị filter đang chọn trước khi rebuild combobox
     const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
 
@@ -2137,10 +2142,8 @@ function renderTasksTable(tasks) {
 
   tbody.innerHTML = tasks.map(t => {
     const isAssigned = t.assigned_to === currentUser?.id
-    const isCreatedByMe = t.assigned_by === currentUser?.id
     const effForTask = getEffectiveRoleForProject(t.project_id)
-    const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(effForTask)
-    const canEditThisTask = isAdminOrLeader || isAssigned || isCreatedByMe
+    const canEditThisTask = ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned
     const canDeleteThisTask = ['system_admin','project_admin'].includes(currentUser?.role) || effForTask === 'project_admin'
     const subCount = t.subtask_count || 0
     const subDone  = t.subtask_done_count || 0
@@ -2256,14 +2259,14 @@ async function toggleSubtasks(taskId, btn) {
     const isAssigned = task.assigned_to === currentUser?.id
     const canAddSubtask = ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned
 
-    renderSubtaskPanel(taskId, subtasks, canAddSubtask, isAssigned)
+    renderSubtaskPanel(taskId, subtasks, canAddSubtask)
   } catch(e) {
     panel.innerHTML = `<div class="py-3 px-4 text-red-400 text-sm">Lỗi tải subtask: ${e.message}</div>`
   }
 }
 
 // ── Render subtask rows inside the panel ──────────────────────────────────
-function renderSubtaskPanel(taskId, subtasks, canAddSubtask, isTaskAssignee = false) {
+function renderSubtaskPanel(taskId, subtasks, canAddSubtask) {
   const panel = document.getElementById(`subtask-panel-${taskId}`)
   if (!panel) return
 
@@ -2278,10 +2281,7 @@ function renderSubtaskPanel(taskId, subtasks, canAddSubtask, isTaskAssignee = fa
   const rows = subtasks.map(s => {
     const sc = statusColors[s.status] || statusColors.todo
     const isDone = s.status === 'done'
-    // canEdit: có thể sửa toàn bộ subtask (admin/leader/creator)
     const canEdit = canAddSubtask || s.created_by === currentUser?.id
-    // canToggle: có thể tick checkbox done/todo (thêm: task assignee hoặc subtask assignee)
-    const canToggle = canEdit || isTaskAssignee || s.assigned_to === currentUser?.id
     const isChecked = isDone ? 'checked' : ''
     return `
     <div class="subtask-row flex items-center gap-3 px-4 py-2 hover:bg-indigo-50/40 border-b border-indigo-50 group" id="str-${s.id}">
@@ -2293,10 +2293,9 @@ function renderSubtaskPanel(taskId, subtasks, canAddSubtask, isTaskAssignee = fa
         <span class="text-xs">${priorityIcon[s.priority] || '🟡'}</span>
       </div>
       <!-- checkbox toggle done -->
-      <input type="checkbox" ${isChecked}
-        ${canToggle ? `onchange="toggleSubtaskDone(${s.id}, ${taskId}, this)"` : 'disabled title="Bạn không có quyền cập nhật subtask này"'}
-        class="w-4 h-4 rounded border-gray-300 text-indigo-500 ${canToggle ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} flex-shrink-0"
-        title="${canToggle ? 'Đánh dấu hoàn thành' : 'Bạn không có quyền cập nhật subtask này'}">
+      <input type="checkbox" ${isChecked} onchange="toggleSubtaskDone(${s.id}, ${taskId}, this)"
+        class="w-4 h-4 rounded border-gray-300 text-indigo-500 cursor-pointer flex-shrink-0"
+        title="Đánh dấu hoàn thành">
       <div class="flex-1 min-w-0">
         <span class="text-sm ${isDone ? 'line-through text-gray-400' : 'text-gray-700'}">${s.title}</span>
         <div class="flex flex-wrap items-center gap-2 mt-0.5">
@@ -2340,8 +2339,7 @@ async function toggleSubtaskDone(subId, taskId, checkbox) {
     const task = allTasks.find(t => t.id === taskId) || {}
     const effForTask = getEffectiveRoleForProject(task.project_id)
     const isAssigned = task.assigned_to === currentUser?.id
-    const canAddSubtask = ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned
-    renderSubtaskPanel(taskId, subtasks, canAddSubtask, isAssigned)
+    renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned)
     // Update badge in parent row
     refreshSubtaskBadge(taskId, subtasks)
   } catch(e) {
@@ -2359,8 +2357,7 @@ async function deleteSubtaskInline(subId, taskId) {
     const task = allTasks.find(t => t.id === taskId) || {}
     const effForTask = getEffectiveRoleForProject(task.project_id)
     const isAssigned = task.assigned_to === currentUser?.id
-    const canAddSubtask = ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned
-    renderSubtaskPanel(taskId, subtasks, canAddSubtask, isAssigned)
+    renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned)
     refreshSubtaskBadge(taskId, subtasks)
   })
 }
@@ -2461,16 +2458,6 @@ async function updateTaskAssigneeByProject(projectId = null, preserveValue = nul
   // Sắp xếp theo tên
   members.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || '', 'vi'))
 
-  // Nếu là member đang tạo task mới → chỉ hiện chính mình và auto-select
-  const _taskIdVal = $('taskId')?.value
-  const _effRole = getEffectiveGlobalRole()
-  const _isMemberCreating = !['system_admin','project_admin','project_leader'].includes(_effRole) && !_taskIdVal
-  if (_isMemberCreating) {
-    const me = currentUser
-    assigneeSelect.innerHTML = `<option value="${me?.id}" selected>${me?.full_name}</option>`
-    return
-  }
-
   assigneeSelect.innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
     members.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
 
@@ -2500,34 +2487,27 @@ async function openTaskModal(taskId = null, projectId = null) {
 
   const effRoleForModal = projectId
     ? getEffectiveRoleForProject(projectId)
-    : (taskId ? getEffectiveRoleForProject(null) : getEffectiveGlobalRole())
+    : (taskId ? getEffectiveGlobalRole() : getEffectiveGlobalRole())
   const isMember = !['system_admin','project_admin','project_leader'].includes(effRoleForModal)
+
   // Fill disciplines
   $('taskDiscipline').innerHTML = '<option value="">-- Chọn bộ môn --</option>' +
     allDisciplines.map(d => `<option value="${d.code}">${d.code} - ${d.name}</option>`).join('')
 
-  // Fill assignees: member tạo task mới → chỉ hiện chính mình và auto-select
-  if (isMember && !taskId) {
-    const me = currentUser
-    $('taskAssignee').innerHTML = `<option value="${me.id}" selected>${me.full_name}</option>`
-  } else {
-    $('taskAssignee').innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
-      (allUsers || []).filter(u => u.is_active !== 0).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
-  }
+  // Fill assignees
+  $('taskAssignee').innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
+    (allUsers || []).filter(u => u.is_active !== 0).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
 
   // Khởi tạo combobox Dự án
   const projItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} - ${p.name}` }))
-  _initTaskProjectCombobox(projItems, false)
+  _initTaskProjectCombobox(projItems, isMember)
 
   // Khởi tạo combobox Hạng mục (rỗng, load sau khi chọn dự án)
-  _initTaskCategoryCombobox([], false, null)
+  _initTaskCategoryCombobox([], isMember, null)
 
-  // Tất cả fields đều được chỉnh sửa mặc định - sẽ điều chỉnh sau khi biết task
-  const allFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
-  allFields.forEach(id => { const el = $(id); if(el) { el.disabled = false; el.style.opacity = '' } })
-  // Ẩn banner nếu còn tồn tại từ trước
-  const memberBanner = $('taskMemberBanner')
-  if (memberBanner) memberBanner.style.display = 'none'
+  // For member: disable non-combobox fields
+  const adminOnlyFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
+  adminOnlyFields.forEach(id => { const el = $(id); if(el) el.disabled = isMember })
 
   if (taskId) {
     try {
@@ -2544,29 +2524,6 @@ async function openTaskModal(taskId = null, projectId = null) {
       $('taskProgress').value = task.progress || 0
       $('taskProgressLabel').textContent = task.progress || 0
 
-      // Kiểm tra quyền chỉnh sửa full hay chỉ status/progress
-      // - Admin/project admin/leader: full quyền
-      // - Member tự tạo task (assigned_by = currentUser.id): full quyền
-      // - Member được giao nhưng không phải người tạo: chỉ sửa status/progress
-      const isOwnTask = task.assigned_by === currentUser?.id
-      const isLimitedEdit = isMember && !isOwnTask
-
-      if (isLimitedEdit) {
-        // Disable các fields admin-only, chỉ cho sửa status/progress/actual_hours
-        const limitedFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
-        limitedFields.forEach(fid => { const el = $(fid); if(el) { el.disabled = true; el.style.opacity = '0.5' } })
-        // Disable project combobox
-        const projInput = document.getElementById('taskProjectComboboxModalInput')
-        if (projInput) { projInput.disabled = true; projInput.style.opacity = '0.5' }
-        // Hiện banner thông báo
-        if (memberBanner) {
-          memberBanner.style.display = ''
-          memberBanner.className = 'mb-4 p-3 rounded-lg text-sm bg-blue-50 border border-blue-200 text-blue-800'
-          memberBanner.innerHTML = '<i class="fas fa-info-circle mr-2 text-blue-500"></i>Task này do quản lý tạo. Bạn chỉ có thể cập nhật <strong>Trạng thái</strong> và <strong>% tiến độ</strong>.'
-        }
-        $('taskModalTitle').textContent = 'Cập nhật tiến độ Task'
-      }
-
       // Set dự án trên combobox - set flag trước để onchange giữ nguyên assignee
       if (task.project_id) {
         const proj = allProjects.find(p => p.id === task.project_id)
@@ -2578,7 +2535,7 @@ async function openTaskModal(taskId = null, projectId = null) {
       // Load hạng mục và assignee sau khi set project
       // Không dùng Promise.all vì _cbSelect đã trigger onchange async
       // Gọi trực tiếp để đảm bảo await đầy đủ
-      await _loadAndInitTaskCategoryCombobox(task.project_id, task.category_id, isLimitedEdit)
+      await _loadAndInitTaskCategoryCombobox(task.project_id, task.category_id, isMember)
       await updateTaskAssigneeByProject(task.project_id, task.assigned_to)
       _taskModalPreserveAssignee = null  // Xóa flag sau khi đã load xong
     } catch (e) { toast('Lỗi tải task', 'error'); return }
@@ -2757,7 +2714,7 @@ async function openTaskDetail(id, openChatTab = false) {
     $('taskDetailTitle').textContent = task.title
     const overdue = isOverdue(task)
     const effD = getEffectiveRoleForProject(task.project_id)
-    const canEditTask = ['system_admin','project_admin','project_leader'].includes(effD) || task.assigned_to === currentUser?.id || task.assigned_by === currentUser?.id
+    const canEditTask = ['system_admin','project_admin','project_leader'].includes(effD) || task.assigned_to === currentUser?.id
     const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(effD)
 
     // Subtask stats
@@ -2810,7 +2767,7 @@ async function openTaskDetail(id, openChatTab = false) {
           <div class="space-y-1 max-h-32 overflow-y-auto">
             ${task.history.map(h => `
               <div class="flex gap-2 text-xs text-gray-500 py-1 border-b">
-                <span class="text-gray-400 flex-shrink-0">${dayjs(h.created_at).format('DD/MM HH:mm')}</span>
+                <span class="text-gray-400 flex-shrink-0">${fmtTs(h.created_at)}</span>
                 <span class="font-medium text-gray-700 flex-shrink-0">${h.changed_by_name}</span>
                 <span class="truncate">→ ${h.field_changed}: ${h.new_value || '-'}</span>
               </div>
@@ -3053,7 +3010,7 @@ function renderChatMessages(container, msgs, contextType, contextId) {
   let lastDate = ''
   container.innerHTML = msgs.map(msg => {
     const isMe = msg.sender_id === currentUser?.id
-    const dt = dayjs(msg.created_at)
+    const dt = parseUTC(msg.created_at)
     const dateLabel = dt.format('DD/MM/YYYY')
     let dateSep = ''
     if (dateLabel !== lastDate) {
@@ -3512,7 +3469,7 @@ $('subtaskForm').addEventListener('submit', async (e) => {
       const task = allTasks.find(t => t.id === taskId) || {}
       const effForTask = getEffectiveRoleForProject(task.project_id)
       const isAssigned = task.assigned_to === currentUser?.id
-      renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned, isAssigned)
+      renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned)
       refreshSubtaskBadge(taskId, subtasks)
     } else {
       // If panel not open yet, just re-open toggle or refresh task detail
@@ -3626,13 +3583,12 @@ async function initTsFilterDropdowns() {
   // ------ Year ------
   const yearSel = $('tsYearFilter')
   if (yearSel && yearSel.options.length <= 1) {
-    await initCalendarYearFilter(yearSel)
-    // Sau khi initCalendarYearFilter, đảm bảo option "Tất cả" vẫn đứng đầu
-    const allOpt = document.createElement('option')
-    allOpt.value = ''; allOpt.textContent = 'Tất cả'
-    yearSel.insertBefore(allOpt, yearSel.firstChild)
-    // Mặc định chọn năm hiện tại (không phải "Tất cả")
-    yearSel.value = String(new Date().getFullYear())
+    ;[2023, 2024, 2025, 2026, 2027].forEach(y => {
+      const opt = document.createElement('option')
+      opt.value = y; opt.textContent = y
+      if (y === new Date().getFullYear()) opt.selected = true
+      yearSel.appendChild(opt)
+    })
   }
 
   // ------ Project dropdown — from /api/timesheets/projects ------
@@ -4079,22 +4035,14 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
 // ── Biến lưu trạng thái locked hiện tại của modal ────────────────────────────
 let _tsModalLocked = false
 
-// Token để huỷ load task cũ khi user đổi project liên tiếp nhanh
-let _tsProjChangeToken = 0
-
 // ── Khởi tạo combobox Dự án trong modal Timesheet ───────────────────────────
 function _initTsProjectCombobox(selectedProjId = '', locked = false) {
   _tsModalLocked = locked   // lưu lại để closure onchange dùng đúng
 
-  // Build items từ allProjects; nếu project hiện tại không có trong list
-  // (ví dụ user bị remove khỏi project) → thêm tạm để hiển thị đúng label
-  let projItems = allProjects.map(p => ({
+  const projItems = allProjects.map(p => ({
     value: String(p.id),
     label: `${p.code} – ${p.name}`
   }))
-  if (selectedProjId && !projItems.find(i => i.value === String(selectedProjId))) {
-    projItems = [{ value: String(selectedProjId), label: `Dự án #${selectedProjId}` }, ...projItems]
-  }
 
   createCombobox('tsProjectCombobox', {
     placeholder: '🔍 Tìm & chọn dự án...',
@@ -4102,19 +4050,11 @@ function _initTsProjectCombobox(selectedProjId = '', locked = false) {
     value: selectedProjId ? String(selectedProjId) : '',
     fullWidth: true,
     onchange: async (val) => {
-      // Cập nhật hidden input ngay lập tức
       $('tsProjectHidden').value = val || ''
-      // Reset task hidden input khi đổi project
-      $('tsTaskHidden').value = ''
-
-      // Dùng token để tránh race condition khi user đổi project liên tiếp
-      const token = ++_tsProjChangeToken
-
-      // Reset task combobox về trống ngay
+      // Khi đổi dự án → reset task combobox rồi load lại
+      // Dùng _tsModalLocked (không phải biến locked bị capture cũ)
       _initTsTaskCombobox([], null, _tsModalLocked)
-
-      // Load tasks cho project mới
-      if (val) await _loadAndInitTsTaskCombobox(val, null, _tsModalLocked, token)
+      if (val) await _loadAndInitTsTaskCombobox(val, null, _tsModalLocked)
     }
   })
 
@@ -4165,24 +4105,18 @@ function _initTsTaskCombobox(tasks = [], selectedTaskId = null, locked = false) 
 }
 
 // ── Load tasks từ API rồi khởi tạo combobox task ─────────────────────────────
-// token: nếu được truyền, hủy kết quả nếu token cũ (user đã đổi project khác)
-async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, locked = false, token = null) {
+async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, locked = false) {
   if (!projectId) { _initTsTaskCombobox([], null, locked); return }
   const spinner = $('tsTaskLoadingSpinner')
   if (spinner) spinner.style.display = 'inline'
   try {
+    // Lấy tất cả task của project (không filter status ở đây — filter trong _initTsTaskCombobox)
     const tasks = await api(`/tasks?project_id=${projectId}`)
-    // Nếu token cũ (user đã đổi project khác trong lúc đang load) → bỏ qua
-    if (token !== null && token !== _tsProjChangeToken) return
     _initTsTaskCombobox(tasks, selectedTaskId, locked)
   } catch (e) {
-    if (token !== null && token !== _tsProjChangeToken) return
     _initTsTaskCombobox([], null, locked)
   } finally {
-    // Chỉ ẩn spinner nếu đây vẫn là request mới nhất
-    if (token === null || token === _tsProjChangeToken) {
-      if (spinner) spinner.style.display = 'none'
-    }
+    if (spinner) spinner.style.display = 'none'
   }
 }
 
@@ -4395,12 +4329,14 @@ async function openTsBulkModal() {
   if (!allProjects.length) allProjects = await api('/projects')
   if (!allUsers.length)    allUsers    = await api('/users')
 
-  // Populate year select (dynamic from API)
+  // Populate year select (current year ± 5)
   const yearSel = $('tsBulkYear')
   if (yearSel) {
+    const curYear = new Date().getFullYear()
     yearSel.innerHTML = ''
-    await initCalendarYearFilter(yearSel)
-    yearSel.value = String(new Date().getFullYear())
+    for (let y = curYear + 1; y >= curYear - 5; y--) {
+      yearSel.innerHTML += `<option value="${y}" ${y === curYear ? 'selected' : ''}>${y}</option>`
+    }
   }
 
   // Init user combobox (force re-init)
@@ -4602,12 +4538,8 @@ $('tsForm').addEventListener('submit', async (e) => {
 
   // Ưu tiên _cbGetValue (luôn đúng với state combobox hiện tại)
   // fallback về hidden input nếu combobox chưa được tạo
-  // Đồng thời sync hidden input từ combobox để tránh lệch
   const projId = _cbGetValue('tsProjectCombobox') || $('tsProjectHidden').value
   const taskId = _cbGetValue('tsTaskCombobox')    || $('tsTaskHidden').value
-  // Sync lại hidden inputs để luôn khớp với combobox value
-  if ($('tsProjectHidden')) $('tsProjectHidden').value = projId || ''
-  if ($('tsTaskHidden'))    $('tsTaskHidden').value    = taskId || ''
 
   if (!projId) {
     toast('Vui lòng chọn dự án', 'warning')
@@ -4633,49 +4565,8 @@ $('tsForm').addEventListener('submit', async (e) => {
   try {
     let result
     if (id) {
-      // Lấy project_id cũ của timesheet trước khi lưu (để so sánh)
-      const oldTs = allTimesheets.find(t => t.id === parseInt(id))
-      const oldProjectId = oldTs ? String(oldTs.project_id) : ''
-
       result = await api(`/timesheets/${id}`, { method: 'put', data })
-
-      // Nếu user đổi project → clear filter project để timesheet vẫn hiển thị sau reload
-      const newProjectId = String(data.project_id || '')
-      if (oldProjectId && newProjectId && oldProjectId !== newProjectId) {
-        // Project đã thay đổi: reset filter project về "Tất cả"
-        // để danh sách sau reload sẽ hiện timesheet với project mới
-        if (_cbState['tsProjectFilterCombobox']) {
-          _cbState['tsProjectFilterCombobox'].value = ''
-          _cbState['tsProjectFilterCombobox'].label = _cbState['tsProjectFilterCombobox'].placeholder
-          _cbUpdateTrigger('tsProjectFilterCombobox')
-        }
-        // Tìm tên project mới để thông báo rõ ràng
-        const newProj = allProjects.find(p => String(p.id) === newProjectId)
-        const newProjName = newProj ? `${newProj.code} – ${newProj.name}` : `#${newProjectId}`
-        toast(`✅ Đã đổi dự án → ${newProjName}`, 'success')
-      } else {
-        toast('Đã cập nhật timesheet', 'success')
-      }
-
-      // Đồng bộ filter tháng/năm theo work_date của timesheet vừa sửa
-      // (để loadTimesheets() hiển thị đúng timesheet sau khi lưu)
-      if (data.work_date) {
-        const [wYear, wMonth] = data.work_date.split('-')
-        const monthSel = $('tsMonthFilter')
-        const yearSel  = $('tsYearFilter')
-        if (monthSel && monthSel.value) monthSel.value = wMonth
-        if (yearSel) {
-          // Kiểm tra option năm có tồn tại không; nếu không thì thêm vào
-          const hasYearOpt = Array.from(yearSel.options).some(o => o.value === wYear)
-          if (!hasYearOpt) {
-            const opt = document.createElement('option')
-            opt.value = wYear
-            opt.textContent = wYear
-            yearSel.appendChild(opt)
-          }
-          yearSel.value = wYear
-        }
-      }
+      toast('Đã cập nhật timesheet', 'success')
     } else {
       result = await api('/timesheets', { method: 'post', data })
       // Backend returns action: 'updated' if it auto-updated an existing record
@@ -4690,16 +4581,7 @@ $('tsForm').addEventListener('submit', async (e) => {
         const monthSel = $('tsMonthFilter')
         const yearSel  = $('tsYearFilter')
         if (monthSel) monthSel.value = wMonth
-        if (yearSel) {
-          const hasYearOpt = Array.from(yearSel.options).some(o => o.value === wYear)
-          if (!hasYearOpt) {
-            const opt = document.createElement('option')
-            opt.value = wYear
-            opt.textContent = wYear
-            yearSel.appendChild(opt)
-          }
-          yearSel.value = wYear
-        }
+        if (yearSel)  yearSel.value  = wYear
       }
     }
     closeModal('timesheetModal')
@@ -4875,74 +4757,6 @@ async function renderGantt() {
 // ================================================================
 // COSTS
 // ================================================================
-// Khởi tạo dropdown năm NTC động từ dữ liệu thực tế trong DB
-async function initCostYearFilter(sel) {
-  if (!sel) return
-  try {
-    const res = await api('/dashboard/available-years')
-    const years = res.years || []
-    const currentNtc = res.current_ntc_year || new Date().getFullYear()
-
-    // Lưu giá trị đang chọn (nếu có) để restore sau khi rebuild
-    const prevVal = sel.value ? parseInt(sel.value) : currentNtc
-
-    sel.innerHTML = years.map(y =>
-      `<option value="${y}"${y === prevVal ? ' selected' : ''}>NTC ${y}</option>`
-    ).join('')
-
-    // Nếu giá trị cũ không còn trong danh sách → chọn NTC hiện tại
-    if (!years.includes(prevVal)) {
-      sel.value = String(currentNtc)
-    }
-  } catch {
-    // Fallback: tạo 5 năm quanh năm hiện tại nếu API lỗi
-    const cur = new Date().getFullYear()
-    sel.innerHTML = ''
-    for (let y = cur - 2; y <= cur + 2; y++) {
-      const opt = document.createElement('option')
-      opt.value = y; opt.textContent = `NTC ${y}`
-      if (y === cur) opt.selected = true
-      sel.appendChild(opt)
-    }
-  }
-}
-
-// Khởi tạo dropdown năm dương lịch (calendar year) cho các filter lương, tài chính dự án, chi phí chung
-async function initCalendarYearFilter(sel) {
-  if (!sel) return
-  try {
-    const res = await api('/dashboard/available-years')
-    // Ưu tiên dùng calendar_years (bao gồm năm từ timesheets + project start_date)
-    const calYears = res.calendar_years || res.years || []
-    const curYear = res.current_cal_year || new Date().getFullYear()
-
-    // Gom thêm năm hiện tại + năm tiếp theo luôn có trong list
-    const yearSet = new Set(calYears)
-    yearSet.add(curYear)
-    yearSet.add(curYear + 1)
-    const sortedYears = Array.from(yearSet).sort((a, b) => a - b)
-
-    const prevVal = sel.value ? parseInt(sel.value) : curYear
-
-    sel.innerHTML = sortedYears.map(y =>
-      `<option value="${y}"${y === prevVal ? ' selected' : ''}>${y}</option>`
-    ).join('')
-
-    if (!sortedYears.includes(prevVal)) {
-      sel.value = String(curYear)
-    }
-  } catch {
-    const cur = new Date().getFullYear()
-    sel.innerHTML = ''
-    for (let y = cur - 3; y <= cur + 2; y++) {
-      const opt = document.createElement('option')
-      opt.value = y; opt.textContent = y
-      if (y === cur) opt.selected = true
-      sel.appendChild(opt)
-    }
-  }
-}
-
 async function loadCostDashboard() {
   // Guard: if already loading, mark pending so we re-run after current finishes
   if (_costDashboardLoading) { _costDashboardPending = true; return }
@@ -4950,12 +4764,6 @@ async function loadCostDashboard() {
   _costDashboardPending = false
   try {
     if (!allProjects.length) allProjects = await api('/projects')
-
-    // Khởi tạo danh sách năm NTC động (chỉ chạy 1 lần khi chưa có options)
-    const yearSel = $('costYearFilter')
-    if (yearSel && yearSel.options.length === 0) {
-      await initCostYearFilter(yearSel)
-    }
 
     // Fill cost project combobox
     const costProjItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` }))
@@ -5119,7 +4927,7 @@ async function loadCosts() {
   } catch (e) { console.error(e) }
 }
 
-async function switchCostTab(tab) {
+function switchCostTab(tab) {
   currentCostTab = tab
   // Tab buttons
   const tabs = ['costs', 'revenues', 'analysis', 'duplicates', 'shared']
@@ -5157,16 +4965,10 @@ async function switchCostTab(tab) {
       sel.innerHTML = '<option value="">-- Chọn dự án --</option>' +
         allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
     }
-    // Set default month/year — khởi tạo năm động nếu chưa có options
+    // Set default month/year
     const now = new Date()
     const ms = $('analysisMonthSel'); if (ms) ms.value = String(now.getMonth() + 1).padStart(2, '0')
-    const ys = $('analysisYearSel')
-    if (ys) {
-      if (ys.options.length === 0) {
-        await initCostYearFilter(ys)
-      }
-      if (!ys.value) ys.value = String(now.getFullYear())
-    }
+    const ys = $('analysisYearSel');  if (ys) ys.value = String(now.getFullYear())
     // Reset cache key so fresh data is loaded when user clicks Phân tích
     _lastAnalysisKey = ''
     _costAnalysisLoaded = false
@@ -5754,22 +5556,19 @@ function renderAssetStats() {
   if (!stats) return
   const byStatus = {}
   allAssets.forEach(a => byStatus[a.status] = (byStatus[a.status] || 0) + 1)
-  const totalPurchase = allAssets.reduce((s, a) => s + (a.purchase_price || 0), 0)
-  const totalNetValue = allAssets.reduce((s, a) => s + (a.net_book_value || a.current_value || 0), 0)
-  const deprActive = allAssets.filter(a => a.depreciation_status === 'active').length
-  const totalMonthlyDepr = allAssets.filter(a => a.depreciation_status === 'active').reduce((s, a) => s + (a.monthly_depreciation || 0), 0)
+  const totalValue = allAssets.reduce((s, a) => s + (a.current_value || 0), 0)
 
   stats.innerHTML = [
     { label: 'Tổng tài sản', value: allAssets.length, icon: 'laptop', color: '#0066CC', bg: 'bg-blue-100' },
     { label: 'Đang sử dụng', value: byStatus['active'] || 0, icon: 'check-circle', color: '#00A651', bg: 'bg-green-100' },
-    { label: 'Đang khấu hao', value: deprActive, icon: 'chart-line', color: '#8B5CF6', bg: 'bg-purple-100', sub: `${fmt(totalMonthlyDepr)}/tháng` },
-    { label: 'Giá trị còn lại', value: fmtMoney(totalNetValue), icon: 'coins', color: '#FF6B00', bg: 'bg-orange-100', sub: `Giá mua: ${fmtMoney(totalPurchase)}` }
+    { label: 'Chưa sử dụng', value: byStatus['unused'] || 0, icon: 'box', color: '#6B7280', bg: 'bg-gray-100' },
+    { label: 'Bảo trì/Sửa chữa', value: (byStatus['maintenance'] || 0) + (byStatus['repair'] || 0), icon: 'wrench', color: '#FF6B00', bg: 'bg-orange-100' },
+    { label: 'Tổng giá trị', value: fmtMoney(totalValue), icon: 'coins', color: '#8B5CF6', bg: 'bg-purple-100' }
   ].map(s => `<div class="kpi-card" style="border-color:${s.color}">
     <div class="flex justify-between">
       <div>
         <p class="text-xs text-gray-500">${s.label}</p>
-        <p class="text-xl font-bold mt-1" style="color:${s.color}">${s.value}</p>
-        ${s.sub ? `<p class="text-xs text-gray-400 mt-0.5">${s.sub}</p>` : ''}
+        <p class="text-2xl font-bold mt-1" style="color:${s.color}">${s.value}</p>
       </div>
       <div class="w-12 h-12 rounded-xl ${s.bg} flex items-center justify-center">
         <i class="fas fa-${s.icon} text-xl" style="color:${s.color}"></i>
@@ -5783,49 +5582,35 @@ function renderAssetsTable(assets) {
   if (!tbody) return
   const statusColors = { active: 'badge-completed', unused: 'badge-todo', maintenance: 'badge-review', repair: 'badge-high', retired: 'badge-cancelled', lost: 'badge-overdue' }
   const statusLabels = { active: 'Đang dùng', unused: 'Chưa dùng', maintenance: 'Bảo trì', repair: 'Sửa chữa', retired: 'Thanh lý', lost: 'Mất' }
-  const deprColors = { active: 'background:#ede9fe;color:#5b21b6', none: 'background:#f3f4f6;color:#6b7280', completed: 'background:#d1fae5;color:#065f46', paused: 'background:#fef3c7;color:#92400e' }
-  const deprLabels = { active: 'Đang KH', none: 'Không KH', completed: 'Hết KH', paused: 'Tạm dừng' }
 
-  tbody.innerHTML = assets.map(a => {
-    const deprSt = a.depreciation_status || 'none'
-    const netVal = a.net_book_value || a.current_value || 0
-    const pctDepr = a.purchase_price > 0 ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100)) : 0
-    return `<tr class="table-row">
+  tbody.innerHTML = assets.map(a => `
+    <tr class="table-row">
       <td class="py-2 pr-3 font-mono text-sm font-bold text-primary">${a.asset_code}</td>
-      <td class="py-2 pr-3">
-        <div class="font-medium text-gray-800 text-sm">${a.name}</div>
-        <div class="text-xs text-gray-400">${a.brand || ''} ${a.model ? '/ ' + a.model : ''}</div>
-      </td>
+      <td class="py-2 pr-3 text-sm font-medium text-gray-800">${a.name}</td>
       <td class="py-2 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${getAssetCategoryName(a.category)}</span></td>
+      <td class="py-2 pr-3 text-xs text-gray-600">${a.brand || '-'} ${a.model ? '/ ' + a.model : ''}</td>
       <td class="py-2 pr-3 text-sm text-gray-600">${a.department || '-'}</td>
-      <td class="py-2 pr-3 text-sm text-right font-medium text-gray-800">${fmt(a.purchase_price)}</td>
-      <td class="py-2 pr-3 text-sm text-right font-semibold" style="color:#8B5CF6">${deprSt === 'active' ? fmt(a.monthly_depreciation) : '<span class="text-gray-300">-</span>'}</td>
-      <td class="py-2 pr-3 text-sm text-right font-bold text-primary">${fmt(netVal)}
-        ${deprSt === 'active' ? `<div class="progress-bar mt-1" style="height:4px"><div class="progress-fill${pctDepr > 80 ? ' danger' : ''}" style="width:${pctDepr}%"></div></div>` : ''}
-      </td>
-      <td class="py-2 pr-3"><span class="badge text-xs" style="${deprColors[deprSt]||deprColors.none}">${deprLabels[deprSt]||deprSt}${deprSt==='active'?' ('+a.depreciation_years+'y)':''}</span></td>
+      <td class="py-2 pr-3 text-sm text-gray-700">${a.assigned_to_name || '<span class="text-gray-300">Không có</span>'}</td>
+      <td class="py-2 pr-3 text-sm text-right font-medium text-primary">${fmt(a.current_value)}</td>
       <td class="py-2 pr-3"><span class="badge ${statusColors[a.status]||'badge-todo'}">${statusLabels[a.status]||a.status}</span></td>
       <td class="py-2">
-        <div class="flex gap-1 flex-wrap">
-          <button onclick="openAssetModal(${a.id})" class="btn-secondary text-xs px-2 py-1" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
-          ${deprSt !== 'none' ? `<button onclick="openDeprDetailFromAsset(${a.id})" class="text-xs px-2 py-1 rounded-lg border border-purple-200 text-purple-600 hover:bg-purple-50" title="Lịch KH"><i class="fas fa-chart-line"></i></button>` : ''}
-          <button onclick="deleteAsset(${a.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>
+        <div class="flex gap-1">
+          <button onclick="openAssetModal(${a.id})" class="btn-secondary text-xs px-2 py-1"><i class="fas fa-edit"></i></button>
+          <button onclick="deleteAsset(${a.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm"><i class="fas fa-trash"></i></button>
         </div>
       </td>
-    </tr>`
-  }).join('') || '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
+    </tr>
+  `).join('') || '<tr><td colspan="9" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
 }
 
 function filterAssets() {
-  const search = ($('assetSearch')?.value || '').toLowerCase()
-  const category = $('assetCategoryFilter')?.value || ''
-  const status = $('assetStatusFilter')?.value || ''
-  const depr = $('assetDeprFilter')?.value || ''
+  const search = $('assetSearch').value.toLowerCase()
+  const category = $('assetCategoryFilter').value
+  const status = $('assetStatusFilter').value
   const filtered = allAssets.filter(a =>
     (!search || a.name.toLowerCase().includes(search) || a.asset_code.toLowerCase().includes(search) || (a.brand||'').toLowerCase().includes(search)) &&
     (!category || a.category === category) &&
-    (!status || a.status === status) &&
-    (!depr || (a.depreciation_status || 'none') === depr)
+    (!status || a.status === status)
   )
   renderAssetsTable(filtered)
 }
@@ -5853,42 +5638,24 @@ async function openAssetModal(assetId = null) {
       $('assetDepartment').value = asset.department || ''
       $('assetAssignedTo').value = asset.assigned_to || ''
       $('assetSpecs').value = asset.specifications || ''
-      $('assetDepreciationYears').value = asset.depreciation_years || 0
-      $('assetDepreciationStart').value = asset.depreciation_start_date || asset.purchase_date || ''
     }
   } else {
-    ['assetCode','assetName','assetBrand','assetModel','assetSerial','assetPurchasePrice','assetCurrentValue','assetDepartment','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
+    $('assetCode').value = ''
+    $('assetName').value = ''
     $('assetCategory').value = 'computer'
     $('assetStatus').value = 'active'
+    $('assetBrand').value = ''
+    $('assetModel').value = ''
+    $('assetSerial').value = ''
     $('assetPurchaseDate').value = today()
+    $('assetPurchasePrice').value = ''
+    $('assetCurrentValue').value = ''
+    $('assetDepartment').value = ''
     $('assetAssignedTo').value = ''
-    $('assetDepreciationYears').value = '0'
-    $('assetDepreciationStart').value = today()
+    $('assetSpecs').value = ''
   }
-  updateDeprPreview()
   openModal('assetModal')
 }
-
-function updateDeprPreview() {
-  const yrs = parseInt($('assetDepreciationYears')?.value || '0')
-  const price = parseFloat($('assetPurchasePrice')?.value || '0')
-  const box = $('deprPreviewBox')
-  const txt = $('deprPreviewText')
-  if (!box || !txt) return
-  if (yrs > 0 && price > 0) {
-    const monthly = price / (yrs * 12)
-    const yearly = price / yrs
-    box.style.display = 'block'
-    txt.innerHTML = `Khấu hao <strong>${yrs} năm</strong> = <strong class="text-green-700">${fmt(monthly)}/tháng</strong> &nbsp;|&nbsp; <strong>${fmt(yearly)}/năm</strong> &nbsp;|&nbsp; Tổng: ${fmt(price)}`
-  } else {
-    box.style.display = 'none'
-  }
-}
-
-// Live preview khi đổi giá mua
-document.addEventListener('input', (e) => {
-  if (e.target?.id === 'assetPurchasePrice') updateDeprPreview()
-})
 
 $('assetForm').addEventListener('submit', async (e) => {
   e.preventDefault()
@@ -5902,24 +5669,13 @@ $('assetForm').addEventListener('submit', async (e) => {
     current_value: parseFloat($('assetCurrentValue').value) || 0,
     department: $('assetDepartment').value,
     assigned_to: parseInt($('assetAssignedTo').value) || null,
-    specifications: $('assetSpecs').value,
-    depreciation_years: parseInt($('assetDepreciationYears').value) || 0,
-    depreciation_start_date: $('assetDepreciationStart').value || null
+    specifications: $('assetSpecs').value
   }
   try {
-    if (id) {
-      await api(`/assets/${id}`, { method: 'put', data })
-      // Nếu thay đổi depreciation_years và có purchase_price thì setup lại lịch KH
-      const oldAsset = allAssets.find(a => a.id == id)
-      const newYrs = data.depreciation_years
-      if (newYrs > 0 && data.purchase_price > 0 && (oldAsset?.depreciation_years !== newYrs || !oldAsset?.depreciation_years)) {
-        await api(`/assets/${id}/depreciation/setup`, { method: 'post', data: { depreciation_years: newYrs, depreciation_start_date: data.depreciation_start_date } })
-      }
-    } else {
-      await api('/assets', { method: 'post', data })
-    }
+    if (id) await api(`/assets/${id}`, { method: 'put', data })
+    else await api('/assets', { method: 'post', data })
     closeModal('assetModal')
-    toast(id ? 'Cập nhật tài sản thành công' : 'Thêm tài sản thành công')
+    toast(id ? 'Cập nhật tài sản' : 'Thêm tài sản thành công')
     loadAssets()
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
@@ -5930,461 +5686,6 @@ async function deleteAsset(id) {
     await api(`/assets/${id}`, { method: 'delete' })
     toast('Đã xóa tài sản')
     loadAssets()
-  } catch (e) { toast('Lỗi: ' + e.message, 'error') }
-}
-
-// Mở chi tiết KH từ bảng tài sản
-async function openDeprDetailFromAsset(assetId) {
-  navigate('depreciation')
-  setTimeout(() => {
-    switchDeprTab('assets')
-    openDeprDetail(assetId)
-  }, 400)
-}
-
-// ================================================================
-// DEPRECIATION (Khấu hao tài sản)
-// ================================================================
-let deprSummaryData = null
-
-async function loadDepreciation() {
-  initDeprYearFilter()
-  switchDeprTab('monthly')  // Luôn bắt đầu ở tab Lịch theo tháng
-  await loadDepreciationSummary()
-  await loadDeprPending()
-}
-
-function initDeprYearFilter() {
-  const sel = $('deprYearFilter')
-  if (!sel) return
-  // Luôn re-init để đảm bảo options đúng
-  const cur = new Date().getFullYear()
-  const currentVal = sel.value ? parseInt(sel.value) : cur
-  sel.innerHTML = ''
-  for (let y = cur + 2; y >= cur - 5; y--) {
-    const opt = document.createElement('option')
-    opt.value = y; opt.textContent = `Năm ${y}`
-    if (y === currentVal) opt.selected = true
-    sel.appendChild(opt)
-  }
-  // Nếu chưa chọn năm nào, set default là năm hiện tại
-  if (!sel.value) sel.value = cur
-}
-
-// Khi thay đổi năm → reset tháng về "Cả năm"
-function onDeprYearChange() {
-  const monthSel = $('deprMonthFilter')
-  if (monthSel) monthSel.value = ''
-  loadDepreciationSummary()
-}
-
-async function loadDepreciationSummary() {
-  // Show loading state
-  const kpiEl = $('deprKpiCards')
-  const monthlyTbody = $('deprMonthlyTable')
-  if (monthlyTbody) monthlyTbody.innerHTML = '<tr><td colspan="7" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</td></tr>'
-  try {
-    const year = $('deprYearFilter')?.value || new Date().getFullYear()
-    const month = $('deprMonthFilter')?.value || ''
-    let url = `/depreciation/summary?year=${year}`
-    if (month) url += `&month=${month}`
-    deprSummaryData = await api(url)
-    renderDeprKpiCards(deprSummaryData)
-    renderDeprMonthlyTable(deprSummaryData)
-    renderDeprAssetsTable(deprSummaryData)
-    // Nếu đang filter tháng, tự switch sang tab monthly để xem chi tiết
-    const selectedMonth = $('deprMonthFilter')?.value
-    if (selectedMonth) switchDeprTab('monthly')
-  } catch (e) { toast('Lỗi tải dữ liệu khấu hao: ' + e.message, 'error') }
-}
-
-async function loadDeprPending() {
-  try {
-    const rows = await api('/depreciation/monthly-unallocated?limit=24')
-    renderDeprPendingTable(rows)
-    // Badge - chỉ đếm 3 tháng gần nhất để badge không quá lớn
-    const badge = $('deprPendingBadge')
-    if (badge) {
-      if (rows.length > 0) { badge.textContent = rows.length; badge.style.cssText = 'display:inline-flex!important' }
-      else { badge.style.cssText = 'display:none!important' }
-    }
-  } catch (e) { /* silent */ }
-}
-
-function renderDeprKpiCards(data) {
-  const el = $('deprKpiCards')
-  if (!el || !data) return
-  const st = data.total_stats || {}
-  const monthlySummary = data.monthly_summary || []
-  const selectedMonth = data.month
-  const selectedYear = data.year
-
-  // Tính tổng từ monthly_summary (1 tháng hoặc cả năm tùy filter)
-  const totalDepr = monthlySummary.reduce((s, m) => s + (m.total_depreciation || 0), 0)
-  const allocated = monthlySummary.reduce((s, m) => s + (m.allocated_amount || 0), 0)
-  const pending = monthlySummary.reduce((s, m) => s + (m.pending_allocation || 0), 0)
-
-  const periodLabel = selectedMonth
-    ? `T${selectedMonth}/${selectedYear}`
-    : `Năm ${selectedYear}`
-
-  el.innerHTML = [
-    { label: 'Tài sản đang KH', value: st.total_assets || 0, sub: `Tổng giá trị: ${fmtMoney(st.total_purchase_value || 0)}`, icon: 'laptop', color: '#0066CC' },
-    { label: 'KH/tháng (hiện tại)', value: fmtMoney(st.total_monthly_depreciation || 0), sub: 'Tổng tất cả tài sản đang KH', icon: 'calendar-alt', color: '#8B5CF6' },
-    { label: `Tổng KH ${periodLabel}`, value: fmtMoney(totalDepr), sub: `Đã phân bổ: ${fmtMoney(allocated)}`, icon: 'chart-bar', color: '#00A651' },
-    { label: `Chờ phân bổ ${periodLabel}`, value: fmtMoney(pending), sub: pending > 0 ? 'Cần phân bổ vào dự án' : 'Đã phân bổ hết ✓', icon: 'clock', color: pending > 0 ? '#FF6B00' : '#6B7280' }
-  ].map(s => `<div class="kpi-card" style="border-color:${s.color}">
-    <div class="flex justify-between">
-      <div>
-        <p class="text-xs text-gray-500">${s.label}</p>
-        <p class="text-lg font-bold mt-1" style="color:${s.color}">${s.value}</p>
-        <p class="text-xs text-gray-400 mt-0.5">${s.sub}</p>
-      </div>
-      <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background:${s.color}20">
-        <i class="fas fa-${s.icon}" style="color:${s.color}"></i>
-      </div>
-    </div>
-  </div>`).join('')
-}
-
-function renderDeprMonthlyTable(data) {
-  const tbody = $('deprMonthlyTable')
-  if (!tbody || !data) return
-  const months = data.monthly_summary || []
-  const curY = new Date().getFullYear()
-  const curM = new Date().getMonth() + 1
-  const selectedYear = parseInt($('deprYearFilter')?.value || curY)
-  const selectedMonth = parseInt($('deprMonthFilter')?.value || '0') || null
-
-  if (months.length === 0) {
-    const msg = selectedMonth
-      ? `Không có tài sản nào đang khấu hao trong T${selectedMonth}/${selectedYear}`
-      : `Không có tài sản nào đang khấu hao trong năm ${selectedYear}`
-    tbody.innerHTML = `<tr><td colspan="7" class="text-center py-8 text-gray-400">
-      <i class="fas fa-info-circle mr-2"></i>${msg}
-    </td></tr>`
-    return
-  }
-
-  tbody.innerHTML = months.map(m => {
-    const isPast = (m.year < curY) || (m.year == curY && m.month < curM)
-    const isCur = (m.year == curY && m.month == curM)
-    const alloc = m.allocated_amount || 0
-    const pending = m.pending_allocation || 0
-    const isFullAllocated = pending < 1
-    return `<tr class="table-row${isCur ? ' bg-blue-50' : ''}">
-      <td class="py-2.5 px-3 font-semibold text-gray-700">
-        T${m.month}/${m.year}${isCur ? ' <span class="text-xs text-blue-600 ml-1">(Tháng hiện tại)</span>' : ''}
-      </td>
-      <td class="py-2.5 px-3 text-center text-gray-600">${m.asset_count}</td>
-      <td class="py-2.5 px-3 text-right font-bold text-purple-700">${fmt(m.total_depreciation)}</td>
-      <td class="py-2.5 px-3 text-right text-green-700">${fmt(alloc)}</td>
-      <td class="py-2.5 px-3 text-right ${pending > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${pending > 0 ? fmt(pending) : '-'}</td>
-      <td class="py-2.5 px-3 text-center">
-        ${isFullAllocated
-          ? '<span class="badge" style="background:#d1fae5;color:#065f46"><i class="fas fa-check mr-1"></i>Đã phân bổ</span>'
-          : isPast || isCur
-            ? '<span class="badge" style="background:#fef3c7;color:#92400e"><i class="fas fa-clock mr-1"></i>Chờ phân bổ</span>'
-            : '<span class="badge badge-todo">Chưa đến hạn</span>'
-        }
-      </td>
-      <td class="py-2.5 px-3 text-center">
-        ${(isPast || isCur) && !isFullAllocated
-          ? `<button onclick="allocateDeprMonth(${m.year},${m.month})" class="btn-primary text-xs px-3 py-1.5">
-               <i class="fas fa-share mr-1"></i>Phân bổ vào dự án
-             </button>`
-          : isFullAllocated
-            ? `<span class="text-xs text-gray-400"><i class="fas fa-check-circle text-green-500 mr-1"></i>Hoàn thành</span>`
-            : '<span class="text-xs text-gray-300">Chưa đến hạn</span>'
-        }
-      </td>
-    </tr>`
-  }).join('')
-
-  // Nếu filter theo tháng cụ thể → hiển thị chi tiết tài sản trong tháng đó
-  renderDeprMonthDetailSection(data)
-}
-
-// Hiển thị bảng chi tiết từng tài sản trong tháng được chọn
-function renderDeprMonthDetailSection(data) {
-  const detailSection = $('deprMonthDetailSection')
-  if (!detailSection) return
-  const monthDetail = data.month_detail || []
-  const selectedMonth = parseInt($('deprMonthFilter')?.value || '0') || null
-  const selectedYear = parseInt($('deprYearFilter')?.value || new Date().getFullYear())
-
-  if (!selectedMonth || monthDetail.length === 0) {
-    detailSection.style.display = 'none'
-    return
-  }
-
-  detailSection.style.display = 'block'
-  const tbody = detailSection.querySelector('#deprMonthDetailTable')
-  if (!tbody) return
-
-  tbody.innerHTML = monthDetail.map(row => `
-    <tr class="table-row">
-      <td class="py-2 px-3">
-        <span class="font-mono text-xs font-bold text-primary">${row.asset_code}</span>
-        <div class="text-xs text-gray-500">${row.asset_name}</div>
-      </td>
-      <td class="py-2 px-3 text-right text-sm">${fmt(row.purchase_price)}</td>
-      <td class="py-2 px-3 text-right font-semibold text-purple-700">${fmt(row.depreciation_amount)}</td>
-      <td class="py-2 px-3 text-right text-orange-600">${fmt(row.accumulated_amount)}</td>
-      <td class="py-2 px-3 text-right font-bold text-primary">${fmt(row.net_book_value)}</td>
-      <td class="py-2 px-3 text-center">
-        ${row.is_allocated
-          ? '<span class="badge" style="background:#d1fae5;color:#065f46"><i class="fas fa-check mr-1"></i>Đã PB</span>'
-          : '<span class="badge badge-todo">Chưa PB</span>'}
-      </td>
-    </tr>
-  `).join('')
-}
-
-function renderDeprAssetsTable(data) {
-  const tbody = $('deprAssetsTable')
-  if (!tbody || !data) return
-  const assets = data.active_assets || []
-  if (assets.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="text-center py-8 text-gray-400">Chưa có tài sản nào đang khấu hao</td></tr>'
-    return
-  }
-
-  tbody.innerHTML = assets.map(a => {
-    const totalMonths = (a.depreciation_years || 0) * 12
-    const usedMonths = a.purchase_price > 0 ? Math.round((a.accumulated_depreciation || 0) / (a.monthly_depreciation || 1)) : 0
-    const pct = totalMonths > 0 ? Math.min(100, Math.round(usedMonths / totalMonths * 100)) : 0
-    const netVal = a.net_book_value || 0
-    return `<tr class="table-row">
-      <td class="py-2.5 px-3">
-        <div class="font-semibold text-gray-800 text-sm">${a.asset_code}</div>
-        <div class="text-xs text-gray-500">${a.name}</div>
-        <div class="text-xs text-gray-400">${getAssetCategoryName(a.category)}</div>
-      </td>
-      <td class="py-2.5 px-3 text-right text-sm">${fmt(a.purchase_price)}</td>
-      <td class="py-2.5 px-3 text-center">
-        <span class="badge" style="background:#ede9fe;color:#5b21b6">${a.depreciation_years} năm</span>
-      </td>
-      <td class="py-2.5 px-3 text-center text-xs text-gray-600">${a.depreciation_start_date || '-'}</td>
-      <td class="py-2.5 px-3 text-right font-semibold text-purple-700">${fmt(a.monthly_depreciation)}</td>
-      <td class="py-2.5 px-3 text-right text-orange-600">${fmt(a.accumulated_depreciation || 0)}</td>
-      <td class="py-2.5 px-3 text-right font-bold text-primary">${fmt(netVal)}</td>
-      <td class="py-2.5 px-3" style="min-width:140px">
-        <div class="flex items-center gap-2">
-          <div class="progress-bar flex-1" style="height:8px">
-            <div class="progress-fill${pct > 80 ? ' danger' : ''}" style="width:${pct}%"></div>
-          </div>
-          <span class="text-xs font-semibold ${pct > 80 ? 'text-red-600' : 'text-gray-600'}">${pct}%</span>
-        </div>
-        <div class="text-xs text-gray-400 mt-0.5">${usedMonths}/${totalMonths} tháng</div>
-      </td>
-      <td class="py-2.5 px-3 text-center">
-        <button onclick="openDeprDetail(${a.id})" class="btn-secondary text-xs px-2 py-1">
-          <i class="fas fa-list-alt mr-1"></i>Chi tiết
-        </button>
-      </td>
-    </tr>`
-  }).join('')
-}
-
-function renderDeprPendingTable(rows) {
-  const tbody = $('deprPendingTable')
-  if (!tbody) return
-  if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-gray-400"><i class="fas fa-check-circle text-green-400 text-2xl mb-2 block"></i>Tất cả đã được phân bổ!</td></tr>'
-    // Cập nhật summary info nếu có
-    const summaryEl = $('deprPendingSummary')
-    if (summaryEl) summaryEl.innerHTML = '<span class="text-green-600 text-sm font-medium"><i class="fas fa-check-circle mr-1"></i>Tất cả đã phân bổ</span>'
-    return
-  }
-  const totalPending = rows.reduce((s, r) => s + (r.total_depreciation || 0), 0)
-  // Cập nhật summary info
-  const summaryEl = $('deprPendingSummary')
-  if (summaryEl) summaryEl.innerHTML = `<span class="text-orange-600 text-sm font-semibold">${rows.length} tháng chờ phân bổ — Tổng: ${fmtMoney(totalPending)}</span>`
-
-  const curY = new Date().getFullYear()
-  const curM = new Date().getMonth() + 1
-  tbody.innerHTML = rows.map(r => {
-    const isCurrentMonth = (r.year == curY && r.month == curM)
-    const isPast = (r.year < curY) || (r.year == curY && r.month < curM)
-    return `
-    <tr class="table-row${isCurrentMonth ? ' bg-blue-50' : ''}">
-      <td class="py-2.5 px-3 font-semibold text-gray-700">
-        Tháng ${r.month}/${r.year}
-        ${isCurrentMonth ? '<span class="ml-2 badge" style="background:#dbeafe;color:#1d4ed8;font-size:10px">Tháng này</span>' : ''}
-        ${isPast && !isCurrentMonth ? '<span class="ml-2 badge" style="background:#fef3c7;color:#92400e;font-size:10px">Quá hạn</span>' : ''}
-      </td>
-      <td class="py-2.5 px-3 text-center text-gray-600">${r.asset_count} tài sản</td>
-      <td class="py-2.5 px-3 text-right font-bold text-orange-600">${fmt(r.total_depreciation)}</td>
-      <td class="py-2.5 px-3 text-center">
-        <span id="deprPreview-${r.year}-${r.month}" class="text-xs text-gray-400 italic">
-          <i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...
-        </span>
-      </td>
-      <td class="py-2.5 px-3 text-center">
-        <button onclick="allocateDeprMonth(${r.year},${r.month})" class="btn-primary text-xs px-3 py-1.5">
-          <i class="fas fa-share mr-1"></i>Phân bổ
-        </button>
-      </td>
-    </tr>
-  `}).join('')
-
-  // Load preview cho từng tháng (bất đồng bộ, không block render)
-  rows.forEach(r => loadDeprRowPreview(r.year, r.month))
-}
-
-// Load preview dự án cho một dòng trong bảng chờ phân bổ
-async function loadDeprRowPreview(year, month) {
-  const el = $(`deprPreview-${year}-${month}`)
-  if (!el) return
-  try {
-    const preview = await api(`/depreciation/allocation-preview?year=${year}&month=${month}`)
-    if (preview.eligible_count === 0) {
-      el.innerHTML = '<span class="text-red-500"><i class="fas fa-exclamation-triangle mr-1"></i>Không có dự án</span>'
-    } else {
-      const projList = preview.eligible_projects.map(p => `<span title="${p.name} (bắt đầu ${p.start_date})" class="inline-block bg-blue-100 text-blue-700 text-xs rounded px-1.5 py-0.5 mr-1">${p.code}</span>`).join('')
-      const excludedNote = preview.excluded_count > 0
-        ? `<span class="text-gray-400 text-xs ml-1" title="${preview.excluded_projects.map(p=>p.code+': '+p.reason).join('; ')}">+${preview.excluded_count} chưa bắt đầu</span>`
-        : ''
-      el.innerHTML = projList + excludedNote
-    }
-  } catch {
-    el.innerHTML = '<span class="text-gray-400 text-xs">-</span>'
-  }
-}
-
-// Sửa dữ liệu khấu hao orphan (is_allocated=1 nhưng không có shared_cost tương ứng)
-async function repairOrphanedDepr() {
-  if (!confirm('Kiểm tra và sửa dữ liệu khấu hao bị lỗi?\n\nThao tác này sẽ:\n• Tìm các tháng khấu hao đã đánh dấu "đã phân bổ" nhưng không có chi phí chung tương ứng\n• Reset các tháng đó về trạng thái "chưa phân bổ"\n\nLưu ý: Thao tác này an toàn và có thể phân bổ lại sau.')) return
-  try {
-    const res = await api('/depreciation/repair-orphaned', { method: 'post', data: {} })
-    if (res.repaired === 0) {
-      toast('✅ Không có dữ liệu lỗi - tất cả dữ liệu khấu hao đều hợp lệ')
-    } else {
-      toast(`✅ Đã sửa ${res.repaired} dòng khấu hao lỗi cho ${res.affected_assets} tài sản\nCác tháng bị ảnh hưởng: ${res.affected_months.join(', ')}`)
-    }
-    await loadDepreciationSummary()
-    await loadDeprPending()
-  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
-}
-
-async function allocateDeprMonth(year, month) {
-  const monthName = `T${month}/${year}`
-  try {
-    // Lấy preview để biết dự án nào sẽ được phân bổ
-    const preview = await api(`/depreciation/allocation-preview?year=${year}&month=${month}`)
-    const fiscalYear = month < 2 ? year - 1 : year
-    const fiscalLabel = preview.fiscal_year_label || `NTC${fiscalYear}`
-
-    if (preview.eligible_count === 0) {
-      toast(`Không có dự án nào đã bắt đầu từ tháng ${monthName} trở về trước để phân bổ`, 'warning')
-      return
-    }
-
-    // Tạo confirm dialog chi tiết
-    const eligibleLines = preview.eligible_projects.map(p =>
-      `  ✅ ${p.code} - ${p.name} (bắt đầu ${p.start_date || '?'}): ${fmtMoney(p.amount)}`
-    ).join('\n')
-    const excludedLines = preview.excluded_projects.length > 0
-      ? '\n\nDự án KHÔNG được tính (chưa bắt đầu):\n' + preview.excluded_projects.map(p =>
-          `  ❌ ${p.code} - ${p.name}: ${p.reason}`
-        ).join('\n')
-      : ''
-
-    const msg = `Phân bổ khấu hao tháng ${monthName} vào Chi phí chung?
-
-Tổng khấu hao: ${fmtMoney(preview.total_depreciation)} (${preview.asset_count} tài sản)
-Chia đều cho ${preview.eligible_count} dự án đã bắt đầu:
-
-${eligibleLines}${excludedLines}
-
-Thao tác này không thể hoàn tác.`
-
-    if (!confirm(msg)) return
-
-    const res = await api('/depreciation/allocate-to-shared-cost', { method: 'post', data: { year, month } })
-    const ntcLabel = res.fiscal_year_label || fiscalLabel
-    // Hiển thị chi tiết từng dự án trong toast
-    const projDetail = res.projects
-      ? res.projects.map(p => `${p.code}: ${fmtMoney(p.amount)}`).join(' | ')
-      : `${fmtMoney(res.per_project)}/dự án`
-    toast(`✅ Đã phân bổ ${fmtMoney(res.total_depreciation)} (${ntcLabel}) cho ${res.project_count} dự án\n${projDetail}`)
-    await loadDepreciationSummary()
-    await loadDeprPending()
-  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
-}
-
-function switchDeprTab(tab) {
-  ;['monthly','assets','pending'].forEach(t => {
-    const btn = $(`deprTab-${t}`)
-    const content = $(`deprContent-${t}`)
-    if (btn) btn.classList.toggle('active', t === tab)
-    if (content) content.style.display = t === tab ? 'block' : 'none'
-  })
-}
-
-// Modal chi tiết lịch KH từng tài sản
-let deprDetailAssetId = null
-
-async function openDeprDetail(assetId) {
-  deprDetailAssetId = assetId
-  // Khởi tạo year filter
-  const sel = $('deprDetailYear')
-  if (sel) {
-    const cur = new Date().getFullYear()
-    sel.innerHTML = ''
-    for (let y = cur + 2; y >= cur - 3; y--) {
-      const opt = document.createElement('option')
-      opt.value = y; opt.textContent = `Năm ${y}`
-      if (y === cur) opt.selected = true
-      sel.appendChild(opt)
-    }
-  }
-  openModal('deprDetailModal')
-  await loadAssetDeprDetail()
-}
-
-async function loadAssetDeprDetail() {
-  if (!deprDetailAssetId) return
-  try {
-    const year = $('deprDetailYear')?.value || new Date().getFullYear()
-    const res = await api(`/assets/${deprDetailAssetId}/depreciation?year=${year}`)
-    const asset = res.asset
-    const schedule = res.schedule || []
-
-    $('deprDetailTitle').textContent = `Lịch KH: ${asset.name} (${asset.asset_code})`
-    const infoEl = $('deprDetailAssetInfo')
-    if (infoEl) {
-      infoEl.innerHTML = `
-        <div><div class="text-xs text-gray-400">Giá mua</div><div class="font-bold text-gray-800">${fmt(asset.purchase_price)}</div></div>
-        <div><div class="text-xs text-gray-400">KH/tháng</div><div class="font-bold text-purple-700">${fmt(asset.monthly_depreciation)}</div></div>
-        <div><div class="text-xs text-gray-400">Thời hạn KH</div><div class="font-bold text-gray-700">${asset.depreciation_years} năm (${(asset.depreciation_years||0)*12} tháng)</div></div>
-        <div><div class="text-xs text-gray-400">Giá trị còn lại</div><div class="font-bold text-primary">${fmt(asset.net_book_value)}</div></div>
-        <div><div class="text-xs text-gray-400">Đã KH lũy kế</div><div class="font-bold text-orange-600">${fmt(asset.accumulated_depreciation)}</div></div>
-        <div><div class="text-xs text-gray-400">Trạng thái KH</div><div><span class="badge text-xs" style="background:#ede9fe;color:#5b21b6">${asset.depreciation_status==='active'?'Đang KH':'Không KH'}</span></div></div>
-      `
-    }
-
-    const tbody = $('deprDetailTable')
-    if (tbody) {
-      if (schedule.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="5" class="text-center py-6 text-gray-400">Không có dữ liệu năm ${year}</td></tr>`
-      } else {
-        tbody.innerHTML = schedule.map(row => `
-          <tr class="table-row${row.is_allocated ? '' : ''}">
-            <td class="py-2 px-3 font-medium text-gray-700">Tháng ${row.month}/${row.year}</td>
-            <td class="py-2 px-3 text-right text-purple-700 font-semibold">${fmt(row.depreciation_amount)}</td>
-            <td class="py-2 px-3 text-right text-orange-600">${fmt(row.accumulated_amount)}</td>
-            <td class="py-2 px-3 text-right text-primary font-bold">${fmt(row.net_book_value)}</td>
-            <td class="py-2 px-3 text-center">
-              ${row.is_allocated
-                ? '<span class="badge" style="background:#d1fae5;color:#065f46"><i class="fas fa-check mr-1"></i>Đã phân bổ</span>'
-                : '<span class="badge badge-todo">Chưa phân bổ</span>'}
-            </td>
-          </tr>
-        `).join('')
-      }
-    }
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 
@@ -6580,20 +5881,6 @@ function switchGuideTab(tab) {
   // Show/hide panels
   document.querySelectorAll('.guide-panel').forEach(panel => {
     panel.classList.toggle('hidden', panel.id !== `guidePanel-${tab}`)
-  })
-}
-
-function switchMGuideTab(tab) {
-  // Update tab buttons in the guide modal
-  document.querySelectorAll('.mguide-tab-btn').forEach(btn => {
-    const isActive = btn.id === `mGuideTab-${tab}`
-    btn.className = isActive
-      ? 'mguide-tab-btn active-mguide flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-primary bg-primary text-white transition-all whitespace-nowrap'
-      : 'mguide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all whitespace-nowrap'
-  })
-  // Show/hide panels in the guide modal
-  document.querySelectorAll('.mguide-panel').forEach(panel => {
-    panel.classList.toggle('hidden', panel.id !== `mGuidePanel-${tab}`)
   })
 }
 
@@ -6947,11 +6234,6 @@ async function loadFinanceProjectPage() {
         fullWidth: true,
         onchange: (val) => { if (val) loadFinanceProject() }
       })
-    }
-    // Khởi tạo finYearFilter động
-    const fyf = $('finYearFilter')
-    if (fyf && fyf.options.length === 0) {
-      await initCalendarYearFilter(fyf)
     }
     // Init default date range for 'range' mode
     const today = new Date().toISOString().slice(0, 10)
@@ -7478,10 +6760,15 @@ async function loadLaborCost() {
       mf.appendChild(opt)
     })
   }
-  // Init year filter (động từ API)
+  // Init year filter
   const yf = $('laborYearFilter')
   if (yf && yf.options.length === 0) {
-    await initCalendarYearFilter(yf)
+    [2023,2024,2025,2026,2027].forEach(y => {
+      const opt = document.createElement('option')
+      opt.value = y; opt.textContent = y
+      if (y === new Date().getFullYear()) opt.selected = true
+      yf.appendChild(opt)
+    })
   }
   // Init input form dropdowns (month)
   const im = $('laborInputMonth')
@@ -7496,7 +6783,12 @@ async function loadLaborCost() {
   }
   const iy = $('laborInputYear')
   if (iy && iy.options.length === 0) {
-    await initCalendarYearFilter(iy)
+    [2023,2024,2025,2026,2027].forEach(y => {
+      const opt = document.createElement('option')
+      opt.value = y; opt.textContent = y
+      if (y === new Date().getFullYear()) opt.selected = true
+      iy.appendChild(opt)
+    })
   }
 
   const periodType = $('laborPeriodType')?.value || 'single'
@@ -8313,38 +7605,24 @@ function renderSharedCostTable() {
   }
 
   const basisLabel = { contract_value: '% GTHĐ', equal: 'Chia đều', manual: 'Thủ công' }
-  const costTypeLabel = {
-    office: 'Văn phòng', equipment: 'Thiết bị', material: 'Vật liệu',
-    travel: 'Đi lại', transport: 'Vận chuyển', salary: 'Lương nhân sự',
-    depreciation: 'Khấu hao tài sản', other: 'Khác'
-  }
-  const costTypeStyle = {
-    depreciation: 'background:#ede9fe;color:#5b21b6',  // tím cho khấu hao
-    salary:       'background:#dbeafe;color:#1e40af',  // xanh lam cho lương
-    equipment:    'background:#fef3c7;color:#92400e',  // vàng cho thiết bị
-    material:     'background:#dcfce7;color:#166534',  // xanh lá cho vật liệu
-    travel:       'background:#fce7f3;color:#9d174d',  // hồng cho đi lại
-  }
+  const costTypeLabel = { office: 'Văn phòng', equipment: 'Thiết bị', material: 'Vật liệu', travel: 'Đi lại', other: 'Khác' }
 
   tbody.innerHTML = _sharedCosts.map(sc => {
     const allocInfo = (sc.allocations || []).map(a =>
       `<span class="inline-block bg-indigo-100 text-indigo-700 rounded px-1 py-0.5 mr-1 mb-1 text-xs" title="${a.project_name}: ${fmtMoney(a.allocated_amount)} (${a.allocation_pct.toFixed(1)}%)">${a.project_code}: ${fmtMoney(a.allocated_amount)}</span>`
     ).join('')
-    const period = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `NTC${sc.year}` : '-')
-    const typeStyle = costTypeStyle[sc.cost_type] || 'background:#fef3c7;color:#92400e'
-    const typeLabel = costTypeLabel[sc.cost_type] || sc.cost_type
-    const isDepr = sc.cost_type === 'depreciation'
-    return `<tr class="hover:bg-gray-50${isDepr ? ' bg-purple-50' : ''}">
+    const period = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `Năm ${sc.year}` : '-')
+    return `<tr class="hover:bg-gray-50">
       <td class="px-3 py-2">
         <div class="font-medium text-gray-800">${sc.description}</div>
         ${sc.notes ? `<div class="text-xs text-gray-400">${sc.notes}</div>` : ''}
         <div class="mt-1">${allocInfo}</div>
       </td>
-      <td class="px-3 py-2 text-xs"><span class="badge" style="${typeStyle}">${typeLabel}</span></td>
+      <td class="px-3 py-2 text-xs"><span class="badge badge-info">${costTypeLabel[sc.cost_type] || sc.cost_type}</span></td>
       <td class="px-3 py-2 text-right font-semibold text-yellow-700">${fmtMoney(sc.amount)}</td>
       <td class="px-3 py-2 text-center text-xs">${basisLabel[sc.allocation_basis] || sc.allocation_basis}</td>
       <td class="px-3 py-2 text-center text-xs">${sc.project_count || 0} dự án</td>
-      <td class="px-3 py-2 text-center text-xs font-medium${isDepr ? ' text-purple-700' : ''}">${period}</td>
+      <td class="px-3 py-2 text-center text-xs">${period}</td>
       <td class="px-3 py-2 text-xs text-gray-500">${sc.vendor || '-'}</td>
       <td class="px-3 py-2 text-center">
         <button onclick="openSharedCostModal(${sc.id})" class="text-blue-600 hover:text-blue-800 mr-2 text-xs"><i class="fas fa-edit"></i></button>
@@ -8363,12 +7641,6 @@ async function openSharedCostModal(id = null) {
   }
   // Populate dropdown scCostType từ danh sách loại chi phí động
   _populateAllCostTypeDropdowns()
-
-  // Khởi tạo scYear động (chỉ lần đầu)
-  const scYearEl = $('scYear')
-  if (scYearEl && scYearEl.options.length === 0) {
-    await initCalendarYearFilter(scYearEl)
-  }
 
   // Reset form
   $('sharedCostId').value = ''
@@ -8635,27 +7907,13 @@ async function saveSharedCost() {
 }
 
 async function deleteSharedCost(id) {
-  // Tìm chi phí chung trong cache để kiểm tra loại
-  const sc = _sharedCosts.find(s => s.id === id)
-  const isDepr = sc && sc.cost_type === 'depreciation'
-
-  const confirmMsg = isDepr
-    ? `⚠️ Xóa khoản Khấu hao tài sản này?\n\n"${sc.description}"\n\n• Tất cả phân bổ về dự án sẽ bị xóa\n• Trạng thái khấu hao sẽ được hoàn lại "Chưa phân bổ"\n• Tháng khấu hao tương ứng sẽ xuất hiện lại trong tab "Chờ phân bổ"\n\nThao tác này không thể hoàn tác.`
-    : `Xóa chi phí chung này? Tất cả phân bổ về dự án cũng sẽ bị xóa.`
-
-  if (!confirm(confirmMsg)) return
+  if (!confirm('Xóa chi phí chung này? Tất cả phân bổ về dự án cũng sẽ bị xóa.')) return
   try {
-    const res = await api(`/shared-costs/${id}`, { method: 'DELETE' })
-    const msg = res.message || 'Đã xóa chi phí chung'
-    toast(msg, 'success')
+    await api(`/shared-costs/${id}`, { method: 'DELETE' })
+    toast('Đã xóa chi phí chung', 'success')
     await loadSharedCosts()
-    // Nếu là khấu hao → cập nhật lại trang depreciation nếu đang mở
-    if (isDepr && document.querySelector('#page-depreciation.active')) {
-      await loadDepreciationSummary()
-      await loadDeprPending()
-    }
   } catch (e) {
-    toast('Lỗi xóa: ' + (e.response?.data?.error || e.message), 'error')
+    toast('Lỗi xóa: ' + e.message, 'error')
   }
 }
 
@@ -8670,12 +7928,11 @@ function getAnalyticsYear() {
 }
 
 async function loadAnalytics() {
-  // Set năm mặc định = năm hiện tại nếu chưa có options
+  // Set năm mặc định = năm hiện tại nếu chưa chọn
   const sel = document.getElementById('analyticsYear')
   if (sel && !sel.dataset.initialized) {
-    sel.dataset.initialized = '1'
-    await initCalendarYearFilter(sel)
     sel.value = new Date().getFullYear().toString()
+    sel.dataset.initialized = '1'
   }
   switchAnalyticsTab(_analyticsActiveTab)
 }
@@ -11847,59 +11104,111 @@ async function executeImportExcel() {
 
 // ── Download Excel Template ──────────────────────────────────────────────────
 function downloadExcelTemplate() {
-  // Generate template Excel using SheetJS (XLSX library đã có sẵn)
   if (typeof XLSX === 'undefined') {
     toast('Thư viện XLSX chưa tải, vui lòng thử lại', 'error'); return
   }
 
   const wb = XLSX.utils.book_new()
 
-  // Template data
+  // ── Hướng dẫn cột STT ────────────────────────────────────────────────────
+  // A/B/C/D        → Giai đoạn (tiêu đề nhóm lớn)
+  // 1, 2, 3...     → Hạng mục cha (parent item)
+  // 1.1, 1.2...    → Tài liệu / sub-item (con của hạng mục cha gần nhất)
+  // ─────────────────────────────────────────────────────────────────────────
   const templateData = [
-    ['STT', 'Hạng mục công việc', 'Thời gian', 'Trạng thái', 'Ghi chú'],
+    // Header
+    ['STT', 'Hạng mục công việc', 'Thời gian (YYYY-MM-DD)', 'Trạng thái', 'Ghi chú'],
+
+    // Giai đoạn A
     ['A', 'GIAI ĐOẠN CHUẨN BỊ GÓI THẦU', null, null, null],
-    [1, 'Yêu cầu lập đề cương dự toán', '2025-03-01', null, null],
-    ['=A3+0.1', 'Dự toán chi phí', null, null, null],
-    ['=A4+0.1', 'Đề cương nhiệm vụ', null, null, null],
-    [2, 'Trình thẩm tra đề cương dự toán', '2025-04-02', null, null],
-    ['=A6+0.1', 'In đề cương dự toán', null, null, null],
-    ['=A7+0.1', 'Trình TVTK ký', null, null, null],
-    [3, 'Quyết định phê duyệt đề cương dự toán', '2025-04-04', null, null],
+    [1,     'Yêu cầu lập đề cương dự toán',          '2025-03-01', null, null],
+    ['1.1', 'Dự toán chi phí',                        null,         null, null],
+    ['1.2', 'Đề cương nhiệm vụ',                      null,         null, null],
+    [2,     'Trình thẩm tra đề cương dự toán',        '2025-04-02', null, null],
+    ['2.1', 'In đề cương dự toán',                    null,         null, null],
+    ['2.2', 'Trình TVTK ký',                          null,         null, null],
+    [3,     'Quyết định phê duyệt đề cương dự toán',  '2025-04-04', null, null],
+
+    // Giai đoạn B
     ['B', 'GIAI ĐOẠN THAM GIA GÓI THẦU', null, null, null],
-    [1, 'Yêu cầu chuẩn bị hồ sơ năng lực nhà thầu', '2025-03-01', null, null],
-    ['=A11+0.1', 'Xin tên gói thầu, các thông tin liên quan nếu có', null, null, null],
-    ['=A12+0.1', 'Thư ngỏ', '2024-03-24', null, null],
-    ['=A13+0.1', 'Thư cam kết thực hiện', '2024-03-24', null, null],
-    [2, 'Trình phiếu đánh giá năng lực nhà thầu', '2025-04-14', null, null],
-    [3, 'Nhận hồ sơ yêu cầu', '2025-04-15', null, null],
-    ['=A16+0.1', 'Văn bản giới thiệu nhân sự đến nhận HSYC', '2025-04-15', null, null],
-    [4, 'Nộp hồ sơ đề xuất', '2025-04-21', null, 'In đóng cuốn 1 bộ gốc và photo thành 3 bộ'],
+    [1,     'Yêu cầu chuẩn bị hồ sơ năng lực nhà thầu', '2025-03-01', null, null],
+    ['1.1', 'Xin tên gói thầu, các thông tin liên quan',  null,         null, null],
+    ['1.2', 'Thư ngỏ',                                    '2024-03-24', null, null],
+    ['1.3', 'Thư cam kết thực hiện',                      '2024-03-24', null, null],
+    [2,     'Trình phiếu đánh giá năng lực nhà thầu',     '2025-04-14', null, null],
+    [3,     'Nhận hồ sơ yêu cầu',                         '2025-04-15', null, null],
+    ['3.1', 'Văn bản giới thiệu nhân sự đến nhận HSYC',   '2025-04-15', null, null],
+    [4,     'Nộp hồ sơ đề xuất',                          '2025-04-21', null, 'In đóng cuốn 1 bộ gốc và photo thành 3 bộ'],
+
+    // Giai đoạn C
     ['C', 'GIAI ĐOẠN KÝ HỢP ĐỒNG VÀ THỰC HIỆN GÓI THẦU', null, null, null],
-    [1, 'Thư mời thương thảo hợp đồng', '2025-04-21', null, null],
-    ['=A20+0.1', 'Công văn tham gia thương thảo hợp đồng', '2025-04-21', null, null],
-    ['=A21+0.1', 'Thương thảo hợp đồng', '2025-04-21', null, null],
-    [2, 'Ký hợp đồng', '2025-04-23', null, null],
-    ['=A23+0.1', 'Bảo lãnh tạm ứng (Nếu có)', null, null, null],
-    ['=A24+0.1', 'Đơn đề nghị tạm ứng', null, null, null],
+    [1,     'Thư mời thương thảo hợp đồng',                '2025-04-21', null, null],
+    ['1.1', 'Công văn tham gia thương thảo hợp đồng',      '2025-04-21', null, null],
+    ['1.2', 'Thương thảo hợp đồng',                        '2025-04-21', null, null],
+    [2,     'Ký hợp đồng',                                 '2025-04-23', null, null],
+    ['2.1', 'Bảo lãnh tạm ứng (Nếu có)',                   null,         null, null],
+    ['2.2', 'Đơn đề nghị tạm ứng',                         null,         null, null],
+
+    // Giai đoạn D
     ['D', 'GIAI ĐOẠN NGHIỆM THU', null, null, null],
-    [1, 'Biên bản nghiệm thu hoàn thành sản phẩm tư vấn', null, null, null],
-    [2, 'Mẫu số 3A - Xác định khối lượng công việc hoàn thành', null, null, null],
-    [3, 'Giấy đề nghị thanh toán', null, null, null],
+    [1,   'Biên bản nghiệm thu hoàn thành sản phẩm tư vấn',     null, null, null],
+    [2,   'Mẫu số 3A - Xác định khối lượng công việc hoàn thành', null, null, null],
+    [3,   'Giấy đề nghị thanh toán',                             null, null, null],
   ]
 
   const ws = XLSX.utils.aoa_to_sheet(templateData)
 
-  // Style column widths
+  // ── Định dạng cột ────────────────────────────────────────────────────────
   ws['!cols'] = [
-    { wch: 12 },  // STT
-    { wch: 55 },  // Hạng mục
-    { wch: 18 },  // Thời gian
+    { wch: 10 },  // STT
+    { wch: 58 },  // Hạng mục
+    { wch: 22 },  // Thời gian
     { wch: 14 },  // Trạng thái
-    { wch: 30 },  // Ghi chú
+    { wch: 35 },  // Ghi chú
+  ]
+
+  // ── Thêm sheet Hướng dẫn ────────────────────────────────────────────────
+  const guideData = [
+    ['HƯỚNG DẪN SỬ DỤNG FILE IMPORT HỒ SƠ PHÁP LÝ'],
+    [''],
+    ['CỘT STT - Quy tắc nhập liệu:'],
+    ['Giá trị', 'Ý nghĩa', 'Ví dụ'],
+    ['A / B / C / D', 'Tiêu đề Giai đoạn (chữ in hoa)', 'A  →  GIAI ĐOẠN CHUẨN BỊ GÓI THẦU'],
+    ['Số nguyên (1, 2, 3...)', 'Hạng mục cha', '1  →  Yêu cầu lập đề cương dự toán'],
+    ['Số thập phân (1.1, 1.2...)', 'Tài liệu / Sub-item (con của hạng mục cha gần nhất)', '1.1  →  Dự toán chi phí'],
+    [''],
+    ['CỘT THỜI GIAN:'],
+    ['→ Nhập theo định dạng YYYY-MM-DD (VD: 2025-03-01) hoặc để trống'],
+    [''],
+    ['CỘT TRẠNG THÁI:'],
+    ['→ Để trống (mặc định: Chưa thực hiện)'],
+    ['→ Nhập "x" hoặc "completed" = Đã hoàn thành'],
+    ['→ Nhập "in_progress" = Đang thực hiện'],
+    [''],
+    ['LƯU Ý KHI NHẬP DỮ LIỆU:'],
+    ['→ KHÔNG dùng công thức (=A3+0.1) ở cột STT — hãy nhập text trực tiếp (1.1, 1.2...)'],
+    ['→ Mỗi Giai đoạn (A/B/C/D) phải đứng trước các hạng mục của nó'],
+    ['→ Sub-item phải đứng sau hạng mục cha tương ứng'],
+    ['→ Có thể thêm nhiều hạng mục / sub-item tùy ý'],
+    [''],
+    ['VÍ DỤ CẤU TRÚC ĐÚNG:'],
+    ['STT', 'Hạng mục công việc', 'Thời gian', 'Trạng thái', 'Ghi chú'],
+    ['A', 'GIAI ĐOẠN CHUẨN BỊ GÓI THẦU', null, null, null],
+    [1, 'Hạng mục cha số 1', '2025-03-01', null, null],
+    ['1.1', 'Sub-item đầu tiên', null, null, null],
+    ['1.2', 'Sub-item thứ hai', null, 'x', null],
+    [2, 'Hạng mục cha số 2', '2025-04-01', null, 'Ghi chú cho hạng mục'],
+  ]
+
+  const wsGuide = XLSX.utils.aoa_to_sheet(guideData)
+  wsGuide['!cols'] = [
+    { wch: 30 }, { wch: 50 }, { wch: 20 }, { wch: 16 }, { wch: 35 }
   ]
 
   XLSX.utils.book_append_sheet(wb, ws, 'TimeLine')
+  XLSX.utils.book_append_sheet(wb, wsGuide, 'Hướng dẫn')
+
   XLSX.writeFile(wb, 'HSPL_Template.xlsx')
-  toast('Đã tải xuống template HSPL_Template.xlsx', 'success')
+  toast('Đã tải xuống HSPL_Template.xlsx (có sheet Hướng dẫn)', 'success')
 }
 // ── End Import Excel Module ──────────────────────────────────────────────────

@@ -394,6 +394,9 @@
         <div class="nav-item" onclick="navigate('assets')" data-tooltip="Tài sản">
           <i class="fas fa-laptop"></i><span>Tài sản</span>
         </div>
+        <div class="nav-item" onclick="navigate('depreciation')" data-tooltip="Khấu hao tài sản">
+          <i class="fas fa-chart-line"></i><span>Khấu hao tài sản</span>
+        </div>
         <div class="nav-item" onclick="navigate('users')" data-tooltip="Nhân sự">
           <i class="fas fa-users"></i><span>Nhân sự</span>
         </div>
@@ -1160,10 +1163,7 @@
             <div id="costProjectFilterCombobox" style="width:200px"></div>
             <div class="flex items-center gap-2">
               <select id="costYearFilter" class="select-field" style="width:100px" onchange="loadCostDashboard()">
-                <option value="2024">NTC 2024</option>
-                <option value="2025">NTC 2025</option>
-                <option value="2026" selected>NTC 2026</option>
-                <option value="2027">NTC 2027</option>
+                <!-- Options populated dynamically by initCostYearFilter() -->
               </select>
               <span id="fyPeriodLabel" class="text-xs text-gray-500 bg-green-50 border border-green-200 rounded px-2 py-1 whitespace-nowrap"></span>
             </div>
@@ -1280,8 +1280,6 @@
               <div>
                 <label class="block text-xs text-gray-500 mb-1 font-medium">Năm (NTC)</label>
                 <select id="analysisYearSel" class="select-field" style="width:110px">
-                  <option value="2024">NTC 2024</option><option value="2025">NTC 2025</option>
-                  <option value="2026" selected>NTC 2026</option><option value="2027">NTC 2027</option>
                 </select>
               </div>
               <button onclick="debouncedLoadCostAnalysis()" class="btn-primary flex items-center gap-2 text-sm">
@@ -1471,6 +1469,12 @@
               <option value="repair">Sửa chữa</option>
               <option value="retired">Thanh lý</option>
             </select>
+            <select id="assetDeprFilter" class="select-field" style="width:160px" onchange="filterAssets()">
+              <option value="">Tất cả KH</option>
+              <option value="active">Đang khấu hao</option>
+              <option value="none">Không KH</option>
+              <option value="completed">Đã hết KH</option>
+            </select>
           </div>
         </div>
 
@@ -1481,15 +1485,156 @@
                 <th class="pb-3 pr-3">Mã tài sản</th>
                 <th class="pb-3 pr-3">Tên tài sản</th>
                 <th class="pb-3 pr-3">Loại</th>
-                <th class="pb-3 pr-3">Thương hiệu/Model</th>
                 <th class="pb-3 pr-3">Phòng ban</th>
-                <th class="pb-3 pr-3">Người sử dụng</th>
-                <th class="pb-3 pr-3 text-right">Giá trị</th>
+                <th class="pb-3 pr-3 text-right">Giá mua</th>
+                <th class="pb-3 pr-3 text-right">KH/tháng</th>
+                <th class="pb-3 pr-3 text-right">Giá trị còn lại</th>
+                <th class="pb-3 pr-3">Trạng thái KH</th>
                 <th class="pb-3 pr-3">Trạng thái</th>
                 <th class="pb-3">Thao tác</th>
               </tr></thead>
               <tbody id="assetsTable" class="divide-y"></tbody>
             </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== DEPRECIATION (Khấu hao tài sản) ========== -->
+      <div id="page-depreciation" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800"><i class="fas fa-chart-line text-primary mr-2"></i>Khấu hao Tài sản</h1>
+            <p class="text-gray-500 text-sm">Theo dõi và phân bổ chi phí khấu hao vào dự án</p>
+          </div>
+          <div class="flex gap-2 items-center">
+            <select id="deprYearFilter" class="select-field" style="width:110px" onchange="onDeprYearChange()"></select>
+            <select id="deprMonthFilter" class="select-field" style="width:130px" onchange="loadDepreciationSummary()">
+              <option value="">Cả năm</option>
+              <option value="1">Tháng 1</option><option value="2">Tháng 2</option>
+              <option value="3">Tháng 3</option><option value="4">Tháng 4</option>
+              <option value="5">Tháng 5</option><option value="6">Tháng 6</option>
+              <option value="7">Tháng 7</option><option value="8">Tháng 8</option>
+              <option value="9">Tháng 9</option><option value="10">Tháng 10</option>
+              <option value="11">Tháng 11</option><option value="12">Tháng 12</option>
+            </select>
+            <button onclick="repairOrphanedDepr()" class="btn-secondary text-xs px-3 py-1.5" title="Kiểm tra và sửa dữ liệu khấu hao bị lỗi (orphan)">
+              <i class="fas fa-wrench mr-1"></i>Sửa lỗi dữ liệu
+            </button>
+          </div>
+        </div>
+
+        <!-- KPI cards -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6" id="deprKpiCards"></div>
+
+        <!-- Tabs -->
+        <div class="flex gap-2 mb-4">
+          <button class="tab-btn active" id="deprTab-monthly" onclick="switchDeprTab('monthly')">
+            <i class="fas fa-calendar-alt mr-1"></i>Lịch khấu hao theo tháng
+          </button>
+          <button class="tab-btn" id="deprTab-assets" onclick="switchDeprTab('assets')">
+            <i class="fas fa-laptop mr-1"></i>Tài sản đang khấu hao
+          </button>
+          <button class="tab-btn" id="deprTab-pending" onclick="switchDeprTab('pending')">
+            <i class="fas fa-clock mr-1"></i>Chờ phân bổ
+            <span id="deprPendingBadge" class="ml-1 inline-flex items-center justify-center w-5 h-5 bg-orange-500 text-white text-xs rounded-full" style="display:none!important"></span>
+          </button>
+        </div>
+
+        <!-- Tab: Monthly schedule -->
+        <div id="deprContent-monthly">
+          <div class="card">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-table text-primary mr-2"></i>Lịch khấu hao hàng tháng</h3>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead><tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
+                  <th class="py-2 px-3">Tháng</th>
+                  <th class="py-2 px-3 text-center">Số tài sản</th>
+                  <th class="py-2 px-3 text-right">KH tháng (VNĐ)</th>
+                  <th class="py-2 px-3 text-right">Đã phân bổ</th>
+                  <th class="py-2 px-3 text-right">Chờ phân bổ</th>
+                  <th class="py-2 px-3 text-center">Trạng thái</th>
+                  <th class="py-2 px-3 text-center">Thao tác</th>
+                </tr></thead>
+                <tbody id="deprMonthlyTable" class="divide-y"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Chi tiết tài sản theo tháng (hiển thị khi filter tháng cụ thể) -->
+          <div id="deprMonthDetailSection" class="card mt-4" style="display:none">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-list-alt text-primary mr-2"></i>Chi tiết khấu hao từng tài sản trong tháng</h3>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead><tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
+                  <th class="py-2 px-3">Mã / Tên tài sản</th>
+                  <th class="py-2 px-3 text-right">Giá mua</th>
+                  <th class="py-2 px-3 text-right">KH tháng này</th>
+                  <th class="py-2 px-3 text-right">KH lũy kế</th>
+                  <th class="py-2 px-3 text-right">Giá trị còn lại</th>
+                  <th class="py-2 px-3 text-center">Trạng thái PB</th>
+                </tr></thead>
+                <tbody id="deprMonthDetailTable" class="divide-y"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Active assets -->
+        <div id="deprContent-assets" style="display:none">
+          <div class="card">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-laptop text-primary mr-2"></i>Danh sách tài sản đang khấu hao</h3>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead><tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
+                  <th class="py-2 px-3">Mã / Tên</th>
+                  <th class="py-2 px-3 text-right">Giá mua</th>
+                  <th class="py-2 px-3 text-center">Thời hạn KH</th>
+                  <th class="py-2 px-3 text-center">Bắt đầu KH</th>
+                  <th class="py-2 px-3 text-right">KH/tháng</th>
+                  <th class="py-2 px-3 text-right">Đã KH lũy kế</th>
+                  <th class="py-2 px-3 text-right">Còn lại</th>
+                  <th class="py-2 px-3">Tiến độ KH</th>
+                  <th class="py-2 px-3 text-center">Chi tiết</th>
+                </tr></thead>
+                <tbody id="deprAssetsTable" class="divide-y"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Pending allocation -->
+        <div id="deprContent-pending" style="display:none">
+          <div class="card">
+            <div class="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg">
+              <div class="flex items-start justify-between gap-3">
+                <div class="flex items-start gap-3">
+                  <i class="fas fa-info-circle text-orange-500 mt-0.5"></i>
+                  <div class="text-sm text-orange-800">
+                    <p class="font-semibold mb-1">Phân bổ khấu hao vào Chi phí chung</p>
+                    <p>Khi phân bổ, hệ thống sẽ tạo một khoản <strong>Chi phí chung</strong> bằng tổng khấu hao tháng đó và <strong>chia đều</strong> cho tất cả dự án đang <span class="text-green-700 font-semibold">active</span>.</p>
+                  </div>
+                </div>
+                <div id="deprPendingSummary" class="flex-shrink-0 text-right"></div>
+              </div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead><tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
+                  <th class="py-2 px-3">Tháng / Năm</th>
+                  <th class="py-2 px-3 text-center">Số tài sản</th>
+                  <th class="py-2 px-3 text-right">Tổng KH (VNĐ)</th>
+                  <th class="py-2 px-3">Dự án nhận phân bổ</th>
+                  <th class="py-2 px-3 text-center">Thao tác</th>
+                </tr></thead>
+                <tbody id="deprPendingTable" class="divide-y"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -1613,6 +1758,10 @@
               class="guide-tab-btn active flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-primary bg-primary text-white transition-all">
               <i class="fas fa-tasks"></i> Cập nhật công việc
             </button>
+            <button onclick="switchGuideTab('create-task')" id="guideTab-create-task"
+              class="guide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all">
+              <i class="fas fa-plus-circle"></i> Tạo task công việc
+            </button>
             <button onclick="switchGuideTab('subtask')" id="guideTab-subtask"
               class="guide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all">
               <i class="fas fa-sitemap"></i> Tạo Subtask báo cáo
@@ -1686,6 +1835,79 @@
               <div class="mt-5 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
                 <i class="fas fa-exclamation-triangle mr-2 text-amber-500"></i>
                 <strong>Lưu ý:</strong> Nên cập nhật trạng thái <strong>mỗi ngày</strong> hoặc khi có tiến độ mới để quản lý nắm được tình hình kịp thời.
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab: Tạo task mới (dành cho member) -->
+          <div id="guidePanel-create-task" class="guide-panel hidden">
+            <div class="card border-l-4 border-indigo-400">
+              <div class="flex items-center gap-3 mb-4">
+                <div class="w-9 h-9 rounded-lg bg-indigo-100 flex items-center justify-center"><i class="fas fa-plus-circle text-indigo-600 text-lg"></i></div>
+                <div>
+                  <h3 class="font-bold text-gray-800 text-lg">Tạo task công việc</h3>
+                  <p class="text-sm text-gray-500">Tạo task khi nhận việc mà hệ thống chưa có</p>
+                </div>
+              </div>
+
+              <div class="space-y-4">
+                <div class="flex gap-4">
+                  <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">1</div>
+                  <div class="flex-1">
+                    <p class="font-semibold text-gray-800">Vào menu <span class="bg-gray-100 px-2 py-0.5 rounded text-primary font-mono text-sm">Công việc</span> hoặc mở <span class="bg-gray-100 px-2 py-0.5 rounded text-primary font-mono text-sm">Chi tiết dự án</span></p>
+                    <p class="text-sm text-gray-500 mt-1">Có thể tạo task từ <strong>2 nơi</strong>:<br>
+                      • Sidebar → <strong>Công việc</strong> → nhấn nút <span class="inline-flex items-center gap-1 bg-primary text-white text-xs px-2 py-0.5 rounded"><i class="fas fa-plus"></i> Tạo task mới</span> góc trên phải.<br>
+                      • Sidebar → <strong>Dự án</strong> → chọn dự án → tab <strong>Danh sách Task</strong> → nhấn nút <span class="inline-flex items-center gap-1 bg-primary text-white text-xs px-2 py-0.5 rounded"><i class="fas fa-plus"></i> Tạo task</span>.
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex gap-4">
+                  <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">2</div>
+                  <div class="flex-1">
+                    <p class="font-semibold text-gray-800">Chọn dự án</p>
+                    <p class="text-sm text-gray-500 mt-1">Chọn đúng dự án bạn đang thực hiện. Bạn chỉ thấy các dự án mình là thành viên.</p>
+                    <div class="mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700">
+                      <i class="fas fa-exclamation-triangle mr-1"></i> Không thấy dự án → liên hệ quản lý để được thêm vào dự án.
+                    </div>
+                  </div>
+                </div>
+
+                <div class="flex gap-4">
+                  <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">3</div>
+                  <div class="flex-1">
+                    <p class="font-semibold text-gray-800">Điền thông tin task</p>
+                    <ul class="mt-2 space-y-2 text-sm text-gray-600 list-none">
+                      <li class="flex items-start gap-2"><i class="fas fa-check-circle text-indigo-500 mt-0.5 flex-shrink-0"></i><span><strong>Tên task</strong> <span class="text-red-500">*</span>: Mô tả rõ công việc (VD: “Vẽ mặt cắt trục C – tầng 3”)</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-check-circle text-indigo-500 mt-0.5 flex-shrink-0"></i><span><strong>Mô tả</strong>: Chi tiết yêu cầu, file tham chiếu, ghi chú thêm</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-check-circle text-indigo-500 mt-0.5 flex-shrink-0"></i><span><strong>Ưu tiên</strong>: Khẩn cấp / Cao / Bình thường / Thấp</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-check-circle text-indigo-500 mt-0.5 flex-shrink-0"></i><span><strong>Hạn hoàn thành</strong>: Ngày dự kiến nộp kết quả</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-check-circle text-indigo-500 mt-0.5 flex-shrink-0"></i><span><strong>Người phụ trách</strong>: Chọn người thực hiện (có thể là chính mình)</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-check-circle text-indigo-500 mt-0.5 flex-shrink-0"></i><span><strong>Bộ môn, giai đoạn, số giờ ước tính</strong>: Điền nếu biết</span></li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div class="flex gap-4">
+                  <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">4</div>
+                  <div class="flex-1">
+                    <p class="font-semibold text-gray-800">Nhấn <strong>Lưu task</strong></p>
+                    <p class="text-sm text-gray-500 mt-1">Task xuất hiện ngay trong danh sách của bạn và quản lý. Hãy thông báo qua <strong>Chat nhóm dự án</strong> để quản lý theo dõi kịp thời.</p>
+                  </div>
+                </div>
+
+                <div class="flex gap-4">
+                  <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">5</div>
+                  <div class="flex-1">
+                    <p class="font-semibold text-gray-800">Cập nhật tiến độ hàng ngày</p>
+                    <p class="text-sm text-gray-500 mt-1">Vào task để cập nhật <strong>Trạng thái</strong> và <strong>% tiến độ</strong> theo thực tế — giúp quản lý nắm được tiến độ mà không cần hỏi lại.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-5 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+                <i class="fas fa-exclamation-triangle mr-2 text-amber-500"></i>
+                <strong>Lưu ý:</strong> Sau khi tạo task, nhớ cập nhật trạng thái <strong>mỗi ngày</strong> để quản lý theo dõi được tiến độ dự án.
               </div>
             </div>
           </div>
@@ -2005,9 +2227,7 @@
             <!-- Year filter (shown for year/months/month modes) -->
             <div id="finYearCtrl" class="hidden">
               <select id="finYearFilter" class="select-field" style="width:110px" onchange="loadFinanceProject()">
-                <option value="2023">2023</option><option value="2024">2024</option>
-                <option value="2025">2025</option><option value="2026" selected>2026</option>
-                <option value="2027">2027</option>
+                <!-- Options populated dynamically -->
               </select>
             </div>
             <!-- Single month filter -->
@@ -2444,11 +2664,6 @@
           </div>
           <div class="flex items-center gap-3">
             <select id="analyticsYear" onchange="reloadAnalytics()" class="select-field w-32">
-              <option value="2023">2023</option>
-              <option value="2024">2024</option>
-              <option value="2025">2025</option>
-              <option value="2026">2026</option>
-              <option value="2027">2027</option>
             </select>
             <button onclick="exportAnalyticsPDF()" class="btn-secondary text-sm"><i class="fas fa-download mr-1"></i>Xuất PDF</button>
           </div>
@@ -2533,6 +2748,9 @@
             </button>
             <button onclick="openLegalDocModal()" id="btnAddDoc" class="btn-primary hidden" style="display:none">
               <i class="fas fa-file-plus mr-1"></i>Thêm tài liệu
+            </button>
+            <button onclick="openImportExcelModal()" id="btnImportExcel" class="btn-secondary" title="Import từ file Excel" style="display:none">
+              <i class="fas fa-file-excel mr-1" style="color:#1d6f42"></i>Import Excel
             </button>
             <button onclick="openLegalLetterConfig()" id="btnLetterConfig" class="btn-secondary hidden" title="Cấu hình đánh số" style="display:none">
               <i class="fas fa-cog"></i>
@@ -3511,10 +3729,7 @@
               <option value="11">Tháng 11</option><option value="12">Tháng 12</option>
             </select>
             <select id="scYear" class="select-field" style="width:90px">
-              <option value="2024">2024</option>
-              <option value="2025">2025</option>
-              <option value="2026" selected>2026</option>
-              <option value="2027">2027</option>
+              <!-- Options populated dynamically -->
             </select>
           </div>
         </div>
@@ -3667,11 +3882,67 @@
         <label class="label">Thông số kỹ thuật</label>
         <textarea id="assetSpecs" class="input-field" rows="2" placeholder="CPU, RAM, ổ cứng..."></textarea>
       </div>
+
+      <!-- === Khấu hao === -->
+      <div class="border-t pt-4 mt-2">
+        <h4 class="font-semibold text-gray-700 mb-3"><i class="fas fa-chart-line text-primary mr-2"></i>Cài đặt khấu hao</h4>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="label">Thời hạn khấu hao</label>
+            <select id="assetDepreciationYears" class="select-field" onchange="updateDeprPreview()">
+              <option value="0">Không khấu hao</option>
+              <option value="3">3 năm (36 tháng)</option>
+              <option value="5">5 năm (60 tháng)</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">Ngày bắt đầu khấu hao</label>
+            <input type="date" id="assetDepreciationStart" class="input-field" oninput="updateDeprPreview()">
+          </div>
+        </div>
+        <div id="deprPreviewBox" class="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg text-sm" style="display:none">
+          <div class="flex items-center gap-2 text-green-800">
+            <i class="fas fa-calculator text-green-600"></i>
+            <span id="deprPreviewText" class="font-medium"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="flex justify-end gap-3 pt-2">
         <button type="button" onclick="closeModal('assetModal')" class="btn-secondary">Hủy</button>
         <button type="submit" class="btn-primary">Lưu tài sản</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- Depreciation Detail Modal -->
+<div id="deprDetailModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:780px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="deprDetailTitle">Lịch khấu hao chi tiết</h3>
+      <button onclick="closeModal('deprDetailModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <!-- Asset info summary -->
+    <div id="deprDetailAssetInfo" class="p-3 bg-gray-50 rounded-lg text-sm mb-4 grid grid-cols-3 gap-3"></div>
+    <!-- Year filter -->
+    <div class="flex gap-2 items-center mb-3">
+      <label class="text-sm text-gray-600 font-medium">Năm:</label>
+      <select id="deprDetailYear" class="select-field" style="width:110px" onchange="loadAssetDeprDetail()"></select>
+    </div>
+    <!-- Table -->
+    <div class="overflow-x-auto max-h-96 overflow-y-auto">
+      <table class="w-full text-sm">
+        <thead class="sticky top-0 bg-white"><tr class="text-left text-gray-500 border-b text-xs uppercase">
+          <th class="py-2 px-3">Tháng</th>
+          <th class="py-2 px-3 text-right">KH tháng</th>
+          <th class="py-2 px-3 text-right">Lũy kế</th>
+          <th class="py-2 px-3 text-right">Giá trị còn lại</th>
+          <th class="py-2 px-3 text-center">Đã phân bổ</th>
+        </tr></thead>
+        <tbody id="deprDetailTable" class="divide-y"></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -4085,7 +4356,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20250320f"></script>
 <script>
   // Prevent Ctrl+Scroll zoom from breaking layout
   document.addEventListener('wheel', (e) => {
@@ -4131,6 +4402,10 @@
       <button onclick="switchMGuideTab('task')" id="mGuideTab-task"
         class="mguide-tab-btn active-mguide flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-primary bg-primary text-white transition-all whitespace-nowrap">
         <i class="fas fa-tasks"></i> Cập nhật công việc
+      </button>
+      <button onclick="switchMGuideTab('create-task')" id="mGuideTab-create-task"
+        class="mguide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all whitespace-nowrap">
+        <i class="fas fa-plus-circle"></i> Tạo task công việc
       </button>
       <button onclick="switchMGuideTab('subtask')" id="mGuideTab-subtask"
         class="mguide-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border-2 border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-all whitespace-nowrap">
@@ -4205,6 +4480,66 @@
           <div class="mt-5 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
             <i class="fas fa-exclamation-triangle mr-2 text-amber-500"></i>
             <strong>Lưu ý:</strong> Nên cập nhật trạng thái <strong>mỗi ngày</strong> để quản lý nắm tình hình kịp thời.
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel: Tạo task mới -->
+      <div id="mGuidePanel-create-task" class="mguide-panel hidden">
+        <div class="card border-l-4 border-indigo-400">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-9 h-9 rounded-lg bg-indigo-100 flex items-center justify-center"><i class="fas fa-plus-circle text-indigo-600 text-lg"></i></div>
+            <div>
+              <h3 class="font-bold text-gray-800 text-lg">Tạo task công việc</h3>
+              <p class="text-sm text-gray-500">Tạo task khi nhận việc mà hệ thống chưa có</p>
+            </div>
+          </div>
+          <div class="space-y-4">
+            <div class="flex gap-3">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">1</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Mở trang <span class="bg-gray-100 px-2 py-0.5 rounded text-primary font-mono text-xs">Công việc</span> hoặc <span class="bg-gray-100 px-2 py-0.5 rounded text-primary font-mono text-xs">Chi tiết dự án</span></p>
+                <p class="text-sm text-gray-500 mt-1">• Sidebar → <strong>Công việc</strong> → nút <span class="inline-flex items-center gap-1 bg-primary text-white text-xs px-2 py-0.5 rounded"><i class="fas fa-plus"></i> Tạo task mới</span><br>• Sidebar → <strong>Dự án</strong> → chọn dự án → tab Task → nút <span class="inline-flex items-center gap-1 bg-primary text-white text-xs px-2 py-0.5 rounded"><i class="fas fa-plus"></i> Tạo task</span></p>
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">2</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Chọn dự án</p>
+                <p class="text-sm text-gray-500 mt-1">Chọn đúng dự án bạn đang thực hiện. Bạn chỉ thấy dự án mình là thành viên. Nếu không thấy → liên hệ quản lý để được thêm vào.</p>
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">3</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Điền thông tin task</p>
+                <ul class="mt-1 space-y-1 text-sm text-gray-600">
+                  <li><i class="fas fa-check-circle text-indigo-400 mr-1"></i><strong>Tên task</strong> – mô tả rõ công việc cần làm</li>
+                  <li><i class="fas fa-check-circle text-indigo-400 mr-1"></i><strong>Mô tả</strong> – chi tiết yêu cầu, ghi chú thêm</li>
+                  <li><i class="fas fa-check-circle text-indigo-400 mr-1"></i><strong>Ưu tiên</strong> – Khẩn cấp / Cao / Bình thường / Thấp</li>
+                  <li><i class="fas fa-check-circle text-indigo-400 mr-1"></i><strong>Hạn hoàn thành</strong> – ngày dự kiến nộp kết quả</li>
+                  <li><i class="fas fa-check-circle text-indigo-400 mr-1"></i><strong>Người phụ trách, bộ môn, số giờ</strong> – điền nếu biết</li>
+                </ul>
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">4</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Nhấn <strong>Lưu task</strong></p>
+                <p class="text-sm text-gray-500 mt-1">Task xuất hiện ngay trong danh sách. Hãy gửi tin nhắn trong <strong>Chat nhóm dự án</strong> để quản lý biết và theo dõi.</p>
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">5</div>
+              <div class="flex-1">
+                <p class="font-semibold text-gray-800">Cập nhật tiến độ hàng ngày</p>
+                <p class="text-sm text-gray-500 mt-1">Vào task để cập nhật <strong>Trạng thái</strong> và <strong>% tiến độ</strong> — giúp quản lý nắm được tiến độ mà không cần hỏi lại.</p>
+              </div>
+            </div>
+          </div>
+          <div class="mt-5 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+            <i class="fas fa-exclamation-triangle mr-2 text-amber-500"></i>
+            <strong>Lưu ý:</strong> Sau khi tạo task, nhớ cập nhật trạng thái <strong>mỗi ngày</strong> để quản lý theo dõi được tiến độ dự án.
           </div>
         </div>
       </div>
@@ -4428,6 +4763,128 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeGuideModal();
 });
 </script>
+
+<!-- ============================================================
+     MODAL: Import Excel - Hồ Sơ Pháp Lý
+     ============================================================ -->
+<div id="modalImportExcel" class="modal-overlay hidden" style="z-index:1100">
+  <div class="modal-container" style="max-width:560px">
+    <div class="modal-header" style="background:linear-gradient(135deg,#1d6f42,#2d9f5e)">
+      <h3 class="modal-title text-white">
+        <i class="fas fa-file-excel mr-2"></i>Import Hồ Sơ Pháp Lý từ Excel
+      </h3>
+      <button class="modal-close text-white hover:text-gray-200" onclick="closeImportExcelModal()">
+        <i class="fas fa-times text-xl"></i>
+      </button>
+    </div>
+    <div class="modal-body p-6">
+
+      <!-- Step 1: Download template -->
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-5">
+        <div class="flex items-start gap-3">
+          <i class="fas fa-info-circle text-blue-500 mt-0.5 text-lg"></i>
+          <div class="text-sm">
+            <p class="font-semibold text-blue-800 mb-1">Hướng dẫn import</p>
+            <ol class="text-blue-700 space-y-1 list-decimal ml-4">
+              <li>Tải file template Excel theo đúng định dạng</li>
+              <li>Điền thông tin hồ sơ pháp lý vào file</li>
+              <li>Upload file đã điền vào đây</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+
+      <!-- Template download -->
+      <div class="mb-5">
+        <p class="text-sm font-medium text-gray-700 mb-2">
+          <i class="fas fa-download mr-1 text-green-600"></i>File template mẫu:
+        </p>
+        <button onclick="downloadExcelTemplate()" class="flex items-center gap-2 px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors w-full justify-center">
+          <i class="fas fa-file-excel text-lg"></i>
+          <span>Tải xuống HSPL_Template.xlsx</span>
+        </button>
+        <p class="text-xs text-gray-400 mt-1 text-center">Cấu trúc: STT | Hạng mục công việc | Thời gian | Trạng thái | Ghi chú</p>
+      </div>
+
+      <hr class="border-gray-200 mb-5">
+
+      <!-- File upload area -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 mb-2">
+          <i class="fas fa-upload mr-1"></i>Chọn file Excel để import:
+        </label>
+        <div id="importDropZone"
+             class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-green-400 hover:bg-green-50 transition-all"
+             onclick="document.getElementById('importExcelFileInput').click()"
+             ondragover="event.preventDefault(); this.classList.add('border-green-400','bg-green-50')"
+             ondragleave="this.classList.remove('border-green-400','bg-green-50')"
+             ondrop="handleImportDrop(event)">
+          <i class="fas fa-cloud-upload-alt text-4xl text-gray-300 mb-3"></i>
+          <p class="text-gray-500 font-medium">Kéo thả file vào đây hoặc click để chọn</p>
+          <p class="text-xs text-gray-400 mt-1">Hỗ trợ: .xlsx, .xls (tối đa 10MB)</p>
+        </div>
+        <input type="file" id="importExcelFileInput" accept=".xlsx,.xls" class="hidden" onchange="onImportFileSelected(event)">
+      </div>
+
+      <!-- File selected preview -->
+      <div id="importFilePreview" class="hidden mb-4">
+        <div class="flex items-center gap-3 bg-green-50 border border-green-200 rounded-lg p-3">
+          <i class="fas fa-file-excel text-2xl text-green-600"></i>
+          <div class="flex-1 min-w-0">
+            <p class="font-medium text-green-800 text-sm truncate" id="importFileName">file.xlsx</p>
+            <p class="text-xs text-green-600" id="importFileSize">0 KB</p>
+          </div>
+          <button onclick="clearImportFile()" class="text-gray-400 hover:text-red-500">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Options -->
+      <div class="bg-gray-50 rounded-lg p-4 mb-5">
+        <p class="text-sm font-medium text-gray-700 mb-3">Tùy chọn import:</p>
+        <label class="flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" id="importReplaceExisting" class="mt-0.5 accent-green-600" checked>
+          <div>
+            <p class="text-sm font-medium text-gray-700">Xóa dữ liệu cũ và thay thế hoàn toàn</p>
+            <p class="text-xs text-gray-400">Nếu bỏ chọn: import sẽ thêm vào dữ liệu hiện có</p>
+          </div>
+        </label>
+      </div>
+
+      <!-- Warning replace -->
+      <div id="importReplaceWarning" class="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-4 flex items-start gap-2">
+        <i class="fas fa-exclamation-triangle text-orange-500 mt-0.5"></i>
+        <p class="text-xs text-orange-700">
+          <strong>Lưu ý:</strong> Tùy chọn "Xóa dữ liệu cũ" sẽ xóa tất cả giai đoạn và hạng mục hiện có của dự án này trước khi import.
+        </p>
+      </div>
+
+      <!-- Progress bar -->
+      <div id="importProgressWrap" class="hidden mb-4">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-sm text-gray-600">Đang import...</span>
+          <span class="text-sm font-medium text-green-600" id="importProgressPct">0%</span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2.5">
+          <div id="importProgressBar" class="bg-green-500 h-2.5 rounded-full transition-all" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Result -->
+      <div id="importResultBox" class="hidden mb-4"></div>
+
+    </div>
+    <div class="modal-footer flex justify-end gap-3">
+      <button onclick="closeImportExcelModal()" class="btn-secondary">
+        <i class="fas fa-times mr-1"></i>Đóng
+      </button>
+      <button onclick="executeImportExcel()" id="btnExecuteImport" class="btn-primary" disabled style="opacity:.5;cursor:not-allowed">
+        <i class="fas fa-upload mr-1"></i>Bắt đầu Import
+      </button>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>

@@ -34,10 +34,17 @@
 - ✅ **Phân tích chi tiết**: Phân tích theo dự án/tháng/năm với breakdown chi tiết
 - ✅ **Tổng hợp từ Timesheet**: Liên kết với module quản lý dự án
 
-#### 📦 Công cụ 3: Quản lý Tài sản (System Admin)
+#### 📦 Công cụ 3: Quản lý Tài sản & Khấu hao (System Admin)
 - ✅ **Tài sản thiết bị**: Máy tính, laptop, phần mềm, thiết bị, phương tiện
 - ✅ **Theo dõi sử dụng**: Giao tài sản cho nhân viên
 - ✅ **Thống kê giá trị**: Tổng giá trị theo phòng ban, trạng thái
+- ✅ **Khấu hao tự động**: Tính khấu hao đường thẳng 3 năm hoặc 5 năm
+  - **Preview realtime**: Hiển thị ngay KH/tháng, KH/năm khi nhập giá mua
+  - **Lịch khấu hao chi tiết**: Xem từng tháng: số tiền KH, lũy kế, giá trị còn lại
+  - **Dashboard khấu hao**: KPI tổng tài sản đang KH, KH/tháng, chờ phân bổ
+  - **Phân bổ vào Chi phí chung**: 1 click tạo Shared Cost = tổng KH tháng, chia đều cho tất cả dự án active
+  - **Kiểm soát trạng thái**: Theo dõi từng tháng đã phân bổ hay chưa, badge cảnh báo
+  - **Tích hợp tài chính**: Khấu hao hiện trực tiếp trong module Chi phí chung & Tài chính dự án
 
 ### 🔖 Bộ môn chuẩn BIM
 | Nhóm | Mã bộ môn |
@@ -95,6 +102,12 @@ GET  /api/users               - Nhân sự (Admin)
 
 GET  /api/dashboard/stats     - Dashboard tổng hợp
 GET  /api/disciplines         - Danh mục bộ môn
+
+GET  /api/depreciation/summary?year=YYYY          - Tổng hợp khấu hao theo năm (Admin)
+GET  /api/depreciation/monthly-unallocated        - Các tháng chưa phân bổ (Admin)
+GET  /api/assets/:id/depreciation?year=YYYY       - Lịch khấu hao từng tài sản (Admin)
+POST /api/assets/:id/depreciation/setup           - Cài đặt/cập nhật khấu hao tài sản (Admin)
+POST /api/depreciation/allocate-to-shared-cost    - Phân bổ KH tháng vào chi phí chung (Admin)
 ```
 
 ---
@@ -235,6 +248,7 @@ npm run deploy
 - [x] Gantt chart timeline
 - [x] Quản lý chi phí & doanh thu
 - [x] Quản lý tài sản
+- [x] **Khấu hao tài sản**: Tính KH đường thẳng 3/5 năm, lịch từng tháng, phân bổ vào chi phí chung
 - [x] Quản lý nhân sự
 - [x] Notifications system
 - [x] Task history tracking

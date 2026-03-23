@@ -552,9 +552,40 @@ app.put('/api/projects/:id/members/:userId', authMiddleware, async (c) => {
     const validRoles = ['member', 'project_leader', 'project_admin']
     if (!validRoles.includes(role)) return c.json({ error: 'Vai trò không hợp lệ' }, 400)
 
+    // 1. Cập nhật role trong project_members
     await db.prepare(
       'UPDATE project_members SET role = ? WHERE project_id = ? AND user_id = ?'
     ).bind(role, projectId, targetUserId).run()
+
+    // 2. Đồng bộ projects.leader_id và projects.admin_id
+    //    Nếu đổi xuống member/không phải leader → clear leader_id nếu đang trỏ tới user này
+    //    Nếu đổi xuống member/không phải admin  → clear admin_id nếu đang trỏ tới user này
+    if (role !== 'project_leader') {
+      // Xóa leader_id nếu đang là user này
+      await db.prepare(
+        'UPDATE projects SET leader_id = NULL WHERE id = ? AND leader_id = ?'
+      ).bind(projectId, targetUserId).run()
+    } else {
+      // Đặt leader_id = user này (nếu lên project_leader)
+      await db.prepare(
+        'UPDATE projects SET leader_id = ? WHERE id = ?'
+      ).bind(targetUserId, projectId).run()
+    }
+
+    if (role !== 'project_admin') {
+      // Xóa admin_id nếu đang là user này (nhưng không xóa nếu đây là creator/system admin)
+      const proj = await db.prepare('SELECT admin_id, created_by FROM projects WHERE id = ?').bind(projectId).first() as any
+      if (proj && proj.admin_id === targetUserId && proj.created_by !== targetUserId) {
+        await db.prepare(
+          'UPDATE projects SET admin_id = NULL WHERE id = ? AND admin_id = ?'
+        ).bind(projectId, targetUserId).run()
+      }
+    } else {
+      // Đặt admin_id = user này (nếu lên project_admin)
+      await db.prepare(
+        'UPDATE projects SET admin_id = ? WHERE id = ?'
+      ).bind(targetUserId, projectId).run()
+    }
 
     // Thông báo cho user được đổi role
     const roleLabels: Record<string, string> = {
@@ -579,7 +610,22 @@ app.delete('/api/projects/:id/members/:userId', authMiddleware, async (c) => {
     const db = c.env.DB
     const projectId = parseInt(c.req.param('id'))
     const userId = parseInt(c.req.param('userId'))
+
+    // Xóa khỏi project_members
     await db.prepare('DELETE FROM project_members WHERE project_id = ? AND user_id = ?').bind(projectId, userId).run()
+
+    // Đồng bộ: clear leader_id / admin_id nếu đang trỏ tới user này
+    await db.prepare(
+      'UPDATE projects SET leader_id = NULL WHERE id = ? AND leader_id = ?'
+    ).bind(projectId, userId).run()
+    // Chỉ clear admin_id nếu không phải người tạo dự án
+    const proj = await db.prepare('SELECT created_by FROM projects WHERE id = ?').bind(projectId).first() as any
+    if (proj && proj.created_by !== userId) {
+      await db.prepare(
+        'UPDATE projects SET admin_id = NULL WHERE id = ? AND admin_id = ?'
+      ).bind(projectId, userId).run()
+    }
+
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -787,23 +833,26 @@ app.get('/api/tasks', authMiddleware, async (c) => {
           // Là leader/admin trong project này → thấy tất cả task của project
           // (project_id filter sẽ được thêm bên dưới)
         } else {
-          // Là member thuần trong project này → chỉ thấy task của mình
-          query += ` AND t.assigned_to = ?`
-          params.push(user.id)
+          // Là member thuần trong project này → thấy task được giao cho mình
+          // HOẶC task do chính mình tạo (assigned_by = user.id, kể cả chưa giao cho ai)
+          query += ` AND (t.assigned_to = ? OR t.assigned_by = ?)`
+          params.push(user.id, user.id)
         }
       } else {
-        // Không có project_id → global list: UNION hai tập
+        // Không có project_id → global list: UNION các tập
         //   1. Task được giao cho mình (ở bất kỳ project nào)
-        //   2. Task thuộc project mà mình là leader/admin
+        //   2. Task do mình tạo (assigned_by = user.id, kể cả chưa giao cho ai)
+        //   3. Task thuộc project mà mình là leader/admin
         query += ` AND (
           t.assigned_to = ?
+          OR t.assigned_by = ?
           OR t.project_id IN (
             SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
             UNION
             SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader','admin','leader')
           )
         )`
-        params.push(user.id, user.id, user.id, user.id)
+        params.push(user.id, user.id, user.id, user.id, user.id)
       }
     }
 
@@ -869,6 +918,18 @@ app.post('/api/tasks', authMiddleware, async (c) => {
 
     if (!project_id || !title) return c.json({ error: 'project_id and title required' }, 400)
 
+    // RBAC: mọi thành viên project đều được tạo task (kể cả member)
+    // system_admin được tạo task ở mọi project
+    const isAdmin = user.role === 'system_admin'
+    const isProjAdminOrLeader = await isProjectLeaderOrAdmin(db, user, project_id)
+    if (!isAdmin && !isProjAdminOrLeader) {
+      // Kiểm tra member có thuộc project không
+      const membership = await db.prepare(
+        'SELECT id FROM project_members WHERE project_id = ? AND user_id = ?'
+      ).bind(project_id, user.id).first()
+      if (!membership) return c.json({ error: 'Bạn không phải thành viên của dự án này' }, 403)
+    }
+
     const result = await db.prepare(
       `INSERT INTO tasks (project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -910,12 +971,16 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
     const isAdmin = user.role === 'system_admin'
     const isProjAdmin = await isProjectLeaderOrAdmin(db, user, task.project_id)
     const isAssigned = task.assigned_to === user.id
+    const isCreator = task.assigned_by === user.id  // người tạo task (member tự tạo)
 
-    if (!isAdmin && !isProjAdmin && !isAssigned)
+    if (!isAdmin && !isProjAdmin && !isAssigned && !isCreator)
       return c.json({ error: 'Không có quyền chỉnh sửa task này' }, 403)
 
-    // member chỉ được sửa progress/status/actual_hours
-    const fields = (isAdmin || isProjAdmin)
+    // - Admin/Project admin/leader: sửa toàn bộ fields
+    // - Member tự tạo task (assigned_by = user.id): sửa toàn bộ fields (task của mình)
+    // - Member được giao task nhưng không phải người tạo: chỉ sửa status/progress/actual_hours
+    const isFullAccess = isAdmin || isProjAdmin || isCreator
+    const fields = isFullAccess
       ? ['title', 'description', 'discipline_code', 'phase', 'priority', 'status', 'assigned_to', 'start_date', 'due_date', 'actual_start_date', 'actual_end_date', 'estimated_hours', 'actual_hours', 'progress', 'category_id']
       : ['status', 'progress', 'actual_hours', 'actual_end_date']
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
@@ -1724,7 +1789,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       }
     }
 
-    const { task_id, work_date, regular_hours, overtime_hours, description, status } = data
+    const { project_id, task_id, work_date, regular_hours, overtime_hours, description, status } = data
     const updates: string[] = []
     const values: any[] = []
 
@@ -1733,7 +1798,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     // (chỉ system_admin được phép sửa timesheet tuần cũ)
     if (!isAdmin && !isProjAdmin && !isWithinCurrentWeek(ts.work_date)) {
       // Chỉ chặn sửa nội dung (không chặn admin phê duyệt/từ chối)
-      const isContentEdit = task_id !== undefined || work_date !== undefined ||
+      const isContentEdit = project_id !== undefined || task_id !== undefined || work_date !== undefined ||
                             regular_hours !== undefined || overtime_hours !== undefined ||
                             description !== undefined
       if (isContentEdit) {
@@ -1747,6 +1812,15 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     // task_id và work_date: chỉ admin/projAdmin hoặc owner ở trạng thái draft/rejected mới được sửa
     const canEditContent = isAdmin || isProjAdmin || (isOwner && ['draft', 'rejected'].includes(ts.status))
     if (canEditContent) {
+      // project_id: cho phép đổi sang dự án khác
+      if (project_id !== undefined && project_id !== null) {
+        // Kiểm tra dự án tồn tại
+        const proj = await db.prepare('SELECT id FROM projects WHERE id = ?').bind(project_id).first()
+        if (!proj) return c.json({ error: 'Dự án không tồn tại' }, 400)
+        updates.push('project_id = ?'); values.push(project_id)
+        // Khi đổi project, task_id liên quan đến project cũ không còn hợp lệ → reset nếu không có task_id mới
+        if (task_id === undefined) { updates.push('task_id = ?'); values.push(null) }
+      }
       // task_id: cho phép set null (xóa task) hoặc set id mới
       if (task_id !== undefined) { updates.push('task_id = ?'); values.push(task_id || null) }
       if (work_date !== undefined) {
@@ -1764,7 +1838,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       if (description !== undefined) { updates.push('description = ?'); values.push(description) }
     } else {
       // member thường không được sửa nội dung (chỉ submit/rút lại)
-      if (regular_hours !== undefined || overtime_hours !== undefined ||
+      if (project_id !== undefined || regular_hours !== undefined || overtime_hours !== undefined ||
           description !== undefined || task_id !== undefined || work_date !== undefined) {
         return c.json({ error: 'Không thể sửa nội dung timesheet đã được duyệt hoặc đang chờ duyệt' }, 403)
       }
@@ -1920,21 +1994,23 @@ app.put('/api/subtasks/:id', authMiddleware, async (c) => {
     const st = await db.prepare('SELECT * FROM subtasks WHERE id = ?').bind(id).first() as any
     if (!st) return c.json({ error: 'Subtask không tồn tại' }, 404)
 
-    // Lấy task cha để kiểm tra quyền project
-    const task = await db.prepare('SELECT project_id FROM tasks WHERE id = ?').bind(st.task_id).first() as any
+    // Lấy task cha để kiểm tra quyền project + task assignee
+    const task = await db.prepare('SELECT project_id, assigned_to FROM tasks WHERE id = ?').bind(st.task_id).first() as any
     const isAdmin = user.role === 'system_admin'
     const isProjAdminOrLeader = await isProjectLeaderOrAdmin(db, user, task?.project_id)
     const isCreator = st.created_by === user.id
     const isAssigned = st.assigned_to === user.id
+    // Member được gán vào task cha cũng có quyền cập nhật subtask (status, actual_hours, notes)
+    const isTaskAssignee = task?.assigned_to === user.id
 
-    if (!isAdmin && !isProjAdminOrLeader && !isCreator && !isAssigned) {
+    if (!isAdmin && !isProjAdminOrLeader && !isCreator && !isAssigned && !isTaskAssignee) {
       return c.json({ error: 'Không có quyền sửa subtask này' }, 403)
     }
 
     const data = await c.req.json()
     const allowedFields = (isAdmin || isProjAdminOrLeader)
       ? ['title', 'description', 'status', 'priority', 'assigned_to', 'due_date', 'estimated_hours', 'actual_hours', 'notes']
-      : ['status', 'actual_hours', 'notes']  // member chỉ cập nhật trạng thái, giờ thực tế, ghi chú
+      : ['status', 'actual_hours', 'notes']  // member (kể cả task assignee) chỉ cập nhật trạng thái, giờ thực tế, ghi chú
 
     const updates: string[] = []
     const values: any[] = []
@@ -4150,9 +4226,77 @@ app.delete('/api/shared-costs/:id', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const id = parseInt(c.req.param('id'))
+
+    // Kiểm tra shared_cost có tồn tại không
+    const sc = await db.prepare(`SELECT * FROM shared_costs WHERE id = ?`).bind(id).first() as any
+    if (!sc) return c.json({ error: 'Không tìm thấy chi phí chung' }, 404)
+
+    // Nếu là khấu hao tài sản (cost_type = 'depreciation') → rollback schedule
+    if (sc.cost_type === 'depreciation') {
+      // Tìm schedule rows theo shared_cost_id (ưu tiên) hoặc year+month (fallback)
+      // Fallback cần thiết khi shared_cost_id bị lưu sai (NULL/string) do lỗi dữ liệu cũ
+      let scheduleRows = await db.prepare(`
+        SELECT ads.*, a.id AS asset_db_id
+        FROM asset_depreciation_schedule ads
+        JOIN assets a ON a.id = ads.asset_id
+        WHERE ads.shared_cost_id = ? AND ads.is_allocated = 1
+      `).bind(id).all()
+
+      let rows = scheduleRows.results as any[]
+
+      // Fallback: nếu không tìm được qua shared_cost_id, dùng year+month từ shared_cost record
+      if (rows.length === 0 && sc.month != null) {
+        scheduleRows = await db.prepare(`
+          SELECT ads.*, a.id AS asset_db_id
+          FROM asset_depreciation_schedule ads
+          JOIN assets a ON a.id = ads.asset_id
+          WHERE ads.year = ? AND ads.month = ? AND ads.is_allocated = 1
+        `).bind(sc.year, sc.month).all()
+        rows = scheduleRows.results as any[]
+      }
+
+      // Reset trạng thái phân bổ trong lịch khấu hao
+      if (rows.length > 0) {
+        // Reset theo shared_cost_id nếu có, còn không thì reset theo year+month
+        const hasLinked = rows.some((r: any) => r.shared_cost_id === id)
+        if (hasLinked) {
+          await db.prepare(`
+            UPDATE asset_depreciation_schedule
+            SET is_allocated = 0, shared_cost_id = NULL, allocated_at = NULL
+            WHERE shared_cost_id = ?
+          `).bind(id).run()
+        } else {
+          // Fallback: reset theo year+month (dữ liệu orphan - shared_cost_id không khớp)
+          await db.prepare(`
+            UPDATE asset_depreciation_schedule
+            SET is_allocated = 0, shared_cost_id = NULL, allocated_at = NULL
+            WHERE year = ? AND month = ? AND is_allocated = 1
+          `).bind(sc.year, sc.month).run()
+        }
+
+        // Rollback accumulated_depreciation và net_book_value trên từng tài sản
+        for (const row of rows) {
+          await db.prepare(`
+            UPDATE assets SET
+              accumulated_depreciation = MAX(0, accumulated_depreciation - ?),
+              net_book_value = MIN(purchase_price, net_book_value + ?)
+            WHERE id = ?
+          `).bind(row.depreciation_amount, row.depreciation_amount, row.asset_id).run()
+        }
+      }
+    }
+
+    // Xóa allocations và shared_cost
     await db.prepare(`DELETE FROM shared_cost_allocations WHERE shared_cost_id = ?`).bind(id).run()
     await db.prepare(`DELETE FROM shared_costs WHERE id = ?`).bind(id).run()
-    return c.json({ success: true })
+
+    return c.json({
+      success: true,
+      rolled_back: sc.cost_type === 'depreciation',
+      message: sc.cost_type === 'depreciation'
+        ? 'Đã xóa chi phí chung và hoàn tác trạng thái khấu hao về chưa phân bổ'
+        : 'Đã xóa chi phí chung'
+    })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -4554,19 +4698,43 @@ app.post('/api/assets', authMiddleware, adminOnly, async (c) => {
     const db = c.env.DB
     const user = c.get('user') as any
     const data = await c.req.json()
-    const { asset_code, name, category, brand, model, serial_number, specifications, purchase_date, purchase_price, current_value, warranty_expiry, status, location, department, assigned_to, notes } = data
+    const { asset_code, name, category, brand, model, serial_number, specifications,
+      purchase_date, purchase_price, current_value, warranty_expiry, status,
+      location, department, assigned_to, notes,
+      depreciation_years, depreciation_start_date } = data
 
     if (!asset_code || !name || !category) return c.json({ error: 'Missing required fields' }, 400)
 
+    const depYears = depreciation_years ? parseInt(depreciation_years) : 0
+    const depStart = depreciation_start_date || purchase_date || null
+    const monthlyDepr = (depYears > 0 && purchase_price > 0)
+      ? parseFloat(purchase_price) / (depYears * 12) : 0
+
     const result = await db.prepare(
-      `INSERT INTO assets (asset_code, name, category, brand, model, serial_number, specifications, purchase_date, purchase_price, current_value, warranty_expiry, status, location, department, assigned_to, notes, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(asset_code, name, category, brand || null, model || null, serial_number || null,
+      `INSERT INTO assets (asset_code, name, category, brand, model, serial_number, specifications,
+        purchase_date, purchase_price, current_value, warranty_expiry, status, location, department,
+        assigned_to, notes, depreciation_years, depreciation_start_date, monthly_depreciation,
+        depreciation_status, net_book_value, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      asset_code, name, category, brand || null, model || null, serial_number || null,
       specifications || null, purchase_date || null, purchase_price || 0, current_value || 0,
       warranty_expiry || null, status || 'active', location || null, department || null,
-      assigned_to || null, notes || null, user.id).run()
+      assigned_to || null, notes || null,
+      depYears, depStart, monthlyDepr,
+      depYears > 0 ? 'active' : 'none',
+      purchase_price || 0,
+      user.id
+    ).run()
 
-    return c.json({ success: true, id: result.meta.last_row_id }, 201)
+    const newId = result.meta.last_row_id as number
+
+    // Tự động tạo lịch khấu hao nếu có depreciation_years
+    if (depYears > 0 && purchase_price > 0 && depStart) {
+      await generateDepreciationSchedule(db, newId, parseFloat(purchase_price), depYears, depStart)
+    }
+
+    return c.json({ success: true, id: newId }, 201)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -4577,7 +4745,10 @@ app.put('/api/assets/:id', authMiddleware, adminOnly, async (c) => {
     const db = c.env.DB
     const id = parseInt(c.req.param('id'))
     const data = await c.req.json()
-    const fields = ['name', 'category', 'brand', 'model', 'serial_number', 'specifications', 'purchase_date', 'purchase_price', 'current_value', 'warranty_expiry', 'status', 'location', 'department', 'assigned_to', 'notes']
+    const fields = ['name', 'category', 'brand', 'model', 'serial_number', 'specifications',
+      'purchase_date', 'purchase_price', 'current_value', 'warranty_expiry',
+      'status', 'location', 'department', 'assigned_to', 'notes',
+      'depreciation_years', 'depreciation_start_date', 'depreciation_status']
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
     updates.push('updated_at = CURRENT_TIMESTAMP')
@@ -4598,6 +4769,491 @@ app.delete('/api/assets/:id', authMiddleware, adminOnly, async (c) => {
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
+})
+
+// ===================================================
+// ASSET DEPRECIATION ROUTES (Khấu hao tài sản)
+// ===================================================
+
+// Helper: Tính monthly_depreciation và sinh lịch khấu hao
+async function generateDepreciationSchedule(db: any, assetId: number, purchasePrice: number, depreciationYears: number, startDate: string) {
+  if (!depreciationYears || depreciationYears <= 0 || !purchasePrice || purchasePrice <= 0) return
+  const monthlyAmount = purchasePrice / (depreciationYears * 12)
+  const totalMonths = depreciationYears * 12
+  const start = new Date(startDate)
+  let accumulated = 0
+
+  // Xóa lịch cũ chưa phân bổ
+  await db.prepare(`DELETE FROM asset_depreciation_schedule WHERE asset_id = ? AND is_allocated = 0`).bind(assetId).run()
+
+  for (let i = 0; i < totalMonths; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth() + i, 1)
+    const yr = d.getFullYear()
+    const mo = d.getMonth() + 1
+    accumulated += monthlyAmount
+    const netVal = Math.max(0, purchasePrice - accumulated)
+    await db.prepare(`
+      INSERT OR IGNORE INTO asset_depreciation_schedule
+        (asset_id, year, month, depreciation_amount, accumulated_amount, net_book_value)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(assetId, yr, mo, monthlyAmount, accumulated, netVal).run()
+  }
+
+  // Cập nhật trạng thái asset
+  await db.prepare(`
+    UPDATE assets SET
+      monthly_depreciation = ?,
+      depreciation_status = 'active',
+      net_book_value = purchase_price,
+      accumulated_depreciation = 0
+    WHERE id = ?
+  `).bind(monthlyAmount, assetId).run()
+}
+
+// GET /api/assets/:id/depreciation — Lịch khấu hao của 1 tài sản
+app.get('/api/assets/:id/depreciation', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const { year } = c.req.query()
+
+    const asset = await db.prepare(
+      `SELECT * FROM assets WHERE id = ?`
+    ).bind(id).first()
+    if (!asset) return c.json({ error: 'Asset not found' }, 404)
+
+    let q = `SELECT * FROM asset_depreciation_schedule WHERE asset_id = ?`
+    const params: any[] = [id]
+    if (year) { q += ` AND year = ?`; params.push(parseInt(year)) }
+    q += ` ORDER BY year ASC, month ASC`
+
+    const schedule = await db.prepare(q).bind(...params).all()
+    return c.json({ asset, schedule: schedule.results })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/assets/:id/depreciation/setup — Cài đặt/cập nhật khấu hao cho tài sản
+app.post('/api/assets/:id/depreciation/setup', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const { depreciation_years, depreciation_start_date } = await c.req.json()
+
+    if (![3, 5].includes(parseInt(depreciation_years))) {
+      return c.json({ error: 'depreciation_years phải là 3 hoặc 5' }, 400)
+    }
+
+    const asset = await db.prepare(`SELECT * FROM assets WHERE id = ?`).bind(id).first() as any
+    if (!asset) return c.json({ error: 'Asset not found' }, 404)
+    if (!asset.purchase_price || asset.purchase_price <= 0) {
+      return c.json({ error: 'Tài sản chưa có giá mua. Vui lòng cập nhật giá mua trước.' }, 400)
+    }
+
+    const startDate = depreciation_start_date || asset.purchase_date
+    if (!startDate) return c.json({ error: 'Cần cung cấp ngày bắt đầu khấu hao' }, 400)
+
+    const yrs = parseInt(depreciation_years)
+    // Cập nhật fields trên asset
+    await db.prepare(`
+      UPDATE assets SET
+        depreciation_years = ?,
+        depreciation_start_date = ?,
+        depreciation_status = 'active'
+      WHERE id = ?
+    `).bind(yrs, startDate, id).run()
+
+    await generateDepreciationSchedule(db, id, asset.purchase_price, yrs, startDate)
+
+    return c.json({ success: true, message: `Đã tạo lịch khấu hao ${yrs} năm (${yrs * 12} tháng)` })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/depreciation/summary — Tổng hợp khấu hao tất cả tài sản theo tháng/năm
+app.get('/api/depreciation/summary', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { year, month } = c.req.query()
+    const yr = parseInt(year || new Date().getFullYear().toString())
+    const mo = month ? parseInt(month) : null
+
+    // Lấy tổng khấu hao từng tháng trong năm (nếu lọc tháng thì chỉ lấy tháng đó)
+    let monthlySummary: any
+    if (mo) {
+      monthlySummary = await db.prepare(`
+        SELECT
+          ads.year, ads.month,
+          COUNT(DISTINCT ads.asset_id) AS asset_count,
+          SUM(ads.depreciation_amount) AS total_depreciation,
+          SUM(CASE WHEN ads.is_allocated = 1 THEN ads.depreciation_amount ELSE 0 END) AS allocated_amount,
+          SUM(CASE WHEN ads.is_allocated = 0 THEN ads.depreciation_amount ELSE 0 END) AS pending_allocation
+        FROM asset_depreciation_schedule ads
+        JOIN assets a ON a.id = ads.asset_id
+        WHERE ads.year = ? AND ads.month = ? AND a.depreciation_status = 'active' AND a.status != 'retired'
+        GROUP BY ads.year, ads.month
+        ORDER BY ads.month ASC
+      `).bind(yr, mo).all()
+    } else {
+      monthlySummary = await db.prepare(`
+        SELECT
+          ads.year, ads.month,
+          COUNT(DISTINCT ads.asset_id) AS asset_count,
+          SUM(ads.depreciation_amount) AS total_depreciation,
+          SUM(CASE WHEN ads.is_allocated = 1 THEN ads.depreciation_amount ELSE 0 END) AS allocated_amount,
+          SUM(CASE WHEN ads.is_allocated = 0 THEN ads.depreciation_amount ELSE 0 END) AS pending_allocation
+        FROM asset_depreciation_schedule ads
+        JOIN assets a ON a.id = ads.asset_id
+        WHERE ads.year = ? AND a.depreciation_status = 'active' AND a.status != 'retired'
+        GROUP BY ads.year, ads.month
+        ORDER BY ads.month ASC
+      `).bind(yr).all()
+    }
+
+    // Lấy danh sách tài sản đang khấu hao
+    const activeAssets = await db.prepare(`
+      SELECT
+        a.id, a.asset_code, a.name, a.category,
+        a.purchase_price, a.purchase_date, a.depreciation_years,
+        a.monthly_depreciation, a.depreciation_start_date, a.depreciation_status,
+        a.accumulated_depreciation, a.net_book_value
+      FROM assets a
+      WHERE a.depreciation_status = 'active' AND a.status != 'retired'
+      ORDER BY a.asset_code ASC
+    `).all()
+
+    // Chi tiết từng tài sản theo tháng (nếu lọc theo tháng cụ thể)
+    let monthDetail: any[] = []
+    if (mo) {
+      const detail = await db.prepare(`
+        SELECT
+          ads.*,
+          a.asset_code, a.name AS asset_name, a.category,
+          a.purchase_price, a.depreciation_years
+        FROM asset_depreciation_schedule ads
+        JOIN assets a ON a.id = ads.asset_id
+        WHERE ads.year = ? AND ads.month = ? AND a.depreciation_status = 'active' AND a.status != 'retired'
+        ORDER BY a.asset_code ASC
+      `).bind(yr, mo).all()
+      monthDetail = detail.results as any[]
+    }
+
+    // Tổng giá trị tài sản & khấu hao lũy kế
+    const totalStats = await db.prepare(`
+      SELECT
+        COUNT(*) AS total_assets,
+        SUM(purchase_price) AS total_purchase_value,
+        SUM(monthly_depreciation) AS total_monthly_depreciation,
+        SUM(accumulated_depreciation) AS total_accumulated,
+        SUM(net_book_value) AS total_net_value
+      FROM assets
+      WHERE depreciation_status = 'active' AND status != 'retired'
+    `).first()
+
+    return c.json({
+      year: yr,
+      month: mo,
+      total_stats: totalStats,
+      monthly_summary: monthlySummary.results,
+      active_assets: activeAssets.results,
+      month_detail: monthDetail
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/depreciation/allocation-preview — Xem trước dự án sẽ được phân bổ cho tháng/năm
+app.get('/api/depreciation/allocation-preview', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { year, month } = c.req.query()
+    if (!year || !month) return c.json({ error: 'Cần cung cấp year và month' }, 400)
+
+    const yr = parseInt(year)
+    const mo = parseInt(month)
+    const lastDayOfMonth = new Date(yr, mo, 0).getDate()
+    const monthEndDate = `${yr}-${String(mo).padStart(2,'0')}-${String(lastDayOfMonth).padStart(2,'0')}`
+
+    // Tổng khấu hao tháng này
+    const totalRow = await db.prepare(`
+      SELECT SUM(ads.depreciation_amount) AS total, COUNT(DISTINCT ads.asset_id) AS asset_count
+      FROM asset_depreciation_schedule ads
+      JOIN assets a ON a.id = ads.asset_id
+      WHERE ads.year = ? AND ads.month = ?
+        AND a.depreciation_status = 'active' AND a.status != 'retired'
+    `).bind(yr, mo).first() as any
+
+    const total = totalRow?.total || 0
+    const assetCount = totalRow?.asset_count || 0
+
+    // Dự án đã bắt đầu (active + start_date <= cuối tháng)
+    const eligibleProjects = await db.prepare(`
+      SELECT id, code, name, start_date, status
+      FROM projects
+      WHERE status = 'active'
+        AND start_date IS NOT NULL
+        AND start_date <= ?
+      ORDER BY start_date ASC, code ASC
+    `).bind(monthEndDate).all()
+    const eligible = eligibleProjects.results as any[]
+
+    // Dự án active nhưng chưa bắt đầu (start_date > cuối tháng)
+    const notYetProjects = await db.prepare(`
+      SELECT id, code, name, start_date, status
+      FROM projects
+      WHERE status = 'active'
+        AND (start_date IS NULL OR start_date > ?)
+      ORDER BY code ASC
+    `).bind(monthEndDate).all()
+    const notYet = notYetProjects.results as any[]
+
+    const perProject = eligible.length > 0 ? total / eligible.length : 0
+
+    return c.json({
+      year: yr, month: mo,
+      month_end_date: monthEndDate,
+      total_depreciation: total,
+      asset_count: assetCount,
+      eligible_projects: eligible.map((p: any) => ({
+        id: p.id, code: p.code, name: p.name, start_date: p.start_date,
+        amount: perProject
+      })),
+      excluded_projects: notYet.map((p: any) => ({
+        id: p.id, code: p.code, name: p.name, start_date: p.start_date,
+        reason: p.start_date ? `Bắt đầu ${p.start_date} (sau tháng ${String(mo).padStart(2,'0')}/${yr})` : 'Chưa có ngày bắt đầu'
+      })),
+      eligible_count: eligible.length,
+      excluded_count: notYet.length,
+      per_project: perProject
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/depreciation/allocate-to-shared-cost — Phân bổ khấu hao tháng vào chi phí chung
+app.post('/api/depreciation/allocate-to-shared-cost', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { year, month } = await c.req.json()
+
+    if (!year || !month) return c.json({ error: 'Cần cung cấp year và month' }, 400)
+
+    const yr = parseInt(year)
+    const mo = parseInt(month)
+    const monthName = `${String(mo).padStart(2,'0')}/${yr}`
+
+    // Lấy cấu hình năm tài chính để tính fiscal_year đúng
+    const fySettings = await getFiscalYearSettings(db)
+    // Nếu tháng phân bổ < tháng bắt đầu NTC → thuộc NTC(yr-1), ngược lại → NTC(yr)
+    // Ví dụ: start_month=2, tháng 1/2024 < tháng 2 → NTC2023; tháng 2/2024 → NTC2024
+    const fiscalYear = mo < fySettings.start_month ? yr - 1 : yr
+    const fiscalYearLabel = `NTC${fiscalYear}`
+
+    // Kiểm tra đã phân bổ chưa
+    const alreadyAllocated = await db.prepare(`
+      SELECT COUNT(*) AS cnt FROM asset_depreciation_schedule
+      WHERE year = ? AND month = ? AND is_allocated = 1
+    `).bind(yr, mo).first() as any
+    if (alreadyAllocated?.cnt > 0) {
+      return c.json({ error: `Tháng ${monthName} đã được phân bổ vào chi phí chung rồi` }, 400)
+    }
+
+    // Lấy tất cả tài sản đang KH trong tháng này
+    const scheduleRows = await db.prepare(`
+      SELECT ads.*, a.asset_code, a.name AS asset_name
+      FROM asset_depreciation_schedule ads
+      JOIN assets a ON a.id = ads.asset_id
+      WHERE ads.year = ? AND ads.month = ?
+        AND a.depreciation_status = 'active' AND a.status != 'retired'
+    `).bind(yr, mo).all()
+
+    const rows = scheduleRows.results as any[]
+    if (rows.length === 0) return c.json({ error: `Không có tài sản nào đang khấu hao trong tháng ${monthName}` }, 400)
+
+    const totalDepreciation = rows.reduce((s: number, r: any) => s + (r.depreciation_amount || 0), 0)
+
+    // Ngày cuối của tháng khấu hao (để so sánh với start_date dự án)
+    // Dự án được tính vào phân bổ khi start_date <= ngày cuối tháng đó
+    const lastDayOfMonth = new Date(yr, mo, 0).getDate()  // mo không trừ 1 vì Date dùng 0-indexed
+    const monthEndDate = `${yr}-${String(mo).padStart(2,'0')}-${String(lastDayOfMonth).padStart(2,'0')}`
+
+    // Lấy danh sách dự án active ĐÃ BẮT ĐẦU từ tháng khấu hao trở về trước
+    // Điều kiện: status='active' VÀ start_date <= ngày cuối tháng khấu hao
+    // Nếu start_date IS NULL → bỏ qua (dự án chưa xác định ngày bắt đầu)
+    const activeProjects = await db.prepare(`
+      SELECT id, code, name, contract_value, status, start_date
+      FROM projects
+      WHERE status = 'active'
+        AND start_date IS NOT NULL
+        AND start_date <= ?
+      ORDER BY code ASC
+    `).bind(monthEndDate).all()
+    const projList = activeProjects.results as any[]
+
+    if (projList.length === 0) {
+      return c.json({
+        error: `Không có dự án nào đã bắt đầu từ tháng ${monthName} trở về trước để phân bổ chi phí khấu hao`
+      }, 400)
+    }
+
+    // Tạo shared_cost với fiscal_year đúng trong year field
+    const projNames = projList.map((p: any) => p.code).join(', ')
+    const scIns = await db.prepare(`
+      INSERT INTO shared_costs
+        (description, cost_type, amount, currency, cost_date, notes, allocation_basis, year, month, created_by)
+      VALUES (?, ?, ?, 'VND', ?, ?, 'equal', ?, ?, ?)
+    `).bind(
+      `Khấu hao tài sản tháng ${monthName} (${fiscalYearLabel})`,
+      'depreciation',
+      totalDepreciation,
+      `${yr}-${String(mo).padStart(2,'0')}-01`,
+      `Tự động phân bổ từ ${rows.length} tài sản đang khấu hao. Tổng: ${totalDepreciation.toLocaleString('vi-VN')} VND. Chia đều cho ${projList.length} dự án đã bắt đầu: ${projNames}`,
+      fiscalYear,
+      mo,
+      user.id
+    ).run()
+
+    const scId = scIns.meta.last_row_id as number
+
+    // Phân bổ đều cho các dự án đã bắt đầu trong/trước tháng khấu hao
+    const perProject = totalDepreciation / projList.length
+    const pct = 100 / projList.length
+
+    for (const proj of projList) {
+      await db.prepare(`
+        INSERT OR REPLACE INTO shared_cost_allocations
+          (shared_cost_id, project_id, allocation_pct, allocated_amount)
+        VALUES (?, ?, ?, ?)
+      `).bind(scId, proj.id, pct, perProject).run()
+    }
+
+    // Đánh dấu đã phân bổ trên schedule
+    for (const row of rows) {
+      await db.prepare(`
+        UPDATE asset_depreciation_schedule
+        SET is_allocated = 1, shared_cost_id = ?, allocated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).bind(scId, row.id).run()
+    }
+
+    // Cập nhật accumulated_depreciation và net_book_value trên assets
+    for (const row of rows) {
+      await db.prepare(`
+        UPDATE assets SET
+          accumulated_depreciation = accumulated_depreciation + ?,
+          net_book_value = MAX(0, purchase_price - (accumulated_depreciation + ?))
+        WHERE id = ?
+      `).bind(row.depreciation_amount, row.depreciation_amount, row.asset_id).run()
+    }
+
+    return c.json({
+      success: true,
+      shared_cost_id: scId,
+      message: `Đã phân bổ ${totalDepreciation.toLocaleString('vi-VN')} VND khấu hao tháng ${monthName} (${fiscalYearLabel}) cho ${projList.length} dự án`,
+      total_depreciation: totalDepreciation,
+      project_count: projList.length,
+      per_project: perProject,
+      asset_count: rows.length,
+      fiscal_year: fiscalYear,
+      fiscal_year_label: fiscalYearLabel,
+      projects: projList.map((p: any) => ({ id: p.id, code: p.code, name: p.name, start_date: p.start_date, amount: perProject })),
+      month_end_date: monthEndDate
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/depreciation/repair-orphaned — Sửa dữ liệu khấu hao bị orphan
+// Orphan = is_allocated=1 nhưng shared_cost_id không tồn tại trong shared_costs
+app.post('/api/depreciation/repair-orphaned', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    // Tìm tất cả schedule rows bị orphan:
+    // is_allocated=1 nhưng shared_cost_id IS NULL hoặc không tồn tại trong shared_costs
+    const orphanedRows = await db.prepare(`
+      SELECT ads.id, ads.asset_id, ads.year, ads.month, ads.depreciation_amount, ads.shared_cost_id
+      FROM asset_depreciation_schedule ads
+      WHERE ads.is_allocated = 1
+        AND (
+          ads.shared_cost_id IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM shared_costs sc WHERE sc.id = ads.shared_cost_id
+          )
+        )
+    `).all()
+
+    const rows = orphanedRows.results as any[]
+    if (rows.length === 0) {
+      return c.json({ success: true, repaired: 0, message: 'Không có dữ liệu khấu hao orphan nào' })
+    }
+
+    // Nhóm theo year+month để rollback accumulated_depreciation đúng
+    const monthMap = new Map<string, any[]>()
+    for (const row of rows) {
+      const key = `${row.year}-${row.month}`
+      if (!monthMap.has(key)) monthMap.set(key, [])
+      monthMap.get(key)!.push(row)
+    }
+
+    // Reset is_allocated = 0 cho tất cả orphan rows
+    await db.prepare(`
+      UPDATE asset_depreciation_schedule
+      SET is_allocated = 0, shared_cost_id = NULL, allocated_at = NULL
+      WHERE is_allocated = 1
+        AND (
+          shared_cost_id IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM shared_costs sc WHERE sc.id = asset_depreciation_schedule.shared_cost_id
+          )
+        )
+    `).run()
+
+    // Rollback accumulated_depreciation và net_book_value cho từng tài sản bị ảnh hưởng
+    const assetMap = new Map<number, number>()
+    for (const row of rows) {
+      assetMap.set(row.asset_id, (assetMap.get(row.asset_id) || 0) + (row.depreciation_amount || 0))
+    }
+    for (const [assetId, totalRollback] of assetMap) {
+      await db.prepare(`
+        UPDATE assets SET
+          accumulated_depreciation = MAX(0, accumulated_depreciation - ?),
+          net_book_value = MIN(purchase_price, net_book_value + ?)
+        WHERE id = ?
+      `).bind(totalRollback, totalRollback, assetId).run()
+    }
+
+    return c.json({
+      success: true,
+      repaired: rows.length,
+      affected_assets: assetMap.size,
+      affected_months: [...monthMap.keys()],
+      message: `Đã sửa ${rows.length} dòng khấu hao orphan cho ${assetMap.size} tài sản`
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/depreciation/monthly-unallocated — Lấy các tháng chưa phân bổ (tối đa 24 tháng gần nhất)
+app.get('/api/depreciation/monthly-unallocated', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { limit } = c.req.query()
+    const maxRows = parseInt(limit || '24')
+    const rows = await db.prepare(`
+      SELECT
+        ads.year, ads.month,
+        COUNT(DISTINCT ads.asset_id) AS asset_count,
+        SUM(ads.depreciation_amount) AS total_depreciation
+      FROM asset_depreciation_schedule ads
+      JOIN assets a ON a.id = ads.asset_id
+      WHERE ads.is_allocated = 0
+        AND a.depreciation_status = 'active'
+        AND a.status != 'retired'
+        AND (ads.year < CAST(strftime('%Y','now') AS INTEGER) OR
+             (ads.year = CAST(strftime('%Y','now') AS INTEGER)
+              AND ads.month <= CAST(strftime('%m','now') AS INTEGER)))
+      GROUP BY ads.year, ads.month
+      ORDER BY ads.year DESC, ads.month DESC
+      LIMIT ?
+    `).bind(maxRows).all()
+    return c.json(rows.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
 // ===================================================
@@ -4890,6 +5546,120 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
+})
+
+// GET /api/dashboard/available-years — Trả về các năm NTC có dữ liệu thực tế
+// Tổng hợp từ: project_costs, revenues (project_revenues), shared_costs, project_labor_costs
+// Luôn thêm năm hiện tại + 1 năm tiếp theo dù chưa có dữ liệu
+app.get('/api/dashboard/available-years', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const fySettings = await getFiscalYearSettings(db)
+    const currentCalYear = new Date().getFullYear()
+    // Năm NTC hiện tại: nếu tháng hiện tại < start_month → năm NTC = năm hiện tại - 1
+    const nowMonth = new Date().getMonth() + 1
+    const currentNtcYear = nowMonth < fySettings.start_month ? currentCalYear - 1 : currentCalYear
+
+    // Lấy tất cả năm có dữ liệu từ các bảng
+    // project_costs.cost_date → convert sang NTC year bằng fySettings.start_month
+    // shared_costs.year, project_labor_costs.year, asset_depreciation_schedule.year đã là NTC year
+    const sm = fySettings.start_month  // tháng bắt đầu NTC (vd: 2 = tháng 2)
+    const yearRows = await db.prepare(`
+      SELECT DISTINCT ntc_year AS year FROM (
+        -- project_costs: cost_date → NTC year
+        SELECT CASE
+          WHEN CAST(strftime('%m', cost_date) AS INTEGER) >= ?
+          THEN CAST(strftime('%Y', cost_date) AS INTEGER)
+          ELSE CAST(strftime('%Y', cost_date) AS INTEGER) - 1
+        END AS ntc_year
+        FROM project_costs WHERE cost_date IS NOT NULL
+        UNION
+        -- shared_costs.year đã là NTC year
+        SELECT year AS ntc_year FROM shared_costs WHERE year IS NOT NULL
+        UNION
+        -- project_labor_costs.year là calendar year → convert sang NTC
+        SELECT CASE
+          WHEN CAST(month AS INTEGER) >= ?
+          THEN CAST(year AS INTEGER)
+          ELSE CAST(year AS INTEGER) - 1
+        END AS ntc_year
+        FROM project_labor_costs WHERE year IS NOT NULL AND month IS NOT NULL
+        UNION
+        -- asset_depreciation_schedule: year/month là calendar → convert sang NTC
+        SELECT CASE
+          WHEN CAST(month AS INTEGER) >= ?
+          THEN CAST(year AS INTEGER)
+          ELSE CAST(year AS INTEGER) - 1
+        END AS ntc_year
+        FROM asset_depreciation_schedule WHERE year IS NOT NULL AND month IS NOT NULL
+      )
+      WHERE year IS NOT NULL
+      ORDER BY year ASC
+    `).bind(sm, sm, sm).all()
+
+    // Lấy năm từ revenues (dùng revenue_date → convert sang NTC year)
+    const revenueYearRows = await db.prepare(`
+      SELECT DISTINCT
+        CASE
+          WHEN CAST(strftime('%m', revenue_date) AS INTEGER) >= ?
+          THEN CAST(strftime('%Y', revenue_date) AS INTEGER)
+          ELSE CAST(strftime('%Y', revenue_date) AS INTEGER) - 1
+        END AS ntc_year
+      FROM project_revenues
+      WHERE revenue_date IS NOT NULL
+      ORDER BY ntc_year ASC
+    `).bind(fySettings.start_month).all()
+
+    // Lấy năm dương lịch từ timesheets (work_date) và project start_date
+    const calYearRows = await db.prepare(`
+      SELECT DISTINCT cal_year AS year FROM (
+        SELECT CAST(strftime('%Y', work_date) AS INTEGER) AS cal_year
+        FROM timesheets WHERE work_date IS NOT NULL
+        UNION
+        SELECT CAST(strftime('%Y', start_date) AS INTEGER) AS cal_year
+        FROM projects WHERE start_date IS NOT NULL
+      )
+      WHERE year IS NOT NULL
+      ORDER BY year ASC
+    `).all()
+
+    const yearSet = new Set<number>()
+    const calYearSet = new Set<number>()
+
+    // Thêm năm từ project_costs, shared_costs, labor, depreciation
+    for (const row of (yearRows.results as any[])) {
+      if (row.year) yearSet.add(row.year)
+    }
+    // Thêm năm từ revenues
+    for (const row of (revenueYearRows.results as any[])) {
+      if (row.ntc_year) yearSet.add(row.ntc_year)
+    }
+    // Thêm năm dương lịch từ timesheets + project start_date
+    for (const row of (calYearRows.results as any[])) {
+      if (row.year) calYearSet.add(row.year)
+    }
+
+    // calendar_years cũng chứa NTC years để dùng cho các filter không phân biệt
+    for (const y of calYearSet) yearSet.add(y)
+
+    // Luôn thêm NTC năm hiện tại và năm tiếp theo
+    yearSet.add(currentNtcYear)
+    yearSet.add(currentNtcYear + 1)
+    // Luôn thêm năm dương lịch hiện tại vào calendar set
+    calYearSet.add(currentCalYear)
+    calYearSet.add(currentCalYear + 1)
+
+    const years = Array.from(yearSet).sort((a, b) => a - b)
+    const calendarYears = Array.from(calYearSet).sort((a, b) => a - b)
+
+    return c.json({
+      years,
+      calendar_years: calendarYears,
+      current_ntc_year: currentNtcYear,
+      current_cal_year: currentCalYear,
+      fiscal_year_start_month: fySettings.start_month
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
 app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
@@ -8468,6 +9238,490 @@ app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
     return c.json({ error: e.message }, 500)
   }
 })
+
+// ===================================================
+// IMPORT EXCEL - Hồ Sơ Pháp Lý
+// ===================================================
+
+// POST /api/legal/import-excel/:projectId
+// Body: multipart/form-data { file: .xlsx }
+// Logic parse:
+//   - Hàng header (STT = 'STT') → bỏ qua
+//   - A = chữ cái (A/B/C/D) → tạo stage mới
+//   - A = số nguyên (1,2,3…) → parent item
+//   - A = công thức =A3+0.1 style → child item (con của parent gần nhất)
+app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const projectId = parseInt(c.req.param('projectId'))
+  const db = c.env.DB
+
+  try {
+    // --- Đọc file từ multipart ---
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File | null
+    if (!file) return c.json({ error: 'Không tìm thấy file' }, 400)
+
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (ext !== 'xlsx' && ext !== 'xls') {
+      return c.json({ error: 'Chỉ hỗ trợ file .xlsx hoặc .xls' }, 400)
+    }
+
+    // Đọc ArrayBuffer → parse thủ công (XLSX binary format)
+    const buffer = await file.arrayBuffer()
+    const bytes = new Uint8Array(buffer)
+
+    // Parse XLSX bằng cách đọc XML bên trong (ZIP format)
+    // Dùng cách unzip + parse XML từ WebAPI
+    const rows = await parseXlsxRowsAsync(bytes)
+    if (!rows || rows.length === 0) {
+      return c.json({ error: 'File rỗng hoặc không đọc được dữ liệu' }, 400)
+    }
+
+    // --- Kiểm tra project tồn tại ---
+    const project = await db.prepare('SELECT id FROM projects WHERE id = ?').bind(projectId).first()
+    if (!project) return c.json({ error: 'Project không tồn tại' }, 404)
+
+    // --- Xóa dữ liệu cũ nếu người dùng chọn replace ---
+    const replaceExisting = formData.get('replace') === '1'
+    if (replaceExisting) {
+      await db.prepare('DELETE FROM legal_items WHERE project_id = ?').bind(projectId).run()
+      await db.prepare('DELETE FROM legal_stages WHERE project_id = ?').bind(projectId).run()
+    }
+
+    // --- Parse rows → stages + items ---
+    const STAGE_MAP: Record<string, string> = {
+      'A': 'Giai đoạn A',
+      'B': 'Giai đoạn B',
+      'C': 'Giai đoạn C',
+      'D': 'Giai đoạn D',
+    }
+
+    let currentStageId: number | null = null
+    let currentStageCode: string | null = null
+    let currentParentId: number | null = null
+    let currentParentStt: string = '0'   // STT của parent hiện tại, dùng để tính 1.1, 1.2...
+    let stageOrder = 0
+    let itemOrder = 0
+    let childCount = 0   // đếm sub-item trong parent hiện tại
+
+    const stats = { stages: 0, parents: 0, children: 0, skipped: 0 }
+
+    for (const row of rows) {
+      // row: [stt, title, due_date, status_raw, notes]
+      const sttRaw = row[0]
+      const title = (row[1] || '').toString().trim()
+      const dueDateRaw = row[2]
+      const statusRaw = (row[3] || '').toString().trim().toLowerCase()
+      const notes = (row[4] || '').toString().trim()
+
+      if (!title) { stats.skipped++; continue }
+
+      const sttStr = sttRaw !== null && sttRaw !== undefined ? sttRaw.toString().trim() : ''
+
+      // Bỏ qua hàng header
+      if (sttStr.toUpperCase() === 'STT') { stats.skipped++; continue }
+
+      // Xử lý công thức Excel dạng =Ax+0.y hoặc =Ax+0.xy khi không có cached value
+      // Ví dụ: =A3+0.1, =A10+0.1 → trường hợp này không có cached value → detect là sub-item
+      // (Khi có cached value thì parseSheetXml đã giải quyết thành float 1.1, 1.2 rồi)
+      // → Nếu sttStr vẫn là dạng công thức thì vẫn nhận diện đúng là child qua isChild check
+
+      // Parse due_date
+      let dueDate: string | null = null
+      if (dueDateRaw) {
+        const d = dueDateRaw.toString().trim()
+        if (d.match(/^\d{4}-\d{2}-\d{2}/)) {
+          dueDate = d.substring(0, 10)
+        } else if (d.match(/^\d+\/\d+\/\d{4}/)) {
+          // dd/mm/yyyy or mm/dd/yyyy
+          const parts = d.split('/')
+          if (parts.length === 3) {
+            dueDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
+          }
+        } else if (d.match(/^\d+\/\d+\/\d{2}$/)) {
+          const parts = d.split('/')
+          dueDate = `20${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
+        } else if (d.match(/^[A-Za-z]/)) {
+          // Text date like "Trước 21/04/2025" → notes
+          if (!notes && d) { /* keep as note */ }
+        }
+      }
+
+      // Parse status
+      let status: string = 'pending'
+      if (statusRaw === 'x' || statusRaw === '✓' || statusRaw === 'completed' || statusRaw === 'done') {
+        status = 'completed'
+      } else if (statusRaw === 'in_progress' || statusRaw === 'đang làm') {
+        status = 'in_progress'
+      }
+
+      // Determine row type
+      // Stage: sttStr là 1 ký tự chữ cái A-D
+      if (/^[A-Za-z]$/.test(sttStr) && sttStr.length === 1) {
+        const code = sttStr.toUpperCase()
+        const stageName = STAGE_MAP[code] || `Giai đoạn ${code}`
+        // Tên stage từ title nếu có
+        const finalStageName = title || stageName
+
+        // Tạo stage
+        const existingStage = await db.prepare(
+          'SELECT id FROM legal_stages WHERE project_id = ? AND code = ?'
+        ).bind(projectId, code).first() as any
+
+        if (existingStage) {
+          currentStageId = existingStage.id
+          currentStageCode = code
+        } else {
+          const stageRes = await db.prepare(
+            'INSERT INTO legal_stages (project_id, code, name, sort_order) VALUES (?, ?, ?, ?)'
+          ).bind(projectId, code, finalStageName, stageOrder).run()
+          currentStageId = stageRes.meta.last_row_id as number
+          currentStageCode = code
+          stageOrder++
+          stats.stages++
+        }
+        currentParentId = null
+        currentParentStt = '0'
+        itemOrder = 0
+        childCount = 0
+        continue
+      }
+
+      // Nếu chưa có stage → tạo mặc định
+      if (!currentStageId) {
+        const stageRes = await db.prepare(
+          'INSERT INTO legal_stages (project_id, code, name, sort_order) VALUES (?, ?, ?, ?)'
+        ).bind(projectId, 'A', 'Giai đoạn A', stageOrder).run()
+        currentStageId = stageRes.meta.last_row_id as number
+        currentStageCode = 'A'
+        stageOrder++
+        stats.stages++
+        itemOrder = 0
+        childCount = 0
+      }
+
+      // Parent item: sttStr là số nguyên (không chứa dấu chấm, không phải công thức)
+      const isParent = /^\d+$/.test(sttStr)
+      // Child item: công thức =A3+0.1 hoặc số thập phân như 1.1, 1.2
+      // Sau khi fix parseSheetXml, formula cells đã được resolve thành float (1.1, 1.2, ...)
+      const isChild = sttStr.startsWith('=') || /^\d+\.\d+$/.test(sttStr)
+
+      // Tính STT thực cho sub-item: parentStt.childIndex (VD: 1.1, 1.2, 2.3)
+      // Luôn đếm tự động để đảm bảo 1.1, 1.2, 1.3... liên tục
+      let itemStt = sttStr
+      if (isChild) {
+        childCount++
+        itemStt = `${currentParentStt}.${childCount}`
+      }
+
+      const notesFinal = [notes, (dueDateRaw?.toString().match(/^[A-Za-zÀ-ỹ]/) ? dueDateRaw.toString().trim() : '')].filter(Boolean).join(' | ')
+
+      if (isParent) {
+        const res = await db.prepare(
+          `INSERT INTO legal_items 
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, NULL, ?, ?, 'group', ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, sttStr, title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+        currentParentId = res.meta.last_row_id as number
+        currentParentStt = sttStr   // lưu STT parent để tính sub-item
+        childCount = 0              // reset đếm sub-item
+        itemOrder++
+        stats.parents++
+      } else if (isChild) {
+        // Nếu chưa có parent, tạo pseudo-parent
+        if (!currentParentId) {
+          const pseudoRes = await db.prepare(
+            `INSERT INTO legal_items 
+             (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, sort_order, created_by)
+             VALUES (?, ?, NULL, '0', '(Nhóm)', 'group', NULL, 'pending', ?, ?)`
+          ).bind(projectId, currentStageId, itemOrder, user.id).run()
+          currentParentId = pseudoRes.meta.last_row_id as number
+          currentParentStt = '0'
+          childCount = 0
+          itemOrder++
+        }
+
+        await db.prepare(
+          `INSERT INTO legal_items 
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, ?, ?, ?, 'document', ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, currentParentId, itemStt, title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+        itemOrder++
+        stats.children++
+      } else {
+        // Row không rõ loại → treat as parent
+        const res = await db.prepare(
+          `INSERT INTO legal_items 
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, NULL, ?, ?, 'task', ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, sttStr || itemOrder.toString(), title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+        currentParentId = res.meta.last_row_id as number
+        currentParentStt = sttStr || itemOrder.toString()
+        childCount = 0
+        itemOrder++
+        stats.parents++
+      }
+    }
+
+    return c.json({
+      success: true,
+      message: `Import thành công: ${stats.stages} giai đoạn, ${stats.parents} hạng mục, ${stats.children} tài liệu con`,
+      stats
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Helper: Parse XLSX file (ZIP → shared strings + sheet XML) ──────────────
+
+// ZIP local file entry structure
+interface ZipEntry {
+  name: string
+  offset: number         // offset đến local file header
+  compressedSize: number
+  uncompressedSize: number
+  compressionMethod: number
+}
+
+function readUint16LE(data: Uint8Array, offset: number): number {
+  return data[offset] | (data[offset + 1] << 8)
+}
+
+function readUint32LE(data: Uint8Array, offset: number): number {
+  return (data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24)) >>> 0
+}
+
+function parseZipEntries(data: Uint8Array): ZipEntry[] {
+  const entries: ZipEntry[] = []
+  // Tìm End of Central Directory (signature 0x06054b50)
+  let eocdOffset = -1
+  for (let i = data.length - 22; i >= 0; i--) {
+    if (data[i] === 0x50 && data[i + 1] === 0x4b && data[i + 2] === 0x05 && data[i + 3] === 0x06) {
+      eocdOffset = i
+      break
+    }
+  }
+  if (eocdOffset === -1) return entries
+
+  const centralDirOffset = readUint32LE(data, eocdOffset + 16)
+  const totalEntries = readUint16LE(data, eocdOffset + 10)
+
+  let pos = centralDirOffset
+  for (let i = 0; i < totalEntries; i++) {
+    // Central directory entry signature: 0x02014b50
+    if (data[pos] !== 0x50 || data[pos + 1] !== 0x4b || data[pos + 2] !== 0x01 || data[pos + 3] !== 0x02) break
+
+    const compressionMethod = readUint16LE(data, pos + 10)
+    const compressedSize = readUint32LE(data, pos + 20)
+    const uncompressedSize = readUint32LE(data, pos + 24)
+    const fileNameLen = readUint16LE(data, pos + 28)
+    const extraFieldLen = readUint16LE(data, pos + 30)
+    const commentLen = readUint16LE(data, pos + 32)
+    const localHeaderOffset = readUint32LE(data, pos + 42)
+
+    const nameBytes = data.slice(pos + 46, pos + 46 + fileNameLen)
+    const name = new TextDecoder().decode(nameBytes)
+
+    entries.push({ name, offset: localHeaderOffset, compressedSize, uncompressedSize, compressionMethod })
+    pos += 46 + fileNameLen + extraFieldLen + commentLen
+  }
+
+  return entries
+}
+
+function decompressEntryUnused(_data: Uint8Array, _entry: ZipEntry): string {
+  throw new Error('Use async version')
+}
+
+// parseXlsxRows async version using DecompressionStream properly
+async function parseXlsxRowsAsync(bytes: Uint8Array): Promise<Array<Array<any>>> {
+  const entries = parseZipEntries(bytes)
+
+  async function extractEntry(entry: ZipEntry): Promise<string> {
+    const pos = entry.offset
+    const fileNameLen = readUint16LE(bytes, pos + 26)
+    const extraLen = readUint16LE(bytes, pos + 28)
+    const dataStart = pos + 30 + fileNameLen + extraLen
+    const compressed = bytes.slice(dataStart, dataStart + entry.compressedSize)
+
+    if (entry.compressionMethod === 0) {
+      return new TextDecoder().decode(compressed)
+    }
+    if (entry.compressionMethod === 8) {
+      const ds = new DecompressionStream('deflate-raw')
+      const writer = ds.writable.getWriter()
+      const reader = ds.readable.getReader()
+      await writer.write(compressed)
+      await writer.close()
+      const chunks: Uint8Array[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+      }
+      const total = chunks.reduce((s, c) => s + c.length, 0)
+      const result = new Uint8Array(total)
+      let off = 0
+      for (const c of chunks) { result.set(c, off); off += c.length }
+      return new TextDecoder().decode(result)
+    }
+    throw new Error(`Unsupported compression ${entry.compressionMethod}`)
+  }
+
+  let sharedStringsXml: string | null = null
+  let sheetXml: string | null = null
+
+  for (const entry of entries) {
+    if (entry.name === 'xl/sharedStrings.xml') {
+      sharedStringsXml = await extractEntry(entry)
+    }
+    if (entry.name === 'xl/worksheets/sheet1.xml') {
+      sheetXml = await extractEntry(entry)
+    }
+  }
+
+  if (!sheetXml) {
+    for (const entry of entries) {
+      if (entry.name.match(/xl\/worksheets\/sheet\d+\.xml/)) {
+        sheetXml = await extractEntry(entry)
+        break
+      }
+    }
+  }
+
+  if (!sheetXml) throw new Error('Không tìm thấy dữ liệu sheet trong file Excel')
+
+  const sharedStrings: string[] = sharedStringsXml ? parseSharedStrings(sharedStringsXml) : []
+  return parseSheetXml(sheetXml, sharedStrings)
+}
+
+// parseSharedStrings: parse xl/sharedStrings.xml
+
+function parseSharedStrings(xml: string): string[] {
+  const strings: string[] = []
+  // Match <si>...</si> blocks
+  const siMatches = xml.match(/<si>([\s\S]*?)<\/si>/g) || []
+  for (const si of siMatches) {
+    // Extract all <t>...</t> values and concatenate
+    const tMatches = si.match(/<t[^>]*>([\s\S]*?)<\/t>/g) || []
+    const text = tMatches.map(t => {
+      return t.replace(/<t[^>]*>/, '').replace(/<\/t>/, '')
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#x([0-9A-Fa-f]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    }).join('')
+    strings.push(text)
+  }
+  return strings
+}
+
+function parseSheetXml(xml: string, sharedStrings: string[]): Array<Array<any>> {
+  const rows: Array<Array<any>> = []
+
+  // Excel date serial → JS Date string
+  function excelDateToString(serial: number): string | null {
+    if (!serial || isNaN(serial)) return null
+    // Excel date serial: 1 = Jan 1, 1900 (with off-by-one for Lotus bug)
+    const msPerDay = 86400000
+    const excelEpoch = new Date(1900, 0, 1).getTime() - msPerDay // start from Dec 31, 1899
+    const jsDate = new Date(excelEpoch + serial * msPerDay)
+    const y = jsDate.getFullYear()
+    const m = String(jsDate.getMonth() + 1).padStart(2, '0')
+    const d = String(jsDate.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+
+  // Parse all <row>...</row>
+  const rowMatches = xml.match(/<row[^>]*>([\s\S]*?)<\/row>/g) || []
+
+  for (const rowXml of rowMatches) {
+    // Get row index from r attribute
+    const rowNumMatch = rowXml.match(/\br="(\d+)"/)
+    // Parse all <c ...>...</c>
+    const cellMatches = rowXml.match(/<c[^>]*>([\s\S]*?)<\/c>/g) || []
+
+    const cellMap: Record<string, any> = {}
+
+    for (const cellXml of cellMatches) {
+      const refMatch = cellXml.match(/\br="([A-Z]+\d+)"/)
+      if (!refMatch) continue
+      const ref = refMatch[1]
+      const colLetter = ref.replace(/\d/g, '')
+
+      const typeMatch = cellXml.match(/\bt="([^"]+)"/)
+      const cellType = typeMatch ? typeMatch[1] : null
+
+      const vMatch = cellXml.match(/<v>([\s\S]*?)<\/v>/)
+      const fMatch = cellXml.match(/<f>([\s\S]*?)<\/f>/)
+      const isMatch = cellXml.match(/<is>([\s\S]*?)<\/is>/)
+
+      let value: any = null
+
+      if (isMatch) {
+        // Inline string
+        const tM = isMatch[1].match(/<t[^>]*>([\s\S]*?)<\/t>/)
+        value = tM ? tM[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>') : ''
+      } else if (cellType === 's' && vMatch) {
+        // Shared string
+        const idx = parseInt(vMatch[1])
+        value = sharedStrings[idx] ?? ''
+      } else if (fMatch) {
+        // Formula cell – ưu tiên đọc cached value <v> nếu có
+        if (vMatch) {
+          // Có cached value → dùng luôn (1.1, 1.2, ...)
+          const raw = vMatch[1]
+          const num = parseFloat(raw)
+          value = isNaN(num) ? raw : num
+        } else {
+          // Không có cached value → giữ công thức dạng string để detect sub-item
+          value = '=' + fMatch[1]
+        }
+      } else if (vMatch) {
+        const raw = vMatch[1]
+        const num = parseFloat(raw)
+        // Check if it's a date (we'll check by column C usually, just pass numeric)
+        if (!isNaN(num)) {
+          value = num
+        } else {
+          value = raw
+        }
+      }
+
+      cellMap[colLetter] = value
+    }
+
+    // Build row array [A, B, C, D, E]
+    const a = cellMap['A'] ?? null
+    const b = cellMap['B'] ?? null
+    const c = cellMap['C'] ?? null
+    const d = cellMap['D'] ?? null
+    const e = cellMap['E'] ?? null
+
+    // Skip completely empty rows
+    if (a === null && b === null && c === null && d === null && e === null) continue
+
+    // Convert date column C: if numeric and > 10000 it's likely Excel date serial
+    let dateVal: any = c
+    if (typeof c === 'number' && c > 10000) {
+      dateVal = excelDateToString(c)
+    } else if (typeof c === 'number' && c > 0 && c < 100) {
+      // Thời gian text encoded as small number → bỏ qua
+      dateVal = null
+    }
+
+    // Convert A: numeric → keep as-is (integer = parent, float = sub-item)
+    // Formula strings như '=A3+0.1' được xử lý ở parseSheetXml đã resolve thành số
+    let sttVal: any = a
+    // Nếu A là float (ví dụ 1.1000000000000001), làm tròn đến 1 chữ số thập phân
+    if (typeof a === 'number' && !Number.isInteger(a)) {
+      sttVal = Math.round(a * 10) / 10  // 1.1000000000000001 → 1.1
+    }
+
+    rows.push([sttVal, b, dateVal, d, e])
+  }
+
+  return rows
+}
 
 // ===================================================
 // STATIC FILES & SPA
