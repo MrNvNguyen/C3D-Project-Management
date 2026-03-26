@@ -400,6 +400,9 @@
         <div class="nav-item" onclick="navigate('users')" data-tooltip="Nhân sự">
           <i class="fas fa-users"></i><span>Nhân sự</span>
         </div>
+        <div class="nav-item admin-only" onclick="navigate('email-admin')" data-tooltip="Quản lý Email">
+          <i class="fas fa-envelope-open-text"></i><span>Email Thông báo</span>
+        </div>
       </div>
 
       <div class="sidebar-section-divider"></div>
@@ -1682,6 +1685,194 @@
         </div>
       </div>
 
+      <!-- ========== EMAIL MANAGEMENT (Admin) ========== -->
+      <div id="page-email-admin" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Quản lý Email Thông báo</h1>
+            <p class="text-gray-500 text-sm">Cấu hình RESEND_API_KEY và xem lịch sử gửi email</p>
+          </div>
+          <button onclick="refreshEmailLogs()" class="btn-secondary flex items-center gap-2">
+            <i class="fas fa-sync-alt"></i> Làm mới
+          </button>
+        </div>
+
+        <!-- Config Status Card -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div class="card border-l-4 border-primary">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center">
+                <i class="fas fa-envelope text-primary text-lg"></i>
+              </div>
+              <div>
+                <p class="text-xs text-gray-500 uppercase tracking-wide">Trạng thái Email</p>
+                <p class="font-bold text-gray-800" id="emailConfigStatus">Đang kiểm tra...</p>
+              </div>
+            </div>
+          </div>
+          <div class="card border-l-4 border-blue-400">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                <i class="fas fa-paper-plane text-blue-500 text-lg"></i>
+              </div>
+              <div>
+                <p class="text-xs text-gray-500 uppercase tracking-wide">Email đã gửi (hôm nay)</p>
+                <p class="font-bold text-gray-800" id="emailSentToday">-</p>
+              </div>
+            </div>
+          </div>
+          <div class="card border-l-4 border-red-400">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-red-100 flex items-center justify-center">
+                <i class="fas fa-exclamation-triangle text-red-500 text-lg"></i>
+              </div>
+              <div>
+                <p class="text-xs text-gray-500 uppercase tracking-wide">Gửi thất bại (hôm nay)</p>
+                <p class="font-bold text-gray-800" id="emailFailedToday">-</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- API Key Config Form -->
+        <div class="card mb-6 border border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-key text-white"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-gray-800">Cấu hình Resend API Key</h3>
+              <p class="text-xs text-gray-500">Nhập API Key để bật tính năng gửi email tự động</p>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label class="label">Resend API Key <span class="text-red-500">*</span></label>
+              <div class="relative">
+                <input type="password" id="cfgResendApiKey" class="input-field pr-10" placeholder="re_xxxxxxxxxxxxxxxxxxxxxxxx">
+                <button type="button" onclick="toggleApiKeyVisibility()" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  <i class="fas fa-eye" id="apiKeyEyeIcon"></i>
+                </button>
+              </div>
+              <p class="text-xs text-gray-400 mt-1">Lấy tại <a href="https://resend.com/api-keys" target="_blank" class="text-primary underline">resend.com/api-keys</a> (miễn phí 3,000 email/tháng)</p>
+            </div>
+            <div>
+              <label class="label">Tên hiển thị khi gửi email</label>
+              <input type="text" id="cfgEmailFromName" class="input-field" placeholder="OneCad BIM" value="OneCad BIM">
+            </div>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button onclick="verifyAndSaveApiKey()" class="btn-primary flex items-center gap-2" id="btnVerifySave">
+              <i class="fas fa-check-circle"></i> Xác minh &amp; Lưu
+            </button>
+            <button onclick="sendTestEmailFromConfig()" class="btn-secondary flex items-center gap-2" id="btnTestEmailConfig">
+              <i class="fas fa-paper-plane"></i> Gửi email test
+            </button>
+            <span id="emailConfigSaveStatus" class="text-sm font-medium"></span>
+          </div>
+          <div class="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-800">
+            <i class="fas fa-info-circle mr-1"></i>
+            <strong>Lưu ý:</strong> API Key được lưu vào database. Với free plan Resend, email chỉ gửi được đến địa chỉ đã đăng ký tài khoản. Để gửi tới bất kỳ địa chỉ nào, cần verify domain tại <a href="https://resend.com/domains" target="_blank" class="underline">resend.com/domains</a>.
+          </div>
+        </div>
+
+        <!-- Setup Guide -->
+        <div class="card mb-6 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200">
+          <!-- Header có nút toggle -->
+          <div class="flex items-center gap-3 cursor-pointer select-none" onclick="toggleEmailRecipients()" id="emailRecipientsHeader">
+            <div class="w-10 h-10 rounded-xl bg-primary flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-users text-white"></i>
+            </div>
+            <div class="flex-1">
+              <h3 class="font-bold text-gray-800">📋 Danh sách nhân sự nhận email thông báo</h3>
+              <p class="text-xs text-gray-500 mt-0.5" id="emailRecipientsSubtitle">Nhấn để xem danh sách...</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span id="emailRecipientsBadge" class="hidden text-xs bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded-full"></span>
+              <button class="w-8 h-8 rounded-full bg-white border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-primary hover:text-white hover:border-primary transition-all shadow-sm" title="Mở rộng / Thu nhỏ">
+                <i class="fas fa-chevron-down text-xs transition-transform duration-300" id="emailRecipientsChevron"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Collapsible body -->
+          <div id="emailRecipientsBody" class="overflow-hidden transition-all duration-300" style="max-height:0;opacity:0;">
+            <!-- Search + stats bar -->
+            <div class="flex items-center gap-2 mt-4 mb-3">
+              <div class="relative flex-1">
+                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                <input type="text" id="emailRecipientsSearch" placeholder="Tìm theo tên hoặc email..."
+                  class="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-primary bg-white"
+                  oninput="filterEmailRecipients()">
+              </div>
+              <select id="emailRecipientsRoleFilter" class="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-primary" onchange="filterEmailRecipients()">
+                <option value="">Tất cả vai trò</option>
+                <option value="system_admin">🔴 Admin</option>
+                <option value="project_admin">🟠 Proj. Admin</option>
+                <option value="project_leader">🟡 Leader</option>
+                <option value="member">🟢 Member</option>
+              </select>
+              <select id="emailRecipientsEmailFilter" class="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-primary" onchange="filterEmailRecipients()">
+                <option value="">Tất cả email</option>
+                <option value="valid">✅ Có email hợp lệ</option>
+                <option value="invalid">⚠️ Chưa có email</option>
+              </select>
+            </div>
+
+            <!-- Stats row -->
+            <div class="flex gap-3 mb-3" id="emailRecipientsStats"></div>
+
+            <!-- List -->
+            <div id="emailRecipientsList" class="space-y-1 text-sm text-gray-600">
+              <p class="text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i> Đang tải danh sách...</p>
+            </div>
+
+            <p class="text-xs text-gray-400 mt-3">
+              <i class="fas fa-info-circle mr-1"></i>
+              Email được lấy từ thông tin nhân sự. Cập nhật email tại <strong>Nhân sự → Chỉnh sửa → Email</strong>.
+              <span class="text-green-600 font-medium">Email sẽ tự động gửi khi có thông báo mới.</span>
+            </p>
+          </div>
+        </div>
+
+        <!-- Email Logs Table -->
+        <div class="card">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-bold text-gray-800"><i class="fas fa-history text-primary mr-2"></i>Lịch sử gửi Email</h3>
+            <div class="flex gap-2">
+              <select id="emailLogFilter" class="select-field text-sm py-1.5" style="width:160px" onchange="filterEmailLogs()">
+                <option value="">Tất cả</option>
+                <option value="sent">✅ Thành công</option>
+                <option value="failed">❌ Thất bại</option>
+                <option value="task_assigned">📌 Giao task</option>
+                <option value="task_status_updated">🔄 Cập nhật task</option>
+                <option value="task_overdue">⚠️ Quá hạn</option>
+                <option value="project_added">🏗️ Thêm vào dự án</option>
+                <option value="timesheet_reviewed">✅ Duyệt timesheet</option>
+                <option value="payment_request_new">💰 Thanh toán</option>
+                <option value="chat_mention">💬 @Mention</option>
+                <option value="test">🧪 Test</option>
+              </select>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                <th class="pb-3 pr-3">Thời gian</th>
+                <th class="pb-3 pr-3">Người nhận</th>
+                <th class="pb-3 pr-3">Tiêu đề</th>
+                <th class="pb-3 pr-3">Loại sự kiện</th>
+                <th class="pb-3 pr-3">Trạng thái</th>
+                <th class="pb-3">Lỗi</th>
+              </tr></thead>
+              <tbody id="emailLogsTable" class="divide-y">
+                <tr><td colspan="6" class="py-8 text-center text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <!-- ========== PROFILE ========== -->
       <div id="page-profile" class="page">
         <h1 class="text-2xl font-bold text-gray-800 mb-6">Hồ sơ cá nhân</h1>
@@ -1737,6 +1928,64 @@
                 <button onclick="changePassword()" class="btn-primary px-6">Đổi mật khẩu</button>
               </div>
             </div>
+
+            <!-- ===== EMAIL NOTIFICATION SETTINGS (System Admin only) ===== -->
+            <div class="card hidden" id="emailSettingsCard">
+              <div class="flex items-center gap-3 mb-4">
+                <i class="fas fa-envelope text-primary text-lg"></i>
+                <div>
+                  <h3 class="font-bold text-gray-800">Thông báo Email tự động</h3>
+                  <p class="text-xs text-gray-400 mt-0.5">Hệ thống tự động gửi email cho các sự kiện quan trọng</p>
+                </div>
+                <span class="ml-auto text-xs font-semibold px-2.5 py-1 rounded-full bg-green-100 text-green-700">
+                  <i class="fas fa-check-circle mr-1"></i>Đang hoạt động
+                </span>
+              </div>
+
+              <!-- 4 mandatory events — read-only info -->
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">4 sự kiện bắt buộc gửi email</p>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div class="flex items-center gap-3 p-3 bg-green-50 border border-green-100 rounded-xl">
+                  <span class="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center text-base flex-shrink-0">📌</span>
+                  <div>
+                    <p class="text-sm font-medium text-gray-800">Task được giao</p>
+                    <p class="text-xs text-gray-400">Khi nhân sự nhận task mới</p>
+                  </div>
+                  <span class="ml-auto text-xs text-green-600 font-semibold whitespace-nowrap">Bắt buộc</span>
+                </div>
+                <div class="flex items-center gap-3 p-3 bg-green-50 border border-green-100 rounded-xl">
+                  <span class="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center text-base flex-shrink-0">⚠️</span>
+                  <div>
+                    <p class="text-sm font-medium text-gray-800">Task quá hạn</p>
+                    <p class="text-xs text-gray-400">Cảnh báo deadline</p>
+                  </div>
+                  <span class="ml-auto text-xs text-green-600 font-semibold whitespace-nowrap">Bắt buộc</span>
+                </div>
+                <div class="flex items-center gap-3 p-3 bg-green-50 border border-green-100 rounded-xl">
+                  <span class="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center text-base flex-shrink-0">🏗️</span>
+                  <div>
+                    <p class="text-sm font-medium text-gray-800">Tham gia dự án</p>
+                    <p class="text-xs text-gray-400">Khi được thêm vào dự án</p>
+                  </div>
+                  <span class="ml-auto text-xs text-green-600 font-semibold whitespace-nowrap">Bắt buộc</span>
+                </div>
+                <div class="flex items-center gap-3 p-3 bg-green-50 border border-green-100 rounded-xl">
+                  <span class="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center text-base flex-shrink-0">💬</span>
+                  <div>
+                    <p class="text-sm font-medium text-gray-800">@Mention trong chat</p>
+                    <p class="text-xs text-gray-400">Khi ai đó nhắc đến bạn</p>
+                  </div>
+                  <span class="ml-auto text-xs text-green-600 font-semibold whitespace-nowrap">Bắt buộc</span>
+                </div>
+              </div>
+
+              <p class="text-xs text-gray-400 mt-3 flex items-start gap-1.5">
+                <i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>
+                Email được gửi tự động đến địa chỉ email của từng nhân sự. Cập nhật email tại <strong class="text-gray-500">Nhân sự → Chỉnh sửa → Email</strong>.
+              </p>
+            </div>
+            <!-- ===== END EMAIL SETTINGS ===== -->
+
           </div>
         </div>
 

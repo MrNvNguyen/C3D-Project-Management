@@ -295,7 +295,7 @@ function navigate(page) {
     dashboard: 'Dashboard', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
     tasks: 'Công việc', timesheet: 'Timesheet', gantt: 'Tiến độ Gantt',
     costs: 'Chi phí & Doanh thu', assets: 'Tài sản', depreciation: 'Khấu hao tài sản',
-    users: 'Nhân sự', profile: 'Hồ sơ',
+    users: 'Nhân sự', profile: 'Hồ sơ', 'email-admin': 'Email Thông báo',
     productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
     'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí',
     'system-config': 'Cấu hình hệ thống', analytics: 'Báo cáo & Phân tích',
@@ -310,6 +310,7 @@ function navigate(page) {
   else if (page === 'gantt') loadGantt()
   else if (page === 'costs') loadCostDashboard()
   else if (page === 'assets') loadAssets()
+  else if (page === 'email-admin') loadEmailAdmin()
   else if (page === 'depreciation') loadDepreciation()
   else if (page === 'users') loadUsers()
   else if (page === 'profile') loadProfile()
@@ -435,8 +436,13 @@ async function initApp() {
   if (currentUser.role === 'system_admin') {
     $('adminNav').style.display = 'block'
     $('btnNewProject').classList.remove('hidden')
+    // Hiện tất cả menu admin-only
+    document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'flex')
   } else if (currentUser.role === 'project_admin') {
     // project_admin: không tạo được dự án, chỉ quản lý dự án được phân công
+    document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none')
+  } else {
+    document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none')
   }
 
   // Initialize DB
@@ -3145,7 +3151,9 @@ async function sendChatMessage(contextType, contextId) {
   const attKey = `chatAtts_${contextType}_${contextId}`
   const attachments = window[attKey] || []
 
-  const mentions = extractMentions(content, contextType, contextId)
+  // Use pendingMentions (set when user picks from dropdown) — reliable even with Unicode names
+  const mentionKey = `pendingMentions_${contextType}_${contextId}`
+  const mentions = window[mentionKey] || []
 
   try {
     const btn = document.querySelector(`#chatInputBar_${contextType}_${contextId} button[onclick*="sendChatMessage"]`)
@@ -3156,6 +3164,7 @@ async function sendChatMessage(contextType, contextId) {
     ta.value = ''
     ta.style.height = 'auto'
     window[attKey] = []
+    window[mentionKey] = []  // clear pending mentions after send
     const prev = $(`chatAttPreview_${contextType}_${contextId}`)
     if (prev) prev.innerHTML = ''
 
@@ -3271,13 +3280,16 @@ async function getProjectMembers(contextType, contextId) {
       } catch { projectId = contextId }
     }
   }
-  if (!projectId) return allUsers || []
+  // Normalize allUsers to always have user_id field (allUsers objects only have id)
+  const normalizeUsers = (users) => (users || []).map(u => ({ ...u, user_id: u.user_id || u.id }))
+  if (!projectId) return normalizeUsers(allUsers)
   if (_chatMembersCache[projectId]) return _chatMembersCache[projectId]
   try {
     const proj = await api(`/projects/${projectId}`)
-    // Include project members + admin + leader (deduplicated)
-    const members = proj.members || []
-    // Also add allUsers as fallback so @mention always works
+    // proj.members from API: each has user_id (actual user id) and id (project_members row id)
+    // Normalize: ensure user_id is always the real user id
+    const members = (proj.members || []).map(m => ({ ...m, user_id: m.user_id }))
+    // Add admin + leader if not already in members list
     const memberIds = new Set(members.map(m => m.user_id))
     if (proj.admin_id && !memberIds.has(proj.admin_id)) {
       const admin = (allUsers || []).find(u => u.id === proj.admin_id)
@@ -3290,8 +3302,8 @@ async function getProjectMembers(contextType, contextId) {
     _chatMembersCache[projectId] = members
     return members
   } catch {
-    // Fallback: return allUsers if project fetch fails
-    return allUsers || []
+    // Fallback: return allUsers normalized
+    return normalizeUsers(allUsers)
   }
 }
 
@@ -3328,7 +3340,9 @@ async function showMentionDropdown(query, contextType, contextId, ta, atIdx) {
     const name = m.full_name || m.name || 'Unknown'
     const dept = m.department || ''
     const initials = name.split(' ').pop()?.charAt(0) || '?'
-    return `<div class="mention-item ${i===0?'active':''}" onclick="insertMention('${name.replace(/'/g,"\\'")}','${contextType}',${contextId})" data-idx="${i}">
+    // IMPORTANT: m.id = project_members row id (wrong), m.user_id = actual user id (correct)
+    const uid = m.user_id || m.id || ''
+    return `<div class="mention-item ${i===0?'active':''}" onclick="insertMention('${name.replace(/'/g,"\'")}','${contextType}',${contextId},${uid})" data-idx="${i}">
       <div class="mention-avatar">${initials}</div>
       <div>
         <div class="font-medium text-gray-800 text-xs">${name}</div>
@@ -3359,10 +3373,11 @@ function selectActiveMention(contextType, contextId) {
   const state = window[`mentionDropdownActive_${contextType}_${contextId}`]
   if (!state) return
   const m = state.members[state.activeIdx]
-  insertMention(m.full_name || m.name || '', contextType, contextId)
+  // Use m.user_id (actual user id), fallback m.id only if user_id absent (allUsers objects)
+  insertMention(m.full_name || m.name || '', contextType, contextId, m.user_id || m.id)
 }
 
-function insertMention(fullName, contextType, contextId) {
+function insertMention(fullName, contextType, contextId, userId) {
   const ta = $(`chatTextarea_${contextType}_${contextId}`)
   if (!ta) return
   const state = window[`mentionDropdownActive_${contextType}_${contextId}`]
@@ -3373,6 +3388,17 @@ function insertMention(fullName, contextType, contextId) {
   const newCursor = before.length + fullName.length + 2
   ta.setSelectionRange(newCursor, newCursor)
   ta.focus()
+
+  // Store mention with userId so backend can lookup by id (avoids Unicode regex issues)
+  if (userId) {
+    const key = `pendingMentions_${contextType}_${contextId}`
+    if (!window[key]) window[key] = []
+    // Avoid duplicates
+    if (!window[key].find(m => m.id === userId)) {
+      window[key].push({ id: userId, name: fullName })
+    }
+  }
+
   closeMentionDropdown(contextType, contextId)
 }
 
@@ -6615,6 +6641,369 @@ async function loadProfile() {
     $('profilePhoneInput').value = user.phone || ''
     $('profileDeptInput').value = user.department || ''
   } catch (e) { toast('Lỗi tải profile', 'error') }
+
+  // Show email settings card only for system_admin
+  const emailCard = $('emailSettingsCard')
+  if (emailCard) {
+    if (user.role === 'system_admin') {
+      emailCard.classList.remove('hidden')
+    } else {
+      emailCard.classList.add('hidden')
+    }
+  }
+}
+
+// ================================================================
+// EMAIL NOTIFICATION SETTINGS (removed — all 4 events are always-on)
+// Settings card is shown only to system_admin (handled in loadProfile)
+// ================================================================
+
+// ================================================================
+// EMAIL ADMIN PAGE
+// ================================================================
+let _emailLogsCache = []
+
+async function loadEmailAdmin() {
+  await loadEmailConfig()
+  await refreshEmailLogs()
+  await loadEmailRecipients()
+}
+
+async function loadEmailConfig() {
+  try {
+    const config = await api('/system-config')
+    if (config.resend_api_key?.configured) {
+      const el = $('cfgResendApiKey')
+      if (el) el.placeholder = '(đã cấu hình — nhập để thay đổi)'
+      const statusEl = $('emailConfigStatus')
+      if (statusEl) { statusEl.textContent = '✅ API Key đã cấu hình'; statusEl.className = 'font-bold text-green-600' }
+    }
+    if (config.email_from_name?.value) {
+      const el = $('cfgEmailFromName')
+      if (el) el.value = config.email_from_name.value
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function verifyAndSaveApiKey() {
+  const apiKey = $('cfgResendApiKey')?.value?.trim()
+  const fromName = $('cfgEmailFromName')?.value?.trim()
+  const statusEl = $('emailConfigSaveStatus')
+  const btn = $('btnVerifySave')
+
+  if (!apiKey && !fromName) { toast('Vui lòng nhập API Key hoặc tên hiển thị', 'warning'); return }
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xác minh...' }
+  if (statusEl) statusEl.textContent = ''
+
+  try {
+    // Nếu có API key mới → verify trước
+    if (apiKey) {
+      if (statusEl) { statusEl.textContent = '🔍 Đang kiểm tra key...'; statusEl.className = 'text-sm text-blue-600' }
+      const verifyRes = await api('/system-config/verify-email-key', { method: 'POST', data: { api_key: apiKey } })
+      if (!verifyRes.valid) {
+        toast('❌ API Key không hợp lệ: ' + verifyRes.error, 'error')
+        if (statusEl) { statusEl.textContent = '❌ Key không hợp lệ'; statusEl.className = 'text-sm text-red-600' }
+        return
+      }
+      toast('✅ API Key hợp lệ! Đang lưu...', 'success')
+    }
+
+    // Lưu cấu hình
+    const payload = {}
+    if (apiKey) payload.resend_api_key = apiKey
+    if (fromName) payload.email_from_name = fromName
+    await api('/system-config', { method: 'PUT', data: payload })
+
+    if (statusEl) { statusEl.textContent = '✅ Đã lưu & xác minh'; statusEl.className = 'text-sm text-green-600' }
+    if (apiKey) {
+      const keyEl = $('cfgResendApiKey')
+      if (keyEl) { keyEl.value = ''; keyEl.placeholder = '✅ API Key đã cấu hình & hợp lệ' }
+      const configStatusEl = $('emailConfigStatus')
+      if (configStatusEl) { configStatusEl.textContent = '✅ Đã cấu hình'; configStatusEl.className = 'font-bold text-green-600' }
+    }
+    toast('✅ Cấu hình email đã được lưu thành công!', 'success')
+  } catch(e) {
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+    if (statusEl) { statusEl.textContent = '❌ Lỗi'; statusEl.className = 'text-sm text-red-600' }
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check-circle"></i> Xác minh & Lưu' }
+  }
+}
+
+async function saveEmailConfig() {
+  return verifyAndSaveApiKey()
+}
+
+async function sendTestEmailFromConfig() {
+  const toEmail = currentUser?.email
+  if (!toEmail) { toast('Không tìm thấy email của bạn. Cập nhật email trong Hồ sơ.', 'warning'); return }
+  const btn = $('btnTestEmailConfig')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang gửi...' }
+  try {
+    const res = await api('/email-settings/test', { method: 'POST', data: { to_email: toEmail } })
+    toast('✅ ' + (res.message || `Email test đã gửi đến ${toEmail}`), 'success')
+    setTimeout(() => refreshEmailLogs(), 1500)
+  } catch(e) {
+    const errMsg = e.response?.data?.error || e.message || 'Lỗi không xác định'
+    toast('❌ ' + errMsg, 'error')
+    if (errMsg.includes('API key')) {
+      const statusEl = $('emailConfigSaveStatus')
+      if (statusEl) { statusEl.textContent = '⚠️ API Key chưa cấu hình hoặc không hợp lệ'; statusEl.className = 'text-sm text-orange-500' }
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Gửi email test' }
+  }
+}
+
+// ── Email recipients list state ──────────────────────────────────────────────
+let _emailRecipientsAll = []    // full data cache
+let _emailRecipientsOpen = false
+
+async function loadEmailRecipients() {
+  // Chỉ load data, KHÔNG tự mở panel
+  try {
+    const users = await api('/users')
+    _emailRecipientsAll = users || []
+
+    // Cập nhật badge đếm và subtitle ngay cả khi đóng
+    const total = _emailRecipientsAll.length
+    const valid = _emailRecipientsAll.filter(u => u.email && u.email.includes('@') && !u.email.endsWith('@onecad.vn')).length
+    const badgeEl = $('emailRecipientsBadge')
+    const subtitleEl = $('emailRecipientsSubtitle')
+    if (badgeEl) { badgeEl.textContent = `${total} nhân sự`; badgeEl.classList.remove('hidden') }
+    if (subtitleEl) subtitleEl.textContent = `${total} nhân sự · ${valid} có email hợp lệ · Nhấn để ${_emailRecipientsOpen ? 'thu nhỏ' : 'mở rộng'}`
+
+    // Nếu đang mở thì render luôn
+    if (_emailRecipientsOpen) _renderEmailRecipients()
+  } catch(e) {
+    const el = $('emailRecipientsList')
+    if (el) el.innerHTML = '<p class="text-red-400 text-xs">Lỗi tải danh sách</p>'
+  }
+}
+
+// ── Toggle mở/đóng panel danh sách email ────────────────────────────────────
+function toggleEmailRecipients() {
+  _emailRecipientsOpen = !_emailRecipientsOpen
+  const body     = $('emailRecipientsBody')
+  const chevron  = $('emailRecipientsChevron')
+  const subtitle = $('emailRecipientsSubtitle')
+
+  if (_emailRecipientsOpen) {
+    // Mở: animate max-height → scroll height
+    body.style.opacity = '0'
+    body.style.maxHeight = body.scrollHeight + 500 + 'px'  // +500 để đủ chỗ khi filter
+    setTimeout(() => { body.style.opacity = '1' }, 50)
+    if (chevron) chevron.style.transform = 'rotate(180deg)'
+    if (subtitle) {
+      const total = _emailRecipientsAll.length
+      const valid = _emailRecipientsAll.filter(u => u.email && u.email.includes('@') && !u.email.endsWith('@onecad.vn')).length
+      subtitle.textContent = `${total} nhân sự · ${valid} có email hợp lệ · Nhấn để thu nhỏ`
+    }
+    // Render nếu chưa có data
+    if (_emailRecipientsAll.length === 0) {
+      loadEmailRecipients()
+    } else {
+      _renderEmailRecipients()
+    }
+  } else {
+    // Đóng: animate về 0
+    body.style.opacity = '0'
+    body.style.maxHeight = '0'
+    if (chevron) chevron.style.transform = 'rotate(0deg)'
+    if (subtitle) {
+      const total = _emailRecipientsAll.length
+      const valid = _emailRecipientsAll.filter(u => u.email && u.email.includes('@') && !u.email.endsWith('@onecad.vn')).length
+      subtitle.textContent = total > 0
+        ? `${total} nhân sự · ${valid} có email hợp lệ · Nhấn để mở rộng`
+        : 'Nhấn để xem danh sách...'
+    }
+  }
+}
+
+// ── Filter danh sách theo search / role / email status ───────────────────────
+function filterEmailRecipients() {
+  _renderEmailRecipients()
+  // Cập nhật max-height sau khi filter (content có thể thay đổi chiều cao)
+  const body = $('emailRecipientsBody')
+  if (body && _emailRecipientsOpen) {
+    body.style.maxHeight = body.scrollHeight + 200 + 'px'
+  }
+}
+
+function _renderEmailRecipients() {
+  const el          = $('emailRecipientsList')
+  const statsEl     = $('emailRecipientsStats')
+  if (!el) return
+
+  const search      = ($('emailRecipientsSearch')?.value || '').toLowerCase().trim()
+  const roleFilter  = $('emailRecipientsRoleFilter')?.value || ''
+  const emailFilter = $('emailRecipientsEmailFilter')?.value || ''
+
+  const roleLabels = { system_admin: ['🔴', 'Admin', 'bg-red-100 text-red-700'], project_admin: ['🟠', 'Proj. Admin', 'bg-orange-100 text-orange-700'], project_leader: ['🟡', 'Leader', 'bg-yellow-100 text-yellow-700'], member: ['🟢', 'Member', 'bg-green-100 text-green-700'] }
+  const avatarColors = ['bg-primary', 'bg-blue-500', 'bg-purple-500', 'bg-pink-500', 'bg-orange-500', 'bg-teal-500']
+
+  // Filter
+  let filtered = _emailRecipientsAll.filter(u => {
+    const isValidEmail = u.email && u.email.includes('@') && !u.email.endsWith('@onecad.vn')
+    if (search && !u.full_name?.toLowerCase().includes(search) && !u.email?.toLowerCase().includes(search)) return false
+    if (roleFilter && u.role !== roleFilter) return false
+    if (emailFilter === 'valid' && !isValidEmail) return false
+    if (emailFilter === 'invalid' && isValidEmail) return false
+    return true
+  })
+
+  // Stats bar
+  const totalAll   = _emailRecipientsAll.length
+  const validAll   = _emailRecipientsAll.filter(u => u.email && u.email.includes('@') && !u.email.endsWith('@onecad.vn')).length
+  const invalidAll = totalAll - validAll
+  if (statsEl) {
+    statsEl.innerHTML = `
+      <span class="flex items-center gap-1.5 text-xs bg-white border border-gray-200 rounded-lg px-3 py-1.5 font-medium text-gray-700">
+        <i class="fas fa-users text-primary"></i> ${totalAll} tổng
+      </span>
+      <span class="flex items-center gap-1.5 text-xs bg-green-50 border border-green-200 rounded-lg px-3 py-1.5 font-medium text-green-700">
+        <i class="fas fa-check-circle"></i> ${validAll} có email
+      </span>
+      ${invalidAll > 0 ? `<span class="flex items-center gap-1.5 text-xs bg-red-50 border border-red-200 rounded-lg px-3 py-1.5 font-medium text-red-600">
+        <i class="fas fa-exclamation-triangle"></i> ${invalidAll} chưa có
+      </span>` : ''}
+      ${filtered.length !== totalAll ? `<span class="flex items-center gap-1.5 text-xs bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 font-medium text-blue-700">
+        <i class="fas fa-filter"></i> ${filtered.length} kết quả
+      </span>` : ''}
+    `
+  }
+
+  if (!filtered.length) {
+    el.innerHTML = `<div class="py-8 text-center text-gray-400"><i class="fas fa-search text-2xl mb-2 block"></i><p class="text-sm">Không tìm thấy nhân sự phù hợp</p></div>`
+    return
+  }
+
+  // Render rows — chia nhóm theo role
+  const grouped = {}
+  filtered.forEach(u => { if (!grouped[u.role]) grouped[u.role] = []; grouped[u.role].push(u) })
+  const roleOrder = ['system_admin', 'project_admin', 'project_leader', 'member']
+
+  let html = ''
+  for (const role of roleOrder) {
+    if (!grouped[role]?.length) continue
+    const [icon, label] = roleLabels[role] || ['⚪', role, '']
+    html += `<div class="mb-3">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+        <span>${icon}</span> ${label} <span class="font-normal normal-case text-gray-300">(${grouped[role].length})</span>
+      </p>
+      <div class="space-y-0.5">`
+    grouped[role].forEach((u, idx) => {
+      const isValidEmail = u.email && u.email.includes('@') && !u.email.endsWith('@onecad.vn')
+      const avatarColor = avatarColors[u.id % avatarColors.length] || 'bg-primary'
+      const emailDisplay = isValidEmail
+        ? `<a href="mailto:${u.email}" class="text-green-600 hover:text-green-700 hover:underline font-medium" title="Gửi email">${u.email}</a>`
+        : `<span class="text-red-400 italic">${u.email || '(chưa có email)'}</span>`
+      const emailIcon = isValidEmail
+        ? `<span class="w-5 h-5 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0" title="Có email hợp lệ"><i class="fas fa-check text-green-600" style="font-size:9px"></i></span>`
+        : `<span class="w-5 h-5 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0" title="Chưa có email hợp lệ"><i class="fas fa-times text-red-500" style="font-size:9px"></i></span>`
+      html += `<div class="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-white/70 transition-colors group">
+        ${emailIcon}
+        <div class="w-7 h-7 rounded-full ${avatarColor} text-white flex items-center justify-center text-xs font-bold flex-shrink-0">${u.full_name?.charAt(0)?.toUpperCase() || '?'}</div>
+        <span class="font-medium text-gray-800 text-sm flex-shrink-0 w-36 truncate" title="${u.full_name}">${u.full_name}</span>
+        ${u.department ? `<span class="text-xs text-gray-400 hidden sm:block truncate max-w-[120px]" title="${u.department}">${u.department}</span>` : '<span class="hidden sm:block w-20"></span>'}
+        <span class="ml-auto text-xs">${emailDisplay}</span>
+      </div>`
+    })
+    html += `</div></div>`
+  }
+  el.innerHTML = html
+}
+
+function toggleApiKeyVisibility() {
+  const input = $('cfgResendApiKey')
+  const icon = $('apiKeyEyeIcon')
+  if (!input) return
+  if (input.type === 'password') { input.type = 'text'; if(icon) { icon.className = 'fas fa-eye-slash' } }
+  else { input.type = 'password'; if(icon) { icon.className = 'fas fa-eye' } }
+}
+
+async function refreshEmailLogs() {
+  try {
+    const logs = await api('/email-logs?limit=100')
+    _emailLogsCache = logs || []
+    renderEmailLogs(_emailLogsCache)
+
+    // Stats
+    const today = new Date().toISOString().split('T')[0]
+    const todayLogs = _emailLogsCache.filter(l => l.sent_at?.startsWith(today))
+    const sentToday = todayLogs.filter(l => l.status === 'sent').length
+    const failedToday = todayLogs.filter(l => l.status === 'failed').length
+
+    const sentEl = $('emailSentToday')
+    const failEl = $('emailFailedToday')
+    const configEl = $('emailConfigStatus')
+
+    if (sentEl) sentEl.textContent = sentEl ? String(sentToday) : '-'
+    if (failEl) failEl.textContent = String(failedToday)
+
+    if (configEl) {
+      const hasLogs = _emailLogsCache.length > 0
+      const hasSuccess = _emailLogsCache.some(l => l.status === 'sent')
+      if (hasSuccess) {
+        configEl.textContent = '✅ Đã cấu hình'
+        configEl.className = 'font-bold text-green-600'
+      } else if (hasLogs) {
+        configEl.textContent = '⚠️ Có lỗi gửi'
+        configEl.className = 'font-bold text-orange-500'
+      } else {
+        configEl.textContent = '❓ Chưa có log'
+        configEl.className = 'font-bold text-gray-500'
+      }
+    }
+  } catch (e) {
+    toast('Lỗi tải email logs: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
+function filterEmailLogs() {
+  const filter = $('emailLogFilter')?.value || ''
+  if (!filter) { renderEmailLogs(_emailLogsCache); return }
+  const filtered = _emailLogsCache.filter(l => l.status === filter || l.event_type === filter)
+  renderEmailLogs(filtered)
+}
+
+const EMAIL_EVENT_LABELS = {
+  task_assigned:        '📌 Giao task',
+  task_status_updated:  '🔄 Cập nhật task',
+  task_overdue:         '⚠️ Quá hạn',
+  project_added:        '🏗️ Thêm dự án',
+  project_updated:      '📝 Cập nhật dự án',
+  timesheet_reviewed:   '✅ Duyệt timesheet',
+  payment_request_new:  '💰 Thanh toán',
+  chat_mention:         '💬 @Mention',
+  test:                 '🧪 Test',
+}
+
+function renderEmailLogs(logs) {
+  const tbody = $('emailLogsTable')
+  if (!tbody) return
+  if (!logs.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="py-10 text-center text-gray-400"><i class="fas fa-inbox mr-2"></i>Chưa có email nào được gửi</td></tr>'
+    return
+  }
+  tbody.innerHTML = logs.map(l => {
+    const timeStr = l.sent_at ? new Date(l.sent_at.replace(' ', 'T')).toLocaleString('vi-VN') : '-'
+    const statusBadge = l.status === 'sent'
+      ? '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-semibold">✅ Thành công</span>'
+      : '<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-semibold">❌ Thất bại</span>'
+    const eventLabel = EMAIL_EVENT_LABELS[l.event_type] || l.event_type
+    const recipient = l.full_name ? `<div class="font-medium text-gray-800 text-xs">${l.full_name}</div><div class="text-gray-400 text-xs">${l.to_email}</div>` : `<div class="text-gray-700 text-xs">${l.to_email}</div>`
+    const errorTip = l.error_msg ? `<span class="text-red-500 text-xs cursor-help" title="${l.error_msg}">⚠️ Xem lỗi</span>` : '<span class="text-gray-300 text-xs">—</span>'
+    return `<tr class="hover:bg-gray-50">
+      <td class="py-3 pr-3 text-xs text-gray-500 whitespace-nowrap">${timeStr}</td>
+      <td class="py-3 pr-3">${recipient}</td>
+      <td class="py-3 pr-3 text-xs text-gray-700 max-w-xs truncate" title="${l.subject}">${l.subject}</td>
+      <td class="py-3 pr-3"><span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">${eventLabel}</span></td>
+      <td class="py-3 pr-3">${statusBadge}</td>
+      <td class="py-3">${errorTip}</td>
+    </tr>`
+  }).join('')
 }
 
 async function updateProfile() {

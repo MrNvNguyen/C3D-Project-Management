@@ -10,6 +10,527 @@ import { serveStatic } from 'hono/cloudflare-workers'
 type Bindings = {
   DB: D1Database
   JWT_SECRET: string
+  RESEND_API_KEY: string
+}
+
+// ===================================================
+// EMAIL SERVICE (Resend API)
+// ===================================================
+
+// ---- Email Templates ----
+function emailBase(title: string, body: string): string {
+  return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="vi">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>${title}</title>
+<!--[if mso]>
+<noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+<![endif]-->
+</head>
+<body style="margin:0;padding:0;background-color:#f4f6f9;font-family:Arial,Helvetica,sans-serif;">
+<!-- Outer wrapper -->
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f6f9;">
+  <tr>
+    <td align="center" style="padding:32px 16px;">
+      <!-- Email card -->
+      <table width="620" cellpadding="0" cellspacing="0" border="0" style="max-width:620px;width:100%;background-color:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+
+        <!-- HEADER -->
+        <tr>
+          <td style="background-color:#00A651;padding:28px 36px;" bgcolor="#00A651">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td>
+                  <!-- Logo badge -->
+                  <table cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
+                    <tr>
+                      <td style="background-color:#007a3d;border-radius:6px;padding:4px 12px;">
+                        <span style="color:#ffffff;font-size:11px;font-weight:bold;letter-spacing:1.5px;font-family:Arial,Helvetica,sans-serif;">ONECAD BIM</span>
+                      </td>
+                    </tr>
+                  </table>
+                  <!-- Title -->
+                  <p style="margin:0 0 4px 0;color:#ffffff;font-size:22px;font-weight:bold;font-family:Arial,Helvetica,sans-serif;line-height:1.3;">${title}</p>
+                  <p style="margin:0;color:#ccf0dd;font-size:13px;font-family:Arial,Helvetica,sans-serif;">Hệ thống quản lý dự án BIM chuyên nghiệp</p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- BODY -->
+        <tr>
+          <td style="padding:32px 36px;background-color:#ffffff;" bgcolor="#ffffff">
+            ${body}
+          </td>
+        </tr>
+
+        <!-- FOOTER -->
+        <tr>
+          <td style="padding:20px 36px 28px;background-color:#f8fafb;border-top:1px solid #e5e7eb;" bgcolor="#f8fafb">
+            <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
+              Email này được gửi tự động từ <strong style="color:#6b7280;">OneCad BIM System</strong>.<br/>
+              Để thay đổi cài đặt thông báo, vui lòng truy cập <a href="#" style="color:#00A651;text-decoration:none;">Hồ sơ cá nhân → Cài đặt Email</a>.<br/>
+              © 2024 OneCad Vietnam. All rights reserved.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>`
+}
+
+function statusBadge(status: string): string {
+  const map: Record<string, [string, string, string]> = {
+    'todo':        ['#f3f4f6','#4b5563', '📋 Chờ làm'],
+    'in_progress': ['#dbeafe','#1d4ed8', '🔄 Đang làm'],
+    'review':      ['#ffedd5','#c2410c', '👀 Đang review'],
+    'done':        ['#dcfce7','#16a34a', '✅ Hoàn thành'],
+    'overdue':     ['#fee2e2','#dc2626', '⚠️ Quá hạn'],
+    'approved':    ['#dcfce7','#16a34a', '✅ Đã duyệt'],
+    'rejected':    ['#fee2e2','#dc2626', '❌ Từ chối'],
+    'pending':     ['#ffedd5','#c2410c', '⏳ Chờ duyệt'],
+  }
+  const [bg, color, label] = map[status] || ['#f3f4f6','#4b5563', status]
+  return `<span style="display:inline-block;background-color:${bg};color:${color};padding:3px 10px;border-radius:4px;font-size:12px;font-weight:bold;font-family:Arial,Helvetica,sans-serif;">${label}</span>`
+}
+
+// Helper: render card block (Outlook-safe)
+function emailCard(label: string, value: string, borderColor: string = '#00A651'): string {
+  return `
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0;">
+    <tr>
+      <td style="background-color:#f8fafb;border-left:4px solid ${borderColor};border-radius:0 6px 6px 0;padding:14px 18px;" bgcolor="#f8fafb">
+        <p style="margin:0 0 4px 0;font-size:11px;color:#888888;text-transform:uppercase;letter-spacing:0.5px;font-family:Arial,Helvetica,sans-serif;">${label}</p>
+        <p style="margin:0;font-size:15px;color:#1a1a1a;font-weight:bold;font-family:Arial,Helvetica,sans-serif;">${value}</p>
+      </td>
+    </tr>
+  </table>`
+}
+
+// Helper: render meta tags row (Outlook-safe, using table instead of flex)
+function emailMeta(items: Array<{label: string; value: string}>): string {
+  const cells = items.map(it => `
+    <td style="padding:0 6px 8px 0;vertical-align:top;">
+      <table cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="background-color:#f3f4f6;border-radius:5px;padding:6px 10px;font-size:12px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;white-space:nowrap;">
+            <strong style="color:#374151;">${it.label}:</strong> ${it.value}
+          </td>
+        </tr>
+      </table>
+    </td>`).join('')
+  return `
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">
+    <tr>${cells}</tr>
+  </table>`
+}
+
+// Helper: divider
+function emailDivider(): string {
+  return `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;"><tr><td style="border-top:1px solid #e5e7eb;font-size:0;line-height:0;">&nbsp;</td></tr></table>`
+}
+
+function emailTemplates(type: string, data: Record<string, any>): { subject: string; html: string } {
+  switch (type) {
+
+    case 'task_assigned': {
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        { label: 'Bộ môn', value: data.discipline || 'N/A' },
+        { label: 'Ưu tiên', value: data.priority || 'Normal' },
+        ...(data.deadline ? [{ label: 'Hạn', value: '📅 ' + data.deadline }] : []),
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Bạn vừa được giao một task mới trong hệ thống OneCad BIM.</p>
+        ${emailCard('Tên Task', '📌 ' + data.taskTitle)}
+        ${emailMeta(metaItems)}
+        ${data.description ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;font-style:italic;">${data.description}</td></tr></table>` : ''}
+        <p style="color:#6b7280;font-size:13px;font-family:Arial,Helvetica,sans-serif;margin-top:12px;">Người giao: <strong style="color:#374151;">${data.assignedBy || 'N/A'}</strong></p>
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Vui lòng đăng nhập hệ thống để xem chi tiết và bắt đầu thực hiện task.</p>`
+      return {
+        subject: `[OneCad BIM] 📌 Task mới: ${data.taskTitle}`,
+        html: emailBase(`📌 Bạn được giao task mới`, body)
+      }
+    }
+
+    case 'task_status_updated': {
+      const metaItems = [
+        { label: 'Trạng thái mới', value: statusBadge(data.newStatus) },
+        ...(data.oldStatus ? [{ label: 'Trước đó', value: statusBadge(data.oldStatus) }] : []),
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        { label: 'Cập nhật bởi', value: data.updatedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Trạng thái task của bạn vừa được cập nhật.</p>
+        ${emailCard('Task', '📌 ' + data.taskTitle)}
+        ${emailMeta(metaItems)}
+        ${data.comment ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;font-style:italic;">Ghi chú: ${data.comment}</td></tr></table>` : ''}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập để xem chi tiết task.</p>`
+      return {
+        subject: `[OneCad BIM] 🔄 Task cập nhật: ${data.taskTitle}`,
+        html: emailBase(`🔄 Cập nhật trạng thái Task`, body)
+      }
+    }
+
+    case 'task_overdue': {
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        { label: 'Hạn chót', value: '📅 ' + data.deadline },
+        { label: 'Quá hạn', value: `<span style="color:#dc2626;font-weight:bold;">${data.daysOverdue} ngày</span>` },
+        { label: 'Trạng thái', value: statusBadge(data.status || 'in_progress') },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#dc2626;font-size:14px;font-weight:bold;font-family:Arial,Helvetica,sans-serif;">⚠️ Task sau đây đã quá hạn và cần được xử lý ngay!</p>
+        ${emailCard('Task quá hạn', '⏰ ' + data.taskTitle, '#dc2626')}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#dc2626;font-size:13px;font-family:Arial,Helvetica,sans-serif;">Vui lòng cập nhật tiến độ hoặc liên hệ Project Leader để điều chỉnh deadline.</p>`
+      return {
+        subject: `[OneCad BIM] ⚠️ TASK QUÁ HẠN: ${data.taskTitle}`,
+        html: emailBase(`⚠️ Cảnh báo Task Quá Hạn`, body)
+      }
+    }
+
+    case 'project_added': {
+      const metaItems = [
+        { label: 'Vai trò', value: data.role || 'Member' },
+        ...(data.projectCode ? [{ label: 'Mã dự án', value: data.projectCode }] : []),
+        ...(data.startDate ? [{ label: 'Bắt đầu', value: data.startDate }] : []),
+        ...(data.endDate ? [{ label: 'Kết thúc', value: data.endDate }] : []),
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Bạn vừa được thêm vào một dự án mới trên hệ thống OneCad BIM.</p>
+        ${emailCard('Tên Dự án', '🏗️ ' + data.projectName)}
+        ${emailMeta(metaItems)}
+        ${data.description ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;font-style:italic;">${data.description}</td></tr></table>` : ''}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập hệ thống để xem thông tin dự án và các task được giao.</p>`
+      return {
+        subject: `[OneCad BIM] 🏗️ Bạn được thêm vào dự án: ${data.projectName}`,
+        html: emailBase(`🏗️ Tham gia Dự án Mới`, body)
+      }
+    }
+
+    case 'timesheet_reviewed': {
+      const isApproved = data.action === 'approved'
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        { label: 'Giờ HC', value: (data.hoursHC || 0) + 'h' },
+        { label: 'Tổng giờ', value: (data.totalHours || 0) + 'h' },
+        { label: 'Trạng thái', value: statusBadge(isApproved ? 'approved' : 'rejected') },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Timesheet của bạn vừa được ${isApproved ? '<strong style="color:#16a34a;">phê duyệt ✅</strong>' : '<strong style="color:#dc2626;">từ chối ❌</strong>'}.</p>
+        ${emailCard('Ngày chấm công', '📅 ' + data.date, isApproved ? '#16a34a' : '#dc2626')}
+        ${emailMeta(metaItems)}
+        ${data.note ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;font-style:italic;">Ghi chú từ quản lý: ${data.note}</td></tr></table>` : ''}
+        ${emailDivider()}
+        <p style="margin:0;color:#6b7280;font-size:13px;font-family:Arial,Helvetica,sans-serif;">Duyệt bởi: <strong style="color:#374151;">${data.reviewedBy || 'N/A'}</strong></p>`
+      return {
+        subject: `[OneCad BIM] ${isApproved ? '✅ Timesheet được duyệt' : '❌ Timesheet bị từ chối'} - ${data.date}`,
+        html: emailBase(`${isApproved ? '✅ Timesheet được phê duyệt' : '❌ Timesheet bị từ chối'}`, body)
+      }
+    }
+
+    case 'payment_request_new': {
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        { label: 'Số tiền', value: `<span style="color:#00A651;font-weight:bold;">${data.amount}</span>` },
+        { label: 'Người đề nghị', value: data.requestedBy || 'N/A' },
+        { label: 'Ngày', value: data.date || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Có một đề nghị thanh toán mới cần xem xét.</p>
+        ${emailCard('Tiêu đề', '💰 ' + data.title)}
+        ${emailMeta(metaItems)}
+        ${data.description ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;font-style:italic;">${data.description}</td></tr></table>` : ''}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Vui lòng đăng nhập để xem xét và phê duyệt đề nghị thanh toán này.</p>`
+      return {
+        subject: `[OneCad BIM] 💰 Đề nghị thanh toán mới: ${data.title}`,
+        html: emailBase(`💰 Đề Nghị Thanh Toán Mới`, body)
+      }
+    }
+
+    case 'chat_mention': {
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;"><strong style="color:#374151;">${data.senderName}</strong> đã nhắc đến bạn trong một cuộc trò chuyện.</p>
+        ${emailCard(data.contextType === 'task' ? '📌 Task' : '🏗️ Dự án', data.contextName)}
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0;">
+          <tr>
+            <td style="background-color:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:14px 18px;">
+              <p style="margin:0;color:#15803d;font-size:14px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;font-style:italic;">"${data.message}"</p>
+            </td>
+          </tr>
+        </table>
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập để phản hồi tin nhắn này.</p>`
+      return {
+        subject: `[OneCad BIM] 💬 ${data.senderName} đã nhắc đến bạn`,
+        html: emailBase(`💬 Bạn được @mention`, body)
+      }
+    }
+
+    case 'project_created': {
+      const statusLabels: Record<string, string> = {
+        planning: 'Lên kế hoạch', active: 'Đang triển khai', on_hold: 'Tạm dừng', completed: 'Hoàn thành', cancelled: 'Đã hủy'
+      }
+      const metaItems = [
+        ...(data.projectCode ? [{ label: 'Mã DA', value: data.projectCode }] : []),
+        ...(data.projectType ? [{ label: 'Loại', value: data.projectType }] : []),
+        ...(data.client ? [{ label: 'Chủ đầu tư', value: data.client }] : []),
+        ...(data.status ? [{ label: 'Trạng thái', value: statusLabels[data.status] || data.status }] : []),
+        ...(data.startDate ? [{ label: 'Bắt đầu', value: '📅 ' + data.startDate }] : []),
+        ...(data.endDate ? [{ label: 'Kết thúc', value: '📅 ' + data.endDate }] : []),
+        ...(data.location ? [{ label: 'Địa điểm', value: '📍 ' + data.location }] : []),
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Một dự án mới vừa được tạo trên hệ thống OneCad BIM.</p>
+        ${emailCard('Tên Dự án', '🏗️ ' + data.projectName)}
+        ${metaItems.length ? emailMeta(metaItems) : ''}
+        ${data.description ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;font-style:italic;">${data.description}</td></tr></table>` : ''}
+        <p style="color:#6b7280;font-size:13px;font-family:Arial,Helvetica,sans-serif;margin-top:8px;">Người tạo: <strong style="color:#374151;">${data.createdBy || 'N/A'}</strong></p>
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập hệ thống để xem chi tiết và quản lý dự án.</p>`
+      return {
+        subject: `[OneCad BIM] 🏗️ Dự án mới: ${data.projectName}`,
+        html: emailBase(`🏗️ Dự án Mới Được Tạo`, body)
+      }
+    }
+
+    case 'project_status_changed': {
+      const pStatusLabels: Record<string, [string, string, string]> = {
+        planning:   ['#f3f4f6','#4b5563', '📋 Lên kế hoạch'],
+        active:     ['#dcfce7','#16a34a', '🚀 Đang triển khai'],
+        on_hold:    ['#ffedd5','#c2410c', '⏸️ Tạm dừng'],
+        completed:  ['#dcfce7','#16a34a', '✅ Hoàn thành'],
+        cancelled:  ['#fee2e2','#dc2626', '❌ Đã hủy'],
+      }
+      const [, , newLabel] = pStatusLabels[data.newStatus] || ['#f3f4f6','#4b5563', data.newStatus]
+      const [, , oldLabel] = pStatusLabels[data.oldStatus] || ['#f3f4f6','#4b5563', data.oldStatus]
+      const [nb, nc] = pStatusLabels[data.newStatus] || ['#f3f4f6','#4b5563']
+      const [ob, oc] = pStatusLabels[data.oldStatus] || ['#f3f4f6','#4b5563']
+      const isCompleted = data.newStatus === 'completed'
+      const metaItems = [
+        { label: 'Trạng thái mới', value: `<span style="display:inline-block;background-color:${nb};color:${nc};padding:3px 10px;border-radius:4px;font-size:12px;font-weight:bold;font-family:Arial,Helvetica,sans-serif;">${newLabel}</span>` },
+        ...(data.oldStatus ? [{ label: 'Trước đó', value: `<span style="display:inline-block;background-color:${ob};color:${oc};padding:3px 10px;border-radius:4px;font-size:12px;font-weight:bold;font-family:Arial,Helvetica,sans-serif;">${oldLabel}</span>` }] : []),
+        { label: 'Cập nhật bởi', value: data.updatedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Trạng thái dự án bạn tham gia vừa được thay đổi.</p>
+        ${emailCard('Dự án', '🏗️ ' + data.projectName, isCompleted ? '#16a34a' : '#00A651')}
+        ${emailMeta(metaItems)}
+        ${data.note ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;font-style:italic;">Ghi chú: ${data.note}</td></tr></table>` : ''}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">${isCompleted ? '🎉 Chúc mừng dự án đã hoàn thành! Cảm ơn sự đóng góp của tất cả thành viên.' : 'Đăng nhập hệ thống để xem chi tiết dự án.'}</p>`
+      return {
+        subject: `[OneCad BIM] 🔄 Dự án "${data.projectName}" chuyển sang ${newLabel}`,
+        html: emailBase(`🔄 Thay đổi Trạng thái Dự án`, body)
+      }
+    }
+
+    case 'payment_status_changed': {
+      const payStatusLabels: Record<string, [string, string, string]> = {
+        pending:    ['#ffedd5','#c2410c', '⏳ Chờ xử lý'],
+        processing: ['#dbeafe','#1d4ed8', '🔄 Đang xử lý'],
+        partial:    ['#ffedd5','#c2410c', '💰 Thanh toán một phần'],
+        paid:       ['#dcfce7','#16a34a', '✅ Đã thanh toán'],
+        rejected:   ['#fee2e2','#dc2626', '❌ Từ chối'],
+      }
+      const [nb2, nc2, newLabel2] = payStatusLabels[data.newStatus] || ['#f3f4f6','#4b5563', data.newStatus]
+      const [ob2, oc2, oldLabel2] = payStatusLabels[data.oldStatus] || ['#f3f4f6','#4b5563', data.oldStatus]
+      const isPaid = data.newStatus === 'paid'
+      const borderColor = isPaid ? '#16a34a' : data.newStatus === 'rejected' ? '#dc2626' : '#00A651'
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        { label: 'Số tiền', value: `<span style="color:#00A651;font-weight:bold;">${data.amount || 'N/A'}</span>` },
+        { label: 'Trạng thái mới', value: `<span style="display:inline-block;background-color:${nb2};color:${nc2};padding:3px 10px;border-radius:4px;font-size:12px;font-weight:bold;font-family:Arial,Helvetica,sans-serif;">${newLabel2}</span>` },
+        ...(data.oldStatus ? [{ label: 'Trước đó', value: `<span style="display:inline-block;background-color:${ob2};color:${oc2};padding:3px 10px;border-radius:4px;font-size:12px;font-weight:bold;font-family:Arial,Helvetica,sans-serif;">${oldLabel2}</span>` }] : []),
+        ...(data.paidAmount ? [{ label: 'Đã thanh toán', value: data.paidAmount }] : []),
+        ...(data.paidDate ? [{ label: 'Ngày TT', value: '📅 ' + data.paidDate }] : []),
+        { label: 'Cập nhật bởi', value: data.updatedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Trạng thái đề nghị thanh toán của bạn vừa được cập nhật.</p>
+        ${emailCard('Đề nghị thanh toán', '💰 ' + data.description, borderColor)}
+        ${emailMeta(metaItems)}
+        ${data.notes ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;font-style:italic;">Ghi chú: ${data.notes}</td></tr></table>` : ''}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">${isPaid ? '✅ Thanh toán đã được xác nhận.' : 'Đăng nhập hệ thống để theo dõi tiến trình thanh toán.'}</p>`
+      return {
+        subject: `[OneCad BIM] 💰 Thanh toán "${data.description}" → ${newLabel2}`,
+        html: emailBase(`💰 Cập nhật Tình trạng Thanh toán`, body)
+      }
+    }
+
+    case 'member_added_to_project': {
+      const metaItems = [
+        { label: 'Thành viên mới', value: '👤 ' + data.memberName },
+        { label: 'Vai trò', value: data.role || 'Thành viên' },
+        { label: 'Phòng ban', value: data.department || 'N/A' },
+        { label: 'Thêm bởi', value: data.addedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Một thành viên mới vừa được thêm vào dự án của bạn.</p>
+        ${emailCard('Dự án', '🏗️ ' + data.projectName)}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập để xem danh sách thành viên và phân công nhiệm vụ.</p>`
+      return {
+        subject: `[OneCad BIM] 👤 Thành viên mới trong dự án: ${data.memberName}`,
+        html: emailBase(`👤 Thành viên Mới Tham Gia Dự án`, body)
+      }
+    }
+
+    case 'timesheet_bulk_approved': {
+      const metaItems = [
+        ...(data.period ? [{ label: 'Kỳ', value: '📅 ' + data.period }] : []),
+        { label: 'Duyệt bởi', value: data.reviewedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Timesheet của bạn vừa được phê duyệt hàng loạt bởi quản lý.</p>
+        ${emailCard('Kết quả duyệt', '✅ ' + data.approvedCount + ' timesheet được duyệt', '#16a34a')}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập để xem chi tiết timesheet đã được duyệt.</p>`
+      return {
+        subject: `[OneCad BIM] ✅ ${data.approvedCount} Timesheet được phê duyệt`,
+        html: emailBase(`✅ Timesheet Được Phê Duyệt Hàng Loạt`, body)
+      }
+    }
+
+    default:
+      return { subject: '[OneCad BIM] Thông báo mới', html: emailBase('Thông báo', '<p>Bạn có thông báo mới từ OneCad BIM.</p>') }
+  }
+}
+
+// ---- Core sendEmail function ----
+async function sendEmail(env: Bindings, opts: {
+  to: string
+  toName: string
+  eventType: string
+  data: Record<string, any>
+  db: D1Database
+  userId?: number
+  relatedType?: string
+  relatedId?: number
+}): Promise<void> {
+  // Try env var first, then fall back to DB config
+  let apiKey = env.RESEND_API_KEY
+  console.log(`[sendEmail] eventType=${opts.eventType} to=${opts.to} apiKey_env=${apiKey ? 'SET' : 'EMPTY'}`)
+  if (!apiKey) {
+    const dbConfig = await opts.db.prepare("SELECT value FROM system_config WHERE key = 'resend_api_key'").first() as any
+    apiKey = dbConfig?.value || ''
+    console.log(`[sendEmail] apiKey from DB: ${apiKey ? 'SET' : 'EMPTY'}`)
+  }
+  if (!apiKey) {
+    console.log(`[sendEmail] ABORT — no RESEND_API_KEY`)
+    return   // No API key → skip silently
+  }
+
+  // Check user email preference
+  // 4 mandatory events — always send regardless of user preference
+  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_overdue', 'project_added', 'chat_mention'])
+
+  if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
+    const pref = await opts.db.prepare(
+      'SELECT email_enabled, notify_task_updated, notify_project_updated, notify_project_created, notify_timesheet_approved, notify_payment_request, notify_payment_status, notify_member_added FROM email_settings WHERE user_id = ?'
+    ).bind(opts.userId).first() as any
+
+    if (pref) {
+      if (!pref.email_enabled) return
+      const prefMap: Record<string, string> = {
+        task_status_updated:      'notify_task_updated',
+        project_updated:          'notify_project_updated',
+        project_created:          'notify_project_created',
+        project_status_changed:   'notify_project_updated',
+        timesheet_reviewed:       'notify_timesheet_approved',
+        timesheet_bulk_approved:  'notify_timesheet_approved',
+        payment_request_new:      'notify_payment_request',
+        payment_status_changed:   'notify_payment_status',
+        member_added_to_project:  'notify_member_added',
+      }
+      const prefKey = prefMap[opts.eventType]
+      if (prefKey && pref[prefKey] === 0) return   // user turned this off
+    }
+    // No pref row → use defaults (all enabled)
+  }
+
+  const { subject, html } = emailTemplates(opts.eventType, { ...opts.data, recipientName: opts.toName })
+
+  let status = 'sent'
+  let errorMsg: string | null = null
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'OneCad BIM <no-reply@bimonecadvn.com>',
+        to: [opts.to],
+        subject,
+        html,
+      }),
+    })
+
+    if (!res.ok) {
+      const err = await res.text()
+      status = 'failed'
+      errorMsg = err.slice(0, 500)
+      console.log(`[sendEmail] FAILED HTTP ${res.status}: ${errorMsg}`)
+    } else {
+      console.log(`[sendEmail] SUCCESS to=${opts.to} event=${opts.eventType}`)
+    }
+  } catch (e: any) {
+    status = 'failed'
+    errorMsg = e.message?.slice(0, 500) || 'Unknown error'
+    console.log(`[sendEmail] EXCEPTION: ${errorMsg}`)
+  }
+
+  // Log to DB (fire and forget)
+  try {
+    await opts.db.prepare(
+      `INSERT INTO email_logs (user_id, to_email, subject, event_type, related_type, related_id, status, error_msg) VALUES (?,?,?,?,?,?,?,?)`
+    ).bind(opts.userId || null, opts.to, subject, opts.eventType, opts.relatedType || null, opts.relatedId || null, status, errorMsg).run()
+  } catch { /* ignore log error */ }
+}
+
+// ---- Helper: get user email info ----
+async function getUserEmailInfo(db: D1Database, userId: number): Promise<{ email: string; full_name: string } | null> {
+  const user = await db.prepare('SELECT email, full_name FROM users WHERE id = ? AND is_active = 1').bind(userId).first() as any
+  if (!user?.email) return null
+  return { email: user.email, full_name: user.full_name }
+}
+
+// ---- Ensure email_settings row exists (lazy init) ----
+async function ensureEmailSettings(db: D1Database, userId: number): Promise<void> {
+  await db.prepare(
+    `INSERT OR IGNORE INTO email_settings (user_id) VALUES (?)`
+  ).bind(userId).run()
 }
 
 // ---- Base64 URL encoding for Unicode support ----
@@ -454,7 +975,59 @@ app.post('/api/projects', authMiddleware, async (c) => {
       start_date || null, end_date || null, budget || 0, contract_value || 0, location || null,
       admin_id || user.id, leader_id || null, project_code_letter || code, user.id).run()
 
-    return c.json({ success: true, id: result.meta.last_row_id }, 201)
+    const projectId = result.meta.last_row_id
+
+    // ── Email: project_created → thông báo cho tất cả system_admin + project_admin ──
+    try {
+      const projectTypeLabels: Record<string, string> = {
+        building: 'Tòa nhà', infrastructure: 'Hạ tầng', transportation: 'Giao thông',
+        energy: 'Năng lượng', landscape: 'Cảnh quan', other: 'Khác'
+      }
+      const emailData = {
+        projectName: name, projectCode: code, description: description || null,
+        client: client || null, status: status || 'planning',
+        projectType: projectTypeLabels[project_type || 'building'] || project_type || 'building',
+        startDate: start_date || null, endDate: end_date || null,
+        location: location || null, createdBy: user.full_name
+      }
+      // Gửi cho các system_admin (không phải người tạo)
+      const admins = await db.prepare(
+        `SELECT id, email, full_name FROM users WHERE role = 'system_admin' AND is_active = 1`
+      ).all()
+      for (const admin of admins.results as any[]) {
+        if (admin.id !== user.id && admin.email) {
+          sendEmail(c.env, {
+            to: admin.email, toName: admin.full_name,
+            eventType: 'project_created', data: emailData,
+            db, userId: admin.id, relatedType: 'project', relatedId: projectId as number
+          })
+        }
+      }
+      // Nếu project_admin được chỉ định và khác người tạo
+      if (admin_id && admin_id !== user.id) {
+        const adminUser = await getUserEmailInfo(db, admin_id)
+        if (adminUser) {
+          sendEmail(c.env, {
+            to: adminUser.email, toName: adminUser.full_name,
+            eventType: 'project_created', data: emailData,
+            db, userId: admin_id, relatedType: 'project', relatedId: projectId as number
+          })
+        }
+      }
+      // Nếu project_leader được chỉ định
+      if (leader_id && leader_id !== user.id && leader_id !== admin_id) {
+        const leaderUser = await getUserEmailInfo(db, leader_id)
+        if (leaderUser) {
+          sendEmail(c.env, {
+            to: leaderUser.email, toName: leaderUser.full_name,
+            eventType: 'project_created', data: emailData,
+            db, userId: leader_id, relatedType: 'project', relatedId: projectId as number
+          })
+        }
+      }
+    } catch (_) { /* ignore email errors */ }
+
+    return c.json({ success: true, id: projectId }, 201)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -480,6 +1053,39 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     updates.push('updated_at = CURRENT_TIMESTAMP')
     values.push(id)
     await db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+
+    // ── Email: project_status_changed → thông báo tất cả thành viên dự án ──
+    if (data.status && data.status !== proj.status) {
+      try {
+        const allMemberIds: Set<number> = new Set()
+        // Lấy thành viên từ project_members
+        const members = await db.prepare(
+          'SELECT user_id FROM project_members WHERE project_id = ?'
+        ).bind(id).all()
+        for (const m of members.results as any[]) allMemberIds.add(m.user_id)
+        // Thêm admin và leader
+        if (proj.admin_id) allMemberIds.add(proj.admin_id)
+        if (proj.leader_id) allMemberIds.add(proj.leader_id)
+
+        const emailData = {
+          projectName: proj.name, oldStatus: proj.status,
+          newStatus: data.status, updatedBy: user.full_name,
+          note: data.description || null
+        }
+        for (const uid of allMemberIds) {
+          if (uid === user.id) continue  // không gửi cho người thực hiện
+          const emailUser = await getUserEmailInfo(db, uid)
+          if (emailUser) {
+            sendEmail(c.env, {
+              to: emailUser.email, toName: emailUser.full_name,
+              eventType: 'project_status_changed', data: emailData,
+              db, userId: uid, relatedType: 'project', relatedId: id
+            })
+          }
+        }
+      } catch (_) { /* ignore email errors */ }
+    }
+
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -529,6 +1135,56 @@ app.post('/api/projects/:id/members', authMiddleware, async (c) => {
     await db.prepare(
       'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
     ).bind(user_id, 'Bạn đã được thêm vào dự án', `Bạn đã được thêm vào dự án với vai trò ${role || 'member'}`, 'info', 'project', projectId).run()
+
+    // ── Email: project_added → gửi cho thành viên được thêm ──
+    const proj = await db.prepare('SELECT name, code, description, start_date, end_date, admin_id, leader_id FROM projects WHERE id = ?').bind(projectId).first() as any
+    const emailUser = await getUserEmailInfo(db, user_id)
+    if (emailUser && proj) {
+      const roleLabels: Record<string, string> = { member: 'Thành viên', project_leader: 'Trưởng dự án', project_admin: 'Quản lý dự án' }
+      await sendEmail(c.env, {
+        to: emailUser.email, toName: emailUser.full_name,
+        eventType: 'project_added',
+        data: { projectName: proj.name, projectCode: proj.code, description: proj.description, startDate: proj.start_date, endDate: proj.end_date, role: roleLabels[role] || role },
+        db, userId: user_id, relatedType: 'project', relatedId: projectId
+      })
+    }
+
+    // ── Email: member_added_to_project → thông báo cho PM và Leader ──
+    try {
+      const addedUserInfo = await db.prepare(
+        'SELECT full_name, department FROM users WHERE id = ?'
+      ).bind(user_id).first() as any
+      if (addedUserInfo && proj) {
+        const roleLabels2: Record<string, string> = { member: 'Thành viên', project_leader: 'Trưởng dự án', project_admin: 'Quản lý dự án' }
+        const memberData = {
+          projectName: proj.name, memberName: addedUserInfo.full_name,
+          department: addedUserInfo.department || 'N/A',
+          role: roleLabels2[role] || role, addedBy: user.full_name
+        }
+        // Thông báo cho Project Admin
+        if (proj.admin_id && proj.admin_id !== user.id && proj.admin_id !== user_id) {
+          const adminInfo = await getUserEmailInfo(db, proj.admin_id)
+          if (adminInfo) {
+            sendEmail(c.env, {
+              to: adminInfo.email, toName: adminInfo.full_name,
+              eventType: 'member_added_to_project', data: memberData,
+              db, userId: proj.admin_id, relatedType: 'project', relatedId: projectId
+            })
+          }
+        }
+        // Thông báo cho Project Leader
+        if (proj.leader_id && proj.leader_id !== user.id && proj.leader_id !== user_id && proj.leader_id !== proj.admin_id) {
+          const leaderInfo = await getUserEmailInfo(db, proj.leader_id)
+          if (leaderInfo) {
+            sendEmail(c.env, {
+              to: leaderInfo.email, toName: leaderInfo.full_name,
+              eventType: 'member_added_to_project', data: memberData,
+              db, userId: proj.leader_id, relatedType: 'project', relatedId: projectId
+            })
+          }
+        }
+      }
+    } catch (_) { /* ignore email errors */ }
 
     return c.json({ success: true })
   } catch (e: any) {
@@ -949,6 +1605,19 @@ app.post('/api/tasks', authMiddleware, async (c) => {
       await db.prepare(
         'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
       ).bind(assigned_to, 'Task mới được giao', `Bạn được giao task: ${title}`, 'info', 'task', taskId).run()
+
+      // ── Email: task_assigned ──
+      const emailUser = await getUserEmailInfo(db, assigned_to)
+      const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(project_id).first() as any
+      if (emailUser) {
+        const disciplineInfo = discipline_code ? await db.prepare('SELECT name FROM disciplines WHERE code = ?').bind(discipline_code).first() as any : null
+        await sendEmail(c.env, {
+          to: emailUser.email, toName: emailUser.full_name,
+          eventType: 'task_assigned',
+          data: { taskTitle: title, projectName: projInfo?.name, discipline: disciplineInfo?.name || discipline_code, priority: priority || 'medium', deadline: due_date, description, assignedBy: user.full_name },
+          db, userId: assigned_to, relatedType: 'task', relatedId: taskId
+        })
+      }
     }
 
     return c.json({ success: true, id: taskId }, 201)
@@ -1009,6 +1678,37 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
         await db.prepare(
           'INSERT INTO task_history (task_id, user_id, field_changed, old_value, new_value) VALUES (?, ?, ?, ?, ?)'
         ).bind(id, user.id, field, String(task[field] ?? ''), String(data[field])).run()
+      }
+    }
+
+    // ── Email: task_status_updated (chỉ khi status thay đổi) ──
+    if (data.status && data.status !== task.status) {
+      const notifyUserId = task.assigned_to && task.assigned_to !== user.id ? task.assigned_to : null
+      if (notifyUserId) {
+        const emailUser = await getUserEmailInfo(db, notifyUserId)
+        const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
+        if (emailUser) {
+          await sendEmail(c.env, {
+            to: emailUser.email, toName: emailUser.full_name,
+            eventType: 'task_status_updated',
+            data: { taskTitle: task.title, projectName: projInfo?.name, oldStatus: task.status, newStatus: data.status, updatedBy: user.full_name },
+            db, userId: notifyUserId, relatedType: 'task', relatedId: id
+          })
+        }
+      }
+    }
+
+    // ── Email: task_assigned (khi đổi người được giao) ──
+    if (data.assigned_to && data.assigned_to !== task.assigned_to) {
+      const emailUser = await getUserEmailInfo(db, data.assigned_to)
+      const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
+      if (emailUser) {
+        await sendEmail(c.env, {
+          to: emailUser.email, toName: emailUser.full_name,
+          eventType: 'task_assigned',
+          data: { taskTitle: task.title, projectName: projInfo?.name, priority: task.priority, deadline: task.due_date, assignedBy: user.full_name },
+          db, userId: data.assigned_to, relatedType: 'task', relatedId: id
+        })
       }
     }
 
@@ -1872,6 +2572,21 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     values.push(id)
 
     await db.prepare(`UPDATE timesheets SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+
+    // ── Email: timesheet_reviewed (khi admin duyệt/từ chối) ──
+    if (status && (status === 'approved' || status === 'rejected') && (isAdmin || isProjAdmin)) {
+      const emailUser = await getUserEmailInfo(db, ts.user_id)
+      if (emailUser) {
+        const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(ts.project_id).first() as any
+        await sendEmail(c.env, {
+          to: emailUser.email, toName: emailUser.full_name,
+          eventType: 'timesheet_reviewed',
+          data: { date: ts.work_date, action: status, projectName: projInfo?.name, hoursHC: ts.hours_hc, totalHours: ts.total_hours, reviewedBy: user.full_name },
+          db, userId: ts.user_id, relatedType: 'timesheet', relatedId: id
+        })
+      }
+    }
+
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -1890,14 +2605,55 @@ app.post('/api/timesheets/bulk-approve', authMiddleware, async (c) => {
     if (!ids?.length) return c.json({ error: 'No IDs provided' }, 400)
 
     let approved = 0
+    // Track per-user approved count + period for email grouping
+    const userApprovedMap: Map<number, { count: number; dates: string[] }> = new Map()
+
     for (const id of ids) {
       try {
-        await db.prepare(
+        // Lấy thông tin timesheet trước khi approve
+        const ts = await db.prepare(
+          'SELECT user_id, work_date, status FROM timesheets WHERE id = ? AND status = \'submitted\''
+        ).bind(id).first() as any
+        const r = await db.prepare(
           `UPDATE timesheets SET status = 'approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitted'`
         ).bind(user.id, id).run()
-        approved++
+        if ((r.meta?.changes || 0) > 0 && ts) {
+          approved++
+          const uid = ts.user_id
+          if (!userApprovedMap.has(uid)) userApprovedMap.set(uid, { count: 0, dates: [] })
+          const entry = userApprovedMap.get(uid)!
+          entry.count++
+          if (ts.work_date) entry.dates.push(ts.work_date)
+        }
       } catch (_) { /* skip */ }
     }
+
+    // ── Email: timesheet_bulk_approved → gửi 1 email tổng hợp cho mỗi user ──
+    try {
+      for (const [uid, info] of userApprovedMap.entries()) {
+        if (uid === user.id) continue
+        const emailUser = await getUserEmailInfo(db, uid)
+        if (emailUser && info.count > 0) {
+          // Xác định kỳ từ dates
+          let period = ''
+          if (info.dates.length > 0) {
+            const sorted = info.dates.sort()
+            if (sorted.length === 1) {
+              period = sorted[0]
+            } else {
+              period = `${sorted[0]} → ${sorted[sorted.length - 1]}`
+            }
+          }
+          sendEmail(c.env, {
+            to: emailUser.email, toName: emailUser.full_name,
+            eventType: 'timesheet_bulk_approved',
+            data: { approvedCount: info.count, period, reviewedBy: user.full_name },
+            db, userId: uid, relatedType: 'timesheet', relatedId: ids[0]
+          })
+        }
+      }
+    } catch (_) { /* ignore email errors */ }
+
     return c.json({ success: true, approved })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -2138,12 +2894,24 @@ app.post('/api/messages', authMiddleware, async (c) => {
     }
 
     // 1. Notify @mentioned users first (high priority)
+    console.log(`[MENTION] mentions array received:`, JSON.stringify(mentions))
     if (mentions && mentions.length > 0) {
       for (const m of mentions) {
-        if (!m.name) continue
-        const mentionedUser = await db.prepare(
-          `SELECT id FROM users WHERE full_name = ? AND is_active = 1`
-        ).bind(m.name).first() as any
+        console.log(`[MENTION] processing mention:`, JSON.stringify(m))
+        // Prefer lookup by id (reliable for Unicode names), fallback to full_name
+        let mentionedUser: any = null
+        if (m.id) {
+          mentionedUser = await db.prepare(
+            `SELECT id, email, full_name FROM users WHERE id = ? AND is_active = 1`
+          ).bind(parseInt(m.id)).first()
+          console.log(`[MENTION] lookup by id=${m.id} →`, mentionedUser ? `${mentionedUser.full_name} <${mentionedUser.email}>` : 'NOT FOUND')
+        } else if (m.name) {
+          mentionedUser = await db.prepare(
+            `SELECT id, email, full_name FROM users WHERE full_name = ? AND is_active = 1`
+          ).bind(m.name).first()
+          console.log(`[MENTION] lookup by name="${m.name}" →`, mentionedUser ? `found id=${mentionedUser.id}` : 'NOT FOUND')
+        }
+        if (!mentionedUser) { console.log(`[MENTION] skip — user not found`); continue }
         if (mentionedUser && mentionedUser.id !== user.id) {
           notifiedIds.add(mentionedUser.id)
           const title = context_type === 'task'
@@ -2159,8 +2927,26 @@ app.post('/api/messages', authMiddleware, async (c) => {
             context_type,
             parseInt(context_id)
           ).run()
+
+          // ── Email: chat_mention ──
+          console.log(`[MENTION] sending email to ${mentionedUser.email} (id=${mentionedUser.id})`)
+          if (mentionedUser.email) {
+            await sendEmail(c.env, {
+              to: mentionedUser.email, toName: mentionedUser.full_name,
+              eventType: 'chat_mention',
+              data: { senderName: user.full_name, contextType: context_type, contextName, message: snippet },
+              db, userId: mentionedUser.id, relatedType: context_type, relatedId: parseInt(context_id)
+            })
+            console.log(`[MENTION] sendEmail called for ${mentionedUser.email}`)
+          } else {
+            console.log(`[MENTION] skip email — mentionedUser has no email`)
+          }
+        } else {
+          console.log(`[MENTION] skip — same sender or id mismatch (mentionedUser.id=${mentionedUser?.id}, sender=${user.id})`)
         }
       }
+    } else {
+      console.log(`[MENTION] no mentions in message`)
     }
 
     // 2. Notify other participants (task assigned user + ALL project members + admin/leader)
@@ -5289,6 +6075,224 @@ app.patch('/api/notifications/read-all', authMiddleware, async (c) => {
     const user = c.get('user') as any
     await db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').bind(user.id).run()
     return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ===================================================
+// EMAIL SETTINGS ROUTES
+// ===================================================
+
+// GET /api/email-settings — lấy cài đặt email của user hiện tại
+app.get('/api/email-settings', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    await ensureEmailSettings(db, user.id)
+    const settings = await db.prepare('SELECT * FROM email_settings WHERE user_id = ?').bind(user.id).first()
+    return c.json(settings)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PUT /api/email-settings — cập nhật cài đặt email của user hiện tại
+app.put('/api/email-settings', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    await ensureEmailSettings(db, user.id)
+    const data = await c.req.json()
+    const fields = ['email_enabled','notify_task_assigned','notify_task_updated','notify_task_overdue','notify_project_added','notify_project_updated','notify_project_created','notify_timesheet_approved','notify_payment_request','notify_payment_status','notify_chat_mention','notify_daily_digest','notify_member_added']
+    const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
+    const values = fields.filter(f => data[f] !== undefined).map(f => data[f] ? 1 : 0)
+    if (!updates.length) return c.json({ error: 'Nothing to update' }, 400)
+    updates.push('updated_at = CURRENT_TIMESTAMP')
+    values.push(user.id)
+    await db.prepare(`UPDATE email_settings SET ${updates.join(', ')} WHERE user_id = ?`).bind(...values).run()
+    const settings = await db.prepare('SELECT * FROM email_settings WHERE user_id = ?').bind(user.id).first()
+    return c.json({ success: true, settings })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ============================================================
+// SYSTEM CONFIG API (Admin only)
+// ============================================================
+
+// GET /api/system-config — lấy cấu hình hệ thống (admin only)
+app.get('/api/system-config', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const rows = await db.prepare('SELECT key, value, description, updated_at FROM system_config').all()
+    // Mask API key value for security
+    const configs: Record<string, any> = {}
+    for (const row of (rows.results as any[])) {
+      if (row.key === 'resend_api_key' && row.value) {
+        configs[row.key] = { value: row.value.slice(0, 8) + '****' + row.value.slice(-4), description: row.description, updated_at: row.updated_at, configured: true }
+      } else {
+        configs[row.key] = { value: row.value, description: row.description, updated_at: row.updated_at, configured: !!row.value }
+      }
+    }
+    return c.json(configs)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PUT /api/system-config — cập nhật cấu hình (admin only)
+app.put('/api/system-config', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const data = await c.req.json() as Record<string, string>
+    
+    const allowedKeys = ['resend_api_key', 'email_from_name', 'email_from_address', 'email_enabled']
+    
+    for (const [key, value] of Object.entries(data)) {
+      if (!allowedKeys.includes(key)) continue
+      await db.prepare(
+        'INSERT OR REPLACE INTO system_config (key, value, updated_by, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)'
+      ).bind(key, value, user.id).run()
+    }
+    return c.json({ success: true, message: 'Cấu hình đã được lưu' })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/system-config/verify-email-key — kiểm tra API key có hợp lệ không
+app.post('/api/system-config/verify-email-key', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const body = await c.req.json().catch(() => ({})) as any
+    
+    // Lấy key: ưu tiên body, sau đó env, cuối cùng DB
+    let apiKey = body?.api_key?.trim()
+    if (!apiKey) apiKey = c.env.RESEND_API_KEY
+    if (!apiKey) {
+      const dbKey = await db.prepare("SELECT value FROM system_config WHERE key = 'resend_api_key'").first() as any
+      apiKey = dbKey?.value || ''
+    }
+    if (!apiKey) return c.json({ valid: false, error: 'Chưa có API key nào được cấu hình' })
+    
+    // Gọi Resend API để verify
+    const res = await fetch('https://api.resend.com/api-keys', {
+      headers: { 'Authorization': `Bearer ${apiKey}` }
+    })
+    
+    if (res.ok) {
+      return c.json({ valid: true, message: '✅ API Key hợp lệ! Sẵn sàng gửi email.' })
+    } else {
+      const err = await res.json() as any
+      return c.json({ valid: false, error: `❌ Key không hợp lệ: ${err?.message || res.statusText}` })
+    }
+  } catch (e: any) {
+    return c.json({ valid: false, error: e.message }, 500)
+  }
+})
+
+// GET /api/email-logs — lịch sử email gửi (admin only, hoặc user xem của mình)
+app.get('/api/email-logs', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const limit = parseInt(c.req.query('limit') || '50')
+    let rows: any
+    if (user.role === 'system_admin') {
+      rows = await db.prepare(`
+        SELECT el.*, u.full_name, u.email as user_email
+        FROM email_logs el LEFT JOIN users u ON el.user_id = u.id
+        ORDER BY el.sent_at DESC LIMIT ?
+      `).bind(limit).all()
+    } else {
+      rows = await db.prepare(`
+        SELECT * FROM email_logs WHERE user_id = ? ORDER BY sent_at DESC LIMIT ?
+      `).bind(user.id, limit).all()
+    }
+    return c.json(rows.results)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/email-settings/test — gửi email test
+app.post('/api/email-settings/test', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+
+    // Cho phép truyền to_email tuỳ chỉnh (hữu ích khi email trong DB là email giả)
+    const body = await c.req.json().catch(() => ({})) as any
+    const overrideEmail = body?.to_email?.trim()
+
+    const emailUser = await getUserEmailInfo(db, user.id)
+    const toEmail = overrideEmail || emailUser?.email
+    const toName  = emailUser?.full_name || user.full_name || 'Admin'
+
+    if (!toEmail) return c.json({ error: 'Tài khoản chưa có email. Vui lòng truyền to_email trong body.' }, 400)
+
+    let apiKey = c.env.RESEND_API_KEY
+    if (!apiKey) {
+      const dbKey = await db.prepare("SELECT value FROM system_config WHERE key = 'resend_api_key'").first() as any
+      apiKey = dbKey?.value || ''
+    }
+    if (!apiKey) return c.json({ error: 'Chưa cấu hình RESEND_API_KEY. Vào Admin → Cấu hình Email để thêm API Key.' }, 400)
+
+    const { subject, html } = emailTemplates('task_assigned', {
+      recipientName: toName,
+      taskTitle: '[TEST] Kiểm tra email thông báo OneCad BIM',
+      projectName: 'OneCad BIM - Demo Project',
+      discipline: 'Kiến trúc (AA)',
+      priority: 'medium',
+      deadline: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+      assignedBy: 'System (Test Email)',
+      description: 'Đây là email kiểm tra từ hệ thống OneCad BIM. Nếu bạn nhận được email này, cài đặt thông báo email đã hoạt động chính xác!'
+    })
+
+    let status = 'sent'
+    let errorMsg: string | null = null
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: 'OneCad BIM <no-reply@bimonecadvn.com>', to: [toEmail], subject, html }),
+      })
+      if (!res.ok) { const err = await res.text(); status = 'failed'; errorMsg = err.slice(0, 500) }
+    } catch (e: any) { status = 'failed'; errorMsg = e.message }
+
+    await db.prepare(`INSERT INTO email_logs (user_id, to_email, subject, event_type, status, error_msg) VALUES (?,?,?,?,?,?)`)
+      .bind(user.id, toEmail, subject, 'test', status, errorMsg).run()
+
+    if (status === 'failed') return c.json({ error: `Gửi thất bại: ${errorMsg}` }, 500)
+    return c.json({ success: true, message: `Email test đã gửi đến ${toEmail}` })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/email-settings/all-users — admin xem settings của tất cả users
+app.get('/api/email-settings/all-users', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const rows = await db.prepare(`
+      SELECT u.id, u.full_name, u.email, u.department,
+        COALESCE(es.email_enabled, 1) as email_enabled,
+        COALESCE(es.notify_task_assigned, 1) as notify_task_assigned,
+        COALESCE(es.notify_task_updated, 1) as notify_task_updated,
+        COALESCE(es.notify_task_overdue, 1) as notify_task_overdue,
+        COALESCE(es.notify_project_added, 1) as notify_project_added,
+        COALESCE(es.notify_timesheet_approved, 1) as notify_timesheet_approved,
+        COALESCE(es.notify_payment_request, 1) as notify_payment_request,
+        COALESCE(es.notify_chat_mention, 1) as notify_chat_mention
+      FROM users u
+      LEFT JOIN email_settings es ON u.id = es.user_id
+      WHERE u.is_active = 1
+      ORDER BY u.full_name
+    `).all()
+    return c.json(rows.results)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -9154,6 +10158,20 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
         .bind(revenueId, paymentId).run()
     }
 
+    // ── Email: payment_request_new → thông báo cho System Admin ──
+    const projInfo = await c.env.DB.prepare('SELECT name FROM projects WHERE id = ?').bind(projectId).first() as any
+    const admins = await c.env.DB.prepare(`SELECT id, email, full_name FROM users WHERE role = 'system_admin' AND is_active = 1`).all()
+    for (const admin of admins.results as any[]) {
+      if (admin.id !== user.id && admin.email) {
+        await sendEmail(c.env, {
+          to: admin.email, toName: admin.full_name,
+          eventType: 'payment_request_new',
+          data: { title: description, projectName: projInfo?.name, amount: `${(amount || 0).toLocaleString('vi-VN')} ${currency || 'VND'}`, requestedBy: user.full_name, date: request_date, description: notes },
+          db: c.env.DB, userId: admin.id, relatedType: 'payment', relatedId: paymentId
+        })
+      }
+    }
+
     return c.json({ id: paymentId, revenue_id: revenueId, success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -9209,6 +10227,63 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
     // Cập nhật revenue_id
     await c.env.DB.prepare('UPDATE payment_requests SET revenue_id = ? WHERE id = ?')
       .bind(revenueId || null, id).run()
+
+    // ── Email: payment_status_changed → thông báo creator khi admin đổi trạng thái ──
+    if (data.status && data.status !== current.status) {
+      try {
+        const projInfo = await c.env.DB.prepare('SELECT name FROM projects WHERE id = ?')
+          .bind(current.project_id).first() as any
+        const amount = current.amount || merged.amount || 0
+        const paidAmount = merged.paid_amount || 0
+        // Thông báo người tạo đề nghị
+        if (current.created_by && current.created_by !== user.id) {
+          const creatorInfo = await getUserEmailInfo(c.env.DB, current.created_by)
+          if (creatorInfo) {
+            sendEmail(c.env, {
+              to: creatorInfo.email, toName: creatorInfo.full_name,
+              eventType: 'payment_status_changed',
+              data: {
+                description: merged.description || current.description,
+                projectName: projInfo?.name,
+                amount: `${Number(amount).toLocaleString('vi-VN')} ${merged.currency || current.currency || 'VND'}`,
+                paidAmount: paidAmount > 0 ? `${Number(paidAmount).toLocaleString('vi-VN')} ${merged.currency || 'VND'}` : null,
+                paidDate: merged.paid_date || current.paid_date || null,
+                oldStatus: current.status, newStatus: data.status,
+                updatedBy: user.full_name,
+                notes: merged.notes || current.notes || null
+              },
+              db: c.env.DB, userId: current.created_by,
+              relatedType: 'payment', relatedId: id
+            })
+          }
+        }
+        // Thông báo thêm cho system_admin nếu đã paid
+        if (data.status === 'paid') {
+          const admins = await c.env.DB.prepare(
+            `SELECT id, email, full_name FROM users WHERE role = 'system_admin' AND is_active = 1`
+          ).all()
+          for (const admin of admins.results as any[]) {
+            if (admin.id !== user.id && admin.id !== current.created_by && admin.email) {
+              sendEmail(c.env, {
+                to: admin.email, toName: admin.full_name,
+                eventType: 'payment_status_changed',
+                data: {
+                  description: merged.description || current.description,
+                  projectName: projInfo?.name,
+                  amount: `${Number(amount).toLocaleString('vi-VN')} ${merged.currency || 'VND'}`,
+                  paidAmount: paidAmount > 0 ? `${Number(paidAmount).toLocaleString('vi-VN')} ${merged.currency || 'VND'}` : null,
+                  paidDate: merged.paid_date || null,
+                  oldStatus: current.status, newStatus: data.status,
+                  updatedBy: user.full_name, notes: merged.notes || null
+                },
+                db: c.env.DB, userId: admin.id,
+                relatedType: 'payment', relatedId: id
+              })
+            }
+          }
+        }
+      } catch (_) { /* ignore email errors */ }
+    }
 
     return c.json({ success: true, revenue_id: revenueId })
   } catch (e: any) {
