@@ -267,6 +267,26 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       }
     }
 
+    case 'chat_message': {
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;"><strong style="color:#374151;">${data.senderName}</strong> vừa gửi tin nhắn ${data.contextType === 'task' ? 'trong task' : 'trong dự án'}:</p>
+        ${emailCard(data.contextType === 'task' ? '📌 Task' : '🏗️ Dự án', data.contextName)}
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0;">
+          <tr>
+            <td style="background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:14px 18px;">
+              <p style="margin:0;color:#374151;font-size:14px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">"${data.message}"</p>
+            </td>
+          </tr>
+        </table>
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập để xem và phản hồi tin nhắn này.</p>`
+      return {
+        subject: `[OneCad BIM] 💬 ${data.senderName}: "${data.message?.slice(0,40)}${data.message?.length > 40 ? '…' : ''}"`,
+        html: emailBase(`💬 Tin nhắn mới`, body)
+      }
+    }
+
     case 'chat_mention': {
       const body = `
         <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
@@ -444,14 +464,13 @@ async function sendEmail(env: Bindings, opts: {
     apiKey = dbConfig?.value || ''
     console.log(`[sendEmail] apiKey from DB: ${apiKey ? 'SET' : 'EMPTY'}`)
   }
+  // 4 mandatory events — always send email regardless of user preference
+  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_overdue', 'project_added', 'chat_mention'])
+
   if (!apiKey) {
     console.log(`[sendEmail] ABORT — no RESEND_API_KEY`)
-    return   // No API key → skip silently
+    return
   }
-
-  // Check user email preference
-  // 4 mandatory events — always send regardless of user preference
-  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_overdue', 'project_added', 'chat_mention'])
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
     const pref = await opts.db.prepare(
@@ -517,6 +536,27 @@ async function sendEmail(env: Bindings, opts: {
       `INSERT INTO email_logs (user_id, to_email, subject, event_type, related_type, related_id, status, error_msg) VALUES (?,?,?,?,?,?,?,?)`
     ).bind(opts.userId || null, opts.to, subject, opts.eventType, opts.relatedType || null, opts.relatedId || null, status, errorMsg).run()
   } catch { /* ignore log error */ }
+
+  // Web Push — fire and forget for mandatory events (requires userId)
+  if (opts.userId) {
+    const eventIconMap: Record<string, string> = {
+      task_assigned:   '📋',
+      task_overdue:    '⏰',
+      project_added:   '🏗️',
+      chat_mention:    '💬',
+      chat_message:    '💬',
+    }
+    const icon = eventIconMap[opts.eventType] || '🔔'
+    sendWebPush(opts.db, opts.userId, {
+      title:       `${icon} ${subject}`,
+      body:        opts.data?.taskTitle || opts.data?.projectName || opts.data?.message || opts.toName,
+      tag:         `${opts.eventType}-${opts.relatedId || opts.userId}`,
+      url:         '/',
+      notifId:     null,
+      relatedType: opts.relatedType || null,
+      relatedId:   opts.relatedId   || null,
+    }).catch(() => { /* silent */ })
+  }
 }
 
 // ---- Helper: get user email info ----
@@ -1681,20 +1721,40 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
       }
     }
 
-    // ── Email: task_status_updated (chỉ khi status thay đổi) ──
+    // ── Email: task_status_updated → chỉ gửi cho Admin (system_admin + project_admin/leader của dự án) ──
     if (data.status && data.status !== task.status) {
-      const notifyUserId = task.assigned_to && task.assigned_to !== user.id ? task.assigned_to : null
-      if (notifyUserId) {
-        const emailUser = await getUserEmailInfo(db, notifyUserId)
-        const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
-        if (emailUser) {
-          await sendEmail(c.env, {
-            to: emailUser.email, toName: emailUser.full_name,
-            eventType: 'task_status_updated',
-            data: { taskTitle: task.title, projectName: projInfo?.name, oldStatus: task.status, newStatus: data.status, updatedBy: user.full_name },
-            db, userId: notifyUserId, relatedType: 'task', relatedId: id
-          })
-        }
+      const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
+
+      // Lấy danh sách admin cần thông báo (loại trừ chính người cập nhật)
+      const adminRows = await db.prepare(`
+        SELECT DISTINCT u.id, u.email, u.full_name
+        FROM users u
+        WHERE u.is_active = 1
+          AND u.id != ?
+          AND (
+            u.role = 'system_admin'
+            OR EXISTS (
+              SELECT 1 FROM project_members pm
+              WHERE pm.project_id = ? AND pm.user_id = u.id
+                AND pm.role IN ('project_admin','project_leader')
+            )
+          )
+      `).bind(user.id, task.project_id).all()
+
+      for (const admin of (adminRows.results as any[])) {
+        if (!admin.email) continue
+        await sendEmail(c.env, {
+          to: admin.email, toName: admin.full_name,
+          eventType: 'task_status_updated',
+          data: {
+            taskTitle: task.title,
+            projectName: projInfo?.name,
+            oldStatus: task.status,
+            newStatus: data.status,
+            updatedBy: user.full_name
+          },
+          db, userId: admin.id, relatedType: 'task', relatedId: id
+        })
       }
     }
 
@@ -2989,16 +3049,24 @@ app.post('/api/messages', authMiddleware, async (c) => {
       const title = context_type === 'task'
         ? `💬 Tin nhắn mới trong task`
         : `💬 Tin nhắn mới trong dự án`
+      const msgBody = `${user.full_name} đã gửi tin trong "${contextName}": ${snippet}`
+
+      // In-app notification
       await db.prepare(
         `INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)`
-      ).bind(
-        uid,
+      ).bind(uid, title, msgBody, 'chat_message', context_type, parseInt(context_id)).run()
+      notifiedIds.add(uid)
+
+      // Browser push only — NO email for normal chat messages
+      sendWebPush(db, uid, {
         title,
-        `${user.full_name} đã gửi tin trong "${contextName}": ${snippet}`,
-        'chat_message',
-        context_type,
-        parseInt(context_id)
-      ).run()
+        body:        msgBody,
+        tag:         `chat_message-${context_type}-${context_id}`,
+        url:         '/',
+        notifId:     null,
+        relatedType: context_type,
+        relatedId:   parseInt(context_id),
+      }).catch(() => {})
     }
     // ── End notifications ──────────────────────────────────────────────────
 
@@ -3051,11 +3119,12 @@ app.delete('/api/messages/:id', authMiddleware, async (c) => {
 })
 
 // ===================================================
-// COST MANAGEMENT ROUTES (Admin Only)
+// COST MANAGEMENT ROUTES (Admin + Project Admin/Leader)
 // ===================================================
-app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
+app.get('/api/costs', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
     const { project_id, cost_type, year } = c.req.query()
 
     let query = `
@@ -3067,10 +3136,18 @@ app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
       WHERE 1=1
     `
     const params: any[] = []
+
+    // Non system_admin chỉ xem được chi phí của dự án họ quản lý
+    if (user.role !== 'system_admin') {
+      query += ` AND (p.admin_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = pc.project_id AND pm.user_id = ? AND pm.role IN ('project_admin','project_leader')
+      ))`
+      params.push(user.id, user.id)
+    }
+
     if (project_id) { query += ` AND pc.project_id = ?`; params.push(parseInt(project_id)) }
     if (cost_type) { query += ` AND pc.cost_type = ?`; params.push(cost_type) }
     if (year) {
-      // Dùng fiscal year date range thay vì calendar year
       const fySettings = await getFiscalYearSettings(db)
       const { startDate, endDate } = getFiscalYearDateRange(parseInt(year), fySettings)
       query += ` AND pc.cost_date >= ? AND pc.cost_date <= ?`
@@ -3085,7 +3162,7 @@ app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-app.post('/api/costs', authMiddleware, adminOnly, async (c) => {
+app.post('/api/costs', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
@@ -3094,6 +3171,12 @@ app.post('/api/costs', authMiddleware, adminOnly, async (c) => {
 
     if (!project_id || !cost_type || !description || !amount) {
       return c.json({ error: 'Missing required fields' }, 400)
+    }
+
+    // Kiểm tra quyền: system_admin hoặc project_admin/leader của dự án này
+    if (user.role !== 'system_admin') {
+      const canManage = await isProjectAdmin(db, user.id, project_id)
+      if (!canManage) return c.json({ error: 'Chỉ System Admin hoặc Quản lý dự án mới được thêm chi phí' }, 403)
     }
 
     const result = await db.prepare(
@@ -3108,10 +3191,20 @@ app.post('/api/costs', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-app.put('/api/costs/:id', authMiddleware, adminOnly, async (c) => {
+app.put('/api/costs/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
     const id = parseInt(c.req.param('id'))
+
+    // Kiểm tra quyền
+    if (user.role !== 'system_admin') {
+      const cost = await db.prepare('SELECT project_id FROM project_costs WHERE id = ?').bind(id).first() as any
+      if (!cost) return c.json({ error: 'Not found' }, 404)
+      const canManage = await isProjectAdmin(db, user.id, cost.project_id)
+      if (!canManage) return c.json({ error: 'Chỉ System Admin hoặc Quản lý dự án mới được sửa chi phí' }, 403)
+    }
+
     const data = await c.req.json()
     const fields = ['cost_type', 'description', 'amount', 'currency', 'cost_date', 'invoice_number', 'vendor', 'notes']
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
@@ -3125,10 +3218,20 @@ app.put('/api/costs/:id', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-app.delete('/api/costs/:id', authMiddleware, adminOnly, async (c) => {
+app.delete('/api/costs/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
     const id = parseInt(c.req.param('id'))
+
+    // Kiểm tra quyền
+    if (user.role !== 'system_admin') {
+      const cost = await db.prepare('SELECT project_id FROM project_costs WHERE id = ?').bind(id).first() as any
+      if (!cost) return c.json({ error: 'Not found' }, 404)
+      const canManage = await isProjectAdmin(db, user.id, cost.project_id)
+      if (!canManage) return c.json({ error: 'Chỉ System Admin hoặc Quản lý dự án mới được xóa chi phí' }, 403)
+    }
+
     await db.prepare('DELETE FROM project_costs WHERE id = ?').bind(id).run()
     return c.json({ success: true })
   } catch (e: any) {
@@ -7104,9 +7207,109 @@ app.post('/api/admin/dedup-tasks', authMiddleware, adminOnly, async (c) => {
 })
 
 // ===================================================
+// SEND OVERDUE REMINDERS — gửi mail nhắc deadline cho đúng người phụ trách
+// POST /api/admin/send-overdue-reminders
+// Gửi mail task_overdue cho assigned_to của mỗi task quá hạn chưa hoàn thành
+// Có thể gọi từ cron job bên ngoài (VD: Cloudflare CRON, GitHub Actions...)
+// ===================================================
+app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    // Lấy tất cả task quá hạn, chưa hoàn thành, có assigned_to
+    const overdueRows = await db.prepare(`
+      SELECT
+        t.id, t.title, t.due_date, t.status, t.progress,
+        t.assigned_to,
+        u.email AS assignee_email, u.full_name AS assignee_name,
+        p.name AS project_name, p.code AS project_code
+      FROM tasks t
+      JOIN users u ON u.id = t.assigned_to AND u.is_active = 1
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.due_date < date('now')
+        AND t.status NOT IN ('completed', 'review', 'cancelled')
+        AND t.assigned_to IS NOT NULL
+        AND u.email IS NOT NULL AND u.email != ''
+      ORDER BY t.due_date ASC
+    `).all()
+
+    const tasks = overdueRows.results as any[]
+    if (tasks.length === 0) {
+      return c.json({ success: true, sent: 0, message: 'Không có task quá hạn nào cần nhắc' })
+    }
+
+    let sent = 0
+    const errors: string[] = []
+
+    for (const task of tasks) {
+      try {
+        // Tính số ngày quá hạn
+        const dueDate = new Date(task.due_date)
+        const today   = new Date()
+        today.setHours(0, 0, 0, 0)
+        const daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / 86400000)
+
+        await sendEmail(c.env, {
+          to:        task.assignee_email,
+          toName:    task.assignee_name,
+          eventType: 'task_overdue',
+          data: {
+            taskTitle:     task.title,
+            projectName:   `${task.project_code} – ${task.project_name}`,
+            deadline:      task.due_date,
+            daysOverdue:   daysOverdue,
+            status:        task.status,
+            recipientName: task.assignee_name,
+          },
+          db,
+          userId:      task.assigned_to,
+          relatedType: 'task',
+          relatedId:   task.id,
+        })
+        sent++
+      } catch (e: any) {
+        errors.push(`task#${task.id}: ${e.message}`)
+      }
+    }
+
+    return c.json({
+      success: true,
+      total_overdue: tasks.length,
+      sent,
+      errors: errors.length ? errors : undefined,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/admin/overdue-tasks-preview — xem trước danh sách sẽ nhận mail
+app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const rows = await db.prepare(`
+      SELECT
+        t.id, t.title, t.due_date, t.status,
+        u.email AS assignee_email, u.full_name AS assignee_name,
+        p.code AS project_code
+      FROM tasks t
+      JOIN users u ON u.id = t.assigned_to AND u.is_active = 1
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.due_date < date('now')
+        AND t.status NOT IN ('completed', 'review', 'cancelled')
+        AND t.assigned_to IS NOT NULL
+        AND u.email IS NOT NULL AND u.email != ''
+      ORDER BY t.due_date ASC
+    `).all()
+    return c.json(rows.results)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
 // COST TYPES (System Admin CRUD)
 // ===================================================
-app.get('/api/cost-types', authMiddleware, adminOnly, async (c) => {
+app.get('/api/cost-types', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const rows = await db.prepare(`
@@ -10803,8 +11006,215 @@ function parseSheetXml(xml: string, sharedStrings: string[]): Array<Array<any>> 
 // ===================================================
 app.use('/static/*', serveStatic({ root: './' }))
 
+// ============================================================
+// WEB PUSH — VAPID + Subscriptions
+// ============================================================
+
+// ── VAPID helpers (pure Web Crypto, no lib needed) ──────────
+function b64url(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
+  let str = ''
+  bytes.forEach(b => str += String.fromCharCode(b))
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+}
+function b64urlDecode(str: string): Uint8Array {
+  const s = str.replace(/-/g, '+').replace(/_/g, '/')
+  const bin = atob(s + '='.repeat((4 - s.length % 4) % 4))
+  return Uint8Array.from(bin, c => c.charCodeAt(0))
+}
+
+async function generateVapidKeys(): Promise<{ publicKey: string; privateKey: string }> {
+  const kp = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey'])
+  const pub  = await crypto.subtle.exportKey('raw', kp.publicKey)
+  const priv = await crypto.subtle.exportKey('pkcs8', kp.privateKey)
+  return { publicKey: b64url(pub), privateKey: b64url(priv) }
+}
+
+async function makeVapidJWT(subject: string, audience: string, privateKeyB64: string): Promise<string> {
+  const header  = b64url(new TextEncoder().encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })))
+  const now     = Math.floor(Date.now() / 1000)
+  const payload = b64url(new TextEncoder().encode(JSON.stringify({ aud: audience, exp: now + 12 * 3600, sub: subject })))
+  const sigInput = `${header}.${payload}`
+
+  const pkcs8 = b64urlDecode(privateKeyB64)
+  const key = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(sigInput))
+  return `${sigInput}.${b64url(sig)}`
+}
+
+async function sendWebPush(db: D1Database, userId: number, payload: object): Promise<void> {
+  // Load VAPID config
+  const rows = await db.prepare(
+    `SELECT key, value FROM system_config WHERE key IN ('vapid_public_key','vapid_private_key','vapid_subject')`
+  ).all()
+  const cfg: Record<string, string> = {}
+  rows.results.forEach((r: any) => { cfg[r.key] = r.value })
+
+  if (!cfg.vapid_public_key || !cfg.vapid_private_key) return  // Not configured
+
+  const subject = cfg.vapid_subject || 'mailto:admin@bimonecadvn.com'
+  const bodyStr = JSON.stringify(payload)
+
+  // Load all subscriptions for user
+  const subs = await db.prepare(
+    'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?'
+  ).bind(userId).all()
+
+  for (const sub of subs.results as any[]) {
+    try {
+      const url    = new URL(sub.endpoint)
+      const aud    = `${url.protocol}//${url.host}`
+      const jwt    = await makeVapidJWT(subject, aud, cfg.vapid_private_key)
+      const vapidAuth = `vapid t=${jwt},k=${cfg.vapid_public_key}`
+
+      // Encrypt payload with ECDH + AES-GCM (RFC 8291)
+      const encrypted = await encryptPushPayload(bodyStr, sub.p256dh, sub.auth)
+
+      const res = await fetch(sub.endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization':  vapidAuth,
+          'Content-Type':   'application/octet-stream',
+          'Content-Encoding': 'aes128gcm',
+          'TTL':            '86400',
+        },
+        body: encrypted,
+      })
+
+      if (res.status === 410 || res.status === 404) {
+        // Subscription expired — remove it
+        await db.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(sub.id).run()
+      }
+      // Update last_used_at
+      await db.prepare('UPDATE push_subscriptions SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?').bind(sub.id).run()
+    } catch { /* silent — don't block notification flow */ }
+  }
+}
+
+// RFC 8291 AES-GCM encryption for Web Push payload
+async function encryptPushPayload(plaintext: string, p256dhB64: string, authB64: string): Promise<Uint8Array> {
+  const encoder    = new TextEncoder()
+  const receiverPub = b64urlDecode(p256dhB64)
+  const authSecret  = b64urlDecode(authB64)
+
+  // Generate sender ephemeral key pair
+  const senderKP = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey', 'deriveBits'])
+  const senderPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', senderKP.publicKey))
+
+  // Import receiver public key
+  const receiverKey = await crypto.subtle.importKey('raw', receiverPub, { name: 'ECDH', namedCurve: 'P-256' }, false, [])
+
+  // ECDH shared secret
+  const sharedBits = await crypto.subtle.deriveBits({ name: 'ECDH', public: receiverKey }, senderKP.privateKey, 256)
+  const sharedSecret = new Uint8Array(sharedBits)
+
+  // Salt
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+
+  // HKDF PRK (auth secret)
+  const prkKey = await crypto.subtle.importKey('raw', authSecret, { name: 'HKDF' }, false, ['deriveBits'])
+  const ikm = await crypto.subtle.importKey('raw', sharedSecret, { name: 'HKDF' }, false, ['deriveBits'])
+
+  // key_info and nonce_info as per RFC 8291
+  const authInfo = concat(encoder.encode('WebPush: info\0'), receiverPub, senderPubRaw)
+  const prkBits  = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: authSecret, info: authInfo }, ikm, 256)
+  const prk = await crypto.subtle.importKey('raw', prkBits, { name: 'HKDF' }, false, ['deriveBits'])
+
+  const keyInfo   = encoder.encode('Content-Encoding: aes128gcm\0')
+  const nonceInfo = encoder.encode('Content-Encoding: nonce\0')
+
+  const cekBits   = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: keyInfo   }, prk, 128)
+  const nonceBits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: nonceInfo }, prk, 96)
+
+  const cek   = await crypto.subtle.importKey('raw', cekBits, { name: 'AES-GCM' }, false, ['encrypt'])
+  const nonce = new Uint8Array(nonceBits)
+
+  // Pad plaintext (add 0x02 padding delimiter)
+  const data = concat(encoder.encode(plaintext), new Uint8Array([2]))
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, cek, data))
+
+  // Build RFC 8291 header: salt(16) + rs(4) + idlen(1) + keyid + ciphertext
+  const rs      = new Uint8Array(4); new DataView(rs.buffer).setUint32(0, 4096, false)
+  const keyId   = senderPubRaw
+  const idLen   = new Uint8Array([keyId.length])
+  return concat(salt, rs, idLen, keyId, ciphertext)
+}
+
+function concat(...arrays: Uint8Array[]): Uint8Array {
+  const len = arrays.reduce((s, a) => s + a.length, 0)
+  const out = new Uint8Array(len)
+  let off = 0
+  for (const a of arrays) { out.set(a, off); off += a.length }
+  return out
+}
+
+// ── GET /api/push/vapid-public-key — trả public key cho client ──
+app.get('/api/push/vapid-public-key', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    let row = await db.prepare(`SELECT value FROM system_config WHERE key = 'vapid_public_key'`).first() as any
+
+    if (!row?.value) {
+      // Auto-generate keys on first call
+      const keys = await generateVapidKeys()
+      await db.prepare(`UPDATE system_config SET value = ? WHERE key = 'vapid_public_key'`).bind(keys.publicKey).run()
+      await db.prepare(`UPDATE system_config SET value = ? WHERE key = 'vapid_private_key'`).bind(keys.privateKey).run()
+      return c.json({ publicKey: keys.publicKey })
+    }
+    return c.json({ publicKey: row.value })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── POST /api/push/subscribe — lưu subscription ─────────────
+app.post('/api/push/subscribe', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const { endpoint, keys } = await c.req.json()
+    if (!endpoint || !keys?.p256dh || !keys?.auth) return c.json({ error: 'Invalid subscription' }, 400)
+
+    const ua = c.req.header('User-Agent')?.slice(0, 200) || ''
+    await db.prepare(
+      `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, endpoint) DO UPDATE SET
+         p256dh = excluded.p256dh, auth = excluded.auth, last_used_at = CURRENT_TIMESTAMP`
+    ).bind(user.id, endpoint, keys.p256dh, keys.auth, ua).run()
+
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── DELETE /api/push/unsubscribe — xóa subscription ─────────
+app.delete('/api/push/unsubscribe', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const { endpoint } = await c.req.json()
+    if (endpoint) {
+      await db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').bind(user.id, endpoint).run()
+    } else {
+      await db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').bind(user.id).run()
+    }
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // Health check
 app.get('/health', (c) => c.json({ status: 'ok', version: '1.0.0' }))
+
+// Service Worker — must be served from root scope with correct MIME type
+app.get('/sw.js', serveStatic({ path: './sw.js' }))
+
+// Push notification icons
+app.get('/icon-192.png',  serveStatic({ path: './icon-192.png' }))
+app.get('/badge-72.png',  serveStatic({ path: './badge-72.png' }))
 
 // SPA - serve index.html as static asset via Cloudflare Pages
 // The _routes.json excludes /index.html and /static/* from the worker

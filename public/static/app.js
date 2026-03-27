@@ -67,7 +67,16 @@ let _lastAnalysisKey = ''              // cache key: projId+periodType+month+yea
 const $ = id => document.getElementById(id)
 const fmt = (n) => new Intl.NumberFormat('vi-VN').format(n || 0)
 const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0)
-const fmtDate = (d) => d ? dayjs(d).format('DD/MM/YYYY') : '-'
+// Chuẩn hóa timestamp từ DB (SQLite CURRENT_TIMESTAMP = UTC, không có 'Z')
+// Thêm 'Z' để dayjs hiểu là UTC → tự chuyển sang giờ local (VN +07:00)
+const toLocalDayjs = (d) => {
+  if (!d) return null
+  // Nếu đã có timezone info (chứa 'Z', '+', hoặc 'T...+') thì parse thẳng
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(d)) return dayjs(d)
+  // SQLite format: '2026-03-26 14:32:00' → thêm Z để coi là UTC
+  return dayjs(d.replace(' ', 'T') + 'Z')
+}
+const fmtDate = (d) => d ? toLocalDayjs(d).format('DD/MM/YYYY') : '-'
 const today = () => new Date().toISOString().split('T')[0]
 
 function api(endpoint, options = {}) {
@@ -94,6 +103,237 @@ function toast(message, type = 'success', duration = 3000) {
   document.body.appendChild(t)
   setTimeout(() => { t.style.animation = 'fadeOut 0.3s forwards'; setTimeout(() => t.remove(), 300) }, duration)
 }
+
+// ================================================================
+// WEB PUSH NOTIFICATIONS — Service Worker + Web Push API
+// ================================================================
+
+// ── Đăng ký Service Worker và lấy push subscription ─────────────
+async function _registerSWAndSubscribe() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
+    await navigator.serviceWorker.ready
+
+    // Lấy VAPID public key từ server
+    const res = await fetch('/api/push/vapid-public-key', {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('bim_token') }
+    })
+    if (!res.ok) return null
+    const { publicKey } = await res.json()
+    if (!publicKey) return null
+
+    // Chuyển base64url → Uint8Array
+    const b64 = publicKey.replace(/-/g, '+').replace(/_/g, '/')
+    const raw = Uint8Array.from(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)), c => c.charCodeAt(0))
+
+    // Đăng ký push subscription (tái sử dụng nếu đã có)
+    let sub = await reg.pushManager.getSubscription()
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: raw })
+    }
+    return sub
+  } catch(e) {
+    console.warn('[Push] SW/subscribe error:', e)
+    return null
+  }
+}
+
+// ── Gửi subscription lên server ─────────────────────────────────
+async function _savePushSubscription(sub) {
+  if (!sub) return
+  try {
+    const key  = sub.getKey('p256dh')
+    const auth = sub.getKey('auth')
+    const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('bim_token')
+      },
+      body: JSON.stringify({
+        endpoint: sub.endpoint,
+        keys: { p256dh: toB64(key), auth: toB64(auth) }
+      })
+    })
+  } catch(e) {
+    console.warn('[Push] Save subscription error:', e)
+  }
+}
+
+// ── Khởi tạo: đăng ký SW, subscribe push, hiển thị banner ───────
+async function initPushNotifications() {
+  if (!('Notification' in window)) return
+
+  const perm = Notification.permission
+  if (perm === 'granted') {
+    // Đã có quyền → đăng ký SW + lưu subscription (idempotent)
+    const sub = await _registerSWAndSubscribe()
+    await _savePushSubscription(sub)
+  } else if (perm === 'default') {
+    // Chưa hỏi → hiện banner sau 2s
+    setTimeout(showPermissionBanner, 2000)
+  }
+  renderPushButton()
+}
+
+// ── Xin quyền và đăng ký push ───────────────────────────────────
+async function requestPushPermission() {
+  if (!('Notification' in window)) { toast('Trình duyệt không hỗ trợ thông báo', 'error'); return }
+
+  localStorage.removeItem('bim_notif_disabled')
+
+  const permission = await Notification.requestPermission()
+  hidePushBanner()
+
+  if (permission === 'granted') {
+    // Đăng ký Service Worker + push subscription
+    const sub = await _registerSWAndSubscribe()
+    await _savePushSubscription(sub)
+
+    if (sub) {
+      toast('✅ Đã bật thông báo! Bạn sẽ nhận thông báo kể cả khi ẩn tab.', 'success', 4000)
+    } else {
+      toast('✅ Đã bật thông báo (chế độ cơ bản — tab cần mở).', 'success', 4000)
+    }
+  } else if (permission === 'denied') {
+    toast('Thông báo bị chặn. Vào cài đặt trình duyệt → Site Settings → Notifications để bật lại.', 'warning', 6000)
+  }
+  renderPushButton()
+}
+
+// ── Tắt thông báo + hủy push subscription ───────────────────────
+async function unsubscribePush() {
+  try {
+    // Hủy push subscription trên browser
+    if ('serviceWorker' in navigator && 'PushManager' in window) {
+      const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+      if (reg) {
+        const sub = await reg.pushManager.getSubscription()
+        if (sub) {
+          // Xóa subscription khỏi server trước
+          await fetch('/api/push/unsubscribe', {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + localStorage.getItem('bim_token')
+            },
+            body: JSON.stringify({ endpoint: sub.endpoint })
+          }).catch(() => {})
+          // Hủy subscription trên browser
+          await sub.unsubscribe()
+        }
+      }
+    }
+  } catch(e) {
+    console.warn('[Push] Unsubscribe error:', e)
+  }
+  localStorage.setItem('bim_notif_disabled', '1')
+  renderPushButton()
+  toast('Đã tắt thông báo', 'info')
+}
+
+// ── Hiển thị banner nhắc bật thông báo ──────────────────────────
+function showPermissionBanner() {
+  if ($('pushPermBanner')) return  // already shown
+  if (Notification.permission !== 'default') return
+  if (localStorage.getItem('bim_notif_dismissed')) return
+
+  const banner = document.createElement('div')
+  banner.id = 'pushPermBanner'
+  banner.style.cssText = `
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:#1e293b; color:#fff; padding:14px 20px; border-radius:12px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.3); z-index:9998;
+    display:flex; align-items:center; gap:12px; max-width:480px; width:calc(100% - 40px);
+    animation:slideUp 0.3s ease;
+  `
+  banner.innerHTML = `
+    <i class="fas fa-bell text-yellow-400 text-xl flex-shrink-0"></i>
+    <div class="flex-1">
+      <p class="font-semibold text-sm">Bật thông báo để không bỏ lỡ tin nhắn</p>
+      <p class="text-xs text-gray-400 mt-0.5">Nhận thông báo khi có tin nhắn chat, task được giao, @mention</p>
+    </div>
+    <button onclick="requestPushPermission()" style="background:#3b82f6;border:none;color:#fff;padding:7px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">Bật ngay</button>
+    <button onclick="hidePushBanner(true)" style="background:transparent;border:none;color:#9ca3af;cursor:pointer;font-size:18px;padding:0 4px;line-height:1;">×</button>
+  `
+  document.body.appendChild(banner)
+
+  // Tự ẩn sau 15s
+  setTimeout(() => hidePushBanner(), 15000)
+}
+
+function hidePushBanner(dismiss = false) {
+  const b = $('pushPermBanner')
+  if (b) b.remove()
+  if (dismiss) localStorage.setItem('bim_notif_dismissed', '1')
+}
+
+// ── Render trạng thái trong trang Profile ────────────────────────
+function renderPushButton() {
+  const container = $('pushNotifContainer')
+  if (!container) return
+
+  if (!('Notification' in window)) {
+    container.innerHTML = `<p class="text-xs text-gray-400"><i class="fas fa-ban mr-1"></i>Trình duyệt không hỗ trợ thông báo</p>`
+    return
+  }
+
+  const permission = Notification.permission
+  const disabled = localStorage.getItem('bim_notif_disabled') === '1'
+
+  let btnHtml = ''
+  if (permission === 'denied') {
+    btnHtml = `
+      <div class="flex items-center gap-3 p-3 bg-red-50 rounded-lg border border-red-200">
+        <i class="fas fa-bell-slash text-red-500 text-lg"></i>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-red-700">Thông báo bị chặn bởi trình duyệt</p>
+          <p class="text-xs text-red-500">Vào Settings → Site Settings → Notifications → Cho phép trang này</p>
+        </div>
+      </div>`
+  } else if (permission === 'granted' && !disabled) {
+    const hasSW = ('serviceWorker' in navigator) && ('PushManager' in window)
+    btnHtml = `
+      <div class="flex items-center gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
+        <i class="fas fa-bell text-green-600 text-lg"></i>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-green-700">✅ Thông báo đang hoạt động</p>
+          <p class="text-xs text-gray-500">${hasSW ? 'Nhận thông báo kể cả khi ẩn tab (Web Push)' : 'Nhận thông báo khi tab đang mở'}</p>
+        </div>
+        <button onclick="unsubscribePush()" class="text-xs text-red-500 hover:text-red-700 underline whitespace-nowrap">Tắt</button>
+      </div>`
+  } else {
+    btnHtml = `
+      <div class="flex items-center gap-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
+        <i class="fas fa-bell text-amber-500 text-lg"></i>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-amber-700">Thông báo chưa được bật</p>
+          <p class="text-xs text-gray-500">Cho phép để nhận thông báo tin nhắn, task, @mention</p>
+        </div>
+        <button onclick="requestPushPermission()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg whitespace-nowrap">Bật ngay</button>
+      </div>`
+  }
+  container.innerHTML = btnHtml
+}
+
+// ── Smart polling: 5s active, paused when hidden ──────────────────
+let _notifPollInterval = null
+function startSmartNotifPoll() {
+  if (_notifPollInterval) clearInterval(_notifPollInterval)
+  _notifPollInterval = setInterval(() => {
+    if (!document.hidden) loadNotifications()
+  }, 5000)
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) loadNotifications()  // Reload immediately on tab focus
+  }, { passive: true })
+}
+
+// ================================================================
+// END BROWSER NOTIFICATIONS
+// ================================================================
 
 function closeModal(id) {
   $(id).style.display = 'none'
@@ -369,6 +609,9 @@ function toggleSidebarMini() {
 
 // Khôi phục trạng thái sidebar khi load
 function restoreSidebarState() {
+  // Tablet (768-1023px): CSS tự handle mini — không cần JS thêm class
+  if (window.innerWidth >= 768 && window.innerWidth < 1024) return
+
   const state = localStorage.getItem('sidebar_state')
   if (state === 'mini') {
     $('sidebar').classList.add('mini')
@@ -380,6 +623,18 @@ function restoreSidebarState() {
     $('mainContent').classList.add('expanded')
   }
 }
+
+// Handle resize: sync sidebar khi resize từ desktop xuống tablet hoặc ngược lại
+window.addEventListener('resize', () => {
+  const sidebar = $('sidebar')
+  const mainContent = $('mainContent')
+  if (!sidebar || !mainContent) return
+  if (window.innerWidth >= 768 && window.innerWidth < 1024) {
+    // Tablet: CSS media query đã handle, bỏ JS-added classes để tránh conflict
+    sidebar.classList.remove('mini', 'collapsed')
+    mainContent.classList.remove('mini-sidebar', 'expanded')
+  }
+})
 
 function toggleNotifications() {
   const d = $('notifDropdown')
@@ -467,7 +722,8 @@ async function initApp() {
   initDatetimeClock()
   loadDashboard()
   loadNotifications()
-  setInterval(loadNotifications, 30000)  // Poll every 30s for chat notifications
+  startSmartNotifPoll()          // Smart polling: 5s when active, pause when hidden
+  initPushNotifications()        // Register SW + subscribe if permission already granted
 }
 
 // ================================================================
@@ -775,6 +1031,7 @@ async function renderRecentTasksTable(projectData) {
 // ================================================================
 // Global unread chat map: { 'task_3': 2, 'project_5': 1 }
 let _chatUnreadMap = {}
+let _lastSeenNotifId = 0   // Track highest notif id seen — detect new arrivals
 
 async function loadNotifications() {
   try {
@@ -782,6 +1039,34 @@ async function loadNotifications() {
       api('/notifications'),
       api('/messages/unread').catch(() => [])
     ])
+
+    // ── Detect new notifications & fire browser Notification ──────
+    const _notifEnabled = Notification.permission === 'granted' && localStorage.getItem('bim_notif_disabled') !== '1'
+    if (_lastSeenNotifId > 0 && _notifEnabled) {
+      const newNotifs = notifs.filter(n => n.id > _lastSeenNotifId && !n.is_read)
+      for (const n of newNotifs) {
+        try {
+          const notif = new Notification(n.title, {
+            body: n.message,
+            icon: '/icon-192.png',
+            badge: '/badge-72.png',
+            tag: `bim-${n.id}`,
+            requireInteraction: false,
+          })
+          notif.onclick = () => {
+            window.focus()
+            notif.close()
+            handleNotifClick(n.id, n.type, n.related_type, n.related_id)
+          }
+        } catch (e) { /* silent */ }
+      }
+    }
+    // Update highest seen id
+    if (notifs.length > 0) {
+      const maxId = Math.max(...notifs.map(n => n.id))
+      if (maxId > _lastSeenNotifId) _lastSeenNotifId = maxId
+    }
+    // ── End browser notification trigger ──────────────────────────
 
     // Build unread chat map
     _chatUnreadMap = {}
@@ -810,7 +1095,7 @@ async function loadNotifications() {
             <div class="flex-1 min-w-0">
               <p class="text-sm font-medium text-gray-800">${icon} ${n.title}</p>
               <p class="text-xs text-gray-500 truncate">${n.message}</p>
-              <p class="text-xs text-gray-400 mt-1">${dayjs(n.created_at).format('DD/MM HH:mm')}</p>
+              <p class="text-xs text-gray-400 mt-1">${toLocalDayjs(n.created_at).format('DD/MM HH:mm')}</p>
             </div>
           </div>
         </div>`
@@ -993,12 +1278,81 @@ async function loadProjects() {
   } catch (e) { toast('Lỗi tải dự án: ' + e.message, 'error') }
 }
 
+// ── Project list pagination state ────────────────────────────────────────
+const PROJ_PAGE_SIZE = 18   // 3-col grid: 18 = 6 hàng × 3 cột; list view cũng dùng chung
+let _projCurrentPage = 1
+let _projAllData     = []   // full sorted+filtered dataset
+
+function projPaginatedData() {
+  const start = (_projCurrentPage - 1) * PROJ_PAGE_SIZE
+  return _projAllData.slice(start, start + PROJ_PAGE_SIZE)
+}
+
+function renderProjectPagination() {
+  const container = $('projectPagination')
+  if (!container) return
+  const total = _projAllData.length
+  const totalPages = Math.max(1, Math.ceil(total / PROJ_PAGE_SIZE))
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+
+  const p = _projCurrentPage
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages = [1]
+    if (p > 3) pages.push('...')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(i)
+    if (p < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  const btn = (label, page, disabled = false, active = false) =>
+    `<button onclick="projGoPage(${page})" ${disabled ? 'disabled' : ''}
+      class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+      ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+  const from = total === 0 ? 0 : (p - 1) * PROJ_PAGE_SIZE + 1
+  const to   = Math.min(p * PROJ_PAGE_SIZE, total)
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-3 pt-4 border-t border-gray-100 mt-4">
+      <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> dự án</p>
+      <div class="flex items-center gap-1">
+        ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+        ${pages.map(pg => pg === '...'
+            ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+            : btn(pg, pg, false, pg === p)
+          ).join('')}
+        ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+      </div>
+    </div>`
+}
+
+function projGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_projAllData.length / PROJ_PAGE_SIZE))
+  _projCurrentPage = Math.max(1, Math.min(page, totalPages))
+  renderProjectRows()
+  renderProjectPagination()
+  const grid = $('projectsGrid')
+  if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function renderProjectsGrid(projects) {
+  // Save full sorted dataset, reset page
+  _projAllData = [...projects].sort((a, b) => (a.code || '').localeCompare(b.code || ''))
+  _projCurrentPage = 1
+  renderProjectRows()
+  renderProjectPagination()
+}
+
+function renderProjectRows() {
   const grid = $('projectsGrid')
   if (!grid) return
 
   // Sắp xếp A-Z theo mã dự án (cả hai view)
-  const sorted = [...projects].sort((a, b) => (a.code || '').localeCompare(b.code || ''))
+  const sorted = projPaginatedData()
 
   const typeColors = {
     building:       '#0066CC',
@@ -1011,6 +1365,12 @@ function renderProjectsGrid(projects) {
   /* ── CARD VIEW (style cũ, sort A-Z theo mã) ──────── */
   if (_projectViewMode === 'card') {
     grid.className = 'card-view'
+    if (_projAllData.length === 0) {
+      grid.innerHTML = `<div class="col-span-3 text-center py-12 text-gray-400">
+        <i class="fas fa-project-diagram text-5xl mb-3"></i><p>Chưa có dự án nào</p>
+      </div>`
+      return
+    }
     grid.innerHTML = sorted.map(p => {
       const total = p.total_tasks || 0
       const done  = p.completed_tasks || 0
@@ -1048,14 +1408,12 @@ function renderProjectsGrid(projects) {
           </div>
         </div>
       </div>`
-    }).join('') || `<div class="col-span-3 text-center py-12 text-gray-400">
-      <i class="fas fa-project-diagram text-5xl mb-3"></i><p>Chưa có dự án nào</p>
-    </div>`
+    }).join('')
 
   /* ── LIST / DETAIL VIEW (bảng cột, sort A-Z theo mã) */
   } else {
     grid.className = 'list-view'
-    if (!sorted.length) {
+    if (_projAllData.length === 0) {
       grid.innerHTML = `<div class="text-center py-16 text-gray-400">
         <i class="fas fa-project-diagram text-5xl mb-3 block"></i><p>Chưa có dự án nào</p>
       </div>`
@@ -1145,6 +1503,83 @@ function filterProjects() {
     (!client || (p.client || '') === client)
   )
   renderProjectsGrid(filtered)
+}
+
+// ── Project detail task pagination ──────────────────────────────
+const PROJ_TASK_PAGE_SIZE = 20
+let _projTaskPage = 1
+let _projTaskAllData = []
+
+function projTaskPaginatedData() {
+  const start = (_projTaskPage - 1) * PROJ_TASK_PAGE_SIZE
+  return _projTaskAllData.slice(start, start + PROJ_TASK_PAGE_SIZE)
+}
+
+function renderProjTaskRows() {
+  const tbody = document.getElementById('projTasksTbody')
+  if (!tbody) return
+  const data = projTaskPaginatedData()
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-gray-400 text-sm">Chưa có task nào trong dự án này</td></tr>`
+    return
+  }
+  tbody.innerHTML = data.map(t => `
+    <tr class="${isOverdue(t) ? 'overdue-row' : 'table-row'}" onclick="openTaskDetail(${t.id})" style="cursor:pointer">
+      <td class="py-1.5 pr-3 font-medium text-gray-800">${t.title}</td>
+      <td class="py-1.5 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
+      <td class="py-1.5 pr-3">${getPriorityBadge(t.priority)}</td>
+      <td class="py-1.5 pr-3 text-gray-600">${t.assigned_to_name||'<span class="text-gray-300">Chưa giao</span>'}</td>
+      <td class="py-1.5 pr-3 ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
+      <td class="py-1.5 pr-3">
+        <div class="flex items-center gap-1.5">
+          <div class="progress-bar" style="width:60px"><div class="progress-fill ${isOverdue(t)?'danger':''}" style="width:${t.progress||0}%"></div></div>
+          <span>${t.progress||0}%</span>
+        </div>
+      </td>
+      <td class="py-1.5">${getStatusBadge(t.status)}</td>
+    </tr>`).join('')
+}
+
+function renderProjTaskPagination() {
+  const container = document.getElementById('projTasksPagination')
+  if (!container) return
+  const total = _projTaskAllData.length
+  const totalPages = Math.ceil(total / PROJ_TASK_PAGE_SIZE)
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+  const p = _projTaskPage
+  const start = (p - 1) * PROJ_TASK_PAGE_SIZE + 1
+  const end = Math.min(p * PROJ_TASK_PAGE_SIZE, total)
+  const btn = (pg, label, disabled, active) =>
+    `<button onclick="projTaskGoPage(${pg})" class="px-3 py-1 rounded text-xs border ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}" ${disabled ? 'disabled' : ''}>${label}</button>`
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(btn(i, i, false, i === p))
+  } else {
+    pages.push(btn(1, 1, false, p === 1))
+    if (p > 3) pages.push('<span class="px-1 text-gray-400">…</span>')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(btn(i, i, false, i === p))
+    if (p < totalPages - 2) pages.push('<span class="px-1 text-gray-400">…</span>')
+    pages.push(btn(totalPages, totalPages, false, p === totalPages))
+  }
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2">
+      <span class="text-xs text-gray-500">Hiển thị ${start}–${end} / ${total} task</span>
+      <div class="flex items-center gap-1">
+        ${btn(p - 1, '‹ Trước', p <= 1, false)}
+        ${pages.join('')}
+        ${btn(p + 1, 'Tiếp ›', p >= totalPages, false)}
+      </div>
+    </div>`
+}
+
+function projTaskGoPage(page) {
+  const totalPages = Math.ceil(_projTaskAllData.length / PROJ_TASK_PAGE_SIZE)
+  if (page < 1 || page > totalPages) return
+  _projTaskPage = page
+  renderProjTaskRows()
+  renderProjTaskPagination()
+  const el = document.getElementById('projTasksTbody')
+  if (el) el.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function openProjectDetail(id, openChatTab = false) {
@@ -1318,24 +1753,10 @@ async function openProjectDetail(id, openChatTab = false) {
                 <th class="pb-2 pr-3">Tiến độ</th>
                 <th class="pb-2">TT</th>
               </tr></thead>
-              <tbody class="divide-y">
-                ${tasks.length ? tasks.map(t => `<tr class="${isOverdue(t) ? 'overdue-row' : 'table-row'}" onclick="openTaskDetail(${t.id})" style="cursor:pointer">
-                  <td class="py-1.5 pr-3 font-medium text-gray-800">${t.title}</td>
-                  <td class="py-1.5 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
-                  <td class="py-1.5 pr-3">${getPriorityBadge(t.priority)}</td>
-                  <td class="py-1.5 pr-3 text-gray-600">${t.assigned_to_name||'<span class="text-gray-300">Chưa giao</span>'}</td>
-                  <td class="py-1.5 pr-3 ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
-                  <td class="py-1.5 pr-3">
-                    <div class="flex items-center gap-1.5">
-                      <div class="progress-bar" style="width:60px"><div class="progress-fill ${isOverdue(t)?'danger':''}" style="width:${t.progress||0}%"></div></div>
-                      <span>${t.progress||0}%</span>
-                    </div>
-                  </td>
-                  <td class="py-1.5">${getStatusBadge(t.status)}</td>
-                </tr>`).join('') : `<tr><td colspan="7" class="py-8 text-center text-gray-400 text-sm">Chưa có task nào trong dự án này</td></tr>`}
-              </tbody>
+              <tbody id="projTasksTbody" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="projTasksPagination" class="mt-3"></div>
         </div>
 
         <!-- Chat panel (lazy-loaded) -->
@@ -1349,6 +1770,14 @@ async function openProjectDetail(id, openChatTab = false) {
     window._currentProjectDetailId = project.id
 
     navigate('project-detail')
+
+    // Render paginated task list (after DOM is ready)
+    setTimeout(() => {
+      _projTaskAllData = tasks
+      _projTaskPage = 1
+      renderProjTaskRows()
+      renderProjTaskPagination()
+    }, 0)
 
     // Always show unread badge on the chat tab button immediately
     setTimeout(() => updateProjectChatTabBadge(project.id), 50)
@@ -2131,16 +2560,90 @@ function updateTaskCategoryFilter(selectedProjectId = '') {
 }
 
 
+// ── Task list pagination state ────────────────────────────────────────────
+const TASK_PAGE_SIZE = 20
+let _taskCurrentPage = 1
+let _taskAllData     = []   // full filtered dataset
+
+function taskPaginatedData() {
+  const start = (_taskCurrentPage - 1) * TASK_PAGE_SIZE
+  return _taskAllData.slice(start, start + TASK_PAGE_SIZE)
+}
+
+function renderTaskPagination() {
+  const container = $('taskPagination')
+  if (!container) return
+  const total = _taskAllData.length
+  const totalPages = Math.max(1, Math.ceil(total / TASK_PAGE_SIZE))
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+
+  const p = _taskCurrentPage
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages = [1]
+    if (p > 3) pages.push('...')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(i)
+    if (p < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  const btn = (label, page, disabled = false, active = false) =>
+    `<button onclick="taskGoPage(${page})" ${disabled ? 'disabled' : ''}
+      class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+      ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+  const from = total === 0 ? 0 : (p - 1) * TASK_PAGE_SIZE + 1
+  const to   = Math.min(p * TASK_PAGE_SIZE, total)
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+      <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> công việc</p>
+      <div class="flex items-center gap-1">
+        ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+        ${pages.map(pg => pg === '...'
+            ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+            : btn(pg, pg, false, pg === p)
+          ).join('')}
+        ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+      </div>
+    </div>`
+}
+
+function taskGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_taskAllData.length / TASK_PAGE_SIZE))
+  _taskCurrentPage = Math.max(1, Math.min(page, totalPages))
+  renderTaskRows()
+  renderTaskPagination()
+  const table = $('tasksTable')
+  if (table) table.closest('.overflow-x-auto')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function renderTasksTable(tasks) {
+  const tbody = $('tasksTable')
+  if (!tbody) return
+
+  // Save full dataset, reset to page 1
+  _taskAllData     = tasks
+  _taskCurrentPage = 1
+
+  renderTaskRows()
+  renderTaskPagination()
+}
+
+function renderTaskRows() {
   const tbody = $('tasksTable')
   if (!tbody) return
   const effGlobal = getEffectiveGlobalRole()
 
-  if (!tasks.length) {
+  if (_taskAllData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="12" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
     return
   }
 
+  const tasks = taskPaginatedData()
   tbody.innerHTML = tasks.map(t => {
     const isAssigned = t.assigned_to === currentUser?.id
     const isCreatedByMe = t.assigned_by === currentUser?.id
@@ -2816,7 +3319,7 @@ async function openTaskDetail(id, openChatTab = false) {
           <div class="space-y-1 max-h-32 overflow-y-auto">
             ${task.history.map(h => `
               <div class="flex gap-2 text-xs text-gray-500 py-1 border-b">
-                <span class="text-gray-400 flex-shrink-0">${dayjs(h.created_at).format('DD/MM HH:mm')}</span>
+                <span class="text-gray-400 flex-shrink-0">${toLocalDayjs(h.created_at).format('DD/MM HH:mm')}</span>
                 <span class="font-medium text-gray-700 flex-shrink-0">${h.changed_by_name}</span>
                 <span class="truncate">→ ${h.field_changed}: ${h.new_value || '-'}</span>
               </div>
@@ -3059,7 +3562,7 @@ function renderChatMessages(container, msgs, contextType, contextId) {
   let lastDate = ''
   container.innerHTML = msgs.map(msg => {
     const isMe = msg.sender_id === currentUser?.id
-    const dt = dayjs(msg.created_at)
+    const dt = toLocalDayjs(msg.created_at)
     const dateLabel = dt.format('DD/MM/YYYY')
     let dateSep = ''
     if (dateLabel !== lastDate) {
@@ -3626,6 +4129,69 @@ let _tsDropdownsInitialised = false   // run dropdown population only once per p
 let _tsMembersCache = []              // cached result from /api/timesheets/members
 let _tsProjectsCache = []             // cached result from /api/timesheets/projects
 
+// ── Pagination state ──────────────────────────────────────────────
+const TS_PAGE_SIZE = 20               // rows per page
+let _tsCurrentPage = 1                // current page (1-based)
+let _tsAllData     = []               // full dataset after filter (set by renderTimesheetTable)
+
+function tsPaginatedData() {
+  const start = (_tsCurrentPage - 1) * TS_PAGE_SIZE
+  return _tsAllData.slice(start, start + TS_PAGE_SIZE)
+}
+
+function renderTsPagination() {
+  const container = $('tsPagination')
+  if (!container) return
+  const total = _tsAllData.length
+  const totalPages = Math.max(1, Math.ceil(total / TS_PAGE_SIZE))
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+
+  const p = _tsCurrentPage
+  // Build page buttons (show max 7 around current)
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages = [1]
+    if (p > 3) pages.push('...')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(i)
+    if (p < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  const btn = (label, page, disabled = false, active = false) =>
+    `<button onclick="tsGoPage(${page})" ${disabled ? 'disabled' : ''}
+      class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+      ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+  const from = total === 0 ? 0 : (p - 1) * TS_PAGE_SIZE + 1
+  const to   = Math.min(p * TS_PAGE_SIZE, total)
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+      <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> bản ghi</p>
+      <div class="flex items-center gap-1">
+        ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+        ${pages.map(pg => pg === '...'
+            ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+            : btn(pg, pg, false, pg === p)
+          ).join('')}
+        ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+      </div>
+    </div>`
+}
+
+function tsGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_tsAllData.length / TS_PAGE_SIZE))
+  _tsCurrentPage = Math.max(1, Math.min(page, totalPages))
+  renderTsRows()
+  renderTsPagination()
+  // Scroll to top of table
+  const table = $('timesheetTable')
+  if (table) table.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 // Initialise dropdowns ONCE using /api/timesheets/members & /api/timesheets/projects
 async function initTsFilterDropdowns() {
   if (_tsDropdownsInitialised) return
@@ -4030,6 +4596,10 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
   const canSeeAll   = isAdmin || isProjAdmin
   const canApprove  = isAdmin || isProjAdmin
 
+  // Save full dataset for pagination, reset to page 1 on new data load
+  _tsAllData     = timesheets
+  _tsCurrentPage = 1
+
   // Use API summary if available (avoids JS re-sum from potentially stale allTimesheets)
   let totalReg, totalOT
   if (apiSummary) {
@@ -4048,27 +4618,46 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
     el.style.display = canSeeAll ? '' : 'none'
   })
 
+  // Render current page rows + pagination
+  renderTsRows()
+  renderTsPagination()
+}
+
+// ── Render chỉ rows của trang hiện tại ──────────────────────────────────────
+function renderTsRows() {
+  const tbody = $('timesheetTable')
+  if (!tbody) return
+
+  const isAdmin     = currentUser.role === 'system_admin'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
+  const canSeeAll   = isAdmin || isProjAdmin
+  const canApprove  = isAdmin || isProjAdmin
+
   const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
   const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
+  const emptyColspan  = canSeeAll ? 10 : 9
 
-  const emptyColspan = canSeeAll ? 10 : 9
+  const pageData = tsPaginatedData()
 
-  tbody.innerHTML = timesheets.map(t => {
+  if (_tsAllData.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="${emptyColspan}" class="text-center py-8 text-gray-400">
+      <i class="fas fa-clock text-3xl mb-2 block"></i>
+      ${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào. Nhấn "+ Thêm timesheet" để bắt đầu.'}
+    </td></tr>`
+    return
+  }
+
+  tbody.innerHTML = pageData.map(t => {
     const isOwner   = t.user_id === currentUser.id
     const isDraft   = t.status === 'draft'
     const isRejected = t.status === 'rejected'
     const isSubmitted = t.status === 'submitted'
 
-    // Quyền edit: admin/projAdmin luôn được; member chỉ khi draft/rejected của mình
-    const canEdit   = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
-    // Quyền xóa: admin luôn được; projAdmin được; member chỉ khi draft/rejected của mình
-    const canDelete = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
-    // Nút submit (gửi duyệt) — chỉ owner, khi đang draft
-    const canSubmit = isOwner && isDraft
-    // Nút approve — admin/projAdmin, khi submitted
+    const canEdit      = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
+    const canDelete    = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
+    const canSubmit    = isOwner && isDraft
     const canApproveBt = canApprove && isSubmitted
-    // Nút reject — admin/projAdmin, khi submitted
-    const canRejectBt = canApprove && isSubmitted
+    const canRejectBt  = canApprove && isSubmitted
 
     return `
     <tr class="table-row ${isOwner && !canSeeAll ? 'bg-green-50/30' : ''}">
@@ -4088,18 +4677,15 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
       <td class="py-2 pr-3"><span class="badge ${statusColors[t.status] || 'badge-todo'}">${statusLabels[t.status] || t.status}</span></td>
       <td class="py-2">
         <div class="flex gap-1 flex-wrap">
-          ${canSubmit ? `<button onclick="submitTimesheet(${t.id})" class="btn-secondary text-xs px-2 py-1 text-blue-600 border-blue-300" title="Gửi duyệt"><i class="fas fa-paper-plane"></i></button>` : ''}
-          ${canEdit   ? `<button onclick="openTimesheetModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
+          ${canSubmit    ? `<button onclick="submitTimesheet(${t.id})" class="btn-secondary text-xs px-2 py-1 text-blue-600 border-blue-300" title="Gửi duyệt"><i class="fas fa-paper-plane"></i></button>` : ''}
+          ${canEdit      ? `<button onclick="openTimesheetModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
           ${canApproveBt ? `<button onclick="approveTimesheet(${t.id})" class="btn-primary text-xs px-2 py-1" title="Duyệt"><i class="fas fa-check"></i></button>` : ''}
           ${canRejectBt  ? `<button onclick="rejectTimesheet(${t.id})" class="text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-1 text-xs" title="Từ chối"><i class="fas fa-times"></i></button>` : ''}
-          ${canDelete ? `<button onclick="deleteTimesheet(${t.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
+          ${canDelete    ? `<button onclick="deleteTimesheet(${t.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
         </div>
       </td>
     </tr>`
-  }).join('') || `<tr><td colspan="${emptyColspan}" class="text-center py-8 text-gray-400">
-    <i class="fas fa-clock text-3xl mb-2 block"></i>
-    ${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào. Nhấn "+ Thêm timesheet" để bắt đầu.'}
-  </td></tr>`
+  }).join('')
 }
 
 // ── Biến lưu trạng thái locked hiện tại của modal ────────────────────────────
@@ -5697,7 +6283,6 @@ async function openCostModal(id = null) {
   }
   _populateAllCostTypeDropdowns()
 
-  $('costMode').value = 'cost'
   $('costModalTitle').textContent = id ? 'Sửa Chi phí' : 'Thêm Chi phí'
   $('costId').value = id || ''
 
@@ -6425,10 +7010,84 @@ async function loadUsers() {
   } catch (e) { toast('Lỗi tải nhân sự: ' + e.message, 'error') }
 }
 
+// ── User list pagination state ────────────────────────────────────────────
+const USER_PAGE_SIZE = 20
+let _userCurrentPage = 1
+let _userAllData     = []
+
+function userPaginatedData() {
+  const start = (_userCurrentPage - 1) * USER_PAGE_SIZE
+  return _userAllData.slice(start, start + USER_PAGE_SIZE)
+}
+
+function renderUserPagination() {
+  const container = $('userPagination')
+  if (!container) return
+  const total = _userAllData.length
+  const totalPages = Math.max(1, Math.ceil(total / USER_PAGE_SIZE))
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+
+  const p = _userCurrentPage
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages = [1]
+    if (p > 3) pages.push('...')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(i)
+    if (p < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  const btn = (label, page, disabled = false, active = false) =>
+    `<button onclick="userGoPage(${page})" ${disabled ? 'disabled' : ''}
+      class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+      ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+  const from = total === 0 ? 0 : (p - 1) * USER_PAGE_SIZE + 1
+  const to   = Math.min(p * USER_PAGE_SIZE, total)
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+      <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> nhân sự</p>
+      <div class="flex items-center gap-1">
+        ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+        ${pages.map(pg => pg === '...'
+            ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+            : btn(pg, pg, false, pg === p)
+          ).join('')}
+        ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+      </div>
+    </div>`
+}
+
+function userGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_userAllData.length / USER_PAGE_SIZE))
+  _userCurrentPage = Math.max(1, Math.min(page, totalPages))
+  renderUserRows()
+  renderUserPagination()
+  const tbody = $('usersTable')
+  if (tbody) tbody.closest('.overflow-x-auto')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function renderUsersTable(users) {
+  _userAllData     = users
+  _userCurrentPage = 1
+  renderUserRows()
+  renderUserPagination()
+}
+
+function renderUserRows() {
   const tbody = $('usersTable')
   if (!tbody) return
-  tbody.innerHTML = users.map(u => `
+
+  if (_userAllData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400">Không có nhân sự</td></tr>'
+    return
+  }
+
+  tbody.innerHTML = userPaginatedData().map(u => `
     <tr class="table-row">
       <td class="py-2 pr-3">
         <div class="flex items-center gap-2">
@@ -6450,12 +7109,12 @@ function renderUsersTable(users) {
         <div class="flex gap-1 items-center">
           <button onclick="openUserModal(${u.id})" class="btn-secondary text-xs px-2 py-1" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
           ${u.id !== currentUser.id ? `
-            <button onclick="toggleUserStatus(${u.id}, ${u.is_active})" 
-              class="${u.is_active ? 'text-orange-400 hover:text-orange-600' : 'text-green-400 hover:text-green-600'} px-1.5 text-sm" 
+            <button onclick="toggleUserStatus(${u.id}, ${u.is_active})"
+              class="${u.is_active ? 'text-orange-400 hover:text-orange-600' : 'text-green-400 hover:text-green-600'} px-1.5 text-sm"
               title="${u.is_active ? 'Vô hiệu hóa' : 'Kích hoạt'}">
               <i class="fas fa-${u.is_active ? 'ban' : 'check-circle'}"></i>
             </button>
-            <button onclick="confirmDeleteUser(${u.id}, '${u.full_name.replace(/'/g,"\\'")}')" 
+            <button onclick="confirmDeleteUser(${u.id}, '${u.full_name.replace(/'/g,"\\'")}')"
               class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa vĩnh viễn">
               <i class="fas fa-trash"></i>
             </button>
@@ -6463,7 +7122,7 @@ function renderUsersTable(users) {
         </div>
       </td>
     </tr>
-  `).join('') || '<tr><td colspan="7" class="text-center py-8 text-gray-400">Không có nhân sự</td></tr>'
+  `).join('')
 }
 
 function filterUsers() {
@@ -6624,8 +7283,9 @@ function switchMGuideTab(tab) {
 }
 
 async function loadProfile() {
+  let user = null
   try {
-    const user = await api('/auth/me')
+    user = await api('/auth/me')
     currentUser = { ...currentUser, ...user }
 
     const initials = user.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
@@ -6645,12 +7305,15 @@ async function loadProfile() {
   // Show email settings card only for system_admin
   const emailCard = $('emailSettingsCard')
   if (emailCard) {
-    if (user.role === 'system_admin') {
+    if (user?.role === 'system_admin') {
       emailCard.classList.remove('hidden')
     } else {
       emailCard.classList.add('hidden')
     }
   }
+
+  // Render browser push notification toggle
+  renderPushButton()
 }
 
 // ================================================================
@@ -6925,7 +7588,7 @@ function toggleApiKeyVisibility() {
 
 async function refreshEmailLogs() {
   try {
-    const logs = await api('/email-logs?limit=100')
+    const logs = await api('/email-logs?limit=20')
     _emailLogsCache = logs || []
     renderEmailLogs(_emailLogsCache)
 
@@ -6968,6 +7631,60 @@ function filterEmailLogs() {
   renderEmailLogs(filtered)
 }
 
+// ── Overdue reminder: xem trước + gửi mail ──────────────────────
+async function previewOverdueTasks() {
+  const listEl   = $('overduePreviewList')
+  const tbodyEl  = $('overduePreviewTbody')
+  const resultEl = $('overdueReminderResult')
+  if (!listEl || !tbodyEl) return
+
+  resultEl.textContent = 'Đang tải...'
+  try {
+    const tasks = await api('/admin/overdue-tasks-preview')
+    if (!tasks.length) {
+      resultEl.textContent = '✅ Không có task quá hạn nào'
+      listEl.classList.add('hidden')
+      return
+    }
+    resultEl.textContent = `Tìm thấy ${tasks.length} task quá hạn`
+    tbodyEl.innerHTML = tasks.map(t => {
+      const days = Math.floor((Date.now() - new Date(t.due_date).getTime()) / 86400000)
+      return `<tr class="table-row">
+        <td class="py-1.5 pr-3 font-medium text-gray-800 max-w-[200px] truncate">${t.title}</td>
+        <td class="py-1.5 pr-3 text-gray-500">${t.project_code}</td>
+        <td class="py-1.5 pr-3 font-medium">${t.assignee_name}</td>
+        <td class="py-1.5 pr-3 text-blue-600">${t.assignee_email}</td>
+        <td class="py-1.5 pr-3 text-red-600 font-bold">${t.due_date} <span class="text-red-400 font-normal">(+${days}ngày)</span></td>
+        <td class="py-1.5"><span class="badge badge-inprogress text-xs">${t.status}</span></td>
+      </tr>`
+    }).join('')
+    listEl.classList.remove('hidden')
+  } catch(e) {
+    resultEl.textContent = '❌ Lỗi: ' + e.message
+  }
+}
+
+async function sendOverdueReminders() {
+  const resultEl = $('overdueReminderResult')
+  if (!confirm('Gửi email nhắc ⚠️ quá hạn đến tất cả nhân sự phụ trách task chưa hoàn thành?')) return
+  if (resultEl) resultEl.textContent = 'Đang gửi...'
+  try {
+    const res = await api('/admin/send-overdue-reminders', { method: 'POST' })
+    if (resultEl) {
+      if (res.sent === 0) {
+        resultEl.textContent = `✅ ${res.message || 'Không có task quá hạn nào'}`
+      } else {
+        resultEl.textContent = `✅ Đã gửi ${res.sent}/${res.total_overdue} email thành công`
+      }
+    }
+    toast(`✅ Đã gửi ${res.sent} email nhắc deadline`, 'success', 4000)
+    setTimeout(() => refreshEmailLogs(), 2000)
+  } catch(e) {
+    if (resultEl) resultEl.textContent = '❌ Lỗi: ' + e.message
+    toast('Lỗi gửi mail: ' + e.message, 'error')
+  }
+}
+
 const EMAIL_EVENT_LABELS = {
   task_assigned:        '📌 Giao task',
   task_status_updated:  '🔄 Cập nhật task',
@@ -6981,28 +7698,63 @@ const EMAIL_EVENT_LABELS = {
 }
 
 function renderEmailLogs(logs) {
-  const tbody = $('emailLogsTable')
-  if (!tbody) return
+  const container = $('emailLogsContainer')
+  if (!container) return
+
   if (!logs.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="py-10 text-center text-gray-400"><i class="fas fa-inbox mr-2"></i>Chưa có email nào được gửi</td></tr>'
+    container.innerHTML = '<div class="py-8 text-center text-gray-400 text-sm"><i class="fas fa-inbox mr-2 text-lg block mb-2"></i>Chưa có email nào được gửi</div>'
     return
   }
-  tbody.innerHTML = logs.map(l => {
-    const timeStr = l.sent_at ? new Date(l.sent_at.replace(' ', 'T')).toLocaleString('vi-VN') : '-'
-    const statusBadge = l.status === 'sent'
-      ? '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-semibold">✅ Thành công</span>'
-      : '<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-semibold">❌ Thất bại</span>'
-    const eventLabel = EMAIL_EVENT_LABELS[l.event_type] || l.event_type
-    const recipient = l.full_name ? `<div class="font-medium text-gray-800 text-xs">${l.full_name}</div><div class="text-gray-400 text-xs">${l.to_email}</div>` : `<div class="text-gray-700 text-xs">${l.to_email}</div>`
-    const errorTip = l.error_msg ? `<span class="text-red-500 text-xs cursor-help" title="${l.error_msg}">⚠️ Xem lỗi</span>` : '<span class="text-gray-300 text-xs">—</span>'
-    return `<tr class="hover:bg-gray-50">
-      <td class="py-3 pr-3 text-xs text-gray-500 whitespace-nowrap">${timeStr}</td>
-      <td class="py-3 pr-3">${recipient}</td>
-      <td class="py-3 pr-3 text-xs text-gray-700 max-w-xs truncate" title="${l.subject}">${l.subject}</td>
-      <td class="py-3 pr-3"><span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">${eventLabel}</span></td>
-      <td class="py-3 pr-3">${statusBadge}</td>
-      <td class="py-3">${errorTip}</td>
-    </tr>`
+
+  const EVENT_ICON = {
+    task_assigned:       '📌', task_status_updated: '🔄', task_overdue: '⚠️',
+    project_added:       '🏗️', project_created:     '🆕', project_status_changed: '🔄',
+    timesheet_reviewed:  '✅', timesheet_bulk_approved: '✅',
+    payment_request_new: '💰', payment_status_changed: '💳',
+    chat_mention:        '💬', member_added_to_project: '👤', test: '🧪',
+  }
+  const EVENT_SHORT = {
+    task_assigned:       'Giao task',       task_status_updated: 'Cập nhật task',
+    task_overdue:        'Quá hạn',         project_added:       'Tham gia dự án',
+    project_created:     'Dự án mới',       project_status_changed: 'TT dự án',
+    timesheet_reviewed:  'Duyệt timesheet', timesheet_bulk_approved: 'Duyệt TS',
+    payment_request_new: 'Đề nghị TT',      payment_status_changed: 'Cập nhật TT',
+    chat_mention:        '@Mention',         member_added_to_project: 'Thành viên mới',
+    test:                'Test',
+  }
+
+  container.innerHTML = logs.map(l => {
+    // Compact time: "08:15 · 26/3"
+    let timeStr = '-'
+    if (l.sent_at) {
+      const d = new Date(l.sent_at.replace(' ', 'T'))
+      const hm = d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+      const dm = `${d.getDate()}/${d.getMonth()+1}`
+      timeStr = `${hm} · ${dm}`
+    }
+    const icon = EVENT_ICON[l.event_type] || '📧'
+    const label = EVENT_SHORT[l.event_type] || l.event_type
+    const name = l.full_name || l.to_email || '—'
+    const isOk = l.status === 'sent'
+    const statusDot = isOk
+      ? '<span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0 mt-0.5" title="Thành công"></span>'
+      : '<span class="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 mt-0.5" title="Thất bại"></span>'
+    const errorHint = l.error_msg
+      ? `<span class="text-red-400 text-xs truncate max-w-[140px]" title="${l.error_msg}">⚠️ ${l.error_msg.slice(0,40)}...</span>`
+      : ''
+
+    return `<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors group">
+      ${statusDot}
+      <span class="text-base flex-shrink-0 w-5 text-center">${icon}</span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-semibold text-gray-700">${name}</span>
+          <span class="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">${label}</span>
+          ${errorHint}
+        </div>
+      </div>
+      <span class="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">${timeStr}</span>
+    </div>`
   }).join('')
 }
 
@@ -7153,6 +7905,104 @@ async function loadProductivity(skipReinit = false) {
   } catch(e) { toast('Lỗi tải năng suất: ' + e.message, 'error') }
 }
 
+// ── Productivity pagination ──────────────────────────────────────
+const PROD_PAGE_SIZE = 20
+let _prodCurrentPage = 1
+let _prodAllData = []
+
+function prodPaginatedData() {
+  const start = (_prodCurrentPage - 1) * PROD_PAGE_SIZE
+  return _prodAllData.slice(start, start + PROD_PAGE_SIZE)
+}
+
+function renderProdRows() {
+  const tbody = $('productivityTable')
+  if (!tbody) return
+  const data = prodPaginatedData()
+  const getScoreColor = s => s >= 75 ? 'text-green-600' : s >= 50 ? 'text-yellow-600' : 'text-red-600'
+  const getBadgeClass  = s => s >= 75 ? 'badge-completed' : s >= 50 ? 'badge-review' : 'badge-overdue'
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400"><i class="fas fa-inbox text-2xl mb-2 block"></i>Không có dữ liệu</td></tr>'
+    return
+  }
+  tbody.innerHTML = data.map(u => {
+    const completionRate = u.completion_rate || 0
+    const ontimeRate     = u.ontime_rate     || 0
+    const productivity   = u.productivity    || 0
+    const score          = u.score           || 0
+    return `
+    <tr class="table-row">
+      <td class="py-2 pr-3">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(u.full_name||'?').split(' ').pop()?.charAt(0)}</div>
+          <div><div class="font-medium text-gray-800 text-sm">${u.full_name || '—'}</div></div>
+        </div>
+      </td>
+      <td class="py-2 pr-3 text-xs text-gray-500">${u.department || '—'}</td>
+      <td class="py-2 pr-3 text-center font-medium">${u.total_tasks}</td>
+      <td class="py-2 pr-3 text-center font-medium text-green-600">${u.completed_tasks}</td>
+      <td class="py-2 pr-3 text-center"><span class="${getScoreColor(completionRate)} font-medium">${completionRate}%</span></td>
+      <td class="py-2 pr-3 text-center text-green-600">${u.ontime_tasks}</td>
+      <td class="py-2 pr-3 text-center text-red-500">${u.late_completed}</td>
+      <td class="py-2 pr-3 text-center">
+        <div class="flex items-center gap-1 justify-center">
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${ontimeRate}%;background:#0066CC"></div></div>
+          <span class="text-xs text-blue-600">${ontimeRate}%</span>
+        </div>
+      </td>
+      <td class="py-2 pr-3 text-center">
+        <div class="flex items-center gap-1 justify-center">
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${productivity}%;background:#F59E0B"></div></div>
+          <span class="text-xs ${getScoreColor(productivity)}">${productivity}%</span>
+        </div>
+      </td>
+      <td class="py-2 text-center"><span class="badge font-bold text-sm px-3 ${getBadgeClass(score)}">${score}</span></td>
+    </tr>`
+  }).join('')
+}
+
+function renderProdPagination() {
+  const container = $('prodPagination')
+  if (!container) return
+  const total = _prodAllData.length
+  const totalPages = Math.ceil(total / PROD_PAGE_SIZE)
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+  const p = _prodCurrentPage
+  const start = (p - 1) * PROD_PAGE_SIZE + 1
+  const end = Math.min(p * PROD_PAGE_SIZE, total)
+  const btn = (pg, label, disabled, active) =>
+    `<button onclick="prodGoPage(${pg})" class="px-3 py-1 rounded text-sm border ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}" ${disabled ? 'disabled' : ''}>${label}</button>`
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(btn(i, i, false, i === p))
+  } else {
+    pages.push(btn(1, 1, false, p === 1))
+    if (p > 3) pages.push('<span class="px-2 text-gray-400">…</span>')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(btn(i, i, false, i === p))
+    if (p < totalPages - 2) pages.push('<span class="px-2 text-gray-400">…</span>')
+    pages.push(btn(totalPages, totalPages, false, p === totalPages))
+  }
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2">
+      <span class="text-xs text-gray-500">Hiển thị ${start}–${end} / ${total} nhân sự</span>
+      <div class="flex items-center gap-1">
+        ${btn(p - 1, '‹ Trước', p <= 1, false)}
+        ${pages.join('')}
+        ${btn(p + 1, 'Tiếp ›', p >= totalPages, false)}
+      </div>
+    </div>`
+}
+
+function prodGoPage(page) {
+  const totalPages = Math.ceil(_prodAllData.length / PROD_PAGE_SIZE)
+  if (page < 1 || page > totalPages) return
+  _prodCurrentPage = page
+  renderProdRows()
+  renderProdPagination()
+  const el = $('productivityTable')
+  if (el) el.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function sortProductivity(key) {
   prodSortKey = key
   // Map display sort keys to actual data keys
@@ -7202,9 +8052,6 @@ function renderProductivityPage(data) {
   })
   console.groupEnd()
 
-  const getScoreColor = s => s >= 75 ? 'text-green-600' : s >= 50 ? 'text-yellow-600' : 'text-red-600'
-  const getBadgeClass = s => s >= 75 ? 'badge-completed' : s >= 50 ? 'badge-review' : 'badge-overdue'
-
   // ---- Bar chart: 4 datasets ----
   destroyChart('prodBar')
   const ctx1 = $('prodBarChart')
@@ -7253,6 +8100,8 @@ function renderProductivityPage(data) {
     const topP = data.filter(u => u.completed_tasks > 0).slice(0, 8)
     const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
     if (topP.length) {
+      // Legend position: bottom on small screens, right on larger screens
+      const isSmallScreen = window.innerWidth < 768
       charts['prodPie'] = safeChart(ctx2, {
         type: 'pie',
         data: {
@@ -7261,62 +8110,21 @@ function renderProductivityPage(data) {
         },
         options: {
           responsive: true,
-          plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } }
+          maintainAspectRatio: false,
+          plugins: { legend: {
+            position: isSmallScreen ? 'bottom' : 'right',
+            labels: { font: { size: 11 }, boxWidth: 12, padding: 8 }
+          }}
         }
       })
     }
   }
 
-  // ---- Table ----
-  const tbody = $('productivityTable')
-  if (!tbody) return
-
-  if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400"><i class="fas fa-inbox text-2xl mb-2 block"></i>Không có dữ liệu</td></tr>'
-    return
-  }
-
-  tbody.innerHTML = data.map((u, i) => {
-    const completionRate = u.completion_rate || 0   // % Hoàn Thành = completed/total×100
-    const ontimeRate     = u.ontime_rate     || 0   // Chính xác    = ontime/completed×100
-    const productivity   = u.productivity    || 0   // Năng suất    = (%Hoàn + Chính xác)/2
-    const score          = u.score           || 0   // Điểm         = (Năng suất + Chính xác)/2
-
-    return `
-    <tr class="table-row">
-      <td class="py-2 pr-3">
-        <div class="flex items-center gap-2">
-          <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(u.full_name||'?').split(' ').pop()?.charAt(0)}</div>
-          <div>
-            <div class="font-medium text-gray-800 text-sm">${u.full_name || '—'}</div>
-          </div>
-        </div>
-      </td>
-      <td class="py-2 pr-3 text-xs text-gray-500">${u.department || '—'}</td>
-      <td class="py-2 pr-3 text-center font-medium">${u.total_tasks}</td>
-      <td class="py-2 pr-3 text-center font-medium text-green-600">${u.completed_tasks}</td>
-      <td class="py-2 pr-3 text-center">
-        <span class="${getScoreColor(completionRate)} font-medium">${completionRate}%</span>
-      </td>
-      <td class="py-2 pr-3 text-center text-green-600">${u.ontime_tasks}</td>
-      <td class="py-2 pr-3 text-center text-red-500">${u.late_completed}</td>
-      <td class="py-2 pr-3 text-center">
-        <div class="flex items-center gap-1 justify-center">
-          <div class="progress-bar w-12"><div class="progress-fill" style="width:${ontimeRate}%;background:#0066CC"></div></div>
-          <span class="text-xs text-blue-600">${ontimeRate}%</span>
-        </div>
-      </td>
-      <td class="py-2 pr-3 text-center">
-        <div class="flex items-center gap-1 justify-center">
-          <div class="progress-bar w-12"><div class="progress-fill" style="width:${productivity}%;background:#F59E0B"></div></div>
-          <span class="text-xs ${getScoreColor(productivity)}">${productivity}%</span>
-        </div>
-      </td>
-      <td class="py-2 text-center">
-        <span class="badge font-bold text-sm px-3 ${getBadgeClass(score)}">${score}</span>
-      </td>
-    </tr>`
-  }).join('')
+  // ---- Table (pagination) ----
+  _prodAllData = data
+  _prodCurrentPage = 1
+  renderProdRows()
+  renderProdPagination()
 }
 
 // ================================================================
@@ -9175,39 +9983,104 @@ async function renderHealthTab(force = false) {
                 <th class="pb-2">Vấn đề</th>
               </tr>
             </thead>
-            <tbody>
-              ${projects.sort((a,b) => a.health_score - b.health_score).map(p => `
-                <tr class="border-b hover:bg-gray-50">
-                  <td class="py-3 pr-4">
-                    <div class="font-medium text-gray-800">${p.name}</div>
-                    <div class="text-xs text-gray-400">${p.code}</div>
-                  </td>
-                  <td class="py-3 pr-4 text-center">
-                    <span class="inline-flex items-center justify-center w-12 h-8 rounded-lg font-bold text-sm health-${p.health_status}">${p.health_score}</span>
-                  </td>
-                  <td class="py-3 pr-4 text-center">
-                    <span class="px-2 py-1 rounded-full text-xs font-medium health-${p.health_status}">${healthLabel[p.health_status]}</span>
-                  </td>
-                  <td class="py-3 pr-4 text-center">
-                    <div class="flex items-center gap-2">
-                      <div class="flex-1 bg-gray-200 rounded-full h-2">
-                        <div class="h-2 rounded-full ${p.completion_rate>=80?'bg-green-500':p.completion_rate>=50?'bg-blue-500':'bg-red-400'}" style="width:${p.completion_rate}%"></div>
-                      </div>
-                      <span class="text-xs text-gray-600 w-8">${p.completion_rate}%</span>
-                    </div>
-                  </td>
-                  <td class="py-3 pr-4 text-center">
-                    <span class="${p.overdue_tasks > 0 ? 'text-red-600 font-bold' : 'text-gray-400'}">${p.overdue_tasks}</span>
-                  </td>
-                  <td class="py-3 pr-4 text-center text-gray-600">${p.team_size} người</td>
-                  <td class="py-3 text-xs text-gray-500">${p.issues.length ? p.issues.slice(0,2).join(', ') : '<span class="text-green-600">Không có vấn đề</span>'}</td>
-                </tr>
-              `).join('')}
-            </tbody>
+            <tbody id="healthProjectsTbody"></tbody>
           </table>
         </div>
+        <div id="healthProjectsPagination"></div>
       </div>
     `
+
+    // ── Health projects pagination ──────────────────────────────
+    const HEALTH_PAGE_SIZE = 15
+    const healthSorted = [...projects].sort((a, b) => a.health_score - b.health_score)
+    let _healthPage = 1
+
+    function renderHealthRows() {
+      const tbody = document.getElementById('healthProjectsTbody')
+      if (!tbody) return
+      const start = (_healthPage - 1) * HEALTH_PAGE_SIZE
+      const pageData = healthSorted.slice(start, start + HEALTH_PAGE_SIZE)
+      tbody.innerHTML = pageData.map(p => `
+        <tr class="border-b hover:bg-gray-50">
+          <td class="py-3 pr-4">
+            <div class="font-medium text-gray-800">${p.name}</div>
+            <div class="text-xs text-gray-400">${p.code}</div>
+          </td>
+          <td class="py-3 pr-4 text-center">
+            <span class="inline-flex items-center justify-center w-12 h-8 rounded-lg font-bold text-sm health-${p.health_status}">${p.health_score}</span>
+          </td>
+          <td class="py-3 pr-4 text-center">
+            <span class="px-2 py-1 rounded-full text-xs font-medium health-${p.health_status}">${healthLabel[p.health_status]}</span>
+          </td>
+          <td class="py-3 pr-4 text-center">
+            <div class="flex items-center gap-2">
+              <div class="flex-1 bg-gray-200 rounded-full h-2">
+                <div class="h-2 rounded-full ${p.completion_rate>=80?'bg-green-500':p.completion_rate>=50?'bg-blue-500':'bg-red-400'}" style="width:${p.completion_rate}%"></div>
+              </div>
+              <span class="text-xs text-gray-600 w-8">${p.completion_rate}%</span>
+            </div>
+          </td>
+          <td class="py-3 pr-4 text-center">
+            <span class="${p.overdue_tasks > 0 ? 'text-red-600 font-bold' : 'text-gray-400'}">${p.overdue_tasks}</span>
+          </td>
+          <td class="py-3 pr-4 text-center text-gray-600">${p.team_size} người</td>
+          <td class="py-3 text-xs text-gray-500">${p.issues.length ? p.issues.slice(0,2).join(', ') : '<span class="text-green-600">Không có vấn đề</span>'}</td>
+        </tr>
+      `).join('')
+    }
+
+    function renderHealthPagination() {
+      const container = document.getElementById('healthProjectsPagination')
+      if (!container) return
+      const total = healthSorted.length
+      const totalPages = Math.max(1, Math.ceil(total / HEALTH_PAGE_SIZE))
+      if (totalPages <= 1) { container.innerHTML = ''; return }
+
+      const p = _healthPage
+      let pages = []
+      if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) pages.push(i)
+      } else {
+        pages = [1]
+        if (p > 3) pages.push('...')
+        for (let i = Math.max(2, p-1); i <= Math.min(totalPages-1, p+1); i++) pages.push(i)
+        if (p < totalPages - 2) pages.push('...')
+        pages.push(totalPages)
+      }
+
+      const from = (p - 1) * HEALTH_PAGE_SIZE + 1
+      const to   = Math.min(p * HEALTH_PAGE_SIZE, total)
+
+      // Expose goPage to window scope so onclick works
+      window._healthGoPage = (page) => {
+        _healthPage = Math.max(1, Math.min(page, totalPages))
+        renderHealthRows()
+        renderHealthPagination()
+      }
+
+      const btn = (label, pg, disabled = false, active = false) =>
+        `<button onclick="_healthGoPage(${pg})" ${disabled ? 'disabled' : ''}
+          class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+          ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+          ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+      container.innerHTML = `
+        <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+          <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> dự án</p>
+          <div class="flex items-center gap-1">
+            ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+            ${pages.map(pg => pg === '...'
+                ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+                : btn(pg, pg, false, pg === p)
+              ).join('')}
+            ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+          </div>
+        </div>`
+    }
+
+    renderHealthRows()
+    renderHealthPagination()
+    // ─────────────────────────────────────────────────────────────
 
     // Draw charts
     destroyAnalyticsChart('healthDist')
@@ -9300,28 +10173,90 @@ async function renderPerformanceTab(force = false) {
               <th class="pb-2 pr-4 text-right">Nhóm</th>
               <th class="pb-2 text-right">Tiến độ</th>
             </tr></thead>
-            <tbody>
-              ${projects.map(p => `
-                <tr class="border-b hover:bg-gray-50">
-                  <td class="py-3 pr-4"><div class="font-medium text-gray-800">${p.name}</div><div class="text-xs text-gray-400">${p.code}</div></td>
-                  <td class="py-3 pr-4"><span class="px-2 py-1 rounded-full text-xs font-medium" style="background:${statusColor[p.status]}22;color:${statusColor[p.status]}">${statusLabel[p.status]||p.status}</span></td>
-                  <td class="py-3 pr-4 text-right font-medium">${p.completed_tasks||0}/${p.total_tasks||0}</td>
-                  <td class="py-3 pr-4 text-right"><span class="${p.overdue_tasks>0?'text-red-600 font-bold':'text-gray-400'}">${p.overdue_tasks||0}</span></td>
-                  <td class="py-3 pr-4 text-right text-gray-600">${(p.total_hours||0).toFixed(1)}h</td>
-                  <td class="py-3 pr-4 text-right text-gray-600">${p.member_count||0}</td>
-                  <td class="py-3 text-right">
-                    <div class="flex items-center justify-end gap-2">
-                      <div class="w-16 bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full bg-green-500" style="width:${p.progress||0}%"></div></div>
-                      <span class="text-xs text-gray-600 w-8">${p.progress||0}%</span>
-                    </div>
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
+            <tbody id="perfProjectsTbody"></tbody>
           </table>
         </div>
+        <div id="perfProjectsPagination"></div>
       </div>
     `
+
+    // ── Performance projects pagination ──────────────────────────────────
+    const PERF_PAGE_SIZE = 15
+    let _perfPage = 1
+
+    function renderPerfRows() {
+      const tbody = document.getElementById('perfProjectsTbody')
+      if (!tbody) return
+      const start = (_perfPage - 1) * PERF_PAGE_SIZE
+      const pageData = projects.slice(start, start + PERF_PAGE_SIZE)
+      tbody.innerHTML = pageData.map(p => `
+        <tr class="border-b hover:bg-gray-50">
+          <td class="py-3 pr-4"><div class="font-medium text-gray-800">${p.name}</div><div class="text-xs text-gray-400">${p.code}</div></td>
+          <td class="py-3 pr-4"><span class="px-2 py-1 rounded-full text-xs font-medium" style="background:${statusColor[p.status]}22;color:${statusColor[p.status]}">${statusLabel[p.status]||p.status}</span></td>
+          <td class="py-3 pr-4 text-right font-medium">${p.completed_tasks||0}/${p.total_tasks||0}</td>
+          <td class="py-3 pr-4 text-right"><span class="${p.overdue_tasks>0?'text-red-600 font-bold':'text-gray-400'}">${p.overdue_tasks||0}</span></td>
+          <td class="py-3 pr-4 text-right text-gray-600">${(p.total_hours||0).toFixed(1)}h</td>
+          <td class="py-3 pr-4 text-right text-gray-600">${p.member_count||0}</td>
+          <td class="py-3 text-right">
+            <div class="flex items-center justify-end gap-2">
+              <div class="w-16 bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full bg-green-500" style="width:${p.progress||0}%"></div></div>
+              <span class="text-xs text-gray-600 w-8">${p.progress||0}%</span>
+            </div>
+          </td>
+        </tr>
+      `).join('')
+    }
+
+    function renderPerfPagination() {
+      const container = document.getElementById('perfProjectsPagination')
+      if (!container) return
+      const total = projects.length
+      const totalPages = Math.max(1, Math.ceil(total / PERF_PAGE_SIZE))
+      if (totalPages <= 1) { container.innerHTML = ''; return }
+
+      const p = _perfPage
+      let pages = []
+      if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) pages.push(i)
+      } else {
+        pages = [1]
+        if (p > 3) pages.push('...')
+        for (let i = Math.max(2, p-1); i <= Math.min(totalPages-1, p+1); i++) pages.push(i)
+        if (p < totalPages - 2) pages.push('...')
+        pages.push(totalPages)
+      }
+      const from = (p - 1) * PERF_PAGE_SIZE + 1
+      const to   = Math.min(p * PERF_PAGE_SIZE, total)
+
+      window._perfGoPage = (page) => {
+        _perfPage = Math.max(1, Math.min(page, totalPages))
+        renderPerfRows()
+        renderPerfPagination()
+      }
+
+      const btn = (label, pg, disabled = false, active = false) =>
+        `<button onclick="_perfGoPage(${pg})" ${disabled ? 'disabled' : ''}
+          class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+          ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+          ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+      container.innerHTML = `
+        <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+          <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> dự án</p>
+          <div class="flex items-center gap-1">
+            ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+            ${pages.map(pg => pg === '...'
+                ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+                : btn(pg, pg, false, pg === p)
+              ).join('')}
+            ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+          </div>
+        </div>`
+    }
+
+    renderPerfRows()
+    renderPerfPagination()
+    // ─────────────────────────────────────────────────────────────────────
 
     destroyAnalyticsChart('perfTasks'); destroyAnalyticsChart('perfHours')
     const top10 = [...projects].sort((a,b) => (b.total_tasks||0) - (a.total_tasks||0)).slice(0, 10)
@@ -10280,7 +11215,7 @@ async function renderProjectFinancialTab(force = false) {
           </div>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm border-collapse">
+          <table class="w-full text-sm border-collapse" id="finDetailTable">
             <thead>
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
                 <th class="text-left py-3 px-3 font-semibold border-b border-gray-200 min-w-[180px]">Dự án</th>
@@ -10297,7 +11232,11 @@ async function renderProjectFinancialTab(force = false) {
                 <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 min-w-[120px]">Tiến độ GTHĐ</th>
               </tr>
             </thead>
-            <tbody>
+          </table>
+          <!-- Scrollable body wrapper -->
+          <div style="max-height:520px;overflow-y:auto;" id="finDetailScrollBody">
+          <table class="w-full text-sm border-collapse" id="finDetailBodyTable">
+            <tbody id="finDetailTbody">
               ${sorted.map((p, idx) => {
                 const hasData = p.revenue_total > 0 || p.total_cost > 0
                 const rowBg = !hasData ? 'bg-gray-50 opacity-60' : idx % 2 === 0 ? '' : 'bg-gray-50/50'
@@ -10376,10 +11315,13 @@ async function renderProjectFinancialTab(force = false) {
                 `
               }).join('')}
             </tbody>
-            <!-- Totals row -->
+          </table>
+          </div><!-- end scrollable body -->
+          <!-- Totals row — always visible, outside scroll -->
+          <table class="w-full text-sm border-collapse" id="finDetailFootTable">
             <tfoot>
               <tr class="bg-gray-100 font-bold text-sm border-t-2 border-gray-300">
-                <td class="py-3 px-3 text-gray-700" ${isLifetime ? '' : ''}><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
+                <td class="py-3 px-3 text-gray-700" style="min-width:180px"><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
                 ${isLifetime ? `<td class="py-3 px-3 text-center text-gray-400 text-xs">—</td>` : ''}
                 <td class="py-3 px-3 text-right text-indigo-700">${fmtM(totals.contract_value)}</td>
                 <td class="py-3 px-3 text-right text-emerald-600">${fmtM(totals.revenue_collected)}</td>
@@ -10455,8 +11397,30 @@ async function renderProjectFinancialTab(force = false) {
     el.innerHTML = html
     _projFinCache = html
 
-    // Draw charts after DOM update
-    requestAnimationFrame(() => _drawProjectFinCharts(data))
+    // Sync column widths: header → body table & footer table
+    requestAnimationFrame(() => {
+      const hdrTable  = document.getElementById('finDetailTable')
+      const bodyTable = document.getElementById('finDetailBodyTable')
+      const footTable = document.getElementById('finDetailFootTable')
+      if (hdrTable && bodyTable && footTable) {
+        const hdrCells = hdrTable.querySelectorAll('thead tr th')
+        // Apply same colgroup to body & foot tables
+        const colHtml = Array.from(hdrCells).map(th => {
+          const w = th.getBoundingClientRect().width
+          return `<col style="width:${w}px;min-width:${w}px">`
+        }).join('')
+        ;[bodyTable, footTable].forEach(t => {
+          let cg = t.querySelector('colgroup')
+          if (!cg) { cg = document.createElement('colgroup'); t.prepend(cg) }
+          cg.innerHTML = colHtml
+        })
+        // Also set header table colgroup
+        let hdrCg = hdrTable.querySelector('colgroup')
+        if (!hdrCg) { hdrCg = document.createElement('colgroup'); hdrTable.prepend(hdrCg) }
+        hdrCg.innerHTML = colHtml
+      }
+      _drawProjectFinCharts(data)
+    })
 
   } catch(e) {
     el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
