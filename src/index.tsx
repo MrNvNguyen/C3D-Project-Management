@@ -1692,6 +1692,9 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
     const fields = isFullAccess
       ? ['title', 'description', 'discipline_code', 'phase', 'priority', 'status', 'assigned_to', 'start_date', 'due_date', 'actual_start_date', 'actual_end_date', 'estimated_hours', 'actual_hours', 'progress', 'category_id']
       : ['status', 'progress', 'actual_hours', 'actual_end_date']
+    // Normalize legacy status 'done' → 'completed' (tasks table không có 'done')
+    if (data.status === 'done') data.status = 'completed'
+
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
 
@@ -1721,39 +1724,22 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
       }
     }
 
-    // ── Email: task_status_updated → chỉ gửi cho Admin (system_admin + project_admin/leader của dự án) ──
-    if (data.status && data.status !== task.status) {
+    // ── Email: task_status_updated → chỉ gửi cho người tạo task (assigned_by) ──
+    if (data.status && data.status !== task.status && task.assigned_by && task.assigned_by !== user.id) {
       const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
-
-      // Lấy danh sách admin cần thông báo (loại trừ chính người cập nhật)
-      const adminRows = await db.prepare(`
-        SELECT DISTINCT u.id, u.email, u.full_name
-        FROM users u
-        WHERE u.is_active = 1
-          AND u.id != ?
-          AND (
-            u.role = 'system_admin'
-            OR EXISTS (
-              SELECT 1 FROM project_members pm
-              WHERE pm.project_id = ? AND pm.user_id = u.id
-                AND pm.role IN ('project_admin','project_leader')
-            )
-          )
-      `).bind(user.id, task.project_id).all()
-
-      for (const admin of (adminRows.results as any[])) {
-        if (!admin.email) continue
+      const creator = await getUserEmailInfo(db, task.assigned_by)
+      if (creator?.email) {
         await sendEmail(c.env, {
-          to: admin.email, toName: admin.full_name,
+          to: creator.email, toName: creator.full_name,
           eventType: 'task_status_updated',
           data: {
-            taskTitle: task.title,
+            taskTitle:   task.title,
             projectName: projInfo?.name,
-            oldStatus: task.status,
-            newStatus: data.status,
-            updatedBy: user.full_name
+            oldStatus:   task.status,
+            newStatus:   data.status,
+            updatedBy:   user.full_name
           },
-          db, userId: admin.id, relatedType: 'task', relatedId: id
+          db, userId: task.assigned_by, relatedType: 'task', relatedId: id
         })
       }
     }
@@ -2797,6 +2783,41 @@ app.post('/api/tasks/:id/subtasks', authMiddleware, async (c) => {
     ).run()
 
     return c.json({ success: true, id: result.meta.last_row_id }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/tasks/:id/subtasks/bulk — tạo nhiều subtask cùng lúc
+app.post('/api/tasks/:id/subtasks/bulk', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const taskId = parseInt(c.req.param('id'))
+
+    const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(taskId).first() as any
+    if (!task) return c.json({ error: 'Task không tồn tại' }, 404)
+
+    const { subtasks } = await c.req.json()
+    if (!Array.isArray(subtasks) || subtasks.length === 0) {
+      return c.json({ error: 'Danh sách subtask không được để trống' }, 400)
+    }
+
+    const results: number[] = []
+    for (const item of subtasks) {
+      const title = (item.title || '').trim()
+      if (!title) continue  // bỏ qua dòng trống
+      const r = await db.prepare(`
+        INSERT INTO subtasks (task_id, title, description, status, priority, assigned_to, due_date, estimated_hours, notes, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        taskId, title, item.description || null,
+        item.status || 'todo', item.priority || 'medium',
+        item.assigned_to || user.id,
+        item.due_date || null, item.estimated_hours || 0, item.notes || null, user.id
+      ).run()
+      if (r.meta?.last_row_id) results.push(r.meta.last_row_id as number)
+    }
+
+    return c.json({ success: true, created: results.length, ids: results }, 201)
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -6459,29 +6480,47 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     `).all()
 
     // Member productivity — use subqueries to avoid Cartesian product between tasks and timesheets
-    const memberProductivity = await db.prepare(`
+    const memberProductivityRaw = await db.prepare(`
       SELECT u.id, u.full_name, u.department,
-        COALESCE(tsk.total_tasks, 0)     AS total_tasks,
+        COALESCE(tsk.total_tasks,     0) AS total_tasks,
         COALESCE(tsk.completed_tasks, 0) AS completed_tasks,
-        COALESCE(ts.total_hours, 0)      AS total_hours
+        COALESCE(tsk.ontime_tasks,    0) AS ontime_tasks,
+        COALESCE(ts.total_hours,      0) AS total_hours
       FROM users u
       LEFT JOIN (
         SELECT assigned_to,
-          COUNT(DISTINCT id)                                                          AS total_tasks,
-          COUNT(DISTINCT CASE WHEN status IN ('completed','review') THEN id END)     AS completed_tasks
+          COUNT(DISTINCT id) AS total_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review') THEN id END) AS completed_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review')
+            AND actual_end_date IS NOT NULL
+            AND actual_end_date <= due_date THEN id END) AS ontime_tasks
         FROM tasks
         GROUP BY assigned_to
       ) tsk ON tsk.assigned_to = u.id
       LEFT JOIN (
         SELECT user_id,
-          SUM(regular_hours + overtime_hours) AS total_hours
+          SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours
         FROM timesheets
         WHERE work_date >= date('now', '-30 days')
         GROUP BY user_id
       ) ts ON ts.user_id = u.id
       WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')
-      ORDER BY total_hours DESC
+      ORDER BY completed_tasks DESC, total_hours DESC
     `).all()
+
+    // Tính các chỉ số năng suất (cùng công thức với /api/productivity)
+    const memberProductivity = {
+      results: (memberProductivityRaw.results as any[]).map(r => {
+        const task_giao       = Math.max(0, r.total_tasks)
+        const da_xong         = Math.min(task_giao, Math.max(0, r.completed_tasks))
+        const dung_han        = Math.min(da_xong, Math.max(0, r.ontime_tasks))
+        const completion_rate = task_giao > 0 ? Math.min(100, Math.round((da_xong / task_giao) * 100)) : 0
+        const ontime_rate     = da_xong > 0   ? Math.min(100, Math.round((dung_han / da_xong) * 100)) : 0
+        const productivity    = Math.round((completion_rate + ontime_rate) / 2)
+        const score           = Math.round((productivity + ontime_rate) / 2)
+        return { ...r, completion_rate, ontime_rate, productivity, score }
+      })
+    }
 
     // ── Extra stats for secondary KPI widgets ──────────────────────────
     const curYear  = new Date().getFullYear()

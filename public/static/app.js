@@ -415,8 +415,10 @@ function getRoleLabel(role) {
 }
 
 function getStatusBadge(status) {
-  const labels = { todo: 'Chờ làm', in_progress: 'Đang làm', review: 'Đang duyệt', completed: 'Hoàn thành', cancelled: 'Đã hủy', active: 'Hoạt động', planning: 'Lập kế hoạch', on_hold: 'Tạm dừng' }
-  return `<span class="badge badge-${status}">${labels[status] || status}</span>`
+  const labels = { todo: 'Chờ làm', in_progress: 'Đang làm', review: 'Đang duyệt', completed: 'Hoàn thành', done: 'Hoàn thành', cancelled: 'Đã hủy', active: 'Hoạt động', planning: 'Lập kế hoạch', on_hold: 'Tạm dừng' }
+  // Normalise legacy 'done' → display as 'completed' badge class
+  const badgeClass = status === 'done' ? 'completed' : status
+  return `<span class="badge badge-${badgeClass}">${labels[status] || status}</span>`
 }
 
 function getPriorityBadge(p) {
@@ -911,26 +913,50 @@ function renderProductivityChart(data) {
   destroyChart('productivity')
   const ctx = $('productivityChart')
   if (!ctx || !data?.length) return
-  const top10 = data.slice(0, 8)
-  // Dashboard passes simpler data (total_tasks, completed_tasks, total_hours)
-  // Compute completion_rate on the fly if not present
-  const getRate = u => u.completion_rate != null ? u.completion_rate
-    : (u.total_tasks > 0 ? Math.round((u.completed_tasks || 0) / u.total_tasks * 100) : 0)
+
+  // Lọc nhân viên có ít nhất 1 task được giao, sắp xếp theo Điểm giảm dần, lấy top 10
+  const withTasks = data.filter(u => (u.total_tasks || 0) > 0)
+  const sorted = withTasks.slice().sort((a, b) => (b.score || 0) - (a.score || 0))
+  const top10 = sorted.slice(0, 10)
+
+  // Nếu không có ai có task, hiển thị tất cả (tối đa 10)
+  const display = top10.length ? top10 : data.slice(0, 10)
+
+  // Tên ngắn: lấy tên (từ cuối) để label gọn
+  const labels = display.map(u => u.full_name?.split(' ').pop() || u.full_name)
+
   charts['productivity'] = safeChart(ctx, {
     type: 'bar',
     data: {
-      labels: top10.map(u => u.full_name?.split(' ').pop() || u.full_name),
+      labels,
       datasets: [
-        { label: '% Hoàn Thành',  data: top10.map(getRate),                    backgroundColor: '#00A651', borderRadius: 4 },
-        { label: 'Chính xác (%)', data: top10.map(u => u.ontime_rate    || 0), backgroundColor: '#0066CC', borderRadius: 4 },
-        { label: 'Năng suất (%)', data: top10.map(u => u.productivity   || 0), backgroundColor: '#F59E0B', borderRadius: 4 },
-        { label: 'Điểm',          data: top10.map(u => u.score          || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
+        { label: '% Hoàn Thành',  data: display.map(u => u.completion_rate || 0), backgroundColor: '#00A651', borderRadius: 4 },
+        { label: 'Chính xác (%)', data: display.map(u => u.ontime_rate     || 0), backgroundColor: '#0066CC', borderRadius: 4 },
+        { label: 'Năng suất (%)', data: display.map(u => u.productivity    || 0), backgroundColor: '#F59E0B', borderRadius: 4 },
+        { label: 'Điểm',          data: display.map(u => u.score           || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
-      scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } }
+      plugins: {
+        legend: { position: 'top', labels: { font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const u = display[ctx.dataIndex]
+              if (!u) return ''
+              if (ctx.datasetIndex === 0) return ` % Hoàn Thành: ${u.completion_rate || 0}% (${u.completed_tasks || 0}/${u.total_tasks || 0} task)`
+              if (ctx.datasetIndex === 1) return ` Chính xác: ${u.ontime_rate || 0}%`
+              if (ctx.datasetIndex === 2) return ` Năng suất: ${u.productivity || 0}%`
+              if (ctx.datasetIndex === 3) return ` Điểm: ${u.score || 0}`
+              return ''
+            }
+          }
+        }
+      },
+      scales: {
+        y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } }
+      }
     }
   })
 }
@@ -4007,7 +4033,266 @@ function openSubtaskModal(taskId, sub = null) {
     const el = $(id); if (el) el.disabled = !canEditAll
   })
 
+  // Ẩn/hiện tab bar: chỉ show khi thêm mới, ẩn khi sửa
+  const tabBar = $('subtaskTabBar')
+  if (tabBar) tabBar.style.display = sub ? 'none' : 'flex'
+
+  // Khi thêm mới: reset về tab single; khi sửa: ở lại tab single
+  switchSubtaskTab('single')
+
+  // Reset import state
+  clearSubtaskImport()
+
   openModal('subtaskModal')
+}
+
+// ── Subtask Modal Tabs ──────────────────────────────────────────
+function switchSubtaskTab(tab) {
+  ;['single','bulk','import'].forEach(t => {
+    const btn = $(`stab-${t}`)
+    const panel = $(`stpanel-${t}`)
+    if (!btn || !panel) return
+    const active = t === tab
+    btn.classList.toggle('border-primary', active)
+    btn.classList.toggle('text-primary', active)
+    btn.classList.toggle('border-transparent', !active)
+    btn.classList.toggle('text-gray-500', !active)
+    panel.style.display = active ? '' : 'none'
+  })
+  // Init bulk rows nếu chưa có
+  if (tab === 'bulk') initBulkRows()
+}
+
+// ── Bulk subtask (thêm nhiều) ────────────────────────────────────
+let _bulkSubtaskRows = []
+
+function initBulkRows() {
+  const container = $('bulkSubtaskRows')
+  if (!container) return
+  if (container.children.length === 0) {
+    _bulkSubtaskRows = []
+    addBulkSubtaskRow()
+    addBulkSubtaskRow()
+    addBulkSubtaskRow()
+  }
+}
+
+function addBulkSubtaskRow(title = '', dueDate = '', priority = 'medium', estHours = '') {
+  const container = $('bulkSubtaskRows')
+  if (!container) return
+  const idx = Date.now() + Math.random()
+  const div = document.createElement('div')
+  div.className = 'flex items-center gap-2'
+  div.dataset.rowId = idx
+  div.innerHTML = `
+    <input type="text" placeholder="Tên subtask *" value="${title.replace(/"/g,'&quot;')}"
+      class="input-field flex-1 text-sm py-1.5" oninput="updateBulkCount()">
+    <input type="date" value="${dueDate}" class="input-field text-sm py-1.5" style="width:130px">
+    <select class="select-field text-sm py-1.5" style="width:100px">
+      <option value="low" ${priority==='low'?'selected':''}>Thấp</option>
+      <option value="medium" ${priority==='medium'?'selected':''}>Trung bình</option>
+      <option value="high" ${priority==='high'?'selected':''}>Cao</option>
+    </select>
+    <input type="number" placeholder="Giờ" value="${estHours}" min="0" step="0.5"
+      class="input-field text-sm py-1.5" style="width:70px">
+    <button type="button" onclick="removeBulkRow(this)" class="text-gray-300 hover:text-red-400 flex-shrink-0 w-6 h-6 flex items-center justify-center">
+      <i class="fas fa-times text-sm"></i>
+    </button>
+  `
+  container.appendChild(div)
+  updateBulkCount()
+  // Focus first input if it's the first row added manually
+  if (title === '') div.querySelector('input[type=text]')?.focus()
+}
+
+function removeBulkRow(btn) {
+  btn.closest('[data-row-id]')?.remove()
+  updateBulkCount()
+}
+
+function updateBulkCount() {
+  const container = $('bulkSubtaskRows')
+  if (!container) return
+  const filled = [...container.querySelectorAll('[data-row-id]')]
+    .filter(row => row.querySelector('input[type=text]')?.value.trim()).length
+  const el = $('bulkSubtaskCount')
+  if (el) el.textContent = `${filled} subtask`
+}
+
+async function saveBulkSubtasks() {
+  const taskId = parseInt($('subtaskTaskId').value)
+  const container = $('bulkSubtaskRows')
+  if (!container) return
+
+  const rows = [...container.querySelectorAll('[data-row-id]')]
+  const subtasks = rows.map(row => {
+    const inputs = row.querySelectorAll('input')
+    const sel = row.querySelector('select')
+    return {
+      title:           inputs[0]?.value.trim() || '',
+      due_date:        inputs[1]?.value || null,
+      priority:        sel?.value || 'medium',
+      estimated_hours: parseFloat(inputs[2]?.value) || 0
+    }
+  }).filter(s => s.title)
+
+  if (!subtasks.length) { toast('Vui lòng nhập ít nhất 1 tên subtask', 'warning'); return }
+
+  try {
+    const r = await api(`/tasks/${taskId}/subtasks/bulk`, { method: 'post', data: { subtasks } })
+    toast(`Đã thêm ${r.created} subtask`)
+    closeModal('subtaskModal')
+    await _refreshSubtaskPanelAfterSave(taskId)
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+// ── Import Excel ─────────────────────────────────────────────────
+let _importedSubtasks = []
+
+function handleSubtaskFileDrop(e) {
+  e.preventDefault()
+  $('subtaskDropZone').classList.remove('border-primary','bg-primary/5')
+  const file = e.dataTransfer.files[0]
+  if (file) parseSubtaskExcel(file)
+}
+
+function handleSubtaskFileSelect(input) {
+  const file = input.files[0]
+  if (file) parseSubtaskExcel(file)
+  input.value = ''  // reset để có thể chọn lại cùng file
+}
+
+function parseSubtaskExcel(file) {
+  if (!window.XLSX) { toast('Thư viện đọc Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return }
+  const reader = new FileReader()
+  reader.onload = e => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+      // Dòng 0 = header (bỏ qua), từ dòng 1 trở đi là data
+      const data = rows.slice(1).map(r => ({
+        title:           String(r[0] || '').trim(),
+        due_date:        parseDateCell(r[1]),
+        priority:        normalizePriority(String(r[2] || '')),
+        estimated_hours: parseFloat(r[3]) || 0,
+        notes:           String(r[4] || '').trim() || null
+      })).filter(s => s.title)
+
+      if (!data.length) { toast('Không tìm thấy dữ liệu hợp lệ trong file', 'warning'); return }
+
+      _importedSubtasks = data
+      renderImportPreview(data)
+    } catch (err) { toast('Lỗi đọc file: ' + err.message, 'error') }
+  }
+  reader.readAsArrayBuffer(file)
+}
+
+function parseDateCell(val) {
+  if (!val) return null
+  if (val instanceof Date) {
+    const y = val.getFullYear(), m = String(val.getMonth()+1).padStart(2,'0'), d = String(val.getDate()).padStart(2,'0')
+    return `${y}-${m}-${d}`
+  }
+  const s = String(val).trim()
+  // DD/MM/YYYY
+  const m1 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (m1) return `${m1[3]}-${m1[2].padStart(2,'0')}-${m1[1].padStart(2,'0')}`
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  return null
+}
+
+function normalizePriority(v) {
+  const map = { low:'low', thấp:'low', medium:'medium', 'trung bình':'medium', high:'high', cao:'high' }
+  return map[v.toLowerCase()] || 'medium'
+}
+
+function renderImportPreview(data) {
+  const preview = $('subtaskImportPreview')
+  const tbody = $('subtaskImportRows')
+  const info = $('subtaskImportInfo')
+  const count = $('subtaskImportCount')
+  const btn = $('btnImportSubtasks')
+  if (!preview || !tbody) return
+
+  const priorityLabel = { low:'Thấp', medium:'Trung bình', high:'Cao' }
+  tbody.innerHTML = data.map((s, i) => `
+    <tr class="hover:bg-gray-50">
+      <td class="px-3 py-1.5 text-gray-400">${i+1}</td>
+      <td class="px-3 py-1.5 font-medium text-gray-800">${s.title}</td>
+      <td class="px-3 py-1.5 text-gray-500">${s.due_date || '—'}</td>
+      <td class="px-3 py-1.5">
+        <span class="px-1.5 py-0.5 rounded text-xs font-medium ${
+          s.priority==='high' ? 'bg-red-100 text-red-700' :
+          s.priority==='low'  ? 'bg-gray-100 text-gray-600' :
+                                'bg-yellow-100 text-yellow-700'
+        }">${priorityLabel[s.priority]||'Trung bình'}</span>
+      </td>
+      <td class="px-3 py-1.5 text-gray-500">${s.estimated_hours||'—'}</td>
+    </tr>
+  `).join('')
+
+  info.textContent = `${data.length} subtask từ file Excel`
+  count.textContent = `Sẵn sàng import ${data.length} subtask`
+  preview.style.display = ''
+  btn.disabled = false
+
+  // Ẩn drop zone
+  $('subtaskDropZone').style.display = 'none'
+}
+
+function clearSubtaskImport() {
+  _importedSubtasks = []
+  const preview = $('subtaskImportPreview')
+  const dz = $('subtaskDropZone')
+  const btn = $('btnImportSubtasks')
+  if (preview) preview.style.display = 'none'
+  if (dz) dz.style.display = ''
+  if (btn) btn.disabled = true
+  const count = $('subtaskImportCount')
+  if (count) count.textContent = ''
+}
+
+async function saveImportedSubtasks() {
+  if (!_importedSubtasks.length) { toast('Chưa có dữ liệu để import', 'warning'); return }
+  const taskId = parseInt($('subtaskTaskId').value)
+  try {
+    const r = await api(`/tasks/${taskId}/subtasks/bulk`, { method: 'post', data: { subtasks: _importedSubtasks } })
+    toast(`Đã import ${r.created} subtask từ Excel`)
+    closeModal('subtaskModal')
+    await _refreshSubtaskPanelAfterSave(taskId)
+  } catch (e) { toast('Lỗi import: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+// ── Helper: refresh panel sau khi lưu bulk/import ───────────────
+async function _refreshSubtaskPanelAfterSave(taskId) {
+  // Luôn fetch subtasks mới nhất 1 lần
+  const subtasks = await api(`/tasks/${taskId}/subtasks`).catch(() => [])
+  const task = allTasks.find(t => t.id === taskId) || {}
+  const effForTask = getEffectiveRoleForProject(task.project_id)
+  const isAssigned = task.assigned_to === currentUser?.id
+  const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(effForTask)
+
+  // 1. Refresh inline panel trong task table (nếu đang mở)
+  const panel = document.getElementById(`subtask-panel-${taskId}`)
+  const containerRow = document.getElementById(`subtask-rows-${taskId}`)
+  if (panel && containerRow && containerRow.style.display !== 'none') {
+    panel.dataset.loaded = '1'
+    renderSubtaskPanel(taskId, subtasks, isAdminOrLeader || isAssigned, isAssigned)
+  }
+
+  // 2. Refresh badge/toggle trên task row (dù panel đóng hay mở)
+  refreshSubtaskBadge(taskId, subtasks)
+  await refreshTaskRowSubtaskCount(taskId)
+
+  // 3. Refresh task detail modal (nếu đang mở) — dùng openTaskDetail để re-render toàn bộ
+  if ($('taskDetailModal')?.style.display !== 'none') {
+    await openTaskDetail(taskId)
+    // Giữ lại tab subtasks đang xem
+    switchTaskDetailTab('subtasks')
+  }
 }
 
 $('subtaskForm').addEventListener('submit', async (e) => {
@@ -4031,21 +4316,11 @@ $('subtaskForm').addEventListener('submit', async (e) => {
       toast('Đã thêm subtask')
     }
     closeModal('subtaskModal')
+    await _refreshSubtaskPanelAfterSave(taskId)
 
-    // Refresh inline panel in task table (if visible)
-    const panel = document.getElementById(`subtask-panel-${taskId}`)
+    // Nếu panel chưa mở → refresh badge/toggle
     const containerRow = document.getElementById(`subtask-rows-${taskId}`)
-    if (panel && containerRow && containerRow.style.display !== 'none') {
-      const subtasks = await api(`/tasks/${taskId}/subtasks`)
-      panel.dataset.loaded = '1'
-      const task = allTasks.find(t => t.id === taskId) || {}
-      const effForTask = getEffectiveRoleForProject(task.project_id)
-      const isAssigned = task.assigned_to === currentUser?.id
-      renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned, isAssigned)
-      refreshSubtaskBadge(taskId, subtasks)
-    } else {
-      // If panel not open yet, just re-open toggle or refresh task detail
-      // Also refresh the expand button if task now has subtasks
+    if (!containerRow || containerRow.style.display === 'none') {
       await refreshTaskRowSubtaskCount(taskId)
     }
 
@@ -7593,8 +7868,8 @@ async function refreshEmailLogs() {
     renderEmailLogs(_emailLogsCache)
 
     // Stats
-    const today = new Date().toISOString().split('T')[0]
-    const todayLogs = _emailLogsCache.filter(l => l.sent_at?.startsWith(today))
+    const today = toLocalDayjs(new Date().toISOString()).format('YYYY-MM-DD')
+    const todayLogs = _emailLogsCache.filter(l => l.sent_at && toLocalDayjs(l.sent_at).format('YYYY-MM-DD') === today)
     const sentToday = todayLogs.filter(l => l.status === 'sent').length
     const failedToday = todayLogs.filter(l => l.status === 'failed').length
 
@@ -7727,10 +8002,8 @@ function renderEmailLogs(logs) {
     // Compact time: "08:15 · 26/3"
     let timeStr = '-'
     if (l.sent_at) {
-      const d = new Date(l.sent_at.replace(' ', 'T'))
-      const hm = d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-      const dm = `${d.getDate()}/${d.getMonth()+1}`
-      timeStr = `${hm} · ${dm}`
+      const d = toLocalDayjs(l.sent_at)
+      timeStr = `${d.format('HH:mm')} · ${d.format('D/M')}`
     }
     const icon = EVENT_ICON[l.event_type] || '📧'
     const label = EVENT_SHORT[l.event_type] || l.event_type
@@ -11587,22 +11860,21 @@ const PAYMENT_STATUS_COLORS = {
 
 // ── Navigate to Legal page ───────────────────────────────────────────────────
 async function loadLegal() {
-  // Populate project select
-  const sel = $('legalProjectSelect')
-  if (sel && allProjects.length === 0) {
+  // Load projects if needed
+  if (allProjects.length === 0) {
     try { allProjects = (await api('/projects')).projects || [] } catch(e) {}
   }
-  if (sel) {
-    const cur = sel.value
-    sel.innerHTML = '<option value="">-- Chọn dự án --</option>'
-    allProjects.forEach(p => {
-      const opt = document.createElement('option')
-      opt.value = p.id
-      opt.textContent = `[${p.code}] ${p.name}`
-      sel.appendChild(opt)
-    })
-    if (cur) sel.value = cur
-  }
+
+  // Build searchable combobox for project selection
+  const items = allProjects.map(p => ({ value: String(p.id), label: `[${p.code}] ${p.name}` }))
+  const currentVal = _legalCurrentProjectId ? String(_legalCurrentProjectId) : ''
+  createCombobox('legalProjectSelectCombobox', {
+    placeholder: '-- Chọn dự án --',
+    items,
+    value: currentVal,
+    minWidth: '240px',
+    onchange: (val) => _onLegalProjectComboChange(val)
+  })
 
   // If project already selected, reload
   if (_legalCurrentProjectId) {
@@ -11610,9 +11882,8 @@ async function loadLegal() {
   }
 }
 
-async function onLegalProjectChange() {
-  const sel = $('legalProjectSelect')
-  const projectId = parseInt(sel.value)
+async function _onLegalProjectComboChange(val) {
+  const projectId = parseInt(val)
   if (!projectId) {
     _legalCurrentProjectId = null
     $('legalStagesContainer').innerHTML = `<div class="card text-center py-16 text-gray-400">
@@ -11625,6 +11896,12 @@ async function onLegalProjectChange() {
     return
   }
   await loadLegalProject(projectId)
+}
+
+// Keep backward compat if any inline onchange still references this
+async function onLegalProjectChange() {
+  const val = _cbGetValue('legalProjectSelectCombobox')
+  await _onLegalProjectComboChange(val)
 }
 
 async function loadLegalProject(projectId) {
@@ -12638,7 +12915,9 @@ const _legalItemTasksCache = {}
 
 // ── Toggle trạng thái task nhanh (click vào vòng tròn) ───────────────────────
 async function toggleLegalTaskStatus(taskId, currentStatus, itemId) {
-  const next = { todo:'in_progress', in_progress:'done', done:'todo', completed:'todo' }
+  // Chu kỳ status khớp với enum của bảng tasks: todo → in_progress → review → completed → todo
+  // Không dùng 'done' vì không phải giá trị hợp lệ trong DB
+  const next = { todo:'in_progress', in_progress:'review', review:'completed', completed:'todo', done:'completed' }
   const newStatus = next[currentStatus] || 'todo'
   try {
     await api(`/tasks/${taskId}`, { method: 'PUT', data: { status: newStatus } })
@@ -12695,10 +12974,12 @@ function renderLegalItemTasks(itemId, tasks) {
     high:   { color:'#ef4444', bg:'#fef2f2', label:'Cao',        icon:'fa-arrow-up' }
   }
   const STATUS_META = {
-    todo:       { color:'#64748b', bg:'#f1f5f9', label:'Chưa làm',  dot:'#94a3b8' },
-    in_progress:{ color:'#2563eb', bg:'#dbeafe', label:'Đang làm',  dot:'#3b82f6' },
-    done:       { color:'#059669', bg:'#d1fae5', label:'Xong',      dot:'#10b981' },
-    completed:  { color:'#059669', bg:'#d1fae5', label:'Xong',      dot:'#10b981' }
+    todo:       { color:'#64748b', bg:'#f1f5f9', label:'Chưa làm',   dot:'#94a3b8' },
+    in_progress:{ color:'#2563eb', bg:'#dbeafe', label:'Đang làm',   dot:'#3b82f6' },
+    review:     { color:'#d97706', bg:'#fef3c7', label:'Đang duyệt', dot:'#f59e0b' },
+    completed:  { color:'#059669', bg:'#d1fae5', label:'Hoàn thành', dot:'#10b981' },
+    cancelled:  { color:'#6b7280', bg:'#f3f4f6', label:'Đã hủy',     dot:'#9ca3af' },
+    done:       { color:'#059669', bg:'#d1fae5', label:'Hoàn thành', dot:'#10b981' }
   }
 
   const done  = tasks.filter(t => t.status === 'done' || t.status === 'completed').length
@@ -12855,12 +13136,13 @@ function renderLegalSubtasksList(taskId, subtasks) {
   const ST_META = {
     todo:       { color:'#64748b', bg:'#f1f5f9', dot:'#94a3b8', label:'Chưa làm' },
     in_progress:{ color:'#2563eb', bg:'#dbeafe', dot:'#3b82f6', label:'Đang làm' },
-    done:       { color:'#059669', bg:'#d1fae5', dot:'#10b981', label:'Xong'      }
+    done:       { color:'#059669', bg:'#d1fae5', dot:'#10b981', label:'Xong'      },
+    completed:  { color:'#059669', bg:'#d1fae5', dot:'#10b981', label:'Xong'      }
   }
   let html = `<div style="background:#f8fafc;border-top:1px solid #f0f0f0;padding:4px 10px 2px 38px">`
   subtasks.forEach((st, i) => {
     const m      = ST_META[st.status] || ST_META.todo
-    const isDone = st.status === 'done'
+    const isDone = st.status === 'done' || st.status === 'completed'
     html += `
     <div id="lst_${st.id}" class="subtask-row-legal"
       style="display:flex;align-items:center;gap:8px;padding:5px 2px;${i < subtasks.length-1 ? 'border-bottom:1px dashed #f0f0f0' : ''}">

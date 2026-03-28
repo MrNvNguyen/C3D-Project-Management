@@ -10,6 +10,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <script>
     tailwind.config = {
@@ -3070,9 +3071,7 @@
             <p class="text-gray-500 text-sm mt-0.5">Theo dõi hợp đồng, phụ lục, nghiệm thu, thanh toán và văn bản gửi đi</p>
           </div>
           <div class="flex items-center gap-2 flex-wrap">
-            <select id="legalProjectSelect" class="select-field" style="min-width:220px" onchange="onLegalProjectChange()">
-              <option value="">-- Chọn dự án --</option>
-            </select>
+            <div id="legalProjectSelectCombobox" style="min-width:240px"></div>
             <button onclick="openLegalLetterModal()" id="btnAddLetter" class="btn-accent hidden" style="display:none">
               <i class="fas fa-paper-plane mr-1"></i>Gửi văn bản
             </button>
@@ -4569,55 +4568,163 @@
 
 <!-- Subtask Modal -->
 <div id="subtaskModal" class="modal-overlay" style="display:none">
-  <div class="modal p-6" style="max-width:500px">
+  <div class="modal p-6" style="max-width:680px;width:95vw">
     <div class="flex justify-between items-center mb-4">
       <h3 class="text-lg font-bold text-gray-800" id="subtaskModalTitle">Thêm Subtask</h3>
       <button onclick="closeModal('subtaskModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
     </div>
-    <form id="subtaskForm" class="space-y-3">
-      <input type="hidden" id="subtaskId">
-      <input type="hidden" id="subtaskTaskId">
-      <div>
-        <label class="label">Tên subtask *</label>
-        <input type="text" id="subtaskTitle" class="input-field" placeholder="Mô tả công việc cụ thể..." required>
-      </div>
-      <div class="grid grid-cols-2 gap-3">
+    <input type="hidden" id="subtaskId">
+    <input type="hidden" id="subtaskTaskId">
+
+    <!-- Tab bar — ẩn khi đang sửa (subtaskId có giá trị) -->
+    <div id="subtaskTabBar" class="flex gap-1 mb-4 border-b border-gray-200">
+      <button type="button" onclick="switchSubtaskTab('single')" id="stab-single"
+        class="px-4 py-2 text-sm font-medium border-b-2 border-primary text-primary">
+        <i class="fas fa-plus mr-1"></i>Thêm 1 subtask
+      </button>
+      <button type="button" onclick="switchSubtaskTab('bulk')" id="stab-bulk"
+        class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        <i class="fas fa-list-ul mr-1"></i>Thêm nhiều
+      </button>
+      <button type="button" onclick="switchSubtaskTab('import')" id="stab-import"
+        class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        <i class="fas fa-file-excel mr-1"></i>Import Excel
+      </button>
+    </div>
+
+    <!-- Tab: Thêm 1 subtask (form cũ) -->
+    <div id="stpanel-single">
+      <form id="subtaskForm" class="space-y-3">
         <div>
-          <label class="label">Trạng thái</label>
-          <select id="subtaskStatus" class="select-field">
-            <option value="todo">Chờ thực hiện</option>
-            <option value="in_progress">Đang làm</option>
-            <option value="done">Hoàn thành</option>
-          </select>
+          <label class="label">Tên subtask *</label>
+          <input type="text" id="subtaskTitle" class="input-field" placeholder="Mô tả công việc cụ thể..." required>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Trạng thái</label>
+            <select id="subtaskStatus" class="select-field">
+              <option value="todo">Chờ thực hiện</option>
+              <option value="in_progress">Đang làm</option>
+              <option value="done">Hoàn thành</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">Ưu tiên</label>
+            <select id="subtaskPriority" class="select-field">
+              <option value="low">Thấp</option>
+              <option value="medium" selected>Trung bình</option>
+              <option value="high">Cao</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Hạn hoàn thành</label>
+            <input type="date" id="subtaskDueDate" class="input-field">
+          </div>
+          <div>
+            <label class="label">Giờ dự kiến</label>
+            <input type="number" id="subtaskEstHours" class="input-field" placeholder="0" min="0" step="0.5">
+          </div>
         </div>
         <div>
-          <label class="label">Ưu tiên</label>
-          <select id="subtaskPriority" class="select-field">
-            <option value="low">Thấp</option>
-            <option value="medium" selected>Trung bình</option>
-            <option value="high">Cao</option>
-          </select>
+          <label class="label">Mô tả / Ghi chú báo cáo</label>
+          <textarea id="subtaskNotes" class="input-field" rows="2" placeholder="Mô tả chi tiết, kết quả thực hiện, vướng mắc..."></textarea>
+        </div>
+        <div class="flex justify-end gap-3 pt-1">
+          <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
+          <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Tab: Thêm nhiều subtask -->
+    <div id="stpanel-bulk" style="display:none">
+      <div class="mb-2 flex items-center justify-between">
+        <span class="text-sm text-gray-500">Nhập danh sách subtask, mỗi dòng là 1 subtask</span>
+        <button type="button" onclick="addBulkSubtaskRow()" class="text-xs text-primary hover:underline font-medium">
+          <i class="fas fa-plus mr-1"></i>Thêm dòng
+        </button>
+      </div>
+      <div id="bulkSubtaskRows" class="space-y-2 max-h-72 overflow-y-auto pr-1">
+        <!-- rows injected by JS -->
+      </div>
+      <div class="flex justify-between items-center mt-4 pt-3 border-t border-gray-100">
+        <span id="bulkSubtaskCount" class="text-xs text-gray-400">0 subtask</span>
+        <div class="flex gap-3">
+          <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
+          <button type="button" onclick="saveBulkSubtasks()" class="btn-primary">
+            <i class="fas fa-save mr-1"></i>Lưu tất cả
+          </button>
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label class="label">Hạn hoàn thành</label>
-          <input type="date" id="subtaskDueDate" class="input-field">
+    </div>
+
+    <!-- Tab: Import Excel -->
+    <div id="stpanel-import" style="display:none">
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+        <div class="flex items-start gap-3">
+          <i class="fas fa-info-circle text-blue-500 mt-0.5"></i>
+          <div class="text-sm text-blue-700">
+            <p class="font-semibold mb-1">Hướng dẫn import từ Excel</p>
+            <ul class="space-y-0.5 text-xs">
+              <li>• Cột <strong>A</strong>: Tên subtask (bắt buộc) — dòng 1 là tiêu đề, bỏ qua khi import</li>
+              <li>• Cột <strong>B</strong>: Hạn hoàn thành (tùy chọn, định dạng YYYY-MM-DD hoặc DD/MM/YYYY)</li>
+              <li>• Cột <strong>C</strong>: Ưu tiên (tùy chọn: low / medium / high)</li>
+              <li>• Cột <strong>D</strong>: Giờ dự kiến (tùy chọn, số)</li>
+              <li>• Cột <strong>E</strong>: Ghi chú (tùy chọn)</li>
+            </ul>
+          </div>
         </div>
-        <div>
-          <label class="label">Giờ dự kiến</label>
-          <input type="number" id="subtaskEstHours" class="input-field" placeholder="0" min="0" step="0.5">
+      </div>
+
+      <!-- Drop zone -->
+      <div id="subtaskDropZone"
+        class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-primary hover:bg-primary/5 transition-colors"
+        onclick="$('subtaskFileInput').click()"
+        ondragover="event.preventDefault();this.classList.add('border-primary','bg-primary/5')"
+        ondragleave="this.classList.remove('border-primary','bg-primary/5')"
+        ondrop="handleSubtaskFileDrop(event)">
+        <i class="fas fa-file-excel text-4xl text-green-500 mb-3"></i>
+        <p class="text-sm font-medium text-gray-700">Kéo thả file Excel vào đây</p>
+        <p class="text-xs text-gray-400 mt-1">hoặc click để chọn file (.xlsx, .xls)</p>
+        <input type="file" id="subtaskFileInput" accept=".xlsx,.xls" style="display:none" onchange="handleSubtaskFileSelect(this)">
+      </div>
+
+      <!-- Preview table -->
+      <div id="subtaskImportPreview" style="display:none" class="mt-4">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700" id="subtaskImportInfo"></span>
+          <button type="button" onclick="clearSubtaskImport()" class="text-xs text-gray-400 hover:text-red-500">
+            <i class="fas fa-times mr-1"></i>Xóa
+          </button>
+        </div>
+        <div class="max-h-56 overflow-y-auto rounded border border-gray-200">
+          <table class="w-full text-xs">
+            <thead class="bg-gray-50 sticky top-0">
+              <tr>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">#</th>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">Tên subtask</th>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">Hạn</th>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">Ưu tiên</th>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">Giờ</th>
+              </tr>
+            </thead>
+            <tbody id="subtaskImportRows" class="divide-y divide-gray-100"></tbody>
+          </table>
         </div>
       </div>
-      <div>
-        <label class="label">Mô tả / Ghi chú báo cáo</label>
-        <textarea id="subtaskNotes" class="input-field" rows="3" placeholder="Mô tả chi tiết, kết quả thực hiện, vướng mắc..."></textarea>
+
+      <div class="flex justify-between items-center mt-4 pt-3 border-t border-gray-100">
+        <span id="subtaskImportCount" class="text-xs text-gray-400"></span>
+        <div class="flex gap-3">
+          <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
+          <button type="button" id="btnImportSubtasks" onclick="saveImportedSubtasks()" class="btn-primary" disabled>
+            <i class="fas fa-upload mr-1"></i>Import subtasks
+          </button>
+        </div>
       </div>
-      <div class="flex justify-end gap-3 pt-1">
-        <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
-        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
-      </div>
-    </form>
+    </div>
   </div>
 </div>
 
