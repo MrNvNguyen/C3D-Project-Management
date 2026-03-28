@@ -8805,6 +8805,15 @@ app.get('/api/analytics/team-productivity', authMiddleware, adminOnly, async (c)
     const dateFilter = month ? `AND strftime('%Y-%m', ts.work_date) = '${y}-${month.padStart(2,'0')}'`
                               : `AND strftime('%Y', ts.work_date) = '${y}'`
 
+    // taskFilter theo năm: task được giao (created_at trong năm hoặc start_date trong năm)
+    // completed: task hoàn thành có actual_end_date trong năm (fallback: updated_at trong năm)
+    const taskYearFilter = month
+      ? `AND strftime('%Y-%m', COALESCE(t.start_date, t.created_at)) = '${y}-${month.padStart(2,'0')}'`
+      : `AND strftime('%Y', COALESCE(t.start_date, t.created_at)) = '${y}'`
+    const taskDoneFilter = month
+      ? `AND strftime('%Y-%m', COALESCE(t.actual_end_date, t.updated_at)) = '${y}-${month.padStart(2,'0')}'`
+      : `AND strftime('%Y', COALESCE(t.actual_end_date, t.updated_at)) = '${y}'`
+
     const members = await db.prepare(`
       SELECT
         u.id, u.full_name, u.department, u.role,
@@ -8813,13 +8822,22 @@ app.get('/api/analytics/team-productivity', authMiddleware, adminOnly, async (c)
         COALESCE(SUM(ts.overtime_hours), 0) as overtime_hours,
         COALESCE(SUM(ts.regular_hours + ts.overtime_hours), 0) as total_hours,
         COALESCE(SUM(CASE WHEN ts.status='approved' THEN ts.regular_hours+ts.overtime_hours ELSE 0 END),0) as approved_hours,
-        COUNT(DISTINCT t.id) as assigned_tasks,
-        SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) as completed_tasks,
-        SUM(CASE WHEN t.is_overdue=1 AND t.status!='completed' THEN 1 ELSE 0 END) as overdue_tasks,
+        COALESCE(tsk.assigned_tasks, 0) as assigned_tasks,
+        COALESCE(tsk.completed_tasks, 0) as completed_tasks,
+        COALESCE(tsk.overdue_tasks, 0) as overdue_tasks,
         COUNT(DISTINCT pm.project_id) as active_projects
       FROM users u
       LEFT JOIN timesheets ts ON ts.user_id = u.id ${dateFilter}
-      LEFT JOIN tasks t ON t.assigned_to = u.id
+      LEFT JOIN (
+        SELECT
+          assigned_to,
+          COUNT(DISTINCT id) as assigned_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review') ${taskDoneFilter} THEN id END) as completed_tasks,
+          COUNT(DISTINCT CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN id END) as overdue_tasks
+        FROM tasks t
+        WHERE assigned_to IS NOT NULL ${taskYearFilter}
+        GROUP BY assigned_to
+      ) tsk ON tsk.assigned_to = u.id
       LEFT JOIN project_members pm ON pm.user_id = u.id
       WHERE u.is_active = 1
       GROUP BY u.id
@@ -9179,11 +9197,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
       // Tỷ lệ doanh thu đã thu / GTHĐ
       const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
-      // Tỷ lệ % từng khoản trên doanh thu đã thu (để thể hiện cơ cấu chi phí)
-      const pctDirect = revenueCollected > 0 ? Math.round((directCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctLabor  = revenueCollected > 0 ? Math.round((laborCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctShared = revenueCollected > 0 ? Math.round((sharedCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctCost   = revenueCollected > 0 ? Math.round((totalCost / revenueCollected) * 100 * 10) / 10 : 0
+      // Tỷ lệ % từng khoản trên GTHĐ (khi có); nếu không có GTHĐ thì trên doanh thu đã thu
+      const pctBase   = contractValue > 0 ? contractValue : revenueCollected
+      const pctDirect = pctBase > 0 ? Math.round((directCost / pctBase) * 100 * 10) / 10 : 0
+      const pctLabor  = pctBase > 0 ? Math.round((laborCost  / pctBase) * 100 * 10) / 10 : 0
+      const pctShared = pctBase > 0 ? Math.round((sharedCost / pctBase) * 100 * 10) / 10 : 0
+      const pctCost   = pctBase > 0 ? Math.round((totalCost  / pctBase) * 100 * 10) / 10 : 0
 
       return {
         id: p.id,
@@ -9237,14 +9256,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
     totals.contract_progress = totals.contract_value > 0
       ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
-    totals.pct_cost = totals.revenue_collected > 0
-      ? Math.round((totals.total_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_direct = totals.revenue_collected > 0
-      ? Math.round((totals.direct_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_labor = totals.revenue_collected > 0
-      ? Math.round((totals.labor_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_shared = totals.revenue_collected > 0
-      ? Math.round((totals.shared_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+    // % tổng tính trên tổng GTHĐ; nếu không có thì trên tổng DT đã thu
+    const totalsPctBase = totals.contract_value > 0 ? totals.contract_value : totals.revenue_collected
+    totals.pct_cost   = totalsPctBase > 0 ? Math.round((totals.total_cost   / totalsPctBase) * 100 * 10) / 10 : 0
+    totals.pct_direct = totalsPctBase > 0 ? Math.round((totals.direct_cost  / totalsPctBase) * 100 * 10) / 10 : 0
+    totals.pct_labor  = totalsPctBase > 0 ? Math.round((totals.labor_cost   / totalsPctBase) * 100 * 10) / 10 : 0
+    totals.pct_shared = totalsPctBase > 0 ? Math.round((totals.shared_cost  / totalsPctBase) * 100 * 10) / 10 : 0
 
     return c.json({
       projects: projectData,
@@ -9343,10 +9360,12 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       const profit           = revenueCollected - totalCost
       const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
       const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
-      const pctDirect = revenueCollected > 0 ? Math.round((directCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctLabor  = revenueCollected > 0 ? Math.round((laborCost  / revenueCollected) * 100 * 10) / 10 : 0
-      const pctShared = revenueCollected > 0 ? Math.round((sharedCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctCost   = revenueCollected > 0 ? Math.round((totalCost  / revenueCollected) * 100 * 10) / 10 : 0
+      // Tỷ lệ % từng khoản trên GTHĐ (khi có); nếu không có GTHĐ thì trên doanh thu đã thu
+      const pctBaseLT = contractValue > 0 ? contractValue : revenueCollected
+      const pctDirect = pctBaseLT > 0 ? Math.round((directCost / pctBaseLT) * 100 * 10) / 10 : 0
+      const pctLabor  = pctBaseLT > 0 ? Math.round((laborCost  / pctBaseLT) * 100 * 10) / 10 : 0
+      const pctShared = pctBaseLT > 0 ? Math.round((sharedCost / pctBaseLT) * 100 * 10) / 10 : 0
+      const pctCost   = pctBaseLT > 0 ? Math.round((totalCost  / pctBaseLT) * 100 * 10) / 10 : 0
 
       // Tính thời gian dự án
       const startDate = p.start_date || ''
@@ -9406,10 +9425,12 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
     totals.contract_progress = totals.contract_value > 0
       ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
-    totals.pct_cost   = totals.revenue_collected > 0 ? Math.round((totals.total_cost  / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_direct = totals.revenue_collected > 0 ? Math.round((totals.direct_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_labor  = totals.revenue_collected > 0 ? Math.round((totals.labor_cost  / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_shared = totals.revenue_collected > 0 ? Math.round((totals.shared_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+    // % tổng tính trên tổng GTHĐ; nếu không có thì trên tổng DT đã thu
+    const totalsPctBaseLT = totals.contract_value > 0 ? totals.contract_value : totals.revenue_collected
+    totals.pct_cost   = totalsPctBaseLT > 0 ? Math.round((totals.total_cost   / totalsPctBaseLT) * 100 * 10) / 10 : 0
+    totals.pct_direct = totalsPctBaseLT > 0 ? Math.round((totals.direct_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
+    totals.pct_labor  = totalsPctBaseLT > 0 ? Math.round((totals.labor_cost   / totalsPctBaseLT) * 100 * 10) / 10 : 0
+    totals.pct_shared = totalsPctBaseLT > 0 ? Math.round((totals.shared_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
 
     return c.json({
       projects: projectData,

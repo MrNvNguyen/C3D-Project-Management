@@ -11592,26 +11592,27 @@ async function renderProjectFinancialTab(force = false) {
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-emerald-600">${p.revenue_collected > 0 ? fmtM(p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
-                      ${p.revenue_collected > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400">${pct(p.revenue_collected, p.contract_value)}%</div>` : ''}
+                      ${p.revenue_collected > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${pct(p.revenue_collected, p.contract_value)}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.revenue_pending > 0 ? 'text-amber-600 font-medium' : 'text-gray-300'}">${p.revenue_pending > 0 ? fmtM(p.revenue_pending) : '—'}</span>
+                      ${p.revenue_pending > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${pct(p.revenue_pending, p.contract_value)}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.direct_cost > 0 ? 'text-blue-600' : 'text-gray-300'}">${p.direct_cost > 0 ? fmtM(p.direct_cost) : '—'}</span>
-                      ${p.direct_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_direct}%</div>` : ''}
+                      ${p.direct_cost > 0 && p.pct_direct > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_direct}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.labor_cost > 0 ? 'text-orange-600' : 'text-gray-300'}">${p.labor_cost > 0 ? fmtM(p.labor_cost) : '—'}</span>
-                      ${p.labor_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_labor}%</div>` : ''}
+                      ${p.labor_cost > 0 && p.pct_labor > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_labor}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.shared_cost > 0 ? 'text-yellow-600' : 'text-gray-300'}">${p.shared_cost > 0 ? fmtM(p.shared_cost) : '—'}</span>
-                      ${p.shared_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_shared}%</div>` : ''}
+                      ${p.shared_cost > 0 && p.pct_shared > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_shared}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-red-500">${p.total_cost > 0 ? fmtM(p.total_cost) : '<span class="text-gray-300">—</span>'}</span>
-                      ${p.total_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_cost}%</div>` : ''}
+                      ${p.total_cost > 0 && p.pct_cost > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_cost}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       ${(p.revenue_collected > 0 || p.total_cost > 0)
