@@ -9144,17 +9144,13 @@ async function loadLaborCost() {
             // So sánh phân bổ TT vs ngân sách nhập
             const budgetDiff = budgetAmt > 0 ? allocated - budgetAmt : 0
             const budgetDiffStr = budgetAmt > 0
-              ? `<span class="text-xs ${Math.abs(budgetDiff) < 1000 ? 'text-green-500' : (budgetDiff > 0 ? 'text-red-400' : 'text-orange-400')}" title="Ngân sách: ${fmtMoney(budgetAmt)}">${budgetAmt > 0 ? ' / NS: ' + fmtMoney(budgetAmt) : ''}</span>`
+              ? `<span class="text-xs ${Math.abs(budgetDiff) < 1000 ? 'text-green-500' : (budgetDiff > 0 ? 'text-red-400' : 'text-orange-400')}" title="Ngân sách nhập: ${fmtMoney(budgetAmt)}">${' / NS: ' + fmtMoney(budgetAmt)}</span>`
               : ''
-            const srcBadge = mt.source === 'synced'
-              ? `<span class="text-xs text-green-600 ml-1" title="Đã đồng bộ">●</span>`
-              : `<span class="text-xs text-orange-400 ml-1" title="Tính thời gian thực">○</span>`
 
             return `<tr class="border-b border-blue-100">
               <td class="py-1 pr-3">
                 <span class="font-medium text-blue-700">${ntcLabel}</span>
                 <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
-                ${srcBadge}
               </td>
               <td class="py-1 pr-3 text-right">${hrs > 0 ? fmt(hrs) + 'h' : '—'}</td>
               <td class="py-1 pr-3 text-right text-purple-600">${cphRow > 0 ? fmtMoney(cphRow) + '/h' : '—'}</td>
