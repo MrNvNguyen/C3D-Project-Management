@@ -11518,6 +11518,17 @@ async function renderProjectFinancialTab(force = false) {
     ` : ''
 
     // ── Bảng chi tiết per-project ────────────────────────────────────
+    // Dùng 1 table duy nhất với sticky thead/tfoot để tránh lệch cột khi tên dài
+    const nameColW  = isLifetime ? 200 : 220   // px — cột tên dự án cố định
+    const timeColW  = isLifetime ? 100 : 0
+    const numCols   = [95, 95, 85, 85, 85, 75, 85, 85, 65, 110]  // GTHĐ, DT đã thu, DT chờ, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
+    const totalMinW = nameColW + (isLifetime ? timeColW : 0) + numCols.reduce((a,b)=>a+b,0)
+    const colgroup  = `<colgroup>
+        <col style="width:${nameColW}px;min-width:${nameColW}px;max-width:${nameColW}px">
+        ${isLifetime ? `<col style="width:${timeColW}px;min-width:${timeColW}px">` : ''}
+        ${numCols.map(w => `<col style="width:${w}px;min-width:${w}px">`).join('')}
+      </colgroup>`
+
     const tableHtml = `
       <div class="card">
         <div class="flex items-center justify-between mb-4">
@@ -11530,27 +11541,25 @@ async function renderProjectFinancialTab(force = false) {
           </div>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm border-collapse" id="finDetailTable">
-            <thead>
+          <div style="max-height:580px;overflow-y:auto;position:relative;" id="finDetailScrollBody">
+          <table class="text-sm border-collapse" style="table-layout:fixed;width:100%;min-width:${totalMinW}px" id="finDetailTable">
+            ${colgroup}
+            <thead style="position:sticky;top:0;z-index:2">
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
-                <th class="text-left py-3 px-3 font-semibold border-b border-gray-200 min-w-[180px]">Dự án</th>
+                <th class="text-left py-3 px-3 font-semibold border-b border-gray-200" style="overflow:hidden">Dự án</th>
                 ${isLifetime ? `<th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Thời gian</th>` : ''}
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT đã thu</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT chờ thu</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT chờ</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP trực tiếp</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP lương</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP chung</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Tổng CP</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Lợi nhuận</th>
                 <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Biên LN</th>
-                <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 min-w-[120px]">Tiến độ GTHĐ</th>
+                <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Tiến độ</th>
               </tr>
             </thead>
-          </table>
-          <!-- Scrollable body wrapper -->
-          <div style="max-height:520px;overflow-y:auto;" id="finDetailScrollBody">
-          <table class="w-full text-sm border-collapse" id="finDetailBodyTable">
             <tbody id="finDetailTbody">
               ${sorted.map((p, idx) => {
                 const hasData = p.revenue_total > 0 || p.total_cost > 0
@@ -11562,14 +11571,14 @@ async function renderProjectFinancialTab(force = false) {
                   : ''
                 return `
                   <tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
-                    <td class="py-3 px-3">
+                    <td class="py-2 px-3" style="overflow:hidden;max-width:${nameColW}px">
                       <div class="flex items-center gap-2">
                         <div class="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
                           style="background:${!hasData?'#d1d5db':p.margin>=30?'#00A651':p.margin>=10?'#3b82f6':p.margin>=0?'#f59e0b':'#ef4444'}">
                           ${p.code?.substring(0,3)||'?'}
                         </div>
-                        <div>
-                          <div class="font-semibold text-gray-800 text-xs leading-tight">${p.name}</div>
+                        <div style="min-width:0;flex:1;overflow:hidden">
+                          <div class="font-semibold text-gray-800 text-xs leading-tight" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.name.replace(/"/g,'&quot;')}">${p.name}</div>
                           <div class="flex items-center gap-1 mt-0.5">
                             <span class="text-gray-400 text-xs">${p.code}</span>
                             <span class="badge ${statusColor[p.status]||'badge-planning'} text-xs py-0 px-1.5" style="font-size:9px">${statusLabel[p.status]||p.status}</span>
@@ -11577,82 +11586,79 @@ async function renderProjectFinancialTab(force = false) {
                         </div>
                       </div>
                     </td>
-                    ${isLifetime ? `<td class="py-3 px-3 text-center">${timespan||'<span class="text-gray-300 text-xs">—</span>'}</td>` : ''}
-                    <td class="py-3 px-3 text-right">
+                    ${isLifetime ? `<td class="py-2 px-3 text-center">${timespan||'<span class="text-gray-300 text-xs">—</span>'}</td>` : ''}
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-indigo-700">${p.contract_value > 0 ? fmtM(p.contract_value) : '<span class="text-gray-300">—</span>'}</span>
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-emerald-600">${p.revenue_collected > 0 ? fmtM(p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
-                      ${p.revenue_collected > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400">${pct(p.revenue_collected, p.contract_value)}% GTHĐ</div>` : ''}
+                      ${p.revenue_collected > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400">${pct(p.revenue_collected, p.contract_value)}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.revenue_pending > 0 ? 'text-amber-600 font-medium' : 'text-gray-300'}">${p.revenue_pending > 0 ? fmtM(p.revenue_pending) : '—'}</span>
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.direct_cost > 0 ? 'text-blue-600' : 'text-gray-300'}">${p.direct_cost > 0 ? fmtM(p.direct_cost) : '—'}</span>
                       ${p.direct_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_direct}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.labor_cost > 0 ? 'text-orange-600' : 'text-gray-300'}">${p.labor_cost > 0 ? fmtM(p.labor_cost) : '—'}</span>
                       ${p.labor_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_labor}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.shared_cost > 0 ? 'text-yellow-600' : 'text-gray-300'}">${p.shared_cost > 0 ? fmtM(p.shared_cost) : '—'}</span>
                       ${p.shared_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_shared}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-red-500">${p.total_cost > 0 ? fmtM(p.total_cost) : '<span class="text-gray-300">—</span>'}</span>
                       ${p.total_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_cost}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       ${(p.revenue_collected > 0 || p.total_cost > 0)
                         ? `<span class="font-bold ${profitColor(p.profit)}">${fmtM(p.profit)}</span>`
                         : '<span class="text-gray-300">—</span>'
                       }
                     </td>
-                    <td class="py-3 px-3 text-center">
+                    <td class="py-2 px-3 text-center">
                       ${p.revenue_collected > 0
-                        ? `<span class="inline-block px-2 py-1 rounded-lg text-xs font-bold ${marginBg(p.margin)}">${p.margin}%</span>`
+                        ? `<span class="inline-block px-2 py-0.5 rounded-lg text-xs font-bold ${marginBg(p.margin)}">${p.margin}%</span>`
                         : '<span class="text-gray-300 text-xs">—</span>'
                       }
                     </td>
-                    <td class="py-3 px-3">
+                    <td class="py-2 px-3">
                       ${p.contract_value > 0 ? `
-                        <div class="flex items-center gap-1.5">
-                          <div class="flex-1 bg-gray-200 rounded-full h-2">
-                            <div class="h-2 rounded-full ${progColor}" style="width:${cProg}%"></div>
+                        <div class="flex items-center gap-1">
+                          <div class="flex-1 bg-gray-200 rounded-full h-1.5">
+                            <div class="h-1.5 rounded-full ${progColor}" style="width:${cProg}%"></div>
                           </div>
-                          <span class="text-xs font-semibold text-gray-600 w-8 text-right">${p.contract_progress}%</span>
+                          <span class="text-xs font-semibold text-gray-600 whitespace-nowrap">${p.contract_progress}%</span>
                         </div>
-                      ` : '<span class="text-xs text-gray-300">Chưa có GTHĐ</span>'}
+                      ` : '<span class="text-xs text-gray-300">—</span>'}
                     </td>
                   </tr>
                 `
               }).join('')}
             </tbody>
-          </table>
-          </div><!-- end scrollable body -->
-          <!-- Totals row — always visible, outside scroll -->
-          <table class="w-full text-sm border-collapse" id="finDetailFootTable">
-            <tfoot>
+            <tfoot style="position:sticky;bottom:0;z-index:2">
               <tr class="bg-gray-100 font-bold text-sm border-t-2 border-gray-300">
-                <td class="py-3 px-3 text-gray-700" style="min-width:180px"><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
+                <td class="py-3 px-3 text-gray-700 whitespace-nowrap" style="overflow:hidden;text-overflow:ellipsis;max-width:${nameColW}px"><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
                 ${isLifetime ? `<td class="py-3 px-3 text-center text-gray-400 text-xs">—</td>` : ''}
-                <td class="py-3 px-3 text-right text-indigo-700">${fmtM(totals.contract_value)}</td>
-                <td class="py-3 px-3 text-right text-emerald-600">${fmtM(totals.revenue_collected)}</td>
-                <td class="py-3 px-3 text-right text-amber-600">${fmtM(totals.revenue_pending)}</td>
-                <td class="py-3 px-3 text-right text-blue-600">${fmtM(totals.direct_cost)}</td>
-                <td class="py-3 px-3 text-right text-orange-600">${fmtM(totals.labor_cost)}</td>
-                <td class="py-3 px-3 text-right text-yellow-600">${fmtM(totals.shared_cost)}</td>
-                <td class="py-3 px-3 text-right text-red-500">${fmtM(totals.total_cost)}</td>
-                <td class="py-3 px-3 text-right ${profitColor(totals.profit)}">${fmtM(totals.profit)}</td>
+                <td class="py-3 px-3 text-right text-indigo-700 whitespace-nowrap">${fmtM(totals.contract_value)}</td>
+                <td class="py-3 px-3 text-right text-emerald-600 whitespace-nowrap">${fmtM(totals.revenue_collected)}</td>
+                <td class="py-3 px-3 text-right text-amber-600 whitespace-nowrap">${fmtM(totals.revenue_pending)}</td>
+                <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap">${fmtM(totals.direct_cost)}</td>
+                <td class="py-3 px-3 text-right text-orange-600 whitespace-nowrap">${fmtM(totals.labor_cost)}</td>
+                <td class="py-3 px-3 text-right text-yellow-600 whitespace-nowrap">${fmtM(totals.shared_cost)}</td>
+                <td class="py-3 px-3 text-right text-red-500 whitespace-nowrap">${fmtM(totals.total_cost)}</td>
+                <td class="py-3 px-3 text-right whitespace-nowrap ${profitColor(totals.profit)}">${fmtM(totals.profit)}</td>
                 <td class="py-3 px-3 text-center">
-                  <span class="inline-block px-2 py-1 rounded-lg text-xs font-bold ${marginBg(totals.margin)}">${totals.margin}%</span>
+                  <span class="inline-block px-2 py-0.5 rounded-lg text-xs font-bold ${marginBg(totals.margin)}">${totals.margin}%</span>
                 </td>
-                <td class="py-3 px-3 text-center text-gray-500 text-xs">${totals.contract_progress}%</td>
+                <td class="py-3 px-3 text-center text-gray-500 text-xs whitespace-nowrap">${totals.contract_progress}%</td>
               </tr>
             </tfoot>
           </table>
+          </div><!-- end scroll wrapper -->
         </div>
       </div>
     `
@@ -11712,28 +11718,8 @@ async function renderProjectFinancialTab(force = false) {
     el.innerHTML = html
     _projFinCache = html
 
-    // Sync column widths: header → body table & footer table
+    // Single table with sticky thead/tfoot — no column sync needed
     requestAnimationFrame(() => {
-      const hdrTable  = document.getElementById('finDetailTable')
-      const bodyTable = document.getElementById('finDetailBodyTable')
-      const footTable = document.getElementById('finDetailFootTable')
-      if (hdrTable && bodyTable && footTable) {
-        const hdrCells = hdrTable.querySelectorAll('thead tr th')
-        // Apply same colgroup to body & foot tables
-        const colHtml = Array.from(hdrCells).map(th => {
-          const w = th.getBoundingClientRect().width
-          return `<col style="width:${w}px;min-width:${w}px">`
-        }).join('')
-        ;[bodyTable, footTable].forEach(t => {
-          let cg = t.querySelector('colgroup')
-          if (!cg) { cg = document.createElement('colgroup'); t.prepend(cg) }
-          cg.innerHTML = colHtml
-        })
-        // Also set header table colgroup
-        let hdrCg = hdrTable.querySelector('colgroup')
-        if (!hdrCg) { hdrCg = document.createElement('colgroup'); hdrTable.prepend(hdrCg) }
-        hdrCg.innerHTML = colHtml
-      }
       _drawProjectFinCharts(data)
     })
 
