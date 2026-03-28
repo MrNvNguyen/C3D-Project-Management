@@ -6859,6 +6859,8 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       laborParamsSynced = [fyYear, fySettings.start_month, fyEnd1Year, fySettings.start_month]
     }
 
+    // Bao gồm cả dự án 'completed' vì chi phí lương vẫn phải tính đủ trong kỳ
+    // Chỉ loại 'cancelled' vì những dự án đó không phát sinh chi phí thực
     const laborByProjectSynced = await db.prepare(`
       SELECT p.id, p.code, p.name,
         COALESCE(SUM(plc.total_labor_cost), 0) as labor_cost,
@@ -6866,7 +6868,7 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
         COUNT(DISTINCT plc.month) as months_with_data
       FROM projects p
       LEFT JOIN project_labor_costs plc ON plc.project_id = p.id AND ${laborWhereSynced}
-      WHERE p.status NOT IN ('cancelled','completed')
+      WHERE p.status != 'cancelled'
       GROUP BY p.id
     `).bind(...laborParamsSynced).all()
 
@@ -6981,6 +6983,26 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       ...(monthlyLaborSummary.results || [])
     ]
 
+    // Pool total: tổng monthly_labor_costs đã nhập cho kỳ NTC này
+    // Dùng để phát hiện chênh lệch giữa chi phí đã nhập tổng thể và chi phí đã sync từng dự án
+    let poolTotalLabor = 0
+    for (const { calYear, calMonth } of (() => {
+      const sm = fySettings.start_month
+      return Array.from({ length: 12 }, (_, i) => {
+        const rawCal = sm - 1 + i + 1
+        const calMonth = ((rawCal - 1) % 12) + 1
+        const calYear = rawCal > 12 ? fyYear + 1 : fyYear
+        return { calYear, calMonth }
+      })
+    })()) {
+      const pr = await db.prepare(
+        `SELECT COALESCE(total_labor_cost, 0) as v FROM monthly_labor_costs WHERE month = ? AND year = ?`
+      ).bind(calMonth, calYear).first() as any
+      poolTotalLabor += pr?.v || 0
+    }
+
+    const projectLaborTotal = (laborByProject as any[]).reduce((s: number, p: any) => s + (p.labor_cost || 0), 0)
+
     return c.json({
       fiscal_year: fyYear,
       fiscal_year_label: getFiscalYearLabel(fyYear, fySettings),
@@ -6990,7 +7012,9 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       cost_by_project: costByProject.results,
       labor_by_project: laborByProject,
       monthly_summary: allMonthlyCosts,
-      timesheet_cost: timesheetCost.results
+      timesheet_cost: timesheetCost.results,
+      pool_total_labor: Math.round(poolTotalLabor),         // Tổng chi phí lương đã nhập (monthly_labor_costs)
+      project_labor_total: Math.round(projectLaborTotal)    // Tổng chi phí lương đã phân bổ theo dự án
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -7829,7 +7853,18 @@ app.get('/api/monthly-labor-costs', authMiddleware, adminOnly, async (c) => {
     const rows = params.length
       ? await db.prepare(sql).bind(...params).all()
       : await db.prepare(sql).all()
-    return c.json(rows.results)
+
+    // Enrich each row with total_hours from timesheets (sum all projects that month)
+    const enriched = await Promise.all((rows.results as any[]).map(async (r: any) => {
+      const calM = String(r.month).padStart(2, '0')
+      const calY = String(r.year)
+      const hRow = await db.prepare(
+        `SELECT COALESCE(SUM(regular_hours + IFNULL(overtime_hours,0)), 0) as total_hours
+         FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+      ).bind(calY, calM).first() as any
+      return { ...r, total_hours: hRow?.total_hours || 0 }
+    }))
+    return c.json(enriched)
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 

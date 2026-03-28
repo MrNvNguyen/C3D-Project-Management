@@ -5901,10 +5901,19 @@ async function loadCostDashboard() {
     const totalShared = sharedSummary?.total_shared_cost || 0
     const totalSharedAllocated = sharedByProj.reduce((s, p) => s + (p.allocated_cost || 0), 0)
 
+    // Kiểm tra chênh lệch giữa pool_total_labor (tổng đã nhập) và project_labor_total (đã phân bổ)
+    const poolTotalLabor = summary.pool_total_labor || 0
+    const projLaborTotal = summary.project_labor_total || 0
+    const laborDiff = poolTotalLabor - projLaborTotal
+    const hasLaborDiff = poolTotalLabor > 0 && Math.abs(laborDiff) > 1000 // > 1,000đ thì mới cảnh báo
+
     $('costKpiRevenue').textContent = fmtMoney(totalRevenue)
     $('costKpiCost').innerHTML = fmtMoney(totalCost) +
       (totalSharedAllocated > 0
         ? `<br><span class="text-xs font-normal text-yellow-600" title="Đã bao gồm ${fmtMoney(totalSharedAllocated)} chi phí chung phân bổ"><i class="fas fa-share-alt mr-1"></i>Gồm ${fmtMoney(totalSharedAllocated)} chi phí chung</span>`
+        : '') +
+      (hasLaborDiff
+        ? `<br><span class="text-xs font-normal text-orange-500" title="Chi phí lương đã nhập tổng thể: ${fmtMoney(poolTotalLabor)} — Đã phân bổ vào dự án: ${fmtMoney(projLaborTotal)}. Chênh lệch ${fmtMoney(laborDiff)} do chưa đồng bộ (Sync) chi phí lương."><i class="fas fa-exclamation-triangle mr-1"></i>Lương chưa sync đủ: ${fmtMoney(laborDiff)}</span>`
         : '')
     $('costKpiProfit').innerHTML = fmtMoney(profit)
     const profitEl = $('costKpiProfit')
@@ -9117,13 +9126,15 @@ async function loadLaborCost() {
               </td>
               <td colspan="3" class="py-1 text-xs text-gray-400 text-center">Chưa nhập</td>
             </tr>`
+            const hrs = entry.total_hours || 0
+            const cphRow = hrs > 0 ? Math.round(entry.total_labor_cost / hrs) : cph
             return `<tr class="border-b border-blue-100">
               <td class="py-1 pr-3">
                 <span class="font-medium text-blue-700">${ntcLabel}</span>
                 <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
               </td>
-              <td class="py-1 pr-3 text-right">—</td>
-              <td class="py-1 pr-3 text-right text-purple-600">${cph > 0 ? fmtMoney(Math.round(cph)) + '/h' : '—'}</td>
+              <td class="py-1 pr-3 text-right">${hrs > 0 ? fmt(hrs) + 'h' : '—'}</td>
+              <td class="py-1 pr-3 text-right text-purple-600">${cphRow > 0 ? fmtMoney(cphRow) + '/h' : '—'}</td>
               <td class="py-1 text-right font-semibold text-green-700">${fmtMoney(entry.total_labor_cost)}</td>
             </tr>`
           }).join('')
