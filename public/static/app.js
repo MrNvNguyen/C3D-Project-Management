@@ -8427,7 +8427,12 @@ async function loadFinanceProjectPage() {
         onchange: (val) => { if (val) loadFinanceProject() }
       })
     }
-    // Khởi tạo finYearFilter động
+    // Khởi tạo finNtcYearFilter động (NTC)
+    const fntcf = $('finNtcYearFilter')
+    if (fntcf && fntcf.options.length === 0) {
+      await initCostYearFilter(fntcf)
+    }
+    // Khởi tạo finYearFilter động (dương lịch)
     const fyf = $('finYearFilter')
     if (fyf && fyf.options.length === 0) {
       await initCalendarYearFilter(fyf)
@@ -8443,16 +8448,18 @@ async function loadFinanceProjectPage() {
 // Period-type toggle for Finance Project page
 function onFinPeriodTypeChange() {
   const pt = $('finPeriodType')?.value || 'all_time'
-  const yearCtrl   = $('finYearCtrl')
-  const singleCtrl = $('finSingleMonthCtrl')
-  const multiCtrl  = $('finMultiMonthCtrl')
-  const rangeCtrl  = $('finRangeCtrl')
+  const ntcYearCtrl = $('finNtcYearCtrl')
+  const yearCtrl    = $('finYearCtrl')
+  const singleCtrl  = $('finSingleMonthCtrl')
+  const multiCtrl   = $('finMultiMonthCtrl')
+  const rangeCtrl   = $('finRangeCtrl')
 
   // Show/hide controls based on mode
-  if (yearCtrl)   yearCtrl.classList.toggle('hidden',   !['year','months','month'].includes(pt))
-  if (singleCtrl) singleCtrl.classList.toggle('hidden', pt !== 'month')
-  if (multiCtrl)  multiCtrl.classList.toggle('hidden',  pt !== 'months')
-  if (rangeCtrl)  rangeCtrl.classList.toggle('hidden',  pt !== 'range')
+  if (ntcYearCtrl) ntcYearCtrl.classList.toggle('hidden', pt !== 'ntc')
+  if (yearCtrl)    yearCtrl.classList.toggle('hidden',   !['year','months','month'].includes(pt))
+  if (singleCtrl)  singleCtrl.classList.toggle('hidden', pt !== 'month')
+  if (multiCtrl)   multiCtrl.classList.toggle('hidden',  pt !== 'months')
+  if (rangeCtrl)   rangeCtrl.classList.toggle('hidden',  pt !== 'range')
 
   // Reset checkboxes when switching to months mode
   if (pt === 'months') {
@@ -8477,11 +8484,14 @@ async function loadFinanceProject() {
   try {
     const periodMode = $('finPeriodType')?.value || 'all_time'
     const year = $('finYearFilter')?.value || String(new Date().getFullYear())
+    const ntcYear = $('finNtcYearFilter')?.value || String(new Date().getFullYear())
 
     // Build query params based on mode
     let query = `/finance/project/${projectId}?mode=${periodMode}`
 
-    if (periodMode === 'year') {
+    if (periodMode === 'ntc') {
+      query += `&year=${ntcYear}`
+    } else if (periodMode === 'year') {
       query += `&year=${year}`
     } else if (periodMode === 'month') {
       const mf = $('finMonthFilter')?.value || String(new Date().getMonth() + 1)

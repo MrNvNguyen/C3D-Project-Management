@@ -7458,6 +7458,14 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       dateFrom = `${currentYear}-01-01`
       dateTo   = today
       periodLabel = `Lũy kế ${currentYear} (01/${currentYear} → hiện tại)`
+    } else if (periodMode === 'ntc' && year) {
+      // Năm Tài Chính (NTC): dùng fiscal year settings
+      const fySettings = await getFiscalYearSettings(db)
+      const fyYear = parseInt(year)
+      const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(fyYear, fySettings)
+      dateFrom = fyStart
+      dateTo   = fyEnd
+      periodLabel = getFiscalYearLabel(fyYear, fySettings)
     } else if (periodMode === 'year' && year) {
       // Cả năm dương lịch
       dateFrom = `${year}-01-01`
@@ -7583,6 +7591,8 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     // ── Lọc theo khoảng ngày (dateFrom → dateTo) ──────────────────────────
     const costDateFilter = `AND cost_date >= '${dateFrom}' AND cost_date <= '${dateTo}'`
     // Revenue: khi all_time không giới hạn dateTo (bao gồm cả thanh toán tương lai đã ghi nhận)
+    // all_time: không giới hạn dateTo cho revenue (bao gồm thanh toán tương lai đã ghi nhận)
+    // ntc/year/month/range: dùng dateTo thực tế của kỳ báo cáo
     const revDateTo = periodMode === 'all_time' ? '9999-12-31' : dateTo
     const revDateFilter  = `AND revenue_date >= '${dateFrom}' AND revenue_date <= '${revDateTo}'`
 
@@ -8944,7 +8954,8 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       GROUP BY strftime('%Y-%m', cost_date)
     `).bind(fyStart, fyEnd).all()
 
-    // ── 3. Labor costs trong NTC (ưu tiên project_labor_costs)
+    // ── 3. Labor costs trong NTC — PURE REALTIME từ monthly_labor_costs
+    // Không dùng project_labor_costs để đảm bảo khớp với tổng lương thực tế đã nhập
     const fyEnd1Year = fySettings.start_month === 1 ? fyYear : fyYear + 1
     let laborWhereSimple: string
     let laborParams: any[]
@@ -8956,24 +8967,14 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       laborParams = [fyYear, fySettings.start_month, fyEnd1Year, fySettings.start_month]
     }
 
-    const plcMonthly = await db.prepare(`
+    // Luôn dùng monthly_labor_costs (tổng lương thực tế nhập theo tháng)
+    const mlcMonthly = await db.prepare(`
       SELECT PRINTF('%d-%02d', year, month) as month,
-        SUM(total_labor_cost) as labor_cost
-      FROM project_labor_costs WHERE ${laborWhereSimple}
-      GROUP BY month ORDER BY month
+        total_labor_cost as labor_cost
+      FROM monthly_labor_costs WHERE ${laborWhereSimple}
+      ORDER BY month
     `).bind(...laborParams).all()
-
-    // Fallback: monthly_labor_costs nếu project_labor_costs trống
-    let laborMonthly = plcMonthly.results as any[]
-    if (!laborMonthly.length) {
-      const mlc = await db.prepare(`
-        SELECT PRINTF('%d-%02d', year, month) as month,
-          total_labor_cost as labor_cost
-        FROM monthly_labor_costs WHERE ${laborWhereSimple}
-        ORDER BY month
-      `).bind(...laborParams).all()
-      laborMonthly = mlc.results as any[]
-    }
+    const laborMonthly = mlcMonthly.results as any[]
 
     // ── 4. Shared costs trong NTC
     const sharedRows = await db.prepare(`
@@ -9133,35 +9134,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       GROUP BY project_id
     `).bind(fyStart, fyEnd).all()
 
-    // ── 4. Chi phí lương theo dự án (project_labor_costs trong NTC, fallback realtime)
-    const fySettings2 = fySettings
-    const fyEnd1Year = fySettings2.start_month === 1 ? fyYear : fyYear + 1
-    let laborWhere: string
-    let laborParams: any[]
-    if (fySettings2.start_month === 1) {
-      laborWhere = `year = ?`
-      laborParams = [fyYear]
-    } else {
-      laborWhere = `((year = ? AND month >= ?) OR (year = ? AND month < ?))`
-      laborParams = [fyYear, fySettings2.start_month, fyEnd1Year, fySettings2.start_month]
-    }
-    const laborCostRows = await db.prepare(`
-      SELECT project_id, SUM(total_labor_cost) as labor_cost, SUM(total_hours) as labor_hours
-      FROM project_labor_costs WHERE ${laborWhere}
-      GROUP BY project_id
-    `).bind(...laborParams).all()
-
-    // Fallback: nếu project_labor_costs trống → tính realtime từ timesheets + monthly_labor_costs
+    // ── 4. Chi phí lương theo dự án — PURE REALTIME từ monthly_labor_costs + timesheets
+    // Không dùng project_labor_costs để đảm bảo nhất quán với tổng lương thực tế đã nhập
     const OVERTIME_FACTOR_FIN = await getOvertimeFactor(db)
-    let laborMap: Record<number, any>
-    if ((laborCostRows.results as any[]).length > 0) {
-      laborMap = {}
-      ;(laborCostRows.results as any[]).forEach((r: any) => { laborMap[r.project_id] = r })
-    } else {
-      const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_FIN, fyStart, fyEnd)
-      laborMap = {}
-      rtMap.forEach((v, pid) => { laborMap[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
-    }
+    const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_FIN, fyStart, fyEnd)
+    const laborMap: Record<number, any> = {}
+    rtMap.forEach((v, pid) => { laborMap[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
     const sharedAllocRows = await db.prepare(`
       SELECT sca.project_id, SUM(sca.allocated_amount) as shared_cost
       FROM shared_cost_allocations sca
@@ -9322,26 +9300,11 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       GROUP BY project_id
     `).all()
 
-    // ── 4. Chi phí lương theo dự án (TOÀN BỘ: project_labor_costs, fallback realtime)
-    const laborCostRowsLT = await db.prepare(`
-      SELECT project_id,
-        SUM(total_labor_cost) as labor_cost,
-        SUM(total_hours) as labor_hours
-      FROM project_labor_costs
-      GROUP BY project_id
-    `).all()
-
+    // ── 4. Chi phí lương theo dự án — PURE REALTIME toàn bộ lịch sử (không lọc ngày)
     const OVERTIME_FACTOR_LT = await getOvertimeFactor(db)
-    let laborMapLT: Record<number, any>
-    if ((laborCostRowsLT.results as any[]).length > 0) {
-      laborMapLT = {}
-      ;(laborCostRowsLT.results as any[]).forEach((r: any) => { laborMapLT[r.project_id] = r })
-    } else {
-      // Fallback: tính realtime toàn bộ lịch sử (không lọc ngày)
-      const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_LT)
-      laborMapLT = {}
-      rtMap.forEach((v, pid) => { laborMapLT[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
-    }
+    const rtMapLT = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_LT)
+    const laborMapLT: Record<number, any> = {}
+    rtMapLT.forEach((v, pid) => { laborMapLT[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
 
     // ── 5. Chi phí chung phân bổ (TOÀN BỘ)
     const sharedAllocRows = await db.prepare(`

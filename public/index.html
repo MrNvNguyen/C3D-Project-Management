@@ -2549,12 +2549,19 @@
             <!-- Period mode selector -->
             <select id="finPeriodType" class="select-field text-sm" style="width:180px" onchange="onFinPeriodTypeChange()">
               <option value="all_time">🏗️ Toàn dự án</option>
+              <option value="ntc">📅 Theo NTC</option>
               <option value="ytd">📈 Lũy kế năm nay</option>
-              <option value="year">🗓️ Theo năm</option>
+              <option value="year">🗓️ Theo năm DL</option>
               <option value="months">📆 Nhiều tháng</option>
               <option value="month">📅 Tháng cụ thể</option>
               <option value="range">📋 Khoảng ngày</option>
             </select>
+            <!-- NTC Year filter (shown for ntc mode) -->
+            <div id="finNtcYearCtrl" class="hidden">
+              <select id="finNtcYearFilter" class="select-field" style="width:120px" onchange="loadFinanceProject()">
+                <!-- Options populated dynamically -->
+              </select>
+            </div>
             <!-- Year filter (shown for year/months/month modes) -->
             <div id="finYearCtrl" class="hidden">
               <select id="finYearFilter" class="select-field" style="width:110px" onchange="loadFinanceProject()">
