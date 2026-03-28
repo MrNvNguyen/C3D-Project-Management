@@ -3778,10 +3778,13 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
     const projectMap: Record<number, any> = {}
     let hasSynced = false, hasRealtime = false
     let grandEffHours = 0
+    // monthly_totals: tổng phân bổ thực tế từng tháng (để UI so sánh với ngân sách nhập)
+    const monthlyTotals: Record<string, { allocated: number; raw_hours: number; eff_hours: number; source: string }> = {}
 
     for (const { calYear, calMonth, fiscalIdx } of calPairs) {
       const calY = String(calYear)
       const calM = String(calMonth).padStart(2, '0')
+      const monthKey = `${calYear}-${calM}`
 
       // 1. Kiểm tra project_labor_costs (synced) cho (calYear, calMonth) này
       const syncedRows = await db.prepare(`
@@ -3794,6 +3797,7 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
 
       if ((syncedRows.results as any[]).length > 0) {
         hasSynced = true
+        let mAllocated = 0, mRawH = 0, mEffH = 0
         for (const row of syncedRows.results as any[]) {
           const pid = row.project_id
           if (!projectMap[pid]) projectMap[pid] = { project_id: pid, project_code: row.project_code, project_name: row.project_name, total_labor_cost: 0, total_hours: 0, _eff_hours: 0, months_count: 0 }
@@ -3803,7 +3807,11 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
           projectMap[pid]._eff_hours += effH
           grandEffHours += effH
           projectMap[pid].months_count++
+          mAllocated += row.total_labor_cost || 0
+          mRawH += row.total_hours || 0
+          mEffH += effH
         }
+        monthlyTotals[monthKey] = { allocated: Math.round(mAllocated), raw_hours: mRawH, eff_hours: Math.round(mEffH), source: 'synced' }
         continue
       }
 
@@ -3814,10 +3822,12 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       if (!mlcRow?.total_labor_cost) continue
 
       const compHrsRow = await db.prepare(`
-        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff,
+               SUM(regular_hours + IFNULL(overtime_hours,0))     as comp_raw
         FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
       `).bind(OVERTIME_FACTOR, calY, calM).first() as any
       const compEff = compHrsRow?.comp_eff || 0
+      const compRaw = compHrsRow?.comp_raw || 0
       if (compEff <= 0) continue
 
       const cph = mlcRow.total_labor_cost / compEff
@@ -3842,6 +3852,7 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       const projInfoMap: Record<number, any> = {}
       for (const p of projInfoRows.results as any[]) projInfoMap[p.id] = p
 
+      let mAllocated = 0, mEffHours = 0
       for (const row of projRows.results as any[]) {
         const pid = row.project_id
         const projRaw = row.proj_raw || 0
@@ -3858,7 +3869,10 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
         projectMap[pid]._eff_hours       += projEff
         grandEffHours += projEff
         projectMap[pid].months_count++
+        mAllocated += mc
+        mEffHours += projEff
       }
+      monthlyTotals[monthKey] = { allocated: Math.round(mAllocated), raw_hours: Math.round(compRaw), eff_hours: Math.round(mEffHours), source: 'realtime' }
     }
 
     const projectsArr = Object.values(projectMap)
@@ -3877,6 +3891,22 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       return rest
     })
 
+    // Xây dựng monthly_totals array: mỗi tháng NTC kèm allocated thực tế + budget đã nhập
+    const monthlyTotalsArr = calPairs.map(p => {
+      const calM = String(p.calMonth).padStart(2, '0')
+      const monthKey = `${p.calYear}-${calM}`
+      const mt = monthlyTotals[monthKey]
+      return {
+        fiscal_idx: p.fiscalIdx,
+        cal_year: p.calYear,
+        cal_month: p.calMonth,
+        allocated: mt?.allocated || 0,
+        raw_hours: mt?.raw_hours || 0,
+        eff_hours: mt?.eff_hours || 0,
+        source: mt?.source || 'none'
+      }
+    })
+
     return c.json({
       year: yInt,
       fiscal_year_start_month: fySettings.start_month,
@@ -3888,12 +3918,13 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       grand_total_eff_hours: Math.round(grandEffHours),
       grand_avg_cost_per_hour: Math.round(grandAvgCph),
       projects_count: projectsArr.length,
-      // Tổng ngân sách lương đã nhập (monthly_labor_costs pool)
+      // pool_total = tổng ngân sách lương đã nhập (monthly_labor_costs) — chỉ dùng tham chiếu
       pool_total: Math.round(poolTotal),
+      // monthly_totals: phân bổ thực tế + giờ làm từng tháng NTC
+      monthly_totals: monthlyTotalsArr,
       // Danh sách tháng NTC đã tính (chỉ số fiscal T1..T12)
       fiscal_months_included: calPairs.map(p => p.fiscalIdx),
       // Danh sách calendar pairs để UI render đúng nhãn tháng
-      // fiscalIdx = chỉ số NTC T1..T12; calMonth/calYear = tháng dương lịch tương ứng
       cal_pairs: calPairs.map(p => ({ fiscalIdx: p.fiscalIdx, calYear: p.calYear, calMonth: p.calMonth }))
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }

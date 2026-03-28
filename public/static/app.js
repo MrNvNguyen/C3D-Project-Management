@@ -9014,16 +9014,22 @@ async function loadLaborCost() {
       }
       if ($('laborYearlyTitle')) $('laborYearlyTitle').textContent = fyLabel
       if ($('laborYearlySubtitle')) $('laborYearlySubtitle').textContent = `${aggData.projects_count} dự án có dữ liệu`
-      // Ưu tiên pool_total (tổng đã nhập) làm tổng hiển thị, fallback grand_total
-      const displayTotal = aggData.pool_total > 0 ? aggData.pool_total : aggData.grand_total_labor_cost
+      // displayTotal = grand_total_labor_cost (phân bổ thực tế theo timesheet)
+      // pool_total = tổng ngân sách lương đã nhập thủ công (tham chiếu)
+      const displayTotal = aggData.grand_total_labor_cost
+      const poolRef = aggData.pool_total || 0
       if ($('laborYearlyTotalCost')) {
         $('laborYearlyTotalCost').textContent = fmtMoney(displayTotal)
-        // Nếu pool_total khác grand_total → hiển thị ghi chú
-        const diff = displayTotal - aggData.grand_total_labor_cost
+        // Hiển thị pool_total (ngân sách) bên dưới như thông tin tham chiếu
         const diffEl = $('laborYearlyPoolDiff')
         if (diffEl) {
-          if (aggData.pool_total > 0 && Math.abs(diff) > 0) {
-            diffEl.textContent = `Đã phân bổ: ${fmtMoney(aggData.grand_total_labor_cost)}`
+          if (poolRef > 0) {
+            const poolDiff = poolRef - displayTotal
+            const poolDiffSign = poolDiff >= 0 ? '+' : ''
+            const color = Math.abs(poolDiff) < 1000 ? 'text-green-600' : (poolDiff > 0 ? 'text-orange-500' : 'text-red-500')
+            diffEl.innerHTML = `<span class="${color}">Ngân sách nhập: ${fmtMoney(poolRef)}` +
+              (Math.abs(poolDiff) > 1000 ? ` <span class="text-xs">(${poolDiffSign}${fmtMoney(poolDiff)})</span>` : ' ✓') +
+              `</span>`
             diffEl.classList.remove('hidden')
           } else {
             diffEl.classList.add('hidden')
@@ -9095,52 +9101,71 @@ async function loadLaborCost() {
         })
       }
 
-      // KPI cards — dùng pool_total (tổng lương đã nhập) làm KPI chính
-      const kpiTotal = aggData.pool_total > 0 ? aggData.pool_total : aggData.grand_total_labor_cost
+      // KPI cards — dùng grand_total_labor_cost (phân bổ thực tế) làm KPI chính
+      const kpiTotal = aggData.grand_total_labor_cost
       if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(kpiTotal)
       if ($('laborKpiSource'))   $('laborKpiSource').textContent   = periodType === 'all' ? `🗓️ NTC ${year}` : `📆 Nhiều tháng NTC ${year}`
       if ($('laborKpiHours'))    $('laborKpiHours').textContent    = fmt(totalHrs) + 'h'
       if ($('laborKpiRate'))     $('laborKpiRate').textContent     = fmtMoney(Math.round(avgRate)) + '/h'
       if ($('laborKpiProjects')) $('laborKpiProjects').textContent = aggData.projects_count || 0
 
-      // Monthly breakdown table — dùng cal_pairs từ API (đã convert fiscal→calendar)
+      // Monthly breakdown table — dùng monthly_totals từ API (phân bổ thực tế)
+      // Đồng thời load monthly_labor_costs để hiển thị ngân sách nhập (tham chiếu)
       const monthlyBreakTbody = $('laborMonthlyBreakdownTable')
-      const calPairsData = aggData.cal_pairs || []
-      if (monthlyBreakTbody && calPairsData.length > 0) {
+      const monthlyTotalsData = aggData.monthly_totals || []
+      if (monthlyBreakTbody && monthlyTotalsData.length > 0) {
         try {
+          // Load ngân sách nhập thủ công để hiển thị tham chiếu
           const mlcList = await api(`/monthly-labor-costs`)
           const mlcMap = {}
           for (const r of mlcList) mlcMap[`${r.month}-${r.year}`] = r
 
-          const rows = calPairsData.map(p => {
-            const key = `${p.calMonth}-${p.calYear}`
-            const entry = mlcMap[key]
-            // Dùng fiscalIdx (T1..T12) làm nhãn NTC, kèm tháng dương lịch để rõ ràng
-            const ntcLabel = `T${p.fiscalIdx}`
-            const calLabel = `(${p.calMonth}/${p.calYear})`
-            const cph = aggData.grand_avg_cost_per_hour || 0
-            if (!entry) return `<tr class="border-b border-blue-100">
-              <td class="py-1 pr-3">
-                <span class="font-medium text-blue-700">${ntcLabel}</span>
-                <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
-              </td>
-              <td colspan="3" class="py-1 text-xs text-gray-400 text-center">Chưa nhập</td>
-            </tr>`
-            const hrs = entry.total_hours || 0
-            const cphRow = hrs > 0 ? Math.round(entry.total_labor_cost / hrs) : cph
+          const cph = aggData.grand_avg_cost_per_hour || 0
+          const rows = monthlyTotalsData.map(mt => {
+            const ntcLabel = `T${mt.fiscal_idx}`
+            const calLabel = `(${mt.cal_month}/${mt.cal_year})`
+            const mlcEntry = mlcMap[`${mt.cal_month}-${mt.cal_year}`]
+            const budgetAmt = mlcEntry?.total_labor_cost || 0
+            const hrs = mt.raw_hours || 0
+            const allocated = mt.allocated || 0
+            const cphRow = hrs > 0 && allocated > 0 ? Math.round(allocated / hrs) : cph
+
+            if (hrs === 0 && allocated === 0) {
+              // Không có timesheet tháng này
+              return `<tr class="border-b border-blue-100">
+                <td class="py-1 pr-3">
+                  <span class="font-medium text-blue-700">${ntcLabel}</span>
+                  <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
+                </td>
+                <td colspan="4" class="py-1 text-xs text-gray-400 text-center">Chưa có timesheet</td>
+              </tr>`
+            }
+
+            // So sánh phân bổ TT vs ngân sách nhập
+            const budgetDiff = budgetAmt > 0 ? allocated - budgetAmt : 0
+            const budgetDiffStr = budgetAmt > 0
+              ? `<span class="text-xs ${Math.abs(budgetDiff) < 1000 ? 'text-green-500' : (budgetDiff > 0 ? 'text-red-400' : 'text-orange-400')}" title="Ngân sách: ${fmtMoney(budgetAmt)}">${budgetAmt > 0 ? ' / NS: ' + fmtMoney(budgetAmt) : ''}</span>`
+              : ''
+            const srcBadge = mt.source === 'synced'
+              ? `<span class="text-xs text-green-600 ml-1" title="Đã đồng bộ">●</span>`
+              : `<span class="text-xs text-orange-400 ml-1" title="Tính thời gian thực">○</span>`
+
             return `<tr class="border-b border-blue-100">
               <td class="py-1 pr-3">
                 <span class="font-medium text-blue-700">${ntcLabel}</span>
                 <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
+                ${srcBadge}
               </td>
               <td class="py-1 pr-3 text-right">${hrs > 0 ? fmt(hrs) + 'h' : '—'}</td>
               <td class="py-1 pr-3 text-right text-purple-600">${cphRow > 0 ? fmtMoney(cphRow) + '/h' : '—'}</td>
-              <td class="py-1 text-right font-semibold text-green-700">${fmtMoney(entry.total_labor_cost)}</td>
+              <td class="py-1 text-right font-semibold text-green-700">
+                ${fmtMoney(allocated)}${budgetDiffStr}
+              </td>
             </tr>`
           }).join('')
           monthlyBreakTbody.innerHTML = rows
           $('laborMonthlyTableWrap')?.classList.remove('hidden')
-        } catch(e2) { /* ignore monthly breakdown errors */ }
+        } catch(e2) { console.warn('Monthly breakdown error:', e2) }
       }
       return
     } catch(e) { toast('Lỗi tải dữ liệu tổng hợp: ' + e.message, 'error'); return }
