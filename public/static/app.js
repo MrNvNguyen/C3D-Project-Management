@@ -10757,40 +10757,108 @@ async function renderTeamTab(force = false) {
         </div>
       </div>
 
-      <!-- Member Detail Table -->
-      <div class="card">
-        <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-table mr-2 text-gray-500"></i>Bảng năng suất chi tiết (${year})</h3>
+      <!-- Member Detail Table with pagination -->
+      <div class="card" id="teamProdTableCard">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-semibold text-gray-700"><i class="fas fa-table mr-2 text-gray-500"></i>Bảng năng suất chi tiết (${year})</h3>
+          <span class="text-xs text-gray-400" id="teamProdCount"></span>
+        </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
-            <thead><tr class="border-b text-left text-gray-500 text-xs uppercase">
-              <th class="pb-2 pr-4">Nhân sự</th><th class="pb-2 pr-4">Phòng ban</th>
-              <th class="pb-2 pr-4 text-right">Giờ thường</th><th class="pb-2 pr-4 text-right">Giờ TC</th>
-              <th class="pb-2 pr-4 text-right">Tổng giờ</th><th class="pb-2 pr-4 text-right">Task xong/giao</th>
-              <th class="pb-2 text-right">Hiệu suất task</th>
+            <thead><tr class="border-b text-left text-gray-500 text-xs uppercase bg-gray-50">
+              <th class="py-2 px-3">Nhân sự</th>
+              <th class="py-2 px-3">Phòng ban</th>
+              <th class="py-2 px-3 text-right">Giờ thường</th>
+              <th class="py-2 px-3 text-right">Giờ TC</th>
+              <th class="py-2 px-3 text-right">Tổng giờ</th>
+              <th class="py-2 px-3 text-right">Task xong/giao</th>
+              <th class="py-2 px-3 text-right">Hiệu suất task</th>
             </tr></thead>
-            <tbody>
-              ${members.sort((a,b)=>(b.total_hours||0)-(a.total_hours||0)).map(m => {
-                const rate = pct(m.completed_tasks||0, m.assigned_tasks||1)
-                return `<tr class="border-b hover:bg-gray-50">
-                  <td class="py-3 pr-4 font-medium text-gray-800">${m.full_name}</td>
-                  <td class="py-3 pr-4 text-gray-500 text-xs">${m.department||'-'}</td>
-                  <td class="py-3 pr-4 text-right">${(m.regular_hours||0).toFixed(1)}h</td>
-                  <td class="py-3 pr-4 text-right text-orange-600">${(m.overtime_hours||0).toFixed(1)}h</td>
-                  <td class="py-3 pr-4 text-right font-semibold">${(m.total_hours||0).toFixed(1)}h</td>
-                  <td class="py-3 pr-4 text-right">${m.completed_tasks||0}/${m.assigned_tasks||0}</td>
-                  <td class="py-3 text-right">
-                    <div class="flex items-center justify-end gap-2">
-                      <div class="w-16 bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full ${rate>=80?'bg-green-500':rate>=50?'bg-blue-500':'bg-red-400'}" style="width:${rate}%"></div></div>
-                      <span class="text-xs text-gray-600 w-8">${rate}%</span>
-                    </div>
-                  </td>
-                </tr>`
-              }).join('')}
-            </tbody>
+            <tbody id="teamProdTbody"></tbody>
           </table>
+        </div>
+        <!-- Pagination -->
+        <div class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100" id="teamProdPager">
+          <div class="flex items-center gap-2 text-xs text-gray-500" id="teamProdPageInfo"></div>
+          <div class="flex items-center gap-1" id="teamProdPageBtns"></div>
         </div>
       </div>
     `
+
+    // ── Pagination for detail table ──────────────────────────────────
+    const PROD_PAGE_SIZE = 15
+    const sortedMembers = members.slice().sort((a,b)=>(b.total_hours||0)-(a.total_hours||0))
+    let _prodPage = 1
+
+    function renderProdTable(page) {
+      _prodPage = page
+      const total   = sortedMembers.length
+      const pages   = Math.max(1, Math.ceil(total / PROD_PAGE_SIZE))
+      const start   = (page - 1) * PROD_PAGE_SIZE
+      const slice   = sortedMembers.slice(start, start + PROD_PAGE_SIZE)
+
+      const tbody = document.getElementById('teamProdTbody')
+      const info  = document.getElementById('teamProdPageInfo')
+      const btns  = document.getElementById('teamProdPageBtns')
+      const count = document.getElementById('teamProdCount')
+      if (!tbody) return
+
+      // Count label
+      if (count) count.textContent = `${total} nhân sự`
+
+      // Rows
+      tbody.innerHTML = slice.map((m, idx) => {
+        const rate = m.assigned_tasks > 0 ? Math.min(100, Math.round((m.completed_tasks||0) / m.assigned_tasks * 100)) : 0
+        const barColor = rate >= 80 ? 'bg-green-500' : rate >= 50 ? 'bg-blue-500' : rate > 0 ? 'bg-red-400' : 'bg-gray-300'
+        const rowBg = (start + idx) % 2 === 1 ? 'bg-gray-50/40' : ''
+        return `<tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
+          <td class="py-2.5 px-3 font-medium text-gray-800 text-sm">${m.full_name}</td>
+          <td class="py-2.5 px-3 text-gray-500 text-xs">${m.department||'—'}</td>
+          <td class="py-2.5 px-3 text-right text-sm">${(m.regular_hours||0).toFixed(1)}h</td>
+          <td class="py-2.5 px-3 text-right text-orange-600 text-sm">${(m.overtime_hours||0).toFixed(1)}h</td>
+          <td class="py-2.5 px-3 text-right font-semibold text-sm">${(m.total_hours||0).toFixed(1)}h</td>
+          <td class="py-2.5 px-3 text-right text-sm">${m.completed_tasks||0}/${m.assigned_tasks||0}</td>
+          <td class="py-2.5 px-3 text-right">
+            <div class="flex items-center justify-end gap-2">
+              <div class="w-16 bg-gray-200 rounded-full h-2 flex-shrink-0">
+                <div class="h-2 rounded-full ${barColor}" style="width:${rate}%"></div>
+              </div>
+              <span class="text-xs font-medium w-8 text-right ${rate>=80?'text-green-600':rate>=50?'text-blue-600':rate>0?'text-red-500':'text-gray-400'}">${rate}%</span>
+            </div>
+          </td>
+        </tr>`
+      }).join('')
+
+      // Page info
+      if (info) info.innerHTML = `<span>Hiển thị <b>${start+1}–${Math.min(start+PROD_PAGE_SIZE,total)}</b> / ${total} nhân sự</span>`
+
+      // Page buttons
+      if (btns) {
+        const maxBtn = 7
+        let html = ''
+        // Prev
+        html += `<button onclick="renderProdTable(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded text-xs border ${page<=1?'text-gray-300 border-gray-200 cursor-not-allowed':'text-gray-600 border-gray-300 hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i></button>`
+        // Page numbers
+        let startP = Math.max(1, page - Math.floor(maxBtn/2))
+        let endP   = Math.min(pages, startP + maxBtn - 1)
+        if (endP - startP < maxBtn - 1) startP = Math.max(1, endP - maxBtn + 1)
+        if (startP > 1) html += `<button onclick="renderProdTable(1)" class="px-2.5 py-1 rounded text-xs border border-gray-300 hover:bg-gray-100 text-gray-600">1</button>${startP>2?'<span class="text-gray-400 text-xs px-1">…</span>':''}`
+        for (let p = startP; p <= endP; p++) {
+          html += `<button onclick="renderProdTable(${p})" class="px-2.5 py-1 rounded text-xs border ${p===page?'bg-green-600 text-white border-green-600 font-semibold':'border-gray-300 hover:bg-gray-100 text-gray-600'}">${p}</button>`
+        }
+        if (endP < pages) html += `${endP<pages-1?'<span class="text-gray-400 text-xs px-1">…</span>':''}<button onclick="renderProdTable(${pages})" class="px-2.5 py-1 rounded text-xs border border-gray-300 hover:bg-gray-100 text-gray-600">${pages}</button>`
+        // Next
+        html += `<button onclick="renderProdTable(${page+1})" ${page>=pages?'disabled':''} class="px-2 py-1 rounded text-xs border ${page>=pages?'text-gray-300 border-gray-200 cursor-not-allowed':'text-gray-600 border-gray-300 hover:bg-gray-100'}"><i class="fas fa-chevron-right"></i></button>`
+        btns.innerHTML = html
+      }
+
+      // Hide pager if only 1 page
+      const pager = document.getElementById('teamProdPager')
+      if (pager) pager.style.display = pages <= 1 ? 'none' : 'flex'
+    }
+
+    // Initial render
+    renderProdTable(1)
 
     destroyAnalyticsChart('teamTopHours'); destroyAnalyticsChart('teamTaskRate')
     const top10 = members.slice(0, 10)
@@ -11404,6 +11472,7 @@ async function renderProjectFinancialTab(force = false) {
       : `/analytics/financial-by-project?year=${year}`
     const data = await api(url)
     _projFinData = data
+    window._projFinRaw = { ...data, fiscal_year_label: data.fiscal_year_label || `NTC ${year}` }
     _projFinYear = year + '_' + mode
     const projects = data.projects || []
     const totals   = data.totals  || {}
@@ -11535,9 +11604,14 @@ async function renderProjectFinancialTab(force = false) {
           <h3 class="font-semibold text-gray-700 text-sm">
             <i class="fas fa-table mr-2 text-gray-500"></i>Chi tiết tài chính từng dự án — ${fyLabel}
           </h3>
-          <div class="flex items-center gap-2 text-xs text-gray-400">
-            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-500 inline-block"></span>Doanh thu đã thu</span>
-            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-400 inline-block"></span>Tổng chi phí</span>
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2 text-xs text-gray-400">
+              <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-500 inline-block"></span>Doanh thu đã thu</span>
+              <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-400 inline-block"></span>Tổng chi phí</span>
+            </div>
+            <button onclick="exportFinDetailExcel()" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors shadow-sm">
+              <i class="fas fa-file-excel"></i> Xuất Excel
+            </button>
           </div>
         </div>
         <div class="overflow-x-auto">
@@ -11730,6 +11804,157 @@ async function renderProjectFinancialTab(force = false) {
 }
 
 let _projFinData = null
+
+// ── Xuất Excel bảng chi tiết tài chính từng dự án ────────────────
+function exportFinDetailExcel() {
+  if (typeof XLSX === 'undefined') {
+    toast('Thư viện Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return
+  }
+
+  // Lấy data từ DOM table hiện tại
+  const table = document.getElementById('finDetailTable')
+  if (!table) { toast('Không tìm thấy bảng dữ liệu', 'error'); return }
+
+  const isLifetime = document.querySelector('#analyticsProjectFinanceContent h3')
+    ?.textContent?.includes('Toàn vòng đời') || false
+
+  // Lấy tiêu đề từ heading bảng
+  const titleEl = document.querySelector('#analyticsProjectFinanceContent .card h3')
+  const title   = titleEl?.textContent?.trim().replace(/^\s*\S+\s*/, '') || 'Chi tiết tài chính'
+
+  // Thu thập rows từ thead + tbody + tfoot
+  const wb = XLSX.utils.book_new()
+
+  // Màu sắc header
+  const headerStyle = {
+    font: { bold: true, color: { rgb: 'FFFFFF' }, sz: 10 },
+    fill: { fgColor: { rgb: '1F7A4D' } },
+    alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+    border: { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } }
+  }
+  const numStyle = {
+    numFmt: '#,##0',
+    alignment: { horizontal: 'right', vertical: 'center' }
+  }
+  const pctStyle = {
+    numFmt: '0.0"%"',
+    alignment: { horizontal: 'center', vertical: 'center' }
+  }
+  const totalStyle = {
+    font: { bold: true, sz: 10 },
+    fill: { fgColor: { rgb: 'F3F4F6' } },
+    alignment: { horizontal: 'right', vertical: 'center' },
+    numFmt: '#,##0'
+  }
+
+  // ── Header rows ──
+  const headers1 = isLifetime
+    ? ['Dự án', 'Mã', 'Trạng thái', 'Thời gian', 'GTHĐ', 'DT đã thu', '% GTHĐ', 'DT chờ thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ HĐ (%)']
+    : ['Dự án', 'Mã', 'Trạng thái', 'GTHĐ', 'DT đã thu', '% GTHĐ', 'DT chờ thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ HĐ (%)']
+
+  // ── Lấy dữ liệu từ _projFinData nếu có ──
+  const rawData    = window._projFinRaw || {}
+  const projects   = rawData.projects || []
+  const totals     = rawData.totals   || {}
+  const fyLabel    = rawData.fiscal_year_label || ''
+  const statusLbl  = { active:'Đang chạy', planning:'Kế hoạch', on_hold:'Tạm dừng', completed:'Hoàn thành', cancelled:'Đã hủy' }
+
+  // Sort same as UI
+  const sorted = [...projects].sort((a, b) => {
+    const scoreA = (a.revenue_total > 0 ? 2 : 0) + (a.total_cost > 0 ? 1 : 0)
+    const scoreB = (b.revenue_total > 0 ? 2 : 0) + (b.total_cost > 0 ? 1 : 0)
+    if (scoreB !== scoreA) return scoreB - scoreA
+    return b.revenue_collected - a.revenue_collected
+  })
+
+  const aoa = []
+  // Title row
+  aoa.push([`Chi tiết tài chính từng dự án — ${fyLabel || title}`])
+  aoa.push([]) // blank
+  aoa.push(headers1)
+
+  sorted.forEach(p => {
+    const cv  = p.contract_value    || 0
+    const rc  = p.revenue_collected || 0
+    const rp  = p.revenue_pending   || 0
+    const dc  = p.direct_cost       || 0
+    const lc  = p.labor_cost        || 0
+    const sc  = p.shared_cost       || 0
+    const tc  = p.total_cost        || 0
+    const pf  = p.profit            || 0
+    const base = cv > 0 ? cv : rc
+    const pctOf = (v) => base > 0 ? Math.round(v / base * 1000) / 10 : ''
+    const timespan = (p.start_date || p.end_date)
+      ? `${(p.start_date||'?').substring(0,7)} → ${(p.end_date||'?').substring(0,7)}`
+      : ''
+
+    if (isLifetime) {
+      aoa.push([
+        p.name, p.code, statusLbl[p.status]||p.status, timespan,
+        cv||'', rc||'', pctOf(rc), rp||'', pctOf(rp),
+        dc||'', pctOf(dc), lc||'', pctOf(lc), sc||'', pctOf(sc),
+        tc||'', pctOf(tc), pf, p.margin||'', p.contract_progress||''
+      ])
+    } else {
+      aoa.push([
+        p.name, p.code, statusLbl[p.status]||p.status,
+        cv||'', rc||'', pctOf(rc), rp||'', pctOf(rp),
+        dc||'', pctOf(dc), lc||'', pctOf(lc), sc||'', pctOf(sc),
+        tc||'', pctOf(tc), pf, p.margin||'', p.contract_progress||''
+      ])
+    }
+  })
+
+  // Totals row
+  const tbase = (totals.contract_value||0) > 0 ? totals.contract_value : (totals.revenue_collected||0)
+  const tpctOf = (v) => tbase > 0 ? Math.round((v||0) / tbase * 1000) / 10 : ''
+  if (isLifetime) {
+    aoa.push([
+      'TỔNG CỘNG', '', '', '',
+      totals.contract_value||0, totals.revenue_collected||0, tpctOf(totals.revenue_collected),
+      totals.revenue_pending||0, tpctOf(totals.revenue_pending),
+      totals.direct_cost||0, tpctOf(totals.direct_cost),
+      totals.labor_cost||0,  tpctOf(totals.labor_cost),
+      totals.shared_cost||0, tpctOf(totals.shared_cost),
+      totals.total_cost||0,  tpctOf(totals.total_cost),
+      totals.profit||0, totals.margin||'', totals.contract_progress||''
+    ])
+  } else {
+    aoa.push([
+      'TỔNG CỘNG', '', '',
+      totals.contract_value||0, totals.revenue_collected||0, tpctOf(totals.revenue_collected),
+      totals.revenue_pending||0, tpctOf(totals.revenue_pending),
+      totals.direct_cost||0, tpctOf(totals.direct_cost),
+      totals.labor_cost||0,  tpctOf(totals.labor_cost),
+      totals.shared_cost||0, tpctOf(totals.shared_cost),
+      totals.total_cost||0,  tpctOf(totals.total_cost),
+      totals.profit||0, totals.margin||'', totals.contract_progress||''
+    ])
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+  // Column widths
+  const colWidths = isLifetime
+    ? [40, 10, 12, 20, 14, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 10, 10]
+    : [40, 10, 12, 14, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 10, 10]
+  ws['!cols'] = colWidths.map(w => ({ wch: w }))
+
+  // Merge title across all cols
+  const totalCols = headers1.length
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }]
+
+  // Row heights
+  ws['!rows'] = [{ hpt: 22 }, { hpt: 4 }, { hpt: 32 }]
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Tài chính dự án')
+
+  // Tên file
+  const safeLabel = (fyLabel || title).replace(/[/\\?*[\]]/g, '-').substring(0, 40)
+  const fname = `TaiChinh_DuAn_${safeLabel}_${new Date().toISOString().slice(0,10)}.xlsx`
+  XLSX.writeFile(wb, fname)
+  toast('Xuất Excel thành công!', 'success')
+}
 
 function _drawProjectFinCharts(data) {
   if (!data) return
