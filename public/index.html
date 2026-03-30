@@ -976,7 +976,7 @@
           <div class="kpi-card" style="border-color:#00A651">
             <p class="text-xs text-gray-500 uppercase tracking-wide">Tổng bản ghi</p>
             <p id="tsCardTotal" class="text-2xl font-bold text-primary mt-1">0</p>
-            <p class="text-xs text-gray-400 mt-1">trong kỳ lọc</p>
+            <p class="text-xs text-gray-400 mt-1">🌴 Nghỉ: <span id="tsCardLeave" class="font-semibold text-amber-600">0</span> ngày</p>
           </div>
           <div class="kpi-card" style="border-color:#F59E0B">
             <p class="text-xs text-gray-500 uppercase tracking-wide">Chờ duyệt</p>
@@ -1088,6 +1088,7 @@
           <!-- Totals summary row -->
           <div class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap gap-4 text-sm text-gray-600">
             <span>📋 Kết quả: <strong id="tsFilterCount" class="text-gray-800">0</strong> bản ghi</span>
+            <span>🌴 Nghỉ: <strong id="tsFilterLeave" class="text-amber-600">0</strong> ngày</span>
             <span>⏰ Giờ HC: <strong id="tsTotalRegular" class="text-primary">0h</strong></span>
             <span>🌙 Tăng ca: <strong id="tsTotalOvertime" class="text-warning">0h</strong></span>
             <span>🕐 Tổng cộng: <strong id="tsTotalHours" class="text-accent">0h</strong></span>
@@ -1103,12 +1104,13 @@
                 <tr id="tsTableHeader" class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
                   <th class="py-2.5 px-3 font-medium">Ngày</th>
                   <th class="py-2.5 px-3 font-medium ts-col-user">Nhân viên</th>
+                  <th class="py-2.5 px-3 font-medium">Loại</th>
                   <th class="py-2.5 px-3 font-medium">Dự án</th>
                   <th class="py-2.5 px-3 font-medium">Task</th>
                   <th class="py-2.5 px-3 font-medium text-center">Giờ HC</th>
                   <th class="py-2.5 px-3 font-medium text-center">Tăng ca</th>
                   <th class="py-2.5 px-3 font-medium text-center">Tổng</th>
-                  <th class="py-2.5 px-3 font-medium">Mô tả</th>
+                  <th class="py-2.5 px-3 font-medium">Ghi chú</th>
                   <th class="py-2.5 px-3 font-medium">Trạng thái</th>
                   <th class="py-2.5 px-3 font-medium">Thao tác</th>
                 </tr>
@@ -3852,38 +3854,57 @@
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="label">Ngày làm việc *</label>
+          <label class="label">Ngày *</label>
           <input type="date" id="tsDate" class="input-field" required>
         </div>
         <div>
+          <label class="label">Loại ngày *</label>
+          <select id="tsDayType" class="input-field" onchange="tsDayTypeChanged()">
+            <option value="work">🏢 Ngày làm việc</option>
+            <option value="annual_leave">🌴 Nghỉ phép năm</option>
+            <option value="unpaid_leave">💸 Nghỉ không lương</option>
+            <option value="holiday">🎉 Nghỉ lễ</option>
+            <option value="sick_leave">🤒 Nghỉ ốm</option>
+            <option value="compensatory">🔄 Nghỉ bù</option>
+          </select>
+        </div>
+      </div>
+      <!-- Leave notice banner -->
+      <div id="tsLeaveNotice" style="display:none" class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium" style="background:#fef3c7;border:1px solid #fde68a;color:#92400e">
+        <i class="fas fa-info-circle text-amber-500"></i>
+        <span id="tsLeaveNoticeText">Ngày nghỉ — giờ công sẽ được ghi nhận là 0h.</span>
+      </div>
+      <!-- Dự án + task — ẩn khi chọn loại nghỉ -->
+      <div id="tsWorkFields">
+        <div class="mb-4">
           <label class="label">Dự án *</label>
           <div id="tsProjectCombobox" style="width:100%"></div>
         </div>
-      </div>
-      <!-- Gợi ý dự án đã khai báo trong ngày -->
-      <div id="tsDateHint" style="display:none" class="flex flex-wrap gap-1 items-center px-3 py-2 rounded-lg text-xs" style="background:#fffbeb;border:1px solid #fde68a;color:#92400e">
-        <i class="fas fa-info-circle text-amber-500 mr-1"></i>
-        <span class="text-amber-800 font-medium mr-1">Ngày này đã có timesheet:</span>
-        <span id="tsDateHintProjects" class="text-amber-700"></span>
-        <span class="text-amber-600 ml-1">— Bạn có thể thêm cho dự án khác.</span>
+        <!-- Gợi ý dự án đã khai báo trong ngày -->
+        <div id="tsDateHint" style="display:none" class="flex flex-wrap gap-1 items-center px-3 py-2 rounded-lg text-xs mb-4" style="background:#fffbeb;border:1px solid #fde68a;color:#92400e">
+          <i class="fas fa-info-circle text-amber-500 mr-1"></i>
+          <span class="text-amber-800 font-medium mr-1">Ngày này đã có timesheet:</span>
+          <span id="tsDateHintProjects" class="text-amber-700"></span>
+          <span class="text-amber-600 ml-1">— Bạn có thể thêm cho dự án khác.</span>
+        </div>
+        <div class="mb-4">
+          <label class="label">Task (tùy chọn) <span id="tsTaskLoadingSpinner" style="display:none" class="text-xs text-gray-400 ml-1"><i class="fas fa-spinner fa-spin"></i> Đang tải...</span></label>
+          <div id="tsTaskCombobox" style="width:100%"></div>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="label">Giờ hành chính</label>
+            <input type="number" id="tsRegularHours" class="input-field" value="8" min="0" max="9999" step="0.5">
+          </div>
+          <div>
+            <label class="label">Giờ tăng ca</label>
+            <input type="number" id="tsOvertimeHours" class="input-field" value="0" min="0" max="9999" step="0.5">
+          </div>
+        </div>
       </div>
       <div>
-        <label class="label">Task (tùy chọn) <span id="tsTaskLoadingSpinner" style="display:none" class="text-xs text-gray-400 ml-1"><i class="fas fa-spinner fa-spin"></i> Đang tải...</span></label>
-        <div id="tsTaskCombobox" style="width:100%"></div>
-      </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="label">Giờ hành chính</label>
-          <input type="number" id="tsRegularHours" class="input-field" value="8" min="0" max="9999" step="0.5">
-        </div>
-        <div>
-          <label class="label">Giờ tăng ca</label>
-          <input type="number" id="tsOvertimeHours" class="input-field" value="0" min="0" max="9999" step="0.5">
-        </div>
-      </div>
-      <div>
-        <label class="label">Mô tả công việc</label>
-        <textarea id="tsDescription" class="input-field" rows="2" placeholder="Tóm tắt công việc đã thực hiện trong ngày"></textarea>
+        <label class="label">Ghi chú</label>
+        <textarea id="tsDescription" class="input-field" rows="2" placeholder="Tóm tắt công việc hoặc lý do nghỉ"></textarea>
       </div>
       <div class="flex justify-end gap-3 pt-2">
         <button type="button" onclick="closeModal('timesheetModal')" class="btn-secondary">Hủy</button>

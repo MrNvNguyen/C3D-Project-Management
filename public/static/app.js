@@ -4643,6 +4643,7 @@ async function loadTimesheets() {
     // ------ Summary KPI cards ------
     const pending  = allTimesheets.filter(t => t.status === 'submitted').length
     const approved = allTimesheets.filter(t => t.status === 'approved').length
+    const leaveDays = allTimesheets.filter(t => t.day_type && t.day_type !== 'work').length
     const totalReg = apiSummary ? (apiSummary.total_regular_hours || 0)
                                 : allTimesheets.reduce((s, t) => s + (t.regular_hours  || 0), 0)
     const totalOT  = apiSummary ? (apiSummary.total_overtime_hours || 0)
@@ -4650,6 +4651,7 @@ async function loadTimesheets() {
     const totalH   = apiSummary ? (apiSummary.total_hours || 0) : totalReg + totalOT
 
     if ($('tsCardTotal'))       $('tsCardTotal').textContent       = allTimesheets.length
+    if ($('tsCardLeave'))       $('tsCardLeave').textContent       = leaveDays
     if ($('tsCardPending'))     $('tsCardPending').textContent     = pending
     if ($('tsCardApproved'))    $('tsCardApproved').textContent    = approved
     if ($('tsCardHours'))       $('tsCardHours').textContent       = totalH + 'h'
@@ -4892,6 +4894,9 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
   $('tsTotalRegular').textContent  = totalReg + 'h'
   $('tsTotalOvertime').textContent = totalOT + 'h'
   $('tsTotalHours').textContent    = (totalReg + totalOT) + 'h'
+  // Update leave count in filter summary
+  const filterLeaveEl = document.getElementById('tsFilterLeave')
+  if (filterLeaveEl) filterLeaveEl.textContent = timesheets.filter(t => t.day_type && t.day_type !== 'work').length
 
   // Ẩn/hiện cột "Nhân viên"
   document.querySelectorAll('.ts-col-user').forEach(el => {
@@ -4915,7 +4920,15 @@ function renderTsRows() {
 
   const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
   const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
-  const emptyColspan  = canSeeAll ? 10 : 9
+  const dayTypeInfo   = {
+    work:         { label: 'Làm việc', cls: 'bg-blue-50 text-blue-700',   icon: '🏢' },
+    annual_leave: { label: 'Phép năm', cls: 'bg-green-50 text-green-700', icon: '🌴' },
+    unpaid_leave: { label: 'KLương',   cls: 'bg-red-50 text-red-700',     icon: '💸' },
+    holiday:      { label: 'Nghỉ lễ', cls: 'bg-purple-50 text-purple-700',icon: '🎉' },
+    sick_leave:   { label: 'Nghỉ ốm', cls: 'bg-orange-50 text-orange-700',icon: '🤒' },
+    compensatory: { label: 'Nghỉ bù', cls: 'bg-amber-50 text-amber-700',  icon: '🔄' },
+  }
+  const emptyColspan  = canSeeAll ? 11 : 10
 
   const pageData = tsPaginatedData()
 
@@ -4939,8 +4952,11 @@ function renderTsRows() {
     const canApproveBt = canApprove && isSubmitted
     const canRejectBt  = canApprove && isSubmitted
 
+    const dt   = dayTypeInfo[t.day_type || 'work'] || dayTypeInfo.work
+    const isLeaveRow = (t.day_type || 'work') !== 'work'
+
     return `
-    <tr class="table-row ${isOwner && !canSeeAll ? 'bg-green-50/30' : ''}">
+    <tr class="table-row ${isLeaveRow ? 'bg-amber-50/40' : (isOwner && !canSeeAll ? 'bg-green-50/30' : '')}">
       <td class="py-2 pr-3 text-sm font-medium">${fmtDate(t.work_date)}</td>
       <td class="py-2 pr-3 text-sm ts-col-user" style="display:${canSeeAll ? '' : 'none'}">
         <div class="flex items-center gap-1.5">
@@ -4948,11 +4964,14 @@ function renderTsRows() {
           <span>${t.user_name || '-'}</span>
         </div>
       </td>
-      <td class="py-2 pr-3 text-sm text-gray-600">${t.project_code || '-'}</td>
-      <td class="py-2 pr-3 text-xs text-gray-500 max-w-28 truncate" title="${t.task_title||''}">${t.task_title || '-'}</td>
-      <td class="py-2 pr-3 text-center font-medium text-primary">${t.regular_hours}h</td>
-      <td class="py-2 pr-3 text-center font-medium text-orange-500">${t.overtime_hours > 0 ? t.overtime_hours + 'h' : '-'}</td>
-      <td class="py-2 pr-3 text-center font-bold text-gray-700">${(t.regular_hours + t.overtime_hours)}h</td>
+      <td class="py-2 pr-3">
+        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium ${dt.cls}" title="${dt.label}">${dt.icon} ${dt.label}</span>
+      </td>
+      <td class="py-2 pr-3 text-sm text-gray-600">${isLeaveRow ? '<span class="text-gray-300">—</span>' : (t.project_code || '-')}</td>
+      <td class="py-2 pr-3 text-xs text-gray-500 max-w-28 truncate" title="${t.task_title||''}">${isLeaveRow ? '<span class="text-gray-300">—</span>' : (t.task_title || '-')}</td>
+      <td class="py-2 pr-3 text-center font-medium text-primary">${isLeaveRow ? '<span class="text-gray-400">0h</span>' : t.regular_hours + 'h'}</td>
+      <td class="py-2 pr-3 text-center font-medium text-orange-500">${isLeaveRow ? '<span class="text-gray-300">—</span>' : (t.overtime_hours > 0 ? t.overtime_hours + 'h' : '-')}</td>
+      <td class="py-2 pr-3 text-center font-bold text-gray-700">${isLeaveRow ? '<span class="text-gray-400">0h</span>' : (t.regular_hours + t.overtime_hours) + 'h'}</td>
       <td class="py-2 pr-3 text-xs text-gray-500 max-w-32 truncate" title="${t.description||''}">${t.description || '-'}</td>
       <td class="py-2 pr-3"><span class="badge ${statusColors[t.status] || 'badge-todo'}">${statusLabels[t.status] || t.status}</span></td>
       <td class="py-2">
@@ -5186,6 +5205,9 @@ async function openTimesheetModal(tsId = null) {
       $('tsDate').removeAttribute('min')
       $('tsDate').removeAttribute('max')
     }
+    // Loại ngày
+    if ($('tsDayType')) { $('tsDayType').value = ts.day_type || 'work'; $('tsDayType').disabled = locked }
+    tsDayTypeChanged()
     $('tsRegularHours').value     = ts.regular_hours  ?? 8
     $('tsOvertimeHours').value    = ts.overtime_hours ?? 0
     $('tsDescription').value      = ts.description    || ''
@@ -5218,6 +5240,9 @@ async function openTimesheetModal(tsId = null) {
       $('tsDate').removeAttribute('min')
       $('tsDate').removeAttribute('max')
     }
+    // Reset loại ngày về "làm việc"
+    if ($('tsDayType')) { $('tsDayType').value = 'work'; $('tsDayType').disabled = false }
+    tsDayTypeChanged()
     $('tsRegularHours').value     = 8
     $('tsOvertimeHours').value    = 0
     $('tsDescription').value      = ''
@@ -5233,6 +5258,29 @@ async function openTimesheetModal(tsId = null) {
     // Hiển thị gợi ý dự án đã khai báo cho ngày hôm nay
     const targetUid = isAdmin ? (parseInt($('tsTargetUserHidden').value) || currentUser.id) : null
     _updateTsDateHint(today(), null, targetUid)
+  }
+}
+
+// ── Loại ngày: ẩn/hiện các trường dự án/giờ khi chọn loại nghỉ ──
+function tsDayTypeChanged() {
+  const dayType = $('tsDayType')?.value || 'work'
+  const workFields  = document.getElementById('tsWorkFields')
+  const leaveNotice = document.getElementById('tsLeaveNotice')
+  const leaveText   = document.getElementById('tsLeaveNoticeText')
+  const isLeave = dayType !== 'work'
+  if (workFields)  workFields.style.display  = isLeave ? 'none' : ''
+  if (leaveNotice) {
+    leaveNotice.style.display = isLeave ? '' : 'none'
+    if (leaveText) {
+      const labels = {
+        annual_leave:  '🌴 Nghỉ phép năm — giờ công ghi nhận 0h, được tính vào phép năm.',
+        unpaid_leave:  '💸 Nghỉ không lương — giờ công ghi nhận 0h, không tính lương ngày này.',
+        holiday:       '🎉 Nghỉ lễ — giờ công ghi nhận 0h.',
+        sick_leave:    '🤒 Nghỉ ốm — giờ công ghi nhận 0h.',
+        compensatory:  '🔄 Nghỉ bù — giờ công ghi nhận 0h.',
+      }
+      leaveText.textContent = labels[dayType] || 'Ngày nghỉ — giờ công ghi nhận 0h.'
+    }
   }
 }
 
@@ -5492,26 +5540,28 @@ $('tsForm').addEventListener('submit', async (e) => {
   e.preventDefault()
   const id = $('tsId').value
 
-  // Ưu tiên _cbGetValue (luôn đúng với state combobox hiện tại)
-  // fallback về hidden input nếu combobox chưa được tạo
-  // Đồng thời sync hidden input từ combobox để tránh lệch
+  const dayType = $('tsDayType')?.value || 'work'
+  const isLeaveDay = dayType !== 'work'
+
+  // Validate: ngày làm việc phải chọn dự án
   const projId = _cbGetValue('tsProjectCombobox') || $('tsProjectHidden').value
   const taskId = _cbGetValue('tsTaskCombobox')    || $('tsTaskHidden').value
   // Sync lại hidden inputs để luôn khớp với combobox value
   if ($('tsProjectHidden')) $('tsProjectHidden').value = projId || ''
   if ($('tsTaskHidden'))    $('tsTaskHidden').value    = taskId || ''
 
-  if (!projId) {
+  if (!isLeaveDay && !projId) {
     toast('Vui lòng chọn dự án', 'warning')
     return
   }
 
   const data = {
-    project_id: parseInt(projId),
-    task_id: parseInt(taskId) || null,
+    day_type: dayType,
+    project_id: isLeaveDay ? null : (parseInt(projId) || null),
+    task_id: isLeaveDay ? null : (parseInt(taskId) || null),
     work_date: $('tsDate').value,
-    regular_hours: parseFloat($('tsRegularHours').value) || 0,
-    overtime_hours: parseFloat($('tsOvertimeHours').value) || 0,
+    regular_hours: isLeaveDay ? 0 : (parseFloat($('tsRegularHours').value) || 0),
+    overtime_hours: isLeaveDay ? 0 : (parseFloat($('tsOvertimeHours').value) || 0),
     description: $('tsDescription').value
   }
 
@@ -5571,8 +5621,11 @@ $('tsForm').addEventListener('submit', async (e) => {
     } else {
       result = await api('/timesheets', { method: 'post', data })
       // Backend returns action: 'updated' if it auto-updated an existing record
+      const leaveLabels = { annual_leave: 'Nghỉ phép năm', unpaid_leave: 'Nghỉ không lương', holiday: 'Nghỉ lễ', sick_leave: 'Nghỉ ốm', compensatory: 'Nghỉ bù' }
       if (result && result.action === 'updated') {
         toast('✅ Đã cập nhật timesheet cho ngày này (đã tồn tại)', 'success')
+      } else if (data.day_type && data.day_type !== 'work') {
+        toast(`✅ Đã khai báo ${leaveLabels[data.day_type] || 'ngày nghỉ'} thành công`, 'success')
       } else {
         toast('✅ Đã thêm timesheet thành công', 'success')
       }

@@ -2281,12 +2281,13 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
 
     let query = `
       SELECT ts.*,
+        COALESCE(ts.day_type, 'work') as day_type,
         u.full_name as user_name, u.department,
         p.name as project_name, p.code as project_code,
         t.title as task_title
       FROM timesheets ts
       JOIN users u ON ts.user_id = u.id
-      JOIN projects p ON ts.project_id = p.id
+      LEFT JOIN projects p ON ts.project_id = p.id
       LEFT JOIN tasks t ON ts.task_id = t.id
       WHERE 1=1
     `
@@ -2449,8 +2450,11 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     const user = c.get('user') as any
     const data = await c.req.json()
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description } = data
+    const day_type = data.day_type || 'work'
+    const isLeaveDay = day_type !== 'work'
 
-    if (!project_id || !work_date) return c.json({ error: 'project_id and work_date required' }, 400)
+    if (!work_date) return c.json({ error: 'work_date required' }, 400)
+    if (!isLeaveDay && !project_id) return c.json({ error: 'project_id required for work day' }, 400)
 
     // ── Giới hạn tuần: member & project_admin/leader chỉ khai báo trong tuần hiện tại ──
     const effRoleGlobalCheck = await getEffectiveRole(db, user)
@@ -2468,18 +2472,20 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
 
     // Kiểm tra quyền tạo timesheet:
     // - system_admin: được tạo cho mọi dự án, mọi user
-    // - project_admin/project_leader của dự án này: được tạo timesheet cho user khác (targetUserId != user.id)
-    // - member (kể cả global role cao hơn) tạo timesheet CHO CHÍNH MÌNH: luôn được phép
-    //   nếu họ là thành viên của dự án (project_members hoặc admin_id/leader_id)
-    // - Tạo timesheet CHO NGƯỜI KHÁC mà không phải admin/leader của dự án: bị từ chối
+    // - Ngày nghỉ (leave): mọi user đều được khai báo cho chính mình, admin cho người khác
+    // - project_admin/project_leader của dự án này: được tạo timesheet cho user khác
+    // - member tạo timesheet CHO CHÍNH MÌNH: luôn được phép nếu là thành viên dự án
 
     if (effRoleGlobal !== 'system_admin') {
       if (targetUserId !== user.id) {
-        // Đang tạo timesheet cho người khác → phải là admin/leader của dự án này
-        const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
-        if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác trong dự án này' }, 403)
-      } else {
-        // Tạo timesheet cho chính mình → kiểm tra có là thành viên của dự án không
+        // Đang tạo timesheet cho người khác → phải là admin/leader
+        if (!isLeaveDay) {
+          const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
+          if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác trong dự án này' }, 403)
+        }
+        // Leave day for others: only system_admin (already guarded above)
+      } else if (!isLeaveDay) {
+        // Tạo timesheet công việc cho chính mình → kiểm tra là thành viên dự án
         const isMember = await db.prepare(
           `SELECT id FROM project_members WHERE project_id = ? AND user_id = ?`
         ).bind(parseInt(project_id), user.id).first()
@@ -2490,12 +2496,15 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
           return c.json({ error: 'Bạn không phải thành viên của dự án này' }, 403)
         }
       }
+      // Leave day for self: always allowed
     }
 
     // === CREATE-OR-UPDATE: check for existing record before inserting ===
+    // For leave days: unique by (user_id, work_date) — project_id may be NULL
+    // For work days: unique by (user_id, work_date) as well (new constraint)
     const existing = await db.prepare(
-      `SELECT id, status FROM timesheets WHERE user_id = ? AND project_id = ? AND work_date = ? LIMIT 1`
-    ).bind(targetUserId, parseInt(project_id), work_date).first() as any
+      `SELECT id, status FROM timesheets WHERE user_id = ? AND work_date = ? LIMIT 1`
+    ).bind(targetUserId, work_date).first() as any
 
     if (existing) {
       // Prevent editing approved timesheets (unless system_admin)
@@ -2504,16 +2513,19 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       }
       // Update existing record instead of creating a duplicate
       await db.prepare(
-        `UPDATE timesheets SET task_id = ?, regular_hours = ?, overtime_hours = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
-      ).bind(task_id || null, regular_hours || 0, overtime_hours || 0, description || null, existing.id).run()
+        `UPDATE timesheets SET day_type = ?, project_id = ?, task_id = ?, regular_hours = ?, overtime_hours = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+      ).bind(day_type, isLeaveDay ? null : (project_id || null), isLeaveDay ? null : (task_id || null),
+        isLeaveDay ? 0 : (regular_hours || 0), isLeaveDay ? 0 : (overtime_hours || 0),
+        description || null, existing.id).run()
       return c.json({ success: true, id: existing.id, action: 'updated' }, 200)
     }
 
     const result = await db.prepare(
-      `INSERT INTO timesheets (user_id, project_id, task_id, work_date, regular_hours, overtime_hours, description)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(targetUserId, project_id, task_id || null, work_date,
-      regular_hours || 0, overtime_hours || 0, description || null).run()
+      `INSERT INTO timesheets (user_id, project_id, task_id, work_date, day_type, regular_hours, overtime_hours, description)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(targetUserId, isLeaveDay ? null : (project_id || null), isLeaveDay ? null : (task_id || null),
+      work_date, day_type, isLeaveDay ? 0 : (regular_hours || 0),
+      isLeaveDay ? 0 : (overtime_hours || 0), description || null).run()
 
     return c.json({ success: true, id: result.meta.last_row_id, action: 'created' }, 201)
   } catch (e: any) {
@@ -2551,6 +2563,8 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     }
 
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description, status } = data
+    const day_type = data.day_type
+    const isLeaveDay = day_type && day_type !== 'work'
     const updates: string[] = []
     const values: any[] = []
 
@@ -2561,7 +2575,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       // Chỉ chặn sửa nội dung (không chặn admin phê duyệt/từ chối)
       const isContentEdit = project_id !== undefined || task_id !== undefined || work_date !== undefined ||
                             regular_hours !== undefined || overtime_hours !== undefined ||
-                            description !== undefined
+                            description !== undefined || day_type !== undefined
       if (isContentEdit) {
         return c.json({
           error: 'Timesheet này thuộc tuần đã qua, không thể chỉnh sửa nữa.',
@@ -2574,16 +2588,29 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     const canEditContent = isAdmin || isProjAdmin || (isOwner && ['draft', 'rejected'].includes(ts.status))
     if (canEditContent) {
       // project_id: cho phép đổi sang dự án khác
-      if (project_id !== undefined && project_id !== null) {
-        // Kiểm tra dự án tồn tại
-        const proj = await db.prepare('SELECT id FROM projects WHERE id = ?').bind(project_id).first()
-        if (!proj) return c.json({ error: 'Dự án không tồn tại' }, 400)
-        updates.push('project_id = ?'); values.push(project_id)
-        // Khi đổi project, task_id liên quan đến project cũ không còn hợp lệ → reset nếu không có task_id mới
-        if (task_id === undefined) { updates.push('task_id = ?'); values.push(null) }
+      // day_type: cập nhật loại ngày trước
+      if (day_type !== undefined) {
+        updates.push('day_type = ?'); values.push(day_type)
+        // Nếu chuyển sang ngày nghỉ → xoá project/task và set giờ = 0
+        if (isLeaveDay) {
+          updates.push('project_id = ?'); values.push(null)
+          updates.push('task_id = ?'); values.push(null)
+          updates.push('regular_hours = ?'); values.push(0)
+          updates.push('overtime_hours = ?'); values.push(0)
+        }
       }
-      // task_id: cho phép set null (xóa task) hoặc set id mới
-      if (task_id !== undefined) { updates.push('task_id = ?'); values.push(task_id || null) }
+      if (!isLeaveDay) {
+        if (project_id !== undefined && project_id !== null) {
+          // Kiểm tra dự án tồn tại
+          const proj = await db.prepare('SELECT id FROM projects WHERE id = ?').bind(project_id).first()
+          if (!proj) return c.json({ error: 'Dự án không tồn tại' }, 400)
+          updates.push('project_id = ?'); values.push(project_id)
+          // Khi đổi project, task_id liên quan đến project cũ không còn hợp lệ → reset nếu không có task_id mới
+          if (task_id === undefined) { updates.push('task_id = ?'); values.push(null) }
+        }
+        // task_id: cho phép set null (xóa task) hoặc set id mới
+        if (task_id !== undefined) { updates.push('task_id = ?'); values.push(task_id || null) }
+      }
       if (work_date !== undefined) {
         // Kiểm tra ngày mới cũng phải trong tuần hiện tại (trừ admin)
         if (!isAdmin && !isProjAdmin && !isWithinCurrentWeek(work_date)) {
@@ -2594,13 +2621,15 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
         }
         updates.push('work_date = ?'); values.push(work_date)
       }
-      if (regular_hours !== undefined) { updates.push('regular_hours = ?'); values.push(regular_hours) }
-      if (overtime_hours !== undefined) { updates.push('overtime_hours = ?'); values.push(overtime_hours) }
+      if (!isLeaveDay) {
+        if (regular_hours !== undefined) { updates.push('regular_hours = ?'); values.push(regular_hours) }
+        if (overtime_hours !== undefined) { updates.push('overtime_hours = ?'); values.push(overtime_hours) }
+      }
       if (description !== undefined) { updates.push('description = ?'); values.push(description) }
     } else {
       // member thường không được sửa nội dung (chỉ submit/rút lại)
       if (project_id !== undefined || regular_hours !== undefined || overtime_hours !== undefined ||
-          description !== undefined || task_id !== undefined || work_date !== undefined) {
+          description !== undefined || task_id !== undefined || work_date !== undefined || day_type !== undefined) {
         return c.json({ error: 'Không thể sửa nội dung timesheet đã được duyệt hoặc đang chờ duyệt' }, 403)
       }
     }
@@ -8040,7 +8069,7 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS message_attachments (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER NOT NULL, file_name TEXT NOT NULL, file_type TEXT NOT NULL, file_size INTEGER DEFAULT 0, data TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(context_type, context_id)`,
       `CREATE INDEX IF NOT EXISTS idx_msg_attachments ON message_attachments(message_id)`,
-      `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER, work_date DATE NOT NULL, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, project_id, work_date))`,
+      `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER, task_id INTEGER, work_date DATE NOT NULL, day_type TEXT NOT NULL DEFAULT 'work', regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, work_date))`,
       `CREATE TABLE IF NOT EXISTS project_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, cost_type TEXT NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', cost_date DATE, invoice_number TEXT, vendor TEXT, approved_by INTEGER, notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS project_revenues (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', revenue_date DATE, invoice_number TEXT, payment_status TEXT DEFAULT 'pending', notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS assets (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, brand TEXT, model TEXT, serial_number TEXT, specifications TEXT, purchase_date DATE, purchase_price REAL DEFAULT 0, current_value REAL DEFAULT 0, warranty_expiry DATE, status TEXT DEFAULT 'unused', location TEXT, department TEXT, assigned_to INTEGER, assigned_date DATE, notes TEXT, image_url TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
@@ -8057,13 +8086,61 @@ app.post('/api/system/init', async (c) => {
       await db.prepare(stmt).run()
     }
 
+    // ---- SAFE MIGRATION: Add new columns to timesheets if they don't exist ----
+    try { await db.prepare(`ALTER TABLE timesheets ADD COLUMN day_type TEXT NOT NULL DEFAULT 'work'`).run() } catch (_) { /* column already exists */ }
+
+    // ---- CRITICAL MIGRATION: Make project_id nullable (for leave days) ----
+    // SQLite cannot ALTER COLUMN to remove NOT NULL, so we must recreate the table
+    try {
+      const colInfo = await db.prepare(`PRAGMA table_info(timesheets)`).all()
+      const projCol = (colInfo.results as any[]).find((c: any) => c.name === 'project_id')
+      if (projCol && projCol.notnull === 1) {
+        // Need to recreate table — project_id must allow NULL for leave-day records
+        // Step 1: create new table
+        await db.prepare(`
+          CREATE TABLE IF NOT EXISTS timesheets_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            project_id INTEGER,
+            task_id INTEGER,
+            work_date DATE NOT NULL,
+            day_type TEXT NOT NULL DEFAULT 'work',
+            regular_hours REAL DEFAULT 0,
+            overtime_hours REAL DEFAULT 0,
+            description TEXT,
+            status TEXT DEFAULT 'draft',
+            approved_by INTEGER,
+            approved_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, work_date)
+          )
+        `).run()
+        // Step 2: copy existing data (dedup by user_id+work_date, keep latest)
+        await db.prepare(`
+          INSERT OR IGNORE INTO timesheets_new
+            (id, user_id, project_id, task_id, work_date, day_type,
+             regular_hours, overtime_hours, description, status,
+             approved_by, approved_at, created_at, updated_at)
+          SELECT id, user_id, project_id, task_id, work_date,
+            COALESCE(day_type, 'work'), regular_hours, overtime_hours,
+            description, status, approved_by, approved_at, created_at, updated_at
+          FROM timesheets
+          ORDER BY id ASC
+        `).run()
+        // Step 3: drop old table and rename new one
+        await db.prepare(`DROP TABLE timesheets`).run()
+        await db.prepare(`ALTER TABLE timesheets_new RENAME TO timesheets`).run()
+      }
+    } catch (_migErr) { /* ignore — migration already applied or DB already correct */ }
+
     // ---- CRITICAL: Always dedup timesheets BEFORE seeding new data ----
-    // This handles DBs created before UNIQUE constraint and any existing dupes
+    // New unique key is (user_id, work_date) — one record per person per day
     try {
       await db.prepare(`
         DELETE FROM timesheets
         WHERE id NOT IN (
-          SELECT MAX(id) FROM timesheets GROUP BY user_id, project_id, work_date
+          SELECT MAX(id) FROM timesheets GROUP BY user_id, work_date
         )
       `).run()
     } catch (_) { /* ignore */ }
@@ -8305,7 +8382,7 @@ app.post('/api/system/init', async (c) => {
       await db.prepare(`
         DELETE FROM timesheets
         WHERE id NOT IN (
-          SELECT MAX(id) FROM timesheets GROUP BY user_id, project_id, work_date
+          SELECT MAX(id) FROM timesheets GROUP BY user_id, work_date
         )
       `).run()
     } catch (_) { /* ignore */ }
