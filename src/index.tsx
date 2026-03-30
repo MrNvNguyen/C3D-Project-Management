@@ -2351,8 +2351,31 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       ? await db.prepare(sumQ).bind(...sumParams).first() as any
       : await db.prepare(sumQ).first() as any
 
+    // Fetch task_entries for timesheets that have multi-task data
+    const timesheetList = result.results as any[]
+    const tsIds = timesheetList.filter(t => !t.task_id && t.project_id).map(t => t.id)
+    let taskEntriesMap: Record<number, any[]> = {}
+    if (tsIds.length > 0) {
+      const placeholders = tsIds.map(() => '?').join(',')
+      const teResult = await db.prepare(
+        `SELECT tt.*, t.title as task_title FROM timesheet_tasks tt
+         LEFT JOIN tasks t ON tt.task_id = t.id
+         WHERE tt.timesheet_id IN (${placeholders})`
+      ).bind(...tsIds).all()
+      for (const te of (teResult.results as any[])) {
+        if (!taskEntriesMap[te.timesheet_id]) taskEntriesMap[te.timesheet_id] = []
+        taskEntriesMap[te.timesheet_id].push(te)
+      }
+    }
+    // Attach task_entries to each timesheet
+    const timesheetsWithEntries = timesheetList.map(t => ({
+      ...t,
+      day_type: t.day_type || 'work',
+      task_entries: taskEntriesMap[t.id] || []
+    }))
+
     return c.json({
-      timesheets: result.results,
+      timesheets: timesheetsWithEntries,
       summary: {
         total_regular_hours: summary?.total_regular_hours || 0,
         total_overtime_hours: summary?.total_overtime_hours || 0,
@@ -2451,7 +2474,12 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     const data = await c.req.json()
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description } = data
     const day_type = data.day_type || 'work'
-    const isLeaveDay = day_type !== 'work'
+    // half_day types still count as work (require project), just with reduced hours
+    const isLeaveDay = !['work','half_day_am','half_day_pm'].includes(day_type)
+    const isHalfDay  = day_type === 'half_day_am' || day_type === 'half_day_pm'
+    // task_entries: array of {task_id, regular_hours, overtime_hours} for multi-task mode
+    const taskEntries: Array<{task_id: number|null, regular_hours: number, overtime_hours: number}> = data.task_entries || []
+    const isMultiTask = taskEntries.length > 0
 
     if (!work_date) return c.json({ error: 'work_date required' }, 400)
     if (!isLeaveDay && !project_id) return c.json({ error: 'project_id required for work day' }, 400)
@@ -2485,13 +2513,14 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
         }
         // Leave day for others: only system_admin (already guarded above)
       } else if (!isLeaveDay) {
-        // Tạo timesheet công việc cho chính mình → kiểm tra là thành viên dự án
+        // Tạo timesheet công việc / nửa ngày cho chính mình → kiểm tra là thành viên dự án
+        const projIdToCheck = parseInt(project_id)
         const isMember = await db.prepare(
           `SELECT id FROM project_members WHERE project_id = ? AND user_id = ?`
-        ).bind(parseInt(project_id), user.id).first()
+        ).bind(projIdToCheck, user.id).first()
         const isAdminOrLeader = await db.prepare(
           `SELECT id FROM projects WHERE id = ? AND (admin_id = ? OR leader_id = ?)`
-        ).bind(parseInt(project_id), user.id, user.id).first()
+        ).bind(projIdToCheck, user.id, user.id).first()
         if (!isMember && !isAdminOrLeader) {
           return c.json({ error: 'Bạn không phải thành viên của dự án này' }, 403)
         }
@@ -2499,35 +2528,55 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       // Leave day for self: always allowed
     }
 
+    // === Tính tổng giờ: multi-task sum hoặc single values ===
+    const totalReg = isLeaveDay ? 0 : (isMultiTask
+      ? taskEntries.reduce((s, e) => s + (e.regular_hours || 0), 0)
+      : (regular_hours || 0))
+    const totalOT = isLeaveDay ? 0 : (isMultiTask
+      ? taskEntries.reduce((s, e) => s + (e.overtime_hours || 0), 0)
+      : (overtime_hours || 0))
+    // Cho single-task: dùng task_id từ data; multi-task: task_id = null (chi tiết trong timesheet_tasks)
+    const mainTaskId = isLeaveDay ? null : (isMultiTask ? null : (task_id || null))
+
     // === CREATE-OR-UPDATE: check for existing record before inserting ===
-    // For leave days: unique by (user_id, work_date) — project_id may be NULL
-    // For work days: unique by (user_id, work_date) as well (new constraint)
     const existing = await db.prepare(
       `SELECT id, status FROM timesheets WHERE user_id = ? AND work_date = ? LIMIT 1`
     ).bind(targetUserId, work_date).first() as any
 
+    let timesheetId: number
     if (existing) {
       // Prevent editing approved timesheets (unless system_admin)
       if (existing.status === 'approved' && user.role !== 'system_admin') {
         return c.json({ error: 'Timesheet ngày này đã được duyệt. Không thể cập nhật.', exists: true, id: existing.id, status: existing.status }, 409)
       }
-      // Update existing record instead of creating a duplicate
+      // Update existing record
       await db.prepare(
         `UPDATE timesheets SET day_type = ?, project_id = ?, task_id = ?, regular_hours = ?, overtime_hours = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
-      ).bind(day_type, isLeaveDay ? null : (project_id || null), isLeaveDay ? null : (task_id || null),
-        isLeaveDay ? 0 : (regular_hours || 0), isLeaveDay ? 0 : (overtime_hours || 0),
-        description || null, existing.id).run()
-      return c.json({ success: true, id: existing.id, action: 'updated' }, 200)
+      ).bind(day_type, isLeaveDay ? null : (project_id || null), mainTaskId,
+        totalReg, totalOT, description || null, existing.id).run()
+      timesheetId = existing.id
+      // Delete old task entries (will re-insert below)
+      await db.prepare(`DELETE FROM timesheet_tasks WHERE timesheet_id = ?`).bind(timesheetId).run()
+      // Return updated action after inserting task entries
+    } else {
+      const result = await db.prepare(
+        `INSERT INTO timesheets (user_id, project_id, task_id, work_date, day_type, regular_hours, overtime_hours, description)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(targetUserId, isLeaveDay ? null : (project_id || null), mainTaskId,
+        work_date, day_type, totalReg, totalOT, description || null).run()
+      timesheetId = result.meta.last_row_id as number
     }
 
-    const result = await db.prepare(
-      `INSERT INTO timesheets (user_id, project_id, task_id, work_date, day_type, regular_hours, overtime_hours, description)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(targetUserId, isLeaveDay ? null : (project_id || null), isLeaveDay ? null : (task_id || null),
-      work_date, day_type, isLeaveDay ? 0 : (regular_hours || 0),
-      isLeaveDay ? 0 : (overtime_hours || 0), description || null).run()
+    // === Lưu task entries cho multi-task mode ===
+    if (isMultiTask && timesheetId) {
+      for (const entry of taskEntries) {
+        await db.prepare(
+          `INSERT INTO timesheet_tasks (timesheet_id, task_id, regular_hours, overtime_hours) VALUES (?, ?, ?, ?)`
+        ).bind(timesheetId, entry.task_id || null, entry.regular_hours || 0, entry.overtime_hours || 0).run()
+      }
+    }
 
-    return c.json({ success: true, id: result.meta.last_row_id, action: 'created' }, 201)
+    return c.json({ success: true, id: timesheetId, action: existing ? 'updated' : 'created' }, existing ? 200 : 201)
   } catch (e: any) {
     if (e.message?.includes('UNIQUE constraint failed')) {
       return c.json({ error: 'Timesheet cho ngày này đã tồn tại. Vui lòng chỉnh sửa bản ghi hiện có.', duplicate: true }, 409)
@@ -2564,7 +2613,9 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
 
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description, status } = data
     const day_type = data.day_type
-    const isLeaveDay = day_type && day_type !== 'work'
+    const isLeaveDay = day_type && !['work','half_day_am','half_day_pm'].includes(day_type)
+    const taskEntries: Array<{task_id: number|null, regular_hours: number, overtime_hours: number}> = data.task_entries || []
+    const isMultiTask = taskEntries.length > 0
     const updates: string[] = []
     const values: any[] = []
 
@@ -2591,7 +2642,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       // day_type: cập nhật loại ngày trước
       if (day_type !== undefined) {
         updates.push('day_type = ?'); values.push(day_type)
-        // Nếu chuyển sang ngày nghỉ → xoá project/task và set giờ = 0
+        // Nếu chuyển sang ngày nghỉ hoàn toàn → xoá project/task và set giờ = 0
         if (isLeaveDay) {
           updates.push('project_id = ?'); values.push(null)
           updates.push('task_id = ?'); values.push(null)
@@ -2601,29 +2652,36 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       }
       if (!isLeaveDay) {
         if (project_id !== undefined && project_id !== null) {
-          // Kiểm tra dự án tồn tại
           const proj = await db.prepare('SELECT id FROM projects WHERE id = ?').bind(project_id).first()
           if (!proj) return c.json({ error: 'Dự án không tồn tại' }, 400)
           updates.push('project_id = ?'); values.push(project_id)
-          // Khi đổi project, task_id liên quan đến project cũ không còn hợp lệ → reset nếu không có task_id mới
-          if (task_id === undefined) { updates.push('task_id = ?'); values.push(null) }
+          if (task_id === undefined && !isMultiTask) { updates.push('task_id = ?'); values.push(null) }
         }
-        // task_id: cho phép set null (xóa task) hoặc set id mới
-        if (task_id !== undefined) { updates.push('task_id = ?'); values.push(task_id || null) }
+        if (!isMultiTask) {
+          // Single task mode: update task_id directly
+          if (task_id !== undefined) { updates.push('task_id = ?'); values.push(task_id || null) }
+        } else {
+          // Multi-task mode: task_id on main record = null, details in timesheet_tasks
+          updates.push('task_id = ?'); values.push(null)
+        }
       }
       if (work_date !== undefined) {
-        // Kiểm tra ngày mới cũng phải trong tuần hiện tại (trừ admin)
         if (!isAdmin && !isProjAdmin && !isWithinCurrentWeek(work_date)) {
-          return c.json({
-            error: 'Chỉ được cập nhật ngày làm việc trong tuần hiện tại (Thứ Hai – Chủ Nhật).',
-            week_limit: true
-          }, 422)
+          return c.json({ error: 'Chỉ được cập nhật ngày làm việc trong tuần hiện tại.', week_limit: true }, 422)
         }
         updates.push('work_date = ?'); values.push(work_date)
       }
       if (!isLeaveDay) {
-        if (regular_hours !== undefined) { updates.push('regular_hours = ?'); values.push(regular_hours) }
-        if (overtime_hours !== undefined) { updates.push('overtime_hours = ?'); values.push(overtime_hours) }
+        if (isMultiTask) {
+          // Compute totals from task_entries
+          const tReg = taskEntries.reduce((s, e) => s + (e.regular_hours || 0), 0)
+          const tOT  = taskEntries.reduce((s, e) => s + (e.overtime_hours || 0), 0)
+          updates.push('regular_hours = ?'); values.push(tReg)
+          updates.push('overtime_hours = ?'); values.push(tOT)
+        } else {
+          if (regular_hours !== undefined) { updates.push('regular_hours = ?'); values.push(regular_hours) }
+          if (overtime_hours !== undefined) { updates.push('overtime_hours = ?'); values.push(overtime_hours) }
+        }
       }
       if (description !== undefined) { updates.push('description = ?'); values.push(description) }
     } else {
@@ -2655,27 +2713,38 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       }
     }
 
-    if (!updates.length) {
+    if (!updates.length && !isMultiTask) {
       return c.json({ error: 'Không có gì để cập nhật' }, 400)
     }
-    updates.push('updated_at = CURRENT_TIMESTAMP')
-    values.push(id)
+    if (updates.length) {
+      updates.push('updated_at = CURRENT_TIMESTAMP')
+      values.push(id)
+      await db.prepare(`UPDATE timesheets SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    }
 
-    await db.prepare(`UPDATE timesheets SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
-
-    // ── Email: timesheet_reviewed (khi admin duyệt/từ chối) ──
-    if (status && (status === 'approved' || status === 'rejected') && (isAdmin || isProjAdmin)) {
-      const emailUser = await getUserEmailInfo(db, ts.user_id)
-      if (emailUser) {
-        const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(ts.project_id).first() as any
-        await sendEmail(c.env, {
-          to: emailUser.email, toName: emailUser.full_name,
-          eventType: 'timesheet_reviewed',
-          data: { date: ts.work_date, action: status, projectName: projInfo?.name, hoursHC: ts.hours_hc, totalHours: ts.total_hours, reviewedBy: user.full_name },
-          db, userId: ts.user_id, relatedType: 'timesheet', relatedId: id
-        })
+    // Cập nhật timesheet_tasks nếu multi-task mode
+    if (isMultiTask) {
+      await db.prepare(`DELETE FROM timesheet_tasks WHERE timesheet_id = ?`).bind(id).run()
+      for (const entry of taskEntries) {
+        await db.prepare(
+          `INSERT INTO timesheet_tasks (timesheet_id, task_id, regular_hours, overtime_hours) VALUES (?, ?, ?, ?)`
+        ).bind(id, entry.task_id || null, entry.regular_hours || 0, entry.overtime_hours || 0).run()
       }
     }
+
+    // ── Email: timesheet_reviewed — đã tắt theo yêu cầu ──
+    // if (status && (status === 'approved' || status === 'rejected') && (isAdmin || isProjAdmin)) {
+    //   const emailUser = await getUserEmailInfo(db, ts.user_id)
+    //   if (emailUser) {
+    //     const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(ts.project_id).first() as any
+    //     await sendEmail(c.env, {
+    //       to: emailUser.email, toName: emailUser.full_name,
+    //       eventType: 'timesheet_reviewed',
+    //       data: { date: ts.work_date, action: status, projectName: projInfo?.name, hoursHC: ts.hours_hc, totalHours: ts.total_hours, reviewedBy: user.full_name },
+    //       db, userId: ts.user_id, relatedType: 'timesheet', relatedId: id
+    //     })
+    //   }
+    // }
 
     return c.json({ success: true })
   } catch (e: any) {
@@ -2718,31 +2787,30 @@ app.post('/api/timesheets/bulk-approve', authMiddleware, async (c) => {
       } catch (_) { /* skip */ }
     }
 
-    // ── Email: timesheet_bulk_approved → gửi 1 email tổng hợp cho mỗi user ──
-    try {
-      for (const [uid, info] of userApprovedMap.entries()) {
-        if (uid === user.id) continue
-        const emailUser = await getUserEmailInfo(db, uid)
-        if (emailUser && info.count > 0) {
-          // Xác định kỳ từ dates
-          let period = ''
-          if (info.dates.length > 0) {
-            const sorted = info.dates.sort()
-            if (sorted.length === 1) {
-              period = sorted[0]
-            } else {
-              period = `${sorted[0]} → ${sorted[sorted.length - 1]}`
-            }
-          }
-          sendEmail(c.env, {
-            to: emailUser.email, toName: emailUser.full_name,
-            eventType: 'timesheet_bulk_approved',
-            data: { approvedCount: info.count, period, reviewedBy: user.full_name },
-            db, userId: uid, relatedType: 'timesheet', relatedId: ids[0]
-          })
-        }
-      }
-    } catch (_) { /* ignore email errors */ }
+    // ── Email: timesheet_bulk_approved — đã tắt theo yêu cầu ──
+    // try {
+    //   for (const [uid, info] of userApprovedMap.entries()) {
+    //     if (uid === user.id) continue
+    //     const emailUser = await getUserEmailInfo(db, uid)
+    //     if (emailUser && info.count > 0) {
+    //       let period = ''
+    //       if (info.dates.length > 0) {
+    //         const sorted = info.dates.sort()
+    //         if (sorted.length === 1) {
+    //           period = sorted[0]
+    //         } else {
+    //           period = `${sorted[0]} → ${sorted[sorted.length - 1]}`
+    //         }
+    //       }
+    //       sendEmail(c.env, {
+    //         to: emailUser.email, toName: emailUser.full_name,
+    //         eventType: 'timesheet_bulk_approved',
+    //         data: { approvedCount: info.count, period, reviewedBy: user.full_name },
+    //         db, userId: uid, relatedType: 'timesheet', relatedId: ids[0]
+    //       })
+    //     }
+    //   }
+    // } catch (_) { /* ignore email errors */ }
 
     return c.json({ success: true, approved })
   } catch (e: any) {
@@ -8070,6 +8138,8 @@ app.post('/api/system/init', async (c) => {
       `CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(context_type, context_id)`,
       `CREATE INDEX IF NOT EXISTS idx_msg_attachments ON message_attachments(message_id)`,
       `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER, task_id INTEGER, work_date DATE NOT NULL, day_type TEXT NOT NULL DEFAULT 'work', regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, work_date))`,
+      `CREATE TABLE IF NOT EXISTS timesheet_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, timesheet_id INTEGER NOT NULL, task_id INTEGER, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (timesheet_id) REFERENCES timesheets(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_timesheet_tasks_ts ON timesheet_tasks(timesheet_id)`,
       `CREATE TABLE IF NOT EXISTS project_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, cost_type TEXT NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', cost_date DATE, invoice_number TEXT, vendor TEXT, approved_by INTEGER, notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS project_revenues (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', revenue_date DATE, invoice_number TEXT, payment_status TEXT DEFAULT 'pending', notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS assets (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, brand TEXT, model TEXT, serial_number TEXT, specifications TEXT, purchase_date DATE, purchase_price REAL DEFAULT 0, current_value REAL DEFAULT 0, warranty_expiry DATE, status TEXT DEFAULT 'unused', location TEXT, department TEXT, assigned_to INTEGER, assigned_date DATE, notes TEXT, image_url TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
@@ -8088,6 +8158,11 @@ app.post('/api/system/init', async (c) => {
 
     // ---- SAFE MIGRATION: Add new columns to timesheets if they don't exist ----
     try { await db.prepare(`ALTER TABLE timesheets ADD COLUMN day_type TEXT NOT NULL DEFAULT 'work'`).run() } catch (_) { /* column already exists */ }
+    // Create timesheet_tasks table if not exists (for multi-task per day support)
+    try {
+      await db.prepare(`CREATE TABLE IF NOT EXISTS timesheet_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, timesheet_id INTEGER NOT NULL, task_id INTEGER, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (timesheet_id) REFERENCES timesheets(id) ON DELETE CASCADE)`).run()
+      await db.prepare(`CREATE INDEX IF NOT EXISTS idx_timesheet_tasks_ts ON timesheet_tasks(timesheet_id)`).run()
+    } catch (_) { /* already exists */ }
 
     // ---- CRITICAL MIGRATION: Make project_id nullable (for leave days) ----
     // SQLite cannot ALTER COLUMN to remove NOT NULL, so we must recreate the table
@@ -9586,56 +9661,101 @@ app.get('/api/analytics/timesheet', authMiddleware, adminOnly, async (c) => {
     `).bind(y).all()
 
     // ── Task hours: actual (từ timesheet) vs planned (estimated_hours trong task) ──
-    // Chỉ lấy task có ít nhất 1 timesheet ghi nhận trong năm này
+    // Gộp cả 2 nguồn:
+    //   1. Single-task: timesheets.task_id IS NOT NULL  → dùng timesheets.regular_hours + overtime_hours
+    //   2. Multi-task:  timesheet_tasks → dùng tt.regular_hours + tt.overtime_hours, join ts để lấy work_date/user_id
     const taskHoursVsPlan = await db.prepare(`
+      WITH task_hours AS (
+        -- Nguồn 1: khai báo đơn task (task_id trực tiếp trên bản ghi timesheet)
+        SELECT
+          ts.task_id                                   AS task_id,
+          ts.regular_hours + ts.overtime_hours         AS hours,
+          ts.work_date,
+          ts.user_id
+        FROM timesheets ts
+        WHERE strftime('%Y', ts.work_date) = ?
+          AND ts.task_id IS NOT NULL
+
+        UNION ALL
+
+        -- Nguồn 2: khai báo nhiều task (lưu trong timesheet_tasks)
+        SELECT
+          tt.task_id                                   AS task_id,
+          tt.regular_hours + tt.overtime_hours         AS hours,
+          ts.work_date,
+          ts.user_id
+        FROM timesheet_tasks tt
+        JOIN timesheets ts ON ts.id = tt.timesheet_id
+        WHERE strftime('%Y', ts.work_date) = ?
+          AND tt.task_id IS NOT NULL
+      )
       SELECT
-        t.id                                                        AS task_id,
-        t.title                                                     AS task_title,
+        t.id                                           AS task_id,
+        t.title                                        AS task_title,
         t.discipline_code,
-        t.status                                                    AS task_status,
+        t.status                                       AS task_status,
         t.priority,
-        t.estimated_hours                                           AS planned_hours,
-        t.actual_hours                                              AS logged_actual_hours,
-        p.code                                                      AS project_code,
-        p.name                                                      AS project_name,
-        COALESCE(u.full_name, '—')                                  AS assignee,
-        SUM(ts.regular_hours + ts.overtime_hours)                  AS ts_actual_hours,
-        COUNT(DISTINCT ts.work_date)                               AS days_logged,
-        COUNT(DISTINCT ts.user_id)                                 AS members_logged,
+        t.estimated_hours                              AS planned_hours,
+        t.actual_hours                                 AS logged_actual_hours,
+        p.code                                         AS project_code,
+        p.name                                         AS project_name,
+        COALESCE(u.full_name, '—')                     AS assignee,
+        SUM(th.hours)                                  AS ts_actual_hours,
+        COUNT(DISTINCT th.work_date)                   AS days_logged,
+        COUNT(DISTINCT th.user_id)                     AS members_logged,
         ROUND(
           CASE WHEN t.estimated_hours > 0
-            THEN SUM(ts.regular_hours + ts.overtime_hours) * 100.0 / t.estimated_hours
+            THEN SUM(th.hours) * 100.0 / t.estimated_hours
             ELSE NULL
           END, 1
-        )                                                           AS pct_used
-      FROM timesheets ts
-      JOIN tasks t     ON t.id = ts.task_id
+        )                                              AS pct_used
+      FROM task_hours th
+      JOIN tasks t     ON t.id = th.task_id
       JOIN projects p  ON p.id = t.project_id
       LEFT JOIN users u ON u.id = t.assigned_to
-      WHERE strftime('%Y', ts.work_date) = ?
-        AND ts.task_id IS NOT NULL
       GROUP BY t.id
       ORDER BY ts_actual_hours DESC
       LIMIT 50
-    `).bind(y).all()
+    `).bind(y, y).all()
 
-    // ── Tổng hợp by project: actual vs planned ──
+    // ── Tổng hợp by project: actual vs planned (cũng gộp cả 2 nguồn) ──
+    // Quan trọng: tránh đếm đôi
+    //   - Multi-task: parent timesheets.regular_hours = SUM của task_entries
+    //     → chỉ dùng Nguồn 2 (timesheet_tasks) cho các bản ghi này
+    //   - Single-task: không có rows trong timesheet_tasks
+    //     → dùng Nguồn 1 (timesheets trực tiếp)
     const projectHoursVsPlan = await db.prepare(`
+      WITH proj_hours AS (
+        -- Nguồn 1: single-task (timesheet KHÔNG có task entries trong timesheet_tasks)
+        SELECT ts.project_id, ts.regular_hours + ts.overtime_hours AS hours, ts.task_id
+        FROM timesheets ts
+        WHERE strftime('%Y', ts.work_date) = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM timesheet_tasks tt WHERE tt.timesheet_id = ts.id
+          )
+
+        UNION ALL
+
+        -- Nguồn 2: multi-task – lấy từng dòng trong timesheet_tasks (project_id từ cha)
+        SELECT ts.project_id, tt.regular_hours + tt.overtime_hours AS hours, tt.task_id
+        FROM timesheet_tasks tt
+        JOIN timesheets ts ON ts.id = tt.timesheet_id
+        WHERE strftime('%Y', ts.work_date) = ?
+      )
       SELECT
         p.id          AS project_id,
         p.code        AS project_code,
         p.name        AS project_name,
-        SUM(DISTINCT t.estimated_hours)                            AS total_planned_hours,
-        SUM(ts.regular_hours + ts.overtime_hours)                  AS total_actual_hours,
-        COUNT(DISTINCT ts.task_id)                                 AS tasks_with_hours,
-        COUNT(DISTINCT t.id)                                       AS total_tasks_in_project
-      FROM timesheets ts
-      JOIN projects p ON p.id = ts.project_id
-      LEFT JOIN tasks t ON t.project_id = p.id AND t.id = ts.task_id
-      WHERE strftime('%Y', ts.work_date) = ?
+        SUM(DISTINCT COALESCE(t.estimated_hours, 0))   AS total_planned_hours,
+        SUM(ph.hours)                                  AS total_actual_hours,
+        COUNT(DISTINCT ph.task_id)                     AS tasks_with_hours,
+        COUNT(DISTINCT t.id)                           AS total_tasks_in_project
+      FROM proj_hours ph
+      JOIN projects p ON p.id = ph.project_id
+      LEFT JOIN tasks t ON t.project_id = p.id AND t.id = ph.task_id
       GROUP BY p.id
       ORDER BY total_actual_hours DESC
-    `).bind(y).all()
+    `).bind(y, y).all()
 
     return c.json({
       monthlyHours: monthlyHours.results,

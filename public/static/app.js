@@ -337,6 +337,20 @@ function startSmartNotifPoll() {
 
 function closeModal(id) {
   $(id).style.display = 'none'
+  // Close & return any teleported combobox panels to their wraps
+  Object.keys(_cbState).forEach(cbId => {
+    const st = _cbState[cbId]
+    if (!st?.teleport) return
+    const panel = document.getElementById(cbId + '_panel')
+    if (panel && panel.parentElement === document.body) {
+      panel.style.display = 'none'
+      const wrap = document.getElementById(cbId + '_wrap')
+      if (wrap) wrap.appendChild(panel)
+      const arrow = document.getElementById(cbId + '_arrow')
+      if (arrow) arrow.style.transform = ''
+    }
+  })
+  _cbHideBackdrop()
   // Stop chat polling when task detail modal is closed
   if (id === 'taskDetailModal') {
     const chatDiv = $('taskDetailChat')
@@ -2370,16 +2384,25 @@ function createCombobox(containerId, options = {}) {
   const initVal = options.value !== undefined ? String(options.value) : ''
   const minWidth = options.minWidth || '160px'
   const fullWidth = options.fullWidth || false
+  // Optional overrides for panel width and dropdown height
+  const panelMaxWidth   = options.panelMaxWidth   || '360px'
+  const dropdownMaxHeight = options.dropdownMaxHeight || '220px'
+
+  // teleport: true → panel is moved to document.body on open (escapes overflow:hidden/auto ancestors)
+  const teleport = options.teleport || false
 
   _cbState[id] = {
     value: initVal,
     label: _cbLabelFor(items, initVal, placeholder),
     items,
     placeholder,
-    onchange: options.onchange || null
+    onchange: options.onchange || null,
+    teleport,
+    panelMaxWidth,
+    dropdownMaxHeight
   }
 
-  container.innerHTML = _cbHTML(id, placeholder, minWidth, fullWidth)
+  container.innerHTML = _cbHTML(id, placeholder, minWidth, fullWidth, panelMaxWidth, dropdownMaxHeight)
   _cbRenderOptions(id, '')
   _cbUpdateTrigger(id)
 }
@@ -2390,11 +2413,13 @@ function _cbLabelFor(items, value, placeholder) {
   return found ? found.label : placeholder
 }
 
-function _cbHTML(id, placeholder, minWidth, fullWidth) {
+function _cbHTML(id, placeholder, minWidth, fullWidth, panelMaxWidth, dropdownMaxHeight) {
+  panelMaxWidth     = panelMaxWidth     || '360px'
+  dropdownMaxHeight = dropdownMaxHeight || '220px'
   const triggerStyle = 'display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid #d1d5db;border-radius:8px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px;color:#374151;min-height:36px;user-select:none;box-sizing:border-box;width:100%'
-  const panelStyle = 'display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:100%;width:max-content;max-width:360px;background:#fff;border:1px solid #d1d5db;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:9999;overflow:hidden'
-  const searchStyle = 'width:100%;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px 5px 28px;font-size:12px;outline:none;color:#374151;background:#f9fafb;box-sizing:border-box'
-  const optsStyle = 'max-height:220px;overflow-y:auto;padding:4px 0'
+  const panelStyle = 'display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:100%;width:max-content;max-width:' + panelMaxWidth + ';background:#fff;border:1px solid #d1d5db;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:9999;overflow:hidden'
+  const searchStyle = 'width:100%;border:1px solid #e5e7eb;border-radius:6px;padding:7px 10px 7px 30px;font-size:13px;outline:none;color:#374151;background:#f9fafb;box-sizing:border-box;transition:border-color .15s'
+  const optsStyle = 'max-height:' + dropdownMaxHeight + ';overflow-y:auto;padding:4px 0'
   const wrapStyle = fullWidth ? 'position:relative;width:100%;display:block' : ('position:relative;min-width:' + minWidth + ';display:inline-block')
   return '<div id="' + id + '_wrap" style="' + wrapStyle + '">'
     + '<div style="' + triggerStyle + '" onclick="_cbToggle(\'' + id + '\')">'
@@ -2402,8 +2427,9 @@ function _cbHTML(id, placeholder, minWidth, fullWidth) {
     + '<span id="' + id + '_arrow" style="flex-shrink:0;font-size:10px;color:#9ca3af">&#9660;</span>'
     + '</div>'
     + '<div id="' + id + '_panel" style="' + panelStyle + '">'
-    + '<div style="padding:8px 8px 6px;border-bottom:1px solid #f0f0f0">'
-    + '<input id="' + id + '_search" type="text" placeholder="\uD83D\uDD0D T\u00ecm ki\u1EBFm..." style="' + searchStyle + '" oninput="_cbFilter(\'' + id + '\',this.value)" onclick="event.stopPropagation()" autocomplete="off">'
+    + '<div style="padding:8px 10px 7px;border-bottom:1px solid #e5e7eb;position:relative">'
+    + '<span style="position:absolute;left:18px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none">🔍</span>'
+    + '<input id="' + id + '_search" type="text" placeholder="T\u00ecm ki\u1EBFm..." style="' + searchStyle + '" oninput="_cbFilter(\'' + id + '\',this.value)" onclick="event.stopPropagation()" autocomplete="off">'
     + '</div>'
     + '<div id="' + id + '_opts" style="' + optsStyle + '"></div>'
     + '</div></div>'
@@ -2417,8 +2443,12 @@ function _cbRenderOptions(id, query) {
   const q = query.trim().toLowerCase()
   const allItems = [{ value: '', label: state.placeholder }, ...state.items]
   const filtered = allItems.filter(i => !q || i.label.toLowerCase().includes(q))
+  // Use larger font/padding for teleported panels (they have more space)
+  const isTeleport = !!state.teleport
+  const itemPad = isTeleport ? '9px 14px' : '7px 12px'
+  const itemFs  = isTeleport ? '13px' : '13px'
   if (!filtered.length) {
-    opts.innerHTML = '<div style="padding:10px 12px;font-size:12px;color:#9ca3af;font-style:italic">Kh\u00f4ng t\u00ecm th\u1EA5y k\u1EBFt qu\u1EA3</div>'
+    opts.innerHTML = '<div style="padding:12px 14px;font-size:13px;color:#9ca3af;font-style:italic">Kh\u00f4ng t\u00ecm th\u1EA5y k\u1EBFt qu\u1EA3</div>'
     return
   }
   opts.innerHTML = filtered.map(i => {
@@ -2428,12 +2458,12 @@ function _cbRenderOptions(id, query) {
     const fw = isSel ? '600' : '400'
     const sv = String(i.value).replace(/'/g, '&#39;')
     const sl = i.label.replace(/'/g, '&#39;')
-    return '<div style="padding:7px 12px;font-size:13px;cursor:pointer;display:flex;align-items:center;background:' + bg + ';color:' + col + ';font-weight:' + fw + '"'
-      + ' onmouseenter="this.style.background=\'#f0fdf4\';this.style.color=\'#00A651\'"'
+    return '<div style="padding:' + itemPad + ';font-size:' + itemFs + ';cursor:pointer;display:flex;align-items:center;gap:6px;background:' + bg + ';color:' + col + ';font-weight:' + fw + ';line-height:1.4"'
+      + ' onmouseenter="this.style.background=\'#eff6ff\';this.style.color=\'#1d4ed8\'"'
       + ' onmouseleave="this.style.background=\'' + bg + '\';this.style.color=\'' + col + '\'"'
       + ' onclick="_cbSelect(\'' + id + '\',\'' + sv + '\',\'' + sl + '\')">'
-      + i.label
-      + (isSel ? '<span style="margin-left:auto;font-size:11px">&#10003;</span>' : '')
+      + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + i.label + '</span>'
+      + (isSel ? '<span style="flex-shrink:0;color:#00A651;font-size:12px">&#10003;</span>' : '')
       + '</div>'
   }).join('')
 }
@@ -2455,27 +2485,127 @@ function _cbUpdateTrigger(id) {
   }
 }
 
+// ── Backdrop for teleported combobox ────────────────────────────
+function _cbGetBackdrop() {
+  let bd = document.getElementById('_cbBackdrop')
+  if (!bd) {
+    bd = document.createElement('div')
+    bd.id = '_cbBackdrop'
+    bd.style.cssText = 'position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,0.25)'
+    bd.addEventListener('click', () => _cbCloseAll())
+    document.body.appendChild(bd)
+  }
+  return bd
+}
+function _cbShowBackdrop() {
+  const bd = _cbGetBackdrop()
+  bd.style.display = 'block'
+}
+function _cbHideBackdrop() {
+  const bd = document.getElementById('_cbBackdrop')
+  if (bd) bd.style.display = 'none'
+}
+function _cbCloseAll() {
+  document.querySelectorAll('[id$="_panel"]').forEach(p => {
+    if (p.style && p.style.display !== 'none') {
+      p.style.display = 'none'
+      const pid = p.id.replace('_panel', '')
+      const a = document.getElementById(p.id.replace('_panel', '_arrow'))
+      if (a) a.style.transform = ''
+      const pState = _cbState[pid]
+      if (pState?.teleport && p.parentElement === document.body) {
+        const wrap = document.getElementById(pid + '_wrap')
+        if (wrap) wrap.appendChild(p)
+      }
+    }
+  })
+  _cbHideBackdrop()
+}
+
 function _cbToggle(id) {
   const panel = $(id + '_panel')
   const arrow = $(id + '_arrow')
   if (!panel) return
   const isOpen = panel.style.display !== 'none'
-  // Close all other panels
+  // Close all other panels first
   document.querySelectorAll('[id$="_panel"]').forEach(p => {
     if (p !== panel && p.style && p.style.display !== 'none') {
       p.style.display = 'none'
+      const pid = p.id.replace('_panel', '')
       const a = document.getElementById(p.id.replace('_panel', '_arrow'))
       if (a) a.style.transform = ''
+      const pState = _cbState[pid]
+      if (pState?.teleport && p.parentElement === document.body) {
+        const wrap = document.getElementById(pid + '_wrap')
+        if (wrap) wrap.appendChild(p)
+      }
     }
   })
   if (isOpen) {
     panel.style.display = 'none'
     if (arrow) arrow.style.transform = ''
+    const state = _cbState[id]
+    if (state?.teleport && panel.parentElement === document.body) {
+      const wrap = $(id + '_wrap')
+      if (wrap) wrap.appendChild(panel)
+    }
+    _cbHideBackdrop()
   } else {
-    panel.style.display = 'block'
+    const state = _cbState[id]
+    if (state?.teleport) {
+      // Teleport panel to body as fixed overlay (escapes all overflow clipping)
+      const wrap = $(id + '_wrap')
+      const trigger = wrap?.querySelector('[onclick*="_cbToggle"]') || wrap?.firstElementChild
+      if (trigger) {
+        const rect = trigger.getBoundingClientRect()
+        const maxWNum = parseInt(state.panelMaxWidth || '520')
+        const maxH    = state.dropdownMaxHeight || '320px'
+
+        // Smart width: at least trigger width, at most maxW, bounded by viewport
+        const panelW  = Math.min(Math.max(rect.width, maxWNum), window.innerWidth - 32)
+
+        // Smart horizontal position: prefer align-left, shift left if it would go off-screen
+        let leftPos = rect.left
+        if (leftPos + panelW > window.innerWidth - 12) {
+          leftPos = Math.max(8, window.innerWidth - panelW - 12)
+        }
+
+        // Smart vertical: open down if enough space, else open up
+        const spaceBelow = window.innerHeight - rect.bottom - 8
+        const spaceAbove = rect.top - 8
+        const openDown   = spaceBelow >= 200 || spaceBelow >= spaceAbove
+
+        panel.style.cssText = [
+          'display:block',
+          'position:fixed',
+          openDown ? `top:${rect.bottom + 6}px` : `bottom:${window.innerHeight - rect.top + 6}px`,
+          `left:${leftPos}px`,
+          `width:${panelW}px`,
+          `z-index:99999`,
+          'background:#fff',
+          'border:1px solid #c7d2fe',
+          'border-radius:12px',
+          'box-shadow:0 20px 60px rgba(0,0,0,.25)',
+          'overflow:hidden',
+          'animation:cbFadeIn .12s ease'
+        ].join(';')
+        // Set opts max-height
+        const optsEl = document.getElementById(id + '_opts')
+        if (optsEl) optsEl.style.maxHeight = maxH
+        // Update search input style for better visibility
+        const srEl = document.getElementById(id + '_search')
+        if (srEl) {
+          srEl.style.cssText = 'width:100%;border:1.5px solid #a5b4fc;border-radius:8px;padding:8px 10px 8px 32px;font-size:14px;outline:none;color:#374151;background:#f8faff;box-sizing:border-box'
+        }
+        document.body.appendChild(panel)
+        _cbShowBackdrop()
+      }
+    } else {
+      panel.style.display = 'block'
+    }
     if (arrow) arrow.style.transform = 'rotate(180deg)'
     const search = $(id + '_search')
-    if (search) { search.value = ''; setTimeout(() => search.focus(), 30) }
+    if (search) { search.value = ''; setTimeout(() => { search.focus(); search.select() }, 30) }
     _cbRenderOptions(id, '')
   }
 }
@@ -2493,7 +2623,15 @@ function _cbSelect(id, value, label) {
   // Close panel
   const panel = $(id + '_panel')
   const arrow = $(id + '_arrow')
-  if (panel) panel.style.display = 'none'
+  if (panel) {
+    panel.style.display = 'none'
+    // Move teleported panel back to its wrap
+    if (state.teleport && panel.parentElement === document.body) {
+      const wrap = $(id + '_wrap')
+      if (wrap) wrap.appendChild(panel)
+      _cbHideBackdrop()
+    }
+  }
   if (arrow) arrow.style.transform = ''
   // Trigger callback
   if (state.onchange) state.onchange(value)
@@ -2517,15 +2655,9 @@ function _cbGetValue(id) {
 
 // Close comboboxes when clicking outside
 document.addEventListener('click', function(e) {
-  if (!e.target.closest('[id$="_wrap"]')) {
-    document.querySelectorAll('[id$="_panel"]').forEach(p => {
-      if (p.style && p.style.display !== 'none') {
-        p.style.display = 'none'
-        const a = document.getElementById(p.id.replace('_panel', '_arrow'))
-        if (a) a.style.transform = ''
-      }
-    })
-  }
+  // Allow clicks inside any _wrap or teleported _panel
+  if (e.target.closest('[id$="_wrap"]') || e.target.closest('[id$="_panel"]')) return
+  _cbCloseAll()
 })
 
 
@@ -4551,8 +4683,8 @@ async function initTsFilterDropdowns() {
       const savedUserId = _cbGetValue('tsUserFilterCombobox')
       const members = await api('/timesheets/members')
       _tsMembersCache = members
-      // Backfill allUsers cache
-      if (!allUsers.length) allUsers = members
+      // Không backfill allUsers bằng /timesheets/members vì chỉ chứa user có timesheet
+      // allUsers phải được fetch riêng từ /users khi cần (xem openTimesheetModal)
       const membersForFilter = isAdmin ? members : members.filter(m => m.role !== 'system_admin')
       const items = membersForFilter.map(m => ({
         value: String(m.id),
@@ -4921,12 +5053,14 @@ function renderTsRows() {
   const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
   const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
   const dayTypeInfo   = {
-    work:         { label: 'Làm việc', cls: 'bg-blue-50 text-blue-700',   icon: '🏢' },
-    annual_leave: { label: 'Phép năm', cls: 'bg-green-50 text-green-700', icon: '🌴' },
-    unpaid_leave: { label: 'KLương',   cls: 'bg-red-50 text-red-700',     icon: '💸' },
-    holiday:      { label: 'Nghỉ lễ', cls: 'bg-purple-50 text-purple-700',icon: '🎉' },
-    sick_leave:   { label: 'Nghỉ ốm', cls: 'bg-orange-50 text-orange-700',icon: '🤒' },
-    compensatory: { label: 'Nghỉ bù', cls: 'bg-amber-50 text-amber-700',  icon: '🔄' },
+    work:         { label: 'Làm việc',      cls: 'bg-blue-50 text-blue-700',   icon: '🏢' },
+    half_day_am:  { label: 'Nghỉ ½ sáng',  cls: 'bg-sky-50 text-sky-700',     icon: '🌅' },
+    half_day_pm:  { label: 'Nghỉ ½ chiều', cls: 'bg-sky-50 text-sky-700',     icon: '🌆' },
+    annual_leave: { label: 'Phép năm',      cls: 'bg-green-50 text-green-700', icon: '🌴' },
+    unpaid_leave: { label: 'KLương',        cls: 'bg-red-50 text-red-700',     icon: '💸' },
+    holiday:      { label: 'Nghỉ lễ',      cls: 'bg-purple-50 text-purple-700',icon: '🎉' },
+    sick_leave:   { label: 'Nghỉ ốm',      cls: 'bg-orange-50 text-orange-700',icon: '🤒' },
+    compensatory: { label: 'Nghỉ bù',      cls: 'bg-amber-50 text-amber-700',  icon: '🔄' },
   }
   const emptyColspan  = canSeeAll ? 11 : 10
 
@@ -4953,10 +5087,25 @@ function renderTsRows() {
     const canRejectBt  = canApprove && isSubmitted
 
     const dt   = dayTypeInfo[t.day_type || 'work'] || dayTypeInfo.work
-    const isLeaveRow = (t.day_type || 'work') !== 'work'
+    // Full leave = no project/hours; half_day = has project/hours, just highlight differently
+    const isFullLeaveRow = !['work','half_day_am','half_day_pm'].includes(t.day_type || 'work')
+    const isHalfDayRow   = t.day_type === 'half_day_am' || t.day_type === 'half_day_pm'
+    const isLeaveRow     = isFullLeaveRow  // backward compat variable (row highlight)
+    // Multi-task: task_entries array with > 0 items
+    const hasMultiTask   = Array.isArray(t.task_entries) && t.task_entries.length > 0
+    // Build task cell content
+    let taskCellContent
+    if (isFullLeaveRow) {
+      taskCellContent = '<span class="text-gray-300">—</span>'
+    } else if (hasMultiTask) {
+      const taskNames = t.task_entries.map(e => e.task_title || `Task #${e.task_id || '?'}`).join(', ')
+      taskCellContent = `<span class="text-indigo-600 font-medium text-xs" title="${taskNames}">📋 ${t.task_entries.length} task</span>`
+    } else {
+      taskCellContent = `<span class="max-w-28 truncate block" title="${t.task_title||''}">${t.task_title || '-'}</span>`
+    }
 
     return `
-    <tr class="table-row ${isLeaveRow ? 'bg-amber-50/40' : (isOwner && !canSeeAll ? 'bg-green-50/30' : '')}">
+    <tr class="table-row ${isFullLeaveRow ? 'bg-amber-50/40' : (isHalfDayRow ? 'bg-sky-50/30' : (isOwner && !canSeeAll ? 'bg-green-50/30' : ''))}">
       <td class="py-2 pr-3 text-sm font-medium">${fmtDate(t.work_date)}</td>
       <td class="py-2 pr-3 text-sm ts-col-user" style="display:${canSeeAll ? '' : 'none'}">
         <div class="flex items-center gap-1.5">
@@ -4967,11 +5116,11 @@ function renderTsRows() {
       <td class="py-2 pr-3">
         <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium ${dt.cls}" title="${dt.label}">${dt.icon} ${dt.label}</span>
       </td>
-      <td class="py-2 pr-3 text-sm text-gray-600">${isLeaveRow ? '<span class="text-gray-300">—</span>' : (t.project_code || '-')}</td>
-      <td class="py-2 pr-3 text-xs text-gray-500 max-w-28 truncate" title="${t.task_title||''}">${isLeaveRow ? '<span class="text-gray-300">—</span>' : (t.task_title || '-')}</td>
-      <td class="py-2 pr-3 text-center font-medium text-primary">${isLeaveRow ? '<span class="text-gray-400">0h</span>' : t.regular_hours + 'h'}</td>
-      <td class="py-2 pr-3 text-center font-medium text-orange-500">${isLeaveRow ? '<span class="text-gray-300">—</span>' : (t.overtime_hours > 0 ? t.overtime_hours + 'h' : '-')}</td>
-      <td class="py-2 pr-3 text-center font-bold text-gray-700">${isLeaveRow ? '<span class="text-gray-400">0h</span>' : (t.regular_hours + t.overtime_hours) + 'h'}</td>
+      <td class="py-2 pr-3 text-sm text-gray-600">${isFullLeaveRow ? '<span class="text-gray-300">—</span>' : (t.project_code || '-')}</td>
+      <td class="py-2 pr-3 text-xs text-gray-500">${taskCellContent}</td>
+      <td class="py-2 pr-3 text-center font-medium text-primary">${isFullLeaveRow ? '<span class="text-gray-400">0h</span>' : t.regular_hours + 'h'}</td>
+      <td class="py-2 pr-3 text-center font-medium text-orange-500">${isFullLeaveRow ? '<span class="text-gray-300">—</span>' : (t.overtime_hours > 0 ? t.overtime_hours + 'h' : '-')}</td>
+      <td class="py-2 pr-3 text-center font-bold text-gray-700">${isFullLeaveRow ? '<span class="text-gray-400">0h</span>' : (t.regular_hours + t.overtime_hours) + 'h'}</td>
       <td class="py-2 pr-3 text-xs text-gray-500 max-w-32 truncate" title="${t.description||''}">${t.description || '-'}</td>
       <td class="py-2 pr-3"><span class="badge ${statusColors[t.status] || 'badge-todo'}">${statusLabels[t.status] || t.status}</span></td>
       <td class="py-2">
@@ -5078,33 +5227,46 @@ function _initTsTaskCombobox(tasks = [], selectedTaskId = null, locked = false) 
 // ── Load tasks từ API rồi khởi tạo combobox task ─────────────────────────────
 // token: nếu được truyền, hủy kết quả nếu token cũ (user đã đổi project khác)
 async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, locked = false, token = null) {
-  if (!projectId) { _initTsTaskCombobox([], null, locked); return }
+  if (!projectId) { _initTsTaskCombobox([], null, locked); _tsCachedTasks = []; _tsRenderMultiRows(); return }
   const spinner = $('tsTaskLoadingSpinner')
+  const spinnerMulti = document.getElementById('tsMultiTaskSpinner')
   if (spinner) spinner.style.display = 'inline'
+  if (spinnerMulti) spinnerMulti.style.display = 'inline'
   try {
     const tasks = await api(`/tasks?project_id=${projectId}`)
-    // Nếu token cũ (user đã đổi project khác trong lúc đang load) → bỏ qua
     if (token !== null && token !== _tsProjChangeToken) return
+    _tsCachedTasks = Array.isArray(tasks) ? tasks : []
     _initTsTaskCombobox(tasks, selectedTaskId, locked)
+    // Re-render multi rows với task mới
+    _tsRenderMultiRows()
   } catch (e) {
     if (token !== null && token !== _tsProjChangeToken) return
+    _tsCachedTasks = []
     _initTsTaskCombobox([], null, locked)
+    _tsRenderMultiRows()
   } finally {
-    // Chỉ ẩn spinner nếu đây vẫn là request mới nhất
     if (token === null || token === _tsProjChangeToken) {
       if (spinner) spinner.style.display = 'none'
+      if (spinnerMulti) spinnerMulti.style.display = 'none'
     }
   }
 }
 
 async function openTimesheetModal(tsId = null) {
   if (!allProjects.length) allProjects = await api('/projects')
-  if (!allUsers.length)    allUsers    = await api('/users')
 
   const isAdmin     = currentUser.role === 'system_admin'
   const isProjAdmin = currentUser.role === 'project_admin' ||
                       currentUser.role === 'project_leader' ||
                       isAnyProjectLeaderOrAdmin()
+
+  // system_admin cần danh sách đầy đủ tất cả nhân viên (không phải chỉ những người có timesheet)
+  // Luôn fetch lại /users cho admin để tránh dùng allUsers đã bị ghi đè bởi /timesheets/members
+  if (isAdmin) {
+    try { allUsers = await api('/users') } catch(e) { if (!allUsers.length) allUsers = [] }
+  } else if (!allUsers.length) {
+    try { allUsers = await api('/users') } catch(e) { allUsers = [] }
+  }
 
   // ── Hiện/ẩn hàng chọn nhân viên (chỉ system_admin) ──
   const userRow = document.getElementById('tsUserRow')
@@ -5226,7 +5388,17 @@ async function openTimesheetModal(tsId = null) {
     if (_hintEl) _hintEl.style.display = 'none'
 
     // Load & init task combobox với task đang chọn sẵn + đúng locked
+    // Reset multi-task về single mode mặc định
+    _tsMultiRows = []; _tsMultiRowIdx = 0; _tsCachedTasks = []
+    document.querySelectorAll('input[name="tsModeRadio"]').forEach(r => { r.checked = r.value === 'single' })
+    tsModeChanged('single')
     await _loadAndInitTsTaskCombobox(ts.project_id, ts.task_id, locked)
+    // Nếu timesheet có task_entries → chuyển sang multi mode
+    if (ts.task_entries && ts.task_entries.length > 0) {
+      document.querySelectorAll('input[name="tsModeRadio"]').forEach(r => { r.checked = r.value === 'multi' })
+      tsModeChanged('multi')
+      _tsInitMultiRowsFromEntries(ts.task_entries)
+    }
 
   } else {
     // ─── Thêm mới ────────────────────────────────────────────
@@ -5250,6 +5422,11 @@ async function openTimesheetModal(tsId = null) {
     $('tsOvertimeHours').disabled = false
     $('tsDescription').disabled   = false
 
+    // Reset về single mode
+    _tsMultiRows = []; _tsMultiRowIdx = 0; _tsCachedTasks = []
+    document.querySelectorAll('input[name="tsModeRadio"]').forEach(r => { r.checked = r.value === 'single' })
+    tsModeChanged('single')
+
     _initTsProjectCombobox('', false)
     _initTsTaskCombobox([], null, false)
 
@@ -5267,12 +5444,16 @@ function tsDayTypeChanged() {
   const workFields  = document.getElementById('tsWorkFields')
   const leaveNotice = document.getElementById('tsLeaveNotice')
   const leaveText   = document.getElementById('tsLeaveNoticeText')
-  const isLeave = dayType !== 'work'
+  const isLeave = !['work','half_day_am','half_day_pm'].includes(dayType)
+  const isHalf  = dayType === 'half_day_am' || dayType === 'half_day_pm'
+
   if (workFields)  workFields.style.display  = isLeave ? 'none' : ''
   if (leaveNotice) {
-    leaveNotice.style.display = isLeave ? '' : 'none'
+    leaveNotice.style.display = (isLeave || isHalf) ? '' : 'none'
     if (leaveText) {
       const labels = {
+        half_day_am:   '🌅 Nghỉ nửa ngày (sáng) — giờ HC còn lại 4h. Vẫn khai báo dự án/task cho buổi làm việc.',
+        half_day_pm:   '🌆 Nghỉ nửa ngày (chiều) — giờ HC còn lại 4h. Vẫn khai báo dự án/task cho buổi làm việc.',
         annual_leave:  '🌴 Nghỉ phép năm — giờ công ghi nhận 0h, được tính vào phép năm.',
         unpaid_leave:  '💸 Nghỉ không lương — giờ công ghi nhận 0h, không tính lương ngày này.',
         holiday:       '🎉 Nghỉ lễ — giờ công ghi nhận 0h.',
@@ -5281,6 +5462,156 @@ function tsDayTypeChanged() {
       }
       leaveText.textContent = labels[dayType] || 'Ngày nghỉ — giờ công ghi nhận 0h.'
     }
+  }
+
+  // Nếu chọn nửa ngày → mặc định giờ HC = 4h, giữ chế độ single/multi bình thường
+  if (isHalf) {
+    const regEl = $('tsRegularHours')
+    if (regEl && (parseFloat(regEl.value) === 8 || parseFloat(regEl.value) === 0)) regEl.value = '4'
+  } else if (dayType === 'work') {
+    const regEl = $('tsRegularHours')
+    if (regEl && parseFloat(regEl.value) === 4) regEl.value = '8'
+  }
+}
+
+// ── Chế độ đơn/nhiều task ──────────────────────────────────────────────────
+let _tsCachedTasks = []   // tasks đã load cho project hiện tại
+
+function tsModeChanged(mode) {
+  const single = document.getElementById('tsSingleTaskBlock')
+  const multi  = document.getElementById('tsMultiTaskBlock')
+  if (single) single.style.display = mode === 'single' ? '' : 'none'
+  if (multi)  multi.style.display  = mode === 'multi'  ? '' : 'none'
+
+  // Mở rộng modal khi chọn nhiều task để combobox có đủ không gian
+  const modalBox = document.querySelector('#timesheetModal .modal')
+  if (modalBox) {
+    modalBox.style.maxWidth = mode === 'multi' ? '720px' : '560px'
+  }
+
+  if (mode === 'multi' && _tsCachedTasks.length === 0) {
+    // Nếu chưa có task nào → thêm 1 dòng trống
+    _tsMultiRows = []
+    tsAddMultiTaskRow()
+  } else if (mode === 'multi') {
+    _tsRenderMultiRows()
+  }
+}
+
+// Mảng các dòng task trong chế độ multi
+let _tsMultiRows = []   // [{id, task_id, reg, ot}]
+let _tsMultiRowIdx = 0
+
+function tsAddMultiTaskRow(taskId = '', reg = '', ot = '') {
+  const idx = _tsMultiRowIdx++
+  _tsMultiRows.push({ idx, task_id: taskId, reg, ot })
+  _tsRenderMultiRows()
+}
+
+function tsRemoveMultiTaskRow(idx) {
+  _tsMultiRows = _tsMultiRows.filter(r => r.idx !== idx)
+  _tsRenderMultiRows()
+}
+
+function _tsRenderMultiRows() {
+  const container = document.getElementById('tsMultiTaskRows')
+  if (!container) return
+
+  // Clean up old combobox states to avoid stale entries
+  Object.keys(_cbState).forEach(k => { if (k.startsWith('tsMultiTask_cb_')) delete _cbState[k] })
+
+  if (_tsMultiRows.length === 0) {
+    container.innerHTML = `<div class="text-xs text-gray-400 text-center py-2">Nhấn "+ Thêm task" để bắt đầu</div>`
+    _tsUpdateMultiTotals()
+    return
+  }
+
+  // Render rows dùng grid 4 cột giống header: [task] [HC] [OT] [xóa]
+  container.innerHTML = _tsMultiRows.map((row, i) => `
+    <div id="tsMultiRow_${row.idx}"
+      style="display:grid;grid-template-columns:1fr 88px 88px 28px;gap:6px;align-items:center;background:${i%2===0?'#f9fafb':'#ffffff'};border:1px solid #e5e7eb;border-radius:8px;padding:6px 6px 6px 8px">
+      <div id="tsMultiTask_cb_${row.idx}"></div>
+      <input type="number" id="tsMultiReg_${row.idx}"
+        style="width:100%;border:1.5px solid #bfdbfe;border-radius:7px;padding:6px 4px;font-size:14px;font-weight:600;text-align:center;color:#1d4ed8;background:#eff6ff;outline:none;box-sizing:border-box"
+        value="${row.reg}" min="0" max="24" step="0.5" placeholder="0"
+        onfocus="this.style.borderColor='#3b82f6';this.style.boxShadow='0 0 0 2px rgba(59,130,246,.2)'"
+        onblur="this.style.borderColor='#bfdbfe';this.style.boxShadow=''"
+        onchange="_tsMultiRowChange(${row.idx},'reg',this.value)"
+        oninput="_tsMultiRowChange(${row.idx},'reg',this.value)">
+      <input type="number" id="tsMultiOT_${row.idx}"
+        style="width:100%;border:1.5px solid #fed7aa;border-radius:7px;padding:6px 4px;font-size:14px;font-weight:600;text-align:center;color:#c2410c;background:#fff7ed;outline:none;box-sizing:border-box"
+        value="${row.ot}" min="0" max="24" step="0.5" placeholder="0"
+        onfocus="this.style.borderColor='#f97316';this.style.boxShadow='0 0 0 2px rgba(249,115,22,.2)'"
+        onblur="this.style.borderColor='#fed7aa';this.style.boxShadow=''"
+        onchange="_tsMultiRowChange(${row.idx},'ot',this.value)"
+        oninput="_tsMultiRowChange(${row.idx},'ot',this.value)">
+      <button type="button" onclick="tsRemoveMultiTaskRow(${row.idx})"
+        style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:#f87171;background:transparent;border:none;cursor:pointer;flex-shrink:0;transition:background .15s"
+        onmouseenter="this.style.background='#fee2e2';this.style.color='#dc2626'"
+        onmouseleave="this.style.background='transparent';this.style.color='#f87171'"
+        title="Xóa dòng này">
+        <i class="fas fa-times text-sm"></i>
+      </button>
+    </div>`
+  ).join('')
+
+  // Init a searchable combobox for each row — panel rộng, list dài hơn
+  const icons = { todo:'⬜', in_progress:'🔵', review:'🟡', completed:'✅', cancelled:'❌' }
+  _tsMultiRows.forEach(row => {
+    const cbId = `tsMultiTask_cb_${row.idx}`
+    const items = _tsCachedTasks
+      .filter(t => !['completed','cancelled'].includes(t.status) || String(t.id) === String(row.task_id))
+      .map(t => {
+        const disc = t.discipline_code ? ` [${t.discipline_code}]` : ''
+        return { value: String(t.id), label: `${icons[t.status]||'⬜'}${disc} ${t.title}` }
+      })
+    createCombobox(cbId, {
+      placeholder: '— Chọn task —',
+      items,
+      fullWidth: true,
+      value: row.task_id ? String(row.task_id) : '',
+      teleport:          true,    // panel nổi lên trên mọi overflow container
+      panelMaxWidth:     '560px',
+      dropdownMaxHeight: '360px',
+      onchange: (val) => { _tsMultiRowChange(row.idx, 'task_id', val) }
+    })
+    // If row has a selected task, apply the label
+    if (row.task_id) {
+      const found = items.find(i => i.value === String(row.task_id))
+      if (found) _cbSelect(cbId, found.value, found.label)
+    }
+  })
+
+  _tsUpdateMultiTotals()
+}
+
+function _tsMultiRowChange(idx, field, val) {
+  const row = _tsMultiRows.find(r => r.idx === idx)
+  if (row) row[field] = val
+  _tsUpdateMultiTotals()
+}
+
+function _tsUpdateMultiTotals() {
+  const totReg = _tsMultiRows.reduce((s, r) => s + (parseFloat(r.reg) || 0), 0)
+  const totOT  = _tsMultiRows.reduce((s, r) => s + (parseFloat(r.ot)  || 0), 0)
+  const elReg = document.getElementById('tsMultiTotalReg')
+  const elOT  = document.getElementById('tsMultiTotalOT')
+  if (elReg) elReg.textContent = totReg + 'h'
+  if (elOT)  elOT.textContent  = totOT  + 'h'
+}
+
+// Khởi tạo multi-task rows từ task_entries khi mở modal sửa
+function _tsInitMultiRowsFromEntries(entries = []) {
+  _tsMultiRows = []
+  _tsMultiRowIdx = 0
+  if (entries.length === 0) {
+    tsAddMultiTaskRow()
+  } else {
+    entries.forEach(e => {
+      const idx = _tsMultiRowIdx++
+      _tsMultiRows.push({ idx, task_id: String(e.task_id || ''), reg: e.regular_hours || '', ot: e.overtime_hours || '' })
+    })
+    _tsRenderMultiRows()
   }
 }
 
@@ -5541,7 +5872,11 @@ $('tsForm').addEventListener('submit', async (e) => {
   const id = $('tsId').value
 
   const dayType = $('tsDayType')?.value || 'work'
-  const isLeaveDay = dayType !== 'work'
+  // half_day_am / half_day_pm vẫn là ngày làm việc (có dự án/task/giờ)
+  const isLeaveDay = !['work','half_day_am','half_day_pm'].includes(dayType)
+
+  // Detect multi-task mode
+  const isMultiMode = document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
 
   // Validate: ngày làm việc phải chọn dự án
   const projId = _cbGetValue('tsProjectCombobox') || $('tsProjectHidden').value
@@ -5555,14 +5890,60 @@ $('tsForm').addEventListener('submit', async (e) => {
     return
   }
 
+  // Multi-task mode: validate có ít nhất 1 dòng task
+  if (!isLeaveDay && isMultiMode) {
+    if (_tsMultiRows.length === 0) {
+      toast('Vui lòng thêm ít nhất một task', 'warning')
+      return
+    }
+    const hasHours = _tsMultiRows.some(r => {
+      const regEl = document.getElementById(`tsMultiReg_${r.idx}`)
+      const otEl  = document.getElementById(`tsMultiOT_${r.idx}`)
+      const reg = parseFloat(regEl ? regEl.value : r.reg) || 0
+      const ot  = parseFloat(otEl  ? otEl.value  : r.ot)  || 0
+      return reg > 0 || ot > 0
+    })
+    if (!hasHours) {
+      toast('Vui lòng nhập giờ cho ít nhất một task', 'warning')
+      return
+    }
+  }
+
+  // Build data object
   const data = {
     day_type: dayType,
     project_id: isLeaveDay ? null : (parseInt(projId) || null),
-    task_id: isLeaveDay ? null : (parseInt(taskId) || null),
     work_date: $('tsDate').value,
-    regular_hours: isLeaveDay ? 0 : (parseFloat($('tsRegularHours').value) || 0),
-    overtime_hours: isLeaveDay ? 0 : (parseFloat($('tsOvertimeHours').value) || 0),
     description: $('tsDescription').value
+  }
+
+  if (isLeaveDay) {
+    data.task_id = null
+    data.regular_hours = 0
+    data.overtime_hours = 0
+  } else if (!isLeaveDay && isMultiMode) {
+    // Multi-task: gửi task_entries, không gửi task_id/hours ở cấp top-level
+    // Sync task_id từ combobox state (phòng trường hợp onchange chưa fire)
+    _tsMultiRows.forEach(r => {
+      const cbVal = _cbState[`tsMultiTask_cb_${r.idx}`]?.value
+      if (cbVal !== undefined) r.task_id = cbVal
+      // Sync hours from input fields directly
+      const regEl = document.getElementById(`tsMultiReg_${r.idx}`)
+      const otEl  = document.getElementById(`tsMultiOT_${r.idx}`)
+      if (regEl) r.reg = regEl.value
+      if (otEl)  r.ot  = otEl.value
+    })
+    data.task_id = null
+    data.task_entries = _tsMultiRows.map(r => ({
+      task_id: r.task_id ? (parseInt(r.task_id) || null) : null,
+      regular_hours: parseFloat(r.reg) || 0,
+      overtime_hours: parseFloat(r.ot) || 0
+    }))
+  } else {
+    // Single-task
+    data.task_id = parseInt(taskId) || null
+    data.regular_hours = parseFloat($('tsRegularHours').value) || 0
+    data.overtime_hours = parseFloat($('tsOvertimeHours').value) || 0
   }
 
   // Nếu admin chọn nhân viên khác → truyền user_id
@@ -5621,11 +6002,13 @@ $('tsForm').addEventListener('submit', async (e) => {
     } else {
       result = await api('/timesheets', { method: 'post', data })
       // Backend returns action: 'updated' if it auto-updated an existing record
-      const leaveLabels = { annual_leave: 'Nghỉ phép năm', unpaid_leave: 'Nghỉ không lương', holiday: 'Nghỉ lễ', sick_leave: 'Nghỉ ốm', compensatory: 'Nghỉ bù' }
+      const leaveLabels = { half_day_am: 'Nghỉ nửa ngày (sáng)', half_day_pm: 'Nghỉ nửa ngày (chiều)', annual_leave: 'Nghỉ phép năm', unpaid_leave: 'Nghỉ không lương', holiday: 'Nghỉ lễ', sick_leave: 'Nghỉ ốm', compensatory: 'Nghỉ bù' }
       if (result && result.action === 'updated') {
         toast('✅ Đã cập nhật timesheet cho ngày này (đã tồn tại)', 'success')
-      } else if (data.day_type && data.day_type !== 'work') {
+      } else if (data.day_type && !['work'].includes(data.day_type)) {
         toast(`✅ Đã khai báo ${leaveLabels[data.day_type] || 'ngày nghỉ'} thành công`, 'success')
+      } else if (isMultiMode && data.task_entries) {
+        toast(`✅ Đã thêm timesheet với ${data.task_entries.length} task thành công`, 'success')
       } else {
         toast('✅ Đã thêm timesheet thành công', 'success')
       }

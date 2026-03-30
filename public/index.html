@@ -182,6 +182,7 @@
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     @keyframes fadeOut { to { opacity: 0; transform: translateX(100%); } }
     @keyframes slideUp { from { transform: translateX(-50%) translateY(20px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }
+    @keyframes cbFadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
     .input-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color 0.2s; }
     .input-field:focus { border-color: #00A651; box-shadow: 0 0 0 3px rgba(0,166,81,0.1); }
     .select-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; background: white; outline: none; }
@@ -3861,6 +3862,8 @@
           <label class="label">Loại ngày *</label>
           <select id="tsDayType" class="input-field" onchange="tsDayTypeChanged()">
             <option value="work">🏢 Ngày làm việc</option>
+            <option value="half_day_am">🌅 Nghỉ nửa ngày (sáng)</option>
+            <option value="half_day_pm">🌆 Nghỉ nửa ngày (chiều)</option>
             <option value="annual_leave">🌴 Nghỉ phép năm</option>
             <option value="unpaid_leave">💸 Nghỉ không lương</option>
             <option value="holiday">🎉 Nghỉ lễ</option>
@@ -3874,34 +3877,82 @@
         <i class="fas fa-info-circle text-amber-500"></i>
         <span id="tsLeaveNoticeText">Ngày nghỉ — giờ công sẽ được ghi nhận là 0h.</span>
       </div>
-      <!-- Dự án + task — ẩn khi chọn loại nghỉ -->
+
+      <!-- Dự án — hiện với ngày làm việc và nghỉ nửa ngày -->
       <div id="tsWorkFields">
-        <div class="mb-4">
+        <div class="mb-3">
           <label class="label">Dự án *</label>
           <div id="tsProjectCombobox" style="width:100%"></div>
         </div>
         <!-- Gợi ý dự án đã khai báo trong ngày -->
-        <div id="tsDateHint" style="display:none" class="flex flex-wrap gap-1 items-center px-3 py-2 rounded-lg text-xs mb-4" style="background:#fffbeb;border:1px solid #fde68a;color:#92400e">
+        <div id="tsDateHint" style="display:none" class="flex flex-wrap gap-1 items-center px-3 py-2 rounded-lg text-xs mb-3" style="background:#fffbeb;border:1px solid #fde68a;color:#92400e">
           <i class="fas fa-info-circle text-amber-500 mr-1"></i>
           <span class="text-amber-800 font-medium mr-1">Ngày này đã có timesheet:</span>
           <span id="tsDateHintProjects" class="text-amber-700"></span>
           <span class="text-amber-600 ml-1">— Bạn có thể thêm cho dự án khác.</span>
         </div>
-        <div class="mb-4">
-          <label class="label">Task (tùy chọn) <span id="tsTaskLoadingSpinner" style="display:none" class="text-xs text-gray-400 ml-1"><i class="fas fa-spinner fa-spin"></i> Đang tải...</span></label>
-          <div id="tsTaskCombobox" style="width:100%"></div>
+
+        <!-- Toggle chế độ: đơn task vs. nhiều task -->
+        <div class="flex items-center gap-3 mb-3 p-2 rounded-lg" style="background:#f8fafc;border:1px solid #e2e8f0">
+          <span class="text-xs font-medium text-gray-500">Chế độ khai báo:</span>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name="tsModeRadio" value="single" checked onchange="tsModeChanged(this.value)" class="accent-green-600">
+            <span class="text-xs text-gray-700">📝 Đơn task</span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name="tsModeRadio" value="multi" onchange="tsModeChanged(this.value)" class="accent-indigo-600">
+            <span class="text-xs text-gray-700">📋 Nhiều task</span>
+          </label>
         </div>
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="label">Giờ hành chính</label>
-            <input type="number" id="tsRegularHours" class="input-field" value="8" min="0" max="9999" step="0.5">
+
+        <!-- Chế độ ĐƠN task -->
+        <div id="tsSingleTaskBlock">
+          <div class="mb-3">
+            <label class="label">Task (tùy chọn) <span id="tsTaskLoadingSpinner" style="display:none" class="text-xs text-gray-400 ml-1"><i class="fas fa-spinner fa-spin"></i> Đang tải...</span></label>
+            <div id="tsTaskCombobox" style="width:100%"></div>
           </div>
-          <div>
-            <label class="label">Giờ tăng ca</label>
-            <input type="number" id="tsOvertimeHours" class="input-field" value="0" min="0" max="9999" step="0.5">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="label">Giờ hành chính</label>
+              <input type="number" id="tsRegularHours" class="input-field" value="8" min="0" max="24" step="0.5">
+            </div>
+            <div>
+              <label class="label">Giờ tăng ca</label>
+              <input type="number" id="tsOvertimeHours" class="input-field" value="0" min="0" max="24" step="0.5">
+            </div>
+          </div>
+        </div>
+
+        <!-- Chế độ NHIỀU task -->
+        <div id="tsMultiTaskBlock" style="display:none">
+          <div class="flex items-center justify-between mb-2">
+            <label class="label mb-0">Danh sách task <span id="tsMultiTaskSpinner" style="display:none" class="text-xs text-gray-400 ml-1"><i class="fas fa-spinner fa-spin"></i></span></label>
+            <button type="button" onclick="tsAddMultiTaskRow()"
+              style="display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;color:#4f46e5;background:#eef2ff;border:1px solid #c7d2fe;cursor:pointer;transition:background .15s"
+              onmouseenter="this.style.background='#e0e7ff';this.style.borderColor='#a5b4fc'"
+              onmouseleave="this.style.background='#eef2ff';this.style.borderColor='#c7d2fe'">
+              <i class="fas fa-plus"></i> Thêm task
+            </button>
+          </div>
+          <!-- Header -->
+          <div style="display:grid;grid-template-columns:1fr 88px 88px 28px;gap:6px;padding:0 2px;margin-bottom:4px">
+            <span class="text-xs font-semibold text-gray-500">Task</span>
+            <span class="text-xs font-semibold text-blue-500 text-center">Giờ HC</span>
+            <span class="text-xs font-semibold text-orange-400 text-center">Tăng ca</span>
+            <span></span>
+          </div>
+          <!-- Task rows container -->
+          <div id="tsMultiTaskRows" class="space-y-1.5 mb-2" style="max-height:300px;overflow-y:auto;padding-right:2px"></div>
+          <!-- Tổng giờ — căn đúng theo grid header -->
+          <div style="display:grid;grid-template-columns:1fr 88px 88px 28px;gap:6px;padding:5px 2px 0;border-top:1px solid #e5e7eb;margin-top:4px">
+            <span class="text-xs text-gray-400 italic">Tổng cộng</span>
+            <strong id="tsMultiTotalReg" class="text-sm font-bold text-blue-600 text-center block">0h</strong>
+            <strong id="tsMultiTotalOT" class="text-sm font-bold text-orange-500 text-center block">0h</strong>
+            <span></span>
           </div>
         </div>
       </div>
+
       <div>
         <label class="label">Ghi chú</label>
         <textarea id="tsDescription" class="input-field" rows="2" placeholder="Tóm tắt công việc hoặc lý do nghỉ"></textarea>
