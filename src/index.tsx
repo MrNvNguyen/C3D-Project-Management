@@ -1706,11 +1706,7 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
     const isFullAccess = isAdmin || isProjAdmin || isCreator
     const fields = isFullAccess
       ? ['title', 'description', 'discipline_code', 'phase', 'priority', 'status', 'assigned_to', 'start_date', 'due_date', 'actual_start_date', 'actual_end_date', 'estimated_hours', 'actual_hours', 'progress', 'category_id']
-<<<<<<< HEAD
       : ['status', 'progress', 'actual_hours', 'actual_end_date', 'estimated_hours']
-=======
-      : ['status', 'progress', 'actual_hours', 'actual_end_date']
->>>>>>> 7b86eb8b37494218bd19a6ca34a9cf75bc9162f6
     // Normalize legacy status 'done' → 'completed' (tasks table không có 'done')
     if (data.status === 'done') data.status = 'completed'
 
