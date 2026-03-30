@@ -10,6 +10,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <script>
     tailwind.config = {
@@ -96,6 +97,10 @@
     .chart-container-sm    { position: relative; width: 100%; height: 220px; }
     .chart-container-lg    { position: relative; width: 100%; height: 350px; }
 
+    /* Productivity pie card – constrain height so chart doesn't balloon */
+    .prod-pie-card { display: flex; flex-direction: column; }
+    .prod-pie-card .chart-container-fixed { flex: 1; min-height: 0; }
+
     /* ================================================================
        BUTTONS
     ================================================================ */
@@ -176,6 +181,7 @@
     .toast { position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px; border-radius: 8px; padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: slideIn 0.3s ease; }
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     @keyframes fadeOut { to { opacity: 0; transform: translateX(100%); } }
+    @keyframes slideUp { from { transform: translateX(-50%) translateY(20px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }
     .input-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color 0.2s; }
     .input-field:focus { border-color: #00A651; box-shadow: 0 0 0 3px rgba(0,166,81,0.1); }
     .select-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; background: white; outline: none; }
@@ -206,6 +212,32 @@
       .chart-container-fixed { height: 260px; }
       .chart-container-lg { height: 300px; }
     }
+
+    /* ── TABLET (768px – 1023px) ── */
+    @media (min-width: 768px) and (max-width: 1023px) {
+      /* Sidebar tự động thu gọn thành mini (64px) */
+      .sidebar { width: 64px; }
+      .sidebar .nav-item { padding: 10px; justify-content: center; margin: 2px 6px; }
+      .sidebar .nav-item i { margin-right: 0; }
+      .sidebar .nav-item span { display: none; }
+      .sidebar .sidebar-section { display: none; }
+      .sidebar .sidebar-logo-full .logo-text { display: none; }
+      .sidebar .sidebar-logo-full { justify-content: center; }
+      .sidebar .sidebar-user-info { display: none; }
+      .sidebar .sidebar-user-mini { display: flex !important; }
+      .sidebar-toggle-btn { display: none; }
+      /* Main content chiếm phần còn lại */
+      .main-content { margin-left: 64px !important; }
+      /* Charts: 1 cột trên tablet */
+      .chart-container-fixed { height: 240px; }
+      .chart-container-lg { height: 280px; }
+      /* Card padding nhỏ hơn */
+      .card { padding: 14px; }
+      .kpi-card { padding: 12px; }
+      /* Page padding */
+      .page { padding: 14px; }
+    }
+
     @media (max-width: 767px) {
       .sidebar { transform: translateX(-260px); }
       .sidebar.mini { transform: translateX(-64px); }
@@ -824,6 +856,7 @@
         </div>
 
         <div id="projectsGrid"></div>
+        <div id="projectPagination"></div>
       </div>
 
       <!-- PROJECT DETAIL (sub-page) -->
@@ -909,6 +942,7 @@
               <tbody id="tasksTable" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="taskPagination"></div>
         </div>
       </div>
 
@@ -980,7 +1014,7 @@
                 <i class="fas fa-users text-primary"></i>Tổng giờ theo nhân viên
                 <span class="text-xs font-normal text-gray-400 ml-1">(theo bộ lọc)</span>
               </h3>
-              <div id="tsMemberBreakdown" class="text-sm space-y-2">
+              <div id="tsMemberBreakdown" class="text-sm space-y-0" style="max-height:320px;overflow-y:auto;scrollbar-width:thin;">
                 <p class="text-gray-400 text-center py-4">Đang tải...</p>
               </div>
             </div>
@@ -989,7 +1023,7 @@
                 <i class="fas fa-project-diagram text-accent"></i>Tổng giờ theo dự án
                 <span class="text-xs font-normal text-gray-400 ml-1">(theo bộ lọc)</span>
               </h3>
-              <div id="tsProjectBreakdown" class="text-sm space-y-2">
+              <div id="tsProjectBreakdown" class="text-sm space-y-0" style="max-height:320px;overflow-y:auto;scrollbar-width:thin;">
                 <p class="text-gray-400 text-center py-4">Đang tải...</p>
               </div>
             </div>
@@ -1082,6 +1116,7 @@
               <tbody id="timesheetTable" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="tsPagination"></div>
           <div id="tsEmptyState" class="hidden text-center py-12 text-gray-400">
             <i class="fas fa-clock text-4xl mb-3"></i>
             <p class="font-medium">Không có timesheet nào</p>
@@ -1682,6 +1717,7 @@
               <tbody id="usersTable" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="userPagination"></div>
         </div>
       </div>
 
@@ -1776,6 +1812,41 @@
           </div>
         </div>
 
+        <!-- Overdue Reminder Card -->
+        <div class="card mb-6 border border-orange-200 bg-gradient-to-br from-orange-50 to-amber-50">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-xl bg-orange-500 flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-bell text-white"></i>
+            </div>
+            <div class="flex-1">
+              <h3 class="font-bold text-gray-800">Gửi mail nhắc task quá hạn</h3>
+              <p class="text-xs text-gray-500">Gửi email ⚠️ đến đúng nhân sự phụ trách các task đã quá deadline, chưa hoàn thành</p>
+            </div>
+          </div>
+          <div class="flex flex-wrap gap-3 items-center">
+            <button onclick="previewOverdueTasks()" class="btn-secondary flex items-center gap-2 text-sm">
+              <i class="fas fa-eye"></i> Xem trước danh sách
+            </button>
+            <button onclick="sendOverdueReminders()" class="btn-primary flex items-center gap-2 text-sm" style="background:#f97316;border-color:#f97316">
+              <i class="fas fa-paper-plane"></i> Gửi mail nhắc ngay
+            </button>
+            <span id="overdueReminderResult" class="text-xs text-gray-500 ml-2"></span>
+          </div>
+          <div id="overduePreviewList" class="hidden mt-4 overflow-x-auto">
+            <table class="w-full text-xs">
+              <thead><tr class="text-left text-gray-400 border-b text-xs uppercase">
+                <th class="pb-2 pr-3">Task</th>
+                <th class="pb-2 pr-3">Dự án</th>
+                <th class="pb-2 pr-3">Phụ trách</th>
+                <th class="pb-2 pr-3">Email</th>
+                <th class="pb-2 pr-3">Hạn</th>
+                <th class="pb-2">TT</th>
+              </tr></thead>
+              <tbody id="overduePreviewTbody" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Setup Guide -->
         <div class="card mb-6 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200">
           <!-- Header có nút toggle -->
@@ -1837,39 +1908,26 @@
 
         <!-- Email Logs Table -->
         <div class="card">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="font-bold text-gray-800"><i class="fas fa-history text-primary mr-2"></i>Lịch sử gửi Email</h3>
-            <div class="flex gap-2">
-              <select id="emailLogFilter" class="select-field text-sm py-1.5" style="width:160px" onchange="filterEmailLogs()">
-                <option value="">Tất cả</option>
-                <option value="sent">✅ Thành công</option>
-                <option value="failed">❌ Thất bại</option>
-                <option value="task_assigned">📌 Giao task</option>
-                <option value="task_status_updated">🔄 Cập nhật task</option>
-                <option value="task_overdue">⚠️ Quá hạn</option>
-                <option value="project_added">🏗️ Thêm vào dự án</option>
-                <option value="timesheet_reviewed">✅ Duyệt timesheet</option>
-                <option value="payment_request_new">💰 Thanh toán</option>
-                <option value="chat_mention">💬 @Mention</option>
-                <option value="test">🧪 Test</option>
-              </select>
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="font-bold text-gray-800"><i class="fas fa-history text-primary mr-2"></i>Lịch sử gửi Email</h3>
+              <p class="text-xs text-gray-400 mt-0.5">20 email gần nhất · <button onclick="refreshEmailLogs()" class="text-primary hover:underline">Làm mới</button></p>
             </div>
+            <select id="emailLogFilter" class="text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:border-primary text-gray-600" onchange="filterEmailLogs()">
+              <option value="">Tất cả loại</option>
+              <option value="sent">✅ Thành công</option>
+              <option value="failed">❌ Thất bại</option>
+              <option value="task_assigned">📌 Giao task</option>
+              <option value="task_overdue">⚠️ Quá hạn</option>
+              <option value="project_added">🏗️ Tham gia dự án</option>
+              <option value="chat_mention">💬 @Mention</option>
+            </select>
           </div>
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
-                <th class="pb-3 pr-3">Thời gian</th>
-                <th class="pb-3 pr-3">Người nhận</th>
-                <th class="pb-3 pr-3">Tiêu đề</th>
-                <th class="pb-3 pr-3">Loại sự kiện</th>
-                <th class="pb-3 pr-3">Trạng thái</th>
-                <th class="pb-3">Lỗi</th>
-              </tr></thead>
-              <tbody id="emailLogsTable" class="divide-y">
-                <tr><td colspan="6" class="py-8 text-center text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</td></tr>
-              </tbody>
-            </table>
+          <div id="emailLogsContainer" class="space-y-1.5">
+            <div class="py-6 text-center text-gray-400 text-sm"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</div>
           </div>
+          <!-- hidden tbody for backward compat -->
+          <table class="hidden"><tbody id="emailLogsTable"></tbody></table>
         </div>
       </div>
 
@@ -1927,6 +1985,25 @@
                 </div>
                 <button onclick="changePassword()" class="btn-primary px-6">Đổi mật khẩu</button>
               </div>
+            </div>
+
+            <!-- ===== BROWSER PUSH NOTIFICATIONS ===== -->
+            <div class="card">
+              <div class="flex items-center gap-3 mb-4">
+                <i class="fas fa-bell text-primary text-lg"></i>
+                <div>
+                  <h3 class="font-bold text-gray-800">Thông báo trình duyệt</h3>
+                  <p class="text-xs text-gray-400 mt-0.5">Nhận thông báo real-time ngay cả khi tab đang ẩn</p>
+                </div>
+              </div>
+              <div id="pushNotifContainer">
+                <!-- Rendered by renderPushButton() -->
+                <div class="animate-pulse bg-gray-100 h-12 rounded-lg"></div>
+              </div>
+              <p class="text-xs text-gray-400 mt-3">
+                <i class="fas fa-info-circle mr-1"></i>
+                Thông báo được gửi khi bạn được giao task, nhắc đến trong chat (@mention), tham gia dự án hoặc task quá hạn.
+              </p>
             </div>
 
             <!-- ===== EMAIL NOTIFICATION SETTINGS (System Admin only) ===== -->
@@ -2383,13 +2460,13 @@
 
       <!-- ========== PRODUCTIVITY PAGE ========== -->
       <div id="page-productivity" class="page">
-        <div class="flex justify-between items-center mb-6">
+        <div class="flex flex-wrap justify-between items-start mb-6 gap-3">
           <div>
             <h1 class="text-2xl font-bold text-gray-800">Năng suất Nhân sự</h1>
             <p class="text-gray-500 text-sm">Đánh giá hiệu suất và tiến độ của từng thành viên</p>
           </div>
-          <div class="flex gap-2">
-            <div id="prodProjectCombobox" style="width:260px;max-width:260px;position:relative"></div>
+          <div class="flex flex-wrap gap-2">
+            <div id="prodProjectCombobox" style="width:220px;max-width:100%;position:relative"></div>
             <select id="prodDaysFilter" class="select-field" style="width:130px" onchange="loadProductivity(true)">
               <option value="30" selected>30 ngày qua</option>
               <option value="60">60 ngày qua</option>
@@ -2399,8 +2476,8 @@
           </div>
         </div>
 
-        <!-- Charts row -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <!-- Charts row: 1 cột trên tablet, 2 cột trên desktop -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
           <div class="card">
             <div class="flex items-start justify-between mb-3">
               <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-bar text-primary mr-2"></i>Biểu đồ năng suất nhân sự</h3>
@@ -2413,14 +2490,18 @@
             </div>
             <div class="chart-container-fixed"><canvas id="prodBarChart"></canvas></div>
           </div>
-          <div class="card">
-            <h3 class="font-bold text-gray-800 text-sm mb-2"><i class="fas fa-chart-pie text-accent mr-2"></i>Phân bổ task hoàn thành</h3>
-            <div class="text-xs text-gray-400 mb-3 bg-gray-50 rounded-lg p-2 leading-relaxed">
-              <div class="font-semibold text-gray-600 mb-1">📐 Công thức:</div>
-              <div>% Hoàn Thành = <em>xong / giao</em> × 100</div>
-              <div>Chính xác &nbsp;&nbsp;&nbsp;= <em>đúng_hạn / xong</em> × 100</div>
-              <div>Năng suất &nbsp;&nbsp;&nbsp;= <em>(% Hoàn + Chính xác)</em> / 2</div>
-              <div class="font-semibold text-red-600">Điểm &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= <em>(Năng suất + Chính xác)</em> / 2</div>
+          <div class="card prod-pie-card">
+            <div class="flex items-start justify-between mb-2">
+              <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-pie text-accent mr-2"></i>Phân bổ task hoàn thành</h3>
+              <details class="text-xs text-gray-400">
+                <summary class="cursor-pointer text-gray-500 hover:text-gray-700">📐 Công thức</summary>
+                <div class="mt-1 bg-gray-50 rounded-lg p-2 leading-relaxed">
+                  <div>% Hoàn Thành = <em>xong / giao</em> × 100</div>
+                  <div>Chính xác = <em>đúng_hạn / xong</em> × 100</div>
+                  <div>Năng suất = <em>(% Hoàn + Chính xác)</em> / 2</div>
+                  <div class="font-semibold text-red-600">Điểm = <em>(Năng suất + Chính xác)</em> / 2</div>
+                </div>
+              </details>
             </div>
             <div class="chart-container-fixed"><canvas id="prodPieChart"></canvas></div>
           </div>
@@ -2428,9 +2509,9 @@
 
         <!-- Table -->
         <div class="card">
-          <div class="flex justify-between items-center mb-4">
+          <div class="flex flex-wrap justify-between items-center mb-4 gap-2">
             <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết năng suất <span class="font-normal text-gray-400 text-xs ml-2">(Điểm = (Năng suất + Chính xác) / 2)</span></h3>
-            <div class="flex gap-2">
+            <div class="flex flex-wrap gap-2">
               <button onclick="sortProductivity('score')" class="btn-secondary text-xs px-2 py-1">Sắp xếp theo Điểm</button>
               <button onclick="sortProductivity('completed_tasks')" class="btn-secondary text-xs px-2 py-1">Sắp xếp theo Hoàn thành</button>
             </div>
@@ -2452,6 +2533,7 @@
               <tbody id="productivityTable" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="prodPagination" class="mt-4"></div>
         </div>
       </div>
 
@@ -2467,12 +2549,19 @@
             <!-- Period mode selector -->
             <select id="finPeriodType" class="select-field text-sm" style="width:180px" onchange="onFinPeriodTypeChange()">
               <option value="all_time">🏗️ Toàn dự án</option>
+              <option value="ntc">📅 Theo NTC</option>
               <option value="ytd">📈 Lũy kế năm nay</option>
-              <option value="year">🗓️ Theo năm</option>
+              <option value="year">🗓️ Theo năm DL</option>
               <option value="months">📆 Nhiều tháng</option>
               <option value="month">📅 Tháng cụ thể</option>
               <option value="range">📋 Khoảng ngày</option>
             </select>
+            <!-- NTC Year filter (shown for ntc mode) -->
+            <div id="finNtcYearCtrl" class="hidden">
+              <select id="finNtcYearFilter" class="select-field" style="width:120px" onchange="loadFinanceProject()">
+                <!-- Options populated dynamically -->
+              </select>
+            </div>
             <!-- Year filter (shown for year/months/month modes) -->
             <div id="finYearCtrl" class="hidden">
               <select id="finYearFilter" class="select-field" style="width:110px" onchange="loadFinanceProject()">
@@ -2989,9 +3078,7 @@
             <p class="text-gray-500 text-sm mt-0.5">Theo dõi hợp đồng, phụ lục, nghiệm thu, thanh toán và văn bản gửi đi</p>
           </div>
           <div class="flex items-center gap-2 flex-wrap">
-            <select id="legalProjectSelect" class="select-field" style="min-width:220px" onchange="onLegalProjectChange()">
-              <option value="">-- Chọn dự án --</option>
-            </select>
+            <div id="legalProjectSelectCombobox" style="min-width:240px"></div>
             <button onclick="openLegalLetterModal()" id="btnAddLetter" class="btn-accent hidden" style="display:none">
               <i class="fas fa-paper-plane mr-1"></i>Gửi văn bản
             </button>
@@ -4488,55 +4575,163 @@
 
 <!-- Subtask Modal -->
 <div id="subtaskModal" class="modal-overlay" style="display:none">
-  <div class="modal p-6" style="max-width:500px">
+  <div class="modal p-6" style="max-width:680px;width:95vw">
     <div class="flex justify-between items-center mb-4">
       <h3 class="text-lg font-bold text-gray-800" id="subtaskModalTitle">Thêm Subtask</h3>
       <button onclick="closeModal('subtaskModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
     </div>
-    <form id="subtaskForm" class="space-y-3">
-      <input type="hidden" id="subtaskId">
-      <input type="hidden" id="subtaskTaskId">
-      <div>
-        <label class="label">Tên subtask *</label>
-        <input type="text" id="subtaskTitle" class="input-field" placeholder="Mô tả công việc cụ thể..." required>
-      </div>
-      <div class="grid grid-cols-2 gap-3">
+    <input type="hidden" id="subtaskId">
+    <input type="hidden" id="subtaskTaskId">
+
+    <!-- Tab bar — ẩn khi đang sửa (subtaskId có giá trị) -->
+    <div id="subtaskTabBar" class="flex gap-1 mb-4 border-b border-gray-200">
+      <button type="button" onclick="switchSubtaskTab('single')" id="stab-single"
+        class="px-4 py-2 text-sm font-medium border-b-2 border-primary text-primary">
+        <i class="fas fa-plus mr-1"></i>Thêm 1 subtask
+      </button>
+      <button type="button" onclick="switchSubtaskTab('bulk')" id="stab-bulk"
+        class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        <i class="fas fa-list-ul mr-1"></i>Thêm nhiều
+      </button>
+      <button type="button" onclick="switchSubtaskTab('import')" id="stab-import"
+        class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        <i class="fas fa-file-excel mr-1"></i>Import Excel
+      </button>
+    </div>
+
+    <!-- Tab: Thêm 1 subtask (form cũ) -->
+    <div id="stpanel-single">
+      <form id="subtaskForm" class="space-y-3">
         <div>
-          <label class="label">Trạng thái</label>
-          <select id="subtaskStatus" class="select-field">
-            <option value="todo">Chờ thực hiện</option>
-            <option value="in_progress">Đang làm</option>
-            <option value="done">Hoàn thành</option>
-          </select>
+          <label class="label">Tên subtask *</label>
+          <input type="text" id="subtaskTitle" class="input-field" placeholder="Mô tả công việc cụ thể..." required>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Trạng thái</label>
+            <select id="subtaskStatus" class="select-field">
+              <option value="todo">Chờ thực hiện</option>
+              <option value="in_progress">Đang làm</option>
+              <option value="done">Hoàn thành</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">Ưu tiên</label>
+            <select id="subtaskPriority" class="select-field">
+              <option value="low">Thấp</option>
+              <option value="medium" selected>Trung bình</option>
+              <option value="high">Cao</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Hạn hoàn thành</label>
+            <input type="date" id="subtaskDueDate" class="input-field">
+          </div>
+          <div>
+            <label class="label">Giờ dự kiến</label>
+            <input type="number" id="subtaskEstHours" class="input-field" placeholder="0" min="0" step="0.5">
+          </div>
         </div>
         <div>
-          <label class="label">Ưu tiên</label>
-          <select id="subtaskPriority" class="select-field">
-            <option value="low">Thấp</option>
-            <option value="medium" selected>Trung bình</option>
-            <option value="high">Cao</option>
-          </select>
+          <label class="label">Mô tả / Ghi chú báo cáo</label>
+          <textarea id="subtaskNotes" class="input-field" rows="2" placeholder="Mô tả chi tiết, kết quả thực hiện, vướng mắc..."></textarea>
+        </div>
+        <div class="flex justify-end gap-3 pt-1">
+          <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
+          <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Tab: Thêm nhiều subtask -->
+    <div id="stpanel-bulk" style="display:none">
+      <div class="mb-2 flex items-center justify-between">
+        <span class="text-sm text-gray-500">Nhập danh sách subtask, mỗi dòng là 1 subtask</span>
+        <button type="button" onclick="addBulkSubtaskRow()" class="text-xs text-primary hover:underline font-medium">
+          <i class="fas fa-plus mr-1"></i>Thêm dòng
+        </button>
+      </div>
+      <div id="bulkSubtaskRows" class="space-y-2 max-h-72 overflow-y-auto pr-1">
+        <!-- rows injected by JS -->
+      </div>
+      <div class="flex justify-between items-center mt-4 pt-3 border-t border-gray-100">
+        <span id="bulkSubtaskCount" class="text-xs text-gray-400">0 subtask</span>
+        <div class="flex gap-3">
+          <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
+          <button type="button" onclick="saveBulkSubtasks()" class="btn-primary">
+            <i class="fas fa-save mr-1"></i>Lưu tất cả
+          </button>
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label class="label">Hạn hoàn thành</label>
-          <input type="date" id="subtaskDueDate" class="input-field">
+    </div>
+
+    <!-- Tab: Import Excel -->
+    <div id="stpanel-import" style="display:none">
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+        <div class="flex items-start gap-3">
+          <i class="fas fa-info-circle text-blue-500 mt-0.5"></i>
+          <div class="text-sm text-blue-700">
+            <p class="font-semibold mb-1">Hướng dẫn import từ Excel</p>
+            <ul class="space-y-0.5 text-xs">
+              <li>• Cột <strong>A</strong>: Tên subtask (bắt buộc) — dòng 1 là tiêu đề, bỏ qua khi import</li>
+              <li>• Cột <strong>B</strong>: Hạn hoàn thành (tùy chọn, định dạng YYYY-MM-DD hoặc DD/MM/YYYY)</li>
+              <li>• Cột <strong>C</strong>: Ưu tiên (tùy chọn: low / medium / high)</li>
+              <li>• Cột <strong>D</strong>: Giờ dự kiến (tùy chọn, số)</li>
+              <li>• Cột <strong>E</strong>: Ghi chú (tùy chọn)</li>
+            </ul>
+          </div>
         </div>
-        <div>
-          <label class="label">Giờ dự kiến</label>
-          <input type="number" id="subtaskEstHours" class="input-field" placeholder="0" min="0" step="0.5">
+      </div>
+
+      <!-- Drop zone -->
+      <div id="subtaskDropZone"
+        class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-primary hover:bg-primary/5 transition-colors"
+        onclick="$('subtaskFileInput').click()"
+        ondragover="event.preventDefault();this.classList.add('border-primary','bg-primary/5')"
+        ondragleave="this.classList.remove('border-primary','bg-primary/5')"
+        ondrop="handleSubtaskFileDrop(event)">
+        <i class="fas fa-file-excel text-4xl text-green-500 mb-3"></i>
+        <p class="text-sm font-medium text-gray-700">Kéo thả file Excel vào đây</p>
+        <p class="text-xs text-gray-400 mt-1">hoặc click để chọn file (.xlsx, .xls)</p>
+        <input type="file" id="subtaskFileInput" accept=".xlsx,.xls" style="display:none" onchange="handleSubtaskFileSelect(this)">
+      </div>
+
+      <!-- Preview table -->
+      <div id="subtaskImportPreview" style="display:none" class="mt-4">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700" id="subtaskImportInfo"></span>
+          <button type="button" onclick="clearSubtaskImport()" class="text-xs text-gray-400 hover:text-red-500">
+            <i class="fas fa-times mr-1"></i>Xóa
+          </button>
+        </div>
+        <div class="max-h-56 overflow-y-auto rounded border border-gray-200">
+          <table class="w-full text-xs">
+            <thead class="bg-gray-50 sticky top-0">
+              <tr>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">#</th>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">Tên subtask</th>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">Hạn</th>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">Ưu tiên</th>
+                <th class="text-left px-3 py-2 text-gray-600 font-medium">Giờ</th>
+              </tr>
+            </thead>
+            <tbody id="subtaskImportRows" class="divide-y divide-gray-100"></tbody>
+          </table>
         </div>
       </div>
-      <div>
-        <label class="label">Mô tả / Ghi chú báo cáo</label>
-        <textarea id="subtaskNotes" class="input-field" rows="3" placeholder="Mô tả chi tiết, kết quả thực hiện, vướng mắc..."></textarea>
+
+      <div class="flex justify-between items-center mt-4 pt-3 border-t border-gray-100">
+        <span id="subtaskImportCount" class="text-xs text-gray-400"></span>
+        <div class="flex gap-3">
+          <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
+          <button type="button" id="btnImportSubtasks" onclick="saveImportedSubtasks()" class="btn-primary" disabled>
+            <i class="fas fa-upload mr-1"></i>Import subtasks
+          </button>
+        </div>
       </div>
-      <div class="flex justify-end gap-3 pt-1">
-        <button type="button" onclick="closeModal('subtaskModal')" class="btn-secondary">Hủy</button>
-        <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
-      </div>
-    </form>
+    </div>
   </div>
 </div>
 

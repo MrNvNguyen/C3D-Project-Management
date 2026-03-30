@@ -67,7 +67,16 @@ let _lastAnalysisKey = ''              // cache key: projId+periodType+month+yea
 const $ = id => document.getElementById(id)
 const fmt = (n) => new Intl.NumberFormat('vi-VN').format(n || 0)
 const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0)
-const fmtDate = (d) => d ? dayjs(d).format('DD/MM/YYYY') : '-'
+// Chuẩn hóa timestamp từ DB (SQLite CURRENT_TIMESTAMP = UTC, không có 'Z')
+// Thêm 'Z' để dayjs hiểu là UTC → tự chuyển sang giờ local (VN +07:00)
+const toLocalDayjs = (d) => {
+  if (!d) return null
+  // Nếu đã có timezone info (chứa 'Z', '+', hoặc 'T...+') thì parse thẳng
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(d)) return dayjs(d)
+  // SQLite format: '2026-03-26 14:32:00' → thêm Z để coi là UTC
+  return dayjs(d.replace(' ', 'T') + 'Z')
+}
+const fmtDate = (d) => d ? toLocalDayjs(d).format('DD/MM/YYYY') : '-'
 const today = () => new Date().toISOString().split('T')[0]
 
 function api(endpoint, options = {}) {
@@ -94,6 +103,237 @@ function toast(message, type = 'success', duration = 3000) {
   document.body.appendChild(t)
   setTimeout(() => { t.style.animation = 'fadeOut 0.3s forwards'; setTimeout(() => t.remove(), 300) }, duration)
 }
+
+// ================================================================
+// WEB PUSH NOTIFICATIONS — Service Worker + Web Push API
+// ================================================================
+
+// ── Đăng ký Service Worker và lấy push subscription ─────────────
+async function _registerSWAndSubscribe() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
+    await navigator.serviceWorker.ready
+
+    // Lấy VAPID public key từ server
+    const res = await fetch('/api/push/vapid-public-key', {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('bim_token') }
+    })
+    if (!res.ok) return null
+    const { publicKey } = await res.json()
+    if (!publicKey) return null
+
+    // Chuyển base64url → Uint8Array
+    const b64 = publicKey.replace(/-/g, '+').replace(/_/g, '/')
+    const raw = Uint8Array.from(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)), c => c.charCodeAt(0))
+
+    // Đăng ký push subscription (tái sử dụng nếu đã có)
+    let sub = await reg.pushManager.getSubscription()
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: raw })
+    }
+    return sub
+  } catch(e) {
+    console.warn('[Push] SW/subscribe error:', e)
+    return null
+  }
+}
+
+// ── Gửi subscription lên server ─────────────────────────────────
+async function _savePushSubscription(sub) {
+  if (!sub) return
+  try {
+    const key  = sub.getKey('p256dh')
+    const auth = sub.getKey('auth')
+    const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('bim_token')
+      },
+      body: JSON.stringify({
+        endpoint: sub.endpoint,
+        keys: { p256dh: toB64(key), auth: toB64(auth) }
+      })
+    })
+  } catch(e) {
+    console.warn('[Push] Save subscription error:', e)
+  }
+}
+
+// ── Khởi tạo: đăng ký SW, subscribe push, hiển thị banner ───────
+async function initPushNotifications() {
+  if (!('Notification' in window)) return
+
+  const perm = Notification.permission
+  if (perm === 'granted') {
+    // Đã có quyền → đăng ký SW + lưu subscription (idempotent)
+    const sub = await _registerSWAndSubscribe()
+    await _savePushSubscription(sub)
+  } else if (perm === 'default') {
+    // Chưa hỏi → hiện banner sau 2s
+    setTimeout(showPermissionBanner, 2000)
+  }
+  renderPushButton()
+}
+
+// ── Xin quyền và đăng ký push ───────────────────────────────────
+async function requestPushPermission() {
+  if (!('Notification' in window)) { toast('Trình duyệt không hỗ trợ thông báo', 'error'); return }
+
+  localStorage.removeItem('bim_notif_disabled')
+
+  const permission = await Notification.requestPermission()
+  hidePushBanner()
+
+  if (permission === 'granted') {
+    // Đăng ký Service Worker + push subscription
+    const sub = await _registerSWAndSubscribe()
+    await _savePushSubscription(sub)
+
+    if (sub) {
+      toast('✅ Đã bật thông báo! Bạn sẽ nhận thông báo kể cả khi ẩn tab.', 'success', 4000)
+    } else {
+      toast('✅ Đã bật thông báo (chế độ cơ bản — tab cần mở).', 'success', 4000)
+    }
+  } else if (permission === 'denied') {
+    toast('Thông báo bị chặn. Vào cài đặt trình duyệt → Site Settings → Notifications để bật lại.', 'warning', 6000)
+  }
+  renderPushButton()
+}
+
+// ── Tắt thông báo + hủy push subscription ───────────────────────
+async function unsubscribePush() {
+  try {
+    // Hủy push subscription trên browser
+    if ('serviceWorker' in navigator && 'PushManager' in window) {
+      const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+      if (reg) {
+        const sub = await reg.pushManager.getSubscription()
+        if (sub) {
+          // Xóa subscription khỏi server trước
+          await fetch('/api/push/unsubscribe', {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + localStorage.getItem('bim_token')
+            },
+            body: JSON.stringify({ endpoint: sub.endpoint })
+          }).catch(() => {})
+          // Hủy subscription trên browser
+          await sub.unsubscribe()
+        }
+      }
+    }
+  } catch(e) {
+    console.warn('[Push] Unsubscribe error:', e)
+  }
+  localStorage.setItem('bim_notif_disabled', '1')
+  renderPushButton()
+  toast('Đã tắt thông báo', 'info')
+}
+
+// ── Hiển thị banner nhắc bật thông báo ──────────────────────────
+function showPermissionBanner() {
+  if ($('pushPermBanner')) return  // already shown
+  if (Notification.permission !== 'default') return
+  if (localStorage.getItem('bim_notif_dismissed')) return
+
+  const banner = document.createElement('div')
+  banner.id = 'pushPermBanner'
+  banner.style.cssText = `
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:#1e293b; color:#fff; padding:14px 20px; border-radius:12px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.3); z-index:9998;
+    display:flex; align-items:center; gap:12px; max-width:480px; width:calc(100% - 40px);
+    animation:slideUp 0.3s ease;
+  `
+  banner.innerHTML = `
+    <i class="fas fa-bell text-yellow-400 text-xl flex-shrink-0"></i>
+    <div class="flex-1">
+      <p class="font-semibold text-sm">Bật thông báo để không bỏ lỡ tin nhắn</p>
+      <p class="text-xs text-gray-400 mt-0.5">Nhận thông báo khi có tin nhắn chat, task được giao, @mention</p>
+    </div>
+    <button onclick="requestPushPermission()" style="background:#3b82f6;border:none;color:#fff;padding:7px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">Bật ngay</button>
+    <button onclick="hidePushBanner(true)" style="background:transparent;border:none;color:#9ca3af;cursor:pointer;font-size:18px;padding:0 4px;line-height:1;">×</button>
+  `
+  document.body.appendChild(banner)
+
+  // Tự ẩn sau 15s
+  setTimeout(() => hidePushBanner(), 15000)
+}
+
+function hidePushBanner(dismiss = false) {
+  const b = $('pushPermBanner')
+  if (b) b.remove()
+  if (dismiss) localStorage.setItem('bim_notif_dismissed', '1')
+}
+
+// ── Render trạng thái trong trang Profile ────────────────────────
+function renderPushButton() {
+  const container = $('pushNotifContainer')
+  if (!container) return
+
+  if (!('Notification' in window)) {
+    container.innerHTML = `<p class="text-xs text-gray-400"><i class="fas fa-ban mr-1"></i>Trình duyệt không hỗ trợ thông báo</p>`
+    return
+  }
+
+  const permission = Notification.permission
+  const disabled = localStorage.getItem('bim_notif_disabled') === '1'
+
+  let btnHtml = ''
+  if (permission === 'denied') {
+    btnHtml = `
+      <div class="flex items-center gap-3 p-3 bg-red-50 rounded-lg border border-red-200">
+        <i class="fas fa-bell-slash text-red-500 text-lg"></i>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-red-700">Thông báo bị chặn bởi trình duyệt</p>
+          <p class="text-xs text-red-500">Vào Settings → Site Settings → Notifications → Cho phép trang này</p>
+        </div>
+      </div>`
+  } else if (permission === 'granted' && !disabled) {
+    const hasSW = ('serviceWorker' in navigator) && ('PushManager' in window)
+    btnHtml = `
+      <div class="flex items-center gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
+        <i class="fas fa-bell text-green-600 text-lg"></i>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-green-700">✅ Thông báo đang hoạt động</p>
+          <p class="text-xs text-gray-500">${hasSW ? 'Nhận thông báo kể cả khi ẩn tab (Web Push)' : 'Nhận thông báo khi tab đang mở'}</p>
+        </div>
+        <button onclick="unsubscribePush()" class="text-xs text-red-500 hover:text-red-700 underline whitespace-nowrap">Tắt</button>
+      </div>`
+  } else {
+    btnHtml = `
+      <div class="flex items-center gap-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
+        <i class="fas fa-bell text-amber-500 text-lg"></i>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-amber-700">Thông báo chưa được bật</p>
+          <p class="text-xs text-gray-500">Cho phép để nhận thông báo tin nhắn, task, @mention</p>
+        </div>
+        <button onclick="requestPushPermission()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg whitespace-nowrap">Bật ngay</button>
+      </div>`
+  }
+  container.innerHTML = btnHtml
+}
+
+// ── Smart polling: 5s active, paused when hidden ──────────────────
+let _notifPollInterval = null
+function startSmartNotifPoll() {
+  if (_notifPollInterval) clearInterval(_notifPollInterval)
+  _notifPollInterval = setInterval(() => {
+    if (!document.hidden) loadNotifications()
+  }, 5000)
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) loadNotifications()  // Reload immediately on tab focus
+  }, { passive: true })
+}
+
+// ================================================================
+// END BROWSER NOTIFICATIONS
+// ================================================================
 
 function closeModal(id) {
   $(id).style.display = 'none'
@@ -175,8 +415,10 @@ function getRoleLabel(role) {
 }
 
 function getStatusBadge(status) {
-  const labels = { todo: 'Chờ làm', in_progress: 'Đang làm', review: 'Đang duyệt', completed: 'Hoàn thành', cancelled: 'Đã hủy', active: 'Hoạt động', planning: 'Lập kế hoạch', on_hold: 'Tạm dừng' }
-  return `<span class="badge badge-${status}">${labels[status] || status}</span>`
+  const labels = { todo: 'Chờ làm', in_progress: 'Đang làm', review: 'Đang duyệt', completed: 'Hoàn thành', done: 'Hoàn thành', cancelled: 'Đã hủy', active: 'Hoạt động', planning: 'Lập kế hoạch', on_hold: 'Tạm dừng' }
+  // Normalise legacy 'done' → display as 'completed' badge class
+  const badgeClass = status === 'done' ? 'completed' : status
+  return `<span class="badge badge-${badgeClass}">${labels[status] || status}</span>`
 }
 
 function getPriorityBadge(p) {
@@ -369,6 +611,9 @@ function toggleSidebarMini() {
 
 // Khôi phục trạng thái sidebar khi load
 function restoreSidebarState() {
+  // Tablet (768-1023px): CSS tự handle mini — không cần JS thêm class
+  if (window.innerWidth >= 768 && window.innerWidth < 1024) return
+
   const state = localStorage.getItem('sidebar_state')
   if (state === 'mini') {
     $('sidebar').classList.add('mini')
@@ -380,6 +625,18 @@ function restoreSidebarState() {
     $('mainContent').classList.add('expanded')
   }
 }
+
+// Handle resize: sync sidebar khi resize từ desktop xuống tablet hoặc ngược lại
+window.addEventListener('resize', () => {
+  const sidebar = $('sidebar')
+  const mainContent = $('mainContent')
+  if (!sidebar || !mainContent) return
+  if (window.innerWidth >= 768 && window.innerWidth < 1024) {
+    // Tablet: CSS media query đã handle, bỏ JS-added classes để tránh conflict
+    sidebar.classList.remove('mini', 'collapsed')
+    mainContent.classList.remove('mini-sidebar', 'expanded')
+  }
+})
 
 function toggleNotifications() {
   const d = $('notifDropdown')
@@ -467,7 +724,8 @@ async function initApp() {
   initDatetimeClock()
   loadDashboard()
   loadNotifications()
-  setInterval(loadNotifications, 30000)  // Poll every 30s for chat notifications
+  startSmartNotifPoll()          // Smart polling: 5s when active, pause when hidden
+  initPushNotifications()        // Register SW + subscribe if permission already granted
 }
 
 // ================================================================
@@ -655,26 +913,50 @@ function renderProductivityChart(data) {
   destroyChart('productivity')
   const ctx = $('productivityChart')
   if (!ctx || !data?.length) return
-  const top10 = data.slice(0, 8)
-  // Dashboard passes simpler data (total_tasks, completed_tasks, total_hours)
-  // Compute completion_rate on the fly if not present
-  const getRate = u => u.completion_rate != null ? u.completion_rate
-    : (u.total_tasks > 0 ? Math.round((u.completed_tasks || 0) / u.total_tasks * 100) : 0)
+
+  // Lọc nhân viên có ít nhất 1 task được giao, sắp xếp theo Điểm giảm dần, lấy top 10
+  const withTasks = data.filter(u => (u.total_tasks || 0) > 0)
+  const sorted = withTasks.slice().sort((a, b) => (b.score || 0) - (a.score || 0))
+  const top10 = sorted.slice(0, 10)
+
+  // Nếu không có ai có task, hiển thị tất cả (tối đa 10)
+  const display = top10.length ? top10 : data.slice(0, 10)
+
+  // Tên ngắn: lấy tên (từ cuối) để label gọn
+  const labels = display.map(u => u.full_name?.split(' ').pop() || u.full_name)
+
   charts['productivity'] = safeChart(ctx, {
     type: 'bar',
     data: {
-      labels: top10.map(u => u.full_name?.split(' ').pop() || u.full_name),
+      labels,
       datasets: [
-        { label: '% Hoàn Thành',  data: top10.map(getRate),                    backgroundColor: '#00A651', borderRadius: 4 },
-        { label: 'Chính xác (%)', data: top10.map(u => u.ontime_rate    || 0), backgroundColor: '#0066CC', borderRadius: 4 },
-        { label: 'Năng suất (%)', data: top10.map(u => u.productivity   || 0), backgroundColor: '#F59E0B', borderRadius: 4 },
-        { label: 'Điểm',          data: top10.map(u => u.score          || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
+        { label: '% Hoàn Thành',  data: display.map(u => u.completion_rate || 0), backgroundColor: '#00A651', borderRadius: 4 },
+        { label: 'Chính xác (%)', data: display.map(u => u.ontime_rate     || 0), backgroundColor: '#0066CC', borderRadius: 4 },
+        { label: 'Năng suất (%)', data: display.map(u => u.productivity    || 0), backgroundColor: '#F59E0B', borderRadius: 4 },
+        { label: 'Điểm',          data: display.map(u => u.score           || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
-      scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } }
+      plugins: {
+        legend: { position: 'top', labels: { font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const u = display[ctx.dataIndex]
+              if (!u) return ''
+              if (ctx.datasetIndex === 0) return ` % Hoàn Thành: ${u.completion_rate || 0}% (${u.completed_tasks || 0}/${u.total_tasks || 0} task)`
+              if (ctx.datasetIndex === 1) return ` Chính xác: ${u.ontime_rate || 0}%`
+              if (ctx.datasetIndex === 2) return ` Năng suất: ${u.productivity || 0}%`
+              if (ctx.datasetIndex === 3) return ` Điểm: ${u.score || 0}`
+              return ''
+            }
+          }
+        }
+      },
+      scales: {
+        y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } }
+      }
     }
   })
 }
@@ -775,6 +1057,7 @@ async function renderRecentTasksTable(projectData) {
 // ================================================================
 // Global unread chat map: { 'task_3': 2, 'project_5': 1 }
 let _chatUnreadMap = {}
+let _lastSeenNotifId = 0   // Track highest notif id seen — detect new arrivals
 
 async function loadNotifications() {
   try {
@@ -782,6 +1065,34 @@ async function loadNotifications() {
       api('/notifications'),
       api('/messages/unread').catch(() => [])
     ])
+
+    // ── Detect new notifications & fire browser Notification ──────
+    const _notifEnabled = Notification.permission === 'granted' && localStorage.getItem('bim_notif_disabled') !== '1'
+    if (_lastSeenNotifId > 0 && _notifEnabled) {
+      const newNotifs = notifs.filter(n => n.id > _lastSeenNotifId && !n.is_read)
+      for (const n of newNotifs) {
+        try {
+          const notif = new Notification(n.title, {
+            body: n.message,
+            icon: '/icon-192.png',
+            badge: '/badge-72.png',
+            tag: `bim-${n.id}`,
+            requireInteraction: false,
+          })
+          notif.onclick = () => {
+            window.focus()
+            notif.close()
+            handleNotifClick(n.id, n.type, n.related_type, n.related_id)
+          }
+        } catch (e) { /* silent */ }
+      }
+    }
+    // Update highest seen id
+    if (notifs.length > 0) {
+      const maxId = Math.max(...notifs.map(n => n.id))
+      if (maxId > _lastSeenNotifId) _lastSeenNotifId = maxId
+    }
+    // ── End browser notification trigger ──────────────────────────
 
     // Build unread chat map
     _chatUnreadMap = {}
@@ -810,7 +1121,7 @@ async function loadNotifications() {
             <div class="flex-1 min-w-0">
               <p class="text-sm font-medium text-gray-800">${icon} ${n.title}</p>
               <p class="text-xs text-gray-500 truncate">${n.message}</p>
-              <p class="text-xs text-gray-400 mt-1">${dayjs(n.created_at).format('DD/MM HH:mm')}</p>
+              <p class="text-xs text-gray-400 mt-1">${toLocalDayjs(n.created_at).format('DD/MM HH:mm')}</p>
             </div>
           </div>
         </div>`
@@ -993,12 +1304,81 @@ async function loadProjects() {
   } catch (e) { toast('Lỗi tải dự án: ' + e.message, 'error') }
 }
 
+// ── Project list pagination state ────────────────────────────────────────
+const PROJ_PAGE_SIZE = 18   // 3-col grid: 18 = 6 hàng × 3 cột; list view cũng dùng chung
+let _projCurrentPage = 1
+let _projAllData     = []   // full sorted+filtered dataset
+
+function projPaginatedData() {
+  const start = (_projCurrentPage - 1) * PROJ_PAGE_SIZE
+  return _projAllData.slice(start, start + PROJ_PAGE_SIZE)
+}
+
+function renderProjectPagination() {
+  const container = $('projectPagination')
+  if (!container) return
+  const total = _projAllData.length
+  const totalPages = Math.max(1, Math.ceil(total / PROJ_PAGE_SIZE))
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+
+  const p = _projCurrentPage
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages = [1]
+    if (p > 3) pages.push('...')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(i)
+    if (p < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  const btn = (label, page, disabled = false, active = false) =>
+    `<button onclick="projGoPage(${page})" ${disabled ? 'disabled' : ''}
+      class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+      ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+  const from = total === 0 ? 0 : (p - 1) * PROJ_PAGE_SIZE + 1
+  const to   = Math.min(p * PROJ_PAGE_SIZE, total)
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-3 pt-4 border-t border-gray-100 mt-4">
+      <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> dự án</p>
+      <div class="flex items-center gap-1">
+        ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+        ${pages.map(pg => pg === '...'
+            ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+            : btn(pg, pg, false, pg === p)
+          ).join('')}
+        ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+      </div>
+    </div>`
+}
+
+function projGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_projAllData.length / PROJ_PAGE_SIZE))
+  _projCurrentPage = Math.max(1, Math.min(page, totalPages))
+  renderProjectRows()
+  renderProjectPagination()
+  const grid = $('projectsGrid')
+  if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function renderProjectsGrid(projects) {
+  // Save full sorted dataset, reset page
+  _projAllData = [...projects].sort((a, b) => (a.code || '').localeCompare(b.code || ''))
+  _projCurrentPage = 1
+  renderProjectRows()
+  renderProjectPagination()
+}
+
+function renderProjectRows() {
   const grid = $('projectsGrid')
   if (!grid) return
 
   // Sắp xếp A-Z theo mã dự án (cả hai view)
-  const sorted = [...projects].sort((a, b) => (a.code || '').localeCompare(b.code || ''))
+  const sorted = projPaginatedData()
 
   const typeColors = {
     building:       '#0066CC',
@@ -1011,6 +1391,12 @@ function renderProjectsGrid(projects) {
   /* ── CARD VIEW (style cũ, sort A-Z theo mã) ──────── */
   if (_projectViewMode === 'card') {
     grid.className = 'card-view'
+    if (_projAllData.length === 0) {
+      grid.innerHTML = `<div class="col-span-3 text-center py-12 text-gray-400">
+        <i class="fas fa-project-diagram text-5xl mb-3"></i><p>Chưa có dự án nào</p>
+      </div>`
+      return
+    }
     grid.innerHTML = sorted.map(p => {
       const total = p.total_tasks || 0
       const done  = p.completed_tasks || 0
@@ -1048,14 +1434,12 @@ function renderProjectsGrid(projects) {
           </div>
         </div>
       </div>`
-    }).join('') || `<div class="col-span-3 text-center py-12 text-gray-400">
-      <i class="fas fa-project-diagram text-5xl mb-3"></i><p>Chưa có dự án nào</p>
-    </div>`
+    }).join('')
 
   /* ── LIST / DETAIL VIEW (bảng cột, sort A-Z theo mã) */
   } else {
     grid.className = 'list-view'
-    if (!sorted.length) {
+    if (_projAllData.length === 0) {
       grid.innerHTML = `<div class="text-center py-16 text-gray-400">
         <i class="fas fa-project-diagram text-5xl mb-3 block"></i><p>Chưa có dự án nào</p>
       </div>`
@@ -1147,6 +1531,83 @@ function filterProjects() {
   renderProjectsGrid(filtered)
 }
 
+// ── Project detail task pagination ──────────────────────────────
+const PROJ_TASK_PAGE_SIZE = 20
+let _projTaskPage = 1
+let _projTaskAllData = []
+
+function projTaskPaginatedData() {
+  const start = (_projTaskPage - 1) * PROJ_TASK_PAGE_SIZE
+  return _projTaskAllData.slice(start, start + PROJ_TASK_PAGE_SIZE)
+}
+
+function renderProjTaskRows() {
+  const tbody = document.getElementById('projTasksTbody')
+  if (!tbody) return
+  const data = projTaskPaginatedData()
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-gray-400 text-sm">Chưa có task nào trong dự án này</td></tr>`
+    return
+  }
+  tbody.innerHTML = data.map(t => `
+    <tr class="${isOverdue(t) ? 'overdue-row' : 'table-row'}" onclick="openTaskDetail(${t.id})" style="cursor:pointer">
+      <td class="py-1.5 pr-3 font-medium text-gray-800">${t.title}</td>
+      <td class="py-1.5 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
+      <td class="py-1.5 pr-3">${getPriorityBadge(t.priority)}</td>
+      <td class="py-1.5 pr-3 text-gray-600">${t.assigned_to_name||'<span class="text-gray-300">Chưa giao</span>'}</td>
+      <td class="py-1.5 pr-3 ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
+      <td class="py-1.5 pr-3">
+        <div class="flex items-center gap-1.5">
+          <div class="progress-bar" style="width:60px"><div class="progress-fill ${isOverdue(t)?'danger':''}" style="width:${t.progress||0}%"></div></div>
+          <span>${t.progress||0}%</span>
+        </div>
+      </td>
+      <td class="py-1.5">${getStatusBadge(t.status)}</td>
+    </tr>`).join('')
+}
+
+function renderProjTaskPagination() {
+  const container = document.getElementById('projTasksPagination')
+  if (!container) return
+  const total = _projTaskAllData.length
+  const totalPages = Math.ceil(total / PROJ_TASK_PAGE_SIZE)
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+  const p = _projTaskPage
+  const start = (p - 1) * PROJ_TASK_PAGE_SIZE + 1
+  const end = Math.min(p * PROJ_TASK_PAGE_SIZE, total)
+  const btn = (pg, label, disabled, active) =>
+    `<button onclick="projTaskGoPage(${pg})" class="px-3 py-1 rounded text-xs border ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}" ${disabled ? 'disabled' : ''}>${label}</button>`
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(btn(i, i, false, i === p))
+  } else {
+    pages.push(btn(1, 1, false, p === 1))
+    if (p > 3) pages.push('<span class="px-1 text-gray-400">…</span>')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(btn(i, i, false, i === p))
+    if (p < totalPages - 2) pages.push('<span class="px-1 text-gray-400">…</span>')
+    pages.push(btn(totalPages, totalPages, false, p === totalPages))
+  }
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2">
+      <span class="text-xs text-gray-500">Hiển thị ${start}–${end} / ${total} task</span>
+      <div class="flex items-center gap-1">
+        ${btn(p - 1, '‹ Trước', p <= 1, false)}
+        ${pages.join('')}
+        ${btn(p + 1, 'Tiếp ›', p >= totalPages, false)}
+      </div>
+    </div>`
+}
+
+function projTaskGoPage(page) {
+  const totalPages = Math.ceil(_projTaskAllData.length / PROJ_TASK_PAGE_SIZE)
+  if (page < 1 || page > totalPages) return
+  _projTaskPage = page
+  renderProjTaskRows()
+  renderProjTaskPagination()
+  const el = document.getElementById('projTasksTbody')
+  if (el) el.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 async function openProjectDetail(id, openChatTab = false) {
   try {
     const project = await api(`/projects/${id}`)
@@ -1204,10 +1665,12 @@ async function openProjectDetail(id, openChatTab = false) {
       if (detailContent) detailContent.insertAdjacentElement('beforebegin', banner)
     }
 
-    const total = tasks.length
-    const done = tasks.filter(t => t.status === 'completed' || t.status === 'review').length
-    const overdue = tasks.filter(t => isOverdue(t)).length
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0
+    // Dùng task_stats từ server (không bị lọc RBAC) cho tiến độ tổng & số trễ hạn
+    const ts     = project.task_stats || {}
+    const total  = ts.total_tasks  || tasks.length
+    const done   = ts.done_tasks   ?? tasks.filter(t => t.status === 'completed' || t.status === 'review').length
+    const overdue = ts.overdue_tasks ?? tasks.filter(t => isOverdue(t)).length
+    const pct    = total > 0 ? Math.round((done / total) * 100) : 0
 
     $('projectDetailContent').innerHTML = `
       <div class="grid grid-cols-1 ${currentUser.role === 'system_admin' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4 mb-6">
@@ -1318,24 +1781,10 @@ async function openProjectDetail(id, openChatTab = false) {
                 <th class="pb-2 pr-3">Tiến độ</th>
                 <th class="pb-2">TT</th>
               </tr></thead>
-              <tbody class="divide-y">
-                ${tasks.length ? tasks.map(t => `<tr class="${isOverdue(t) ? 'overdue-row' : 'table-row'}" onclick="openTaskDetail(${t.id})" style="cursor:pointer">
-                  <td class="py-1.5 pr-3 font-medium text-gray-800">${t.title}</td>
-                  <td class="py-1.5 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
-                  <td class="py-1.5 pr-3">${getPriorityBadge(t.priority)}</td>
-                  <td class="py-1.5 pr-3 text-gray-600">${t.assigned_to_name||'<span class="text-gray-300">Chưa giao</span>'}</td>
-                  <td class="py-1.5 pr-3 ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
-                  <td class="py-1.5 pr-3">
-                    <div class="flex items-center gap-1.5">
-                      <div class="progress-bar" style="width:60px"><div class="progress-fill ${isOverdue(t)?'danger':''}" style="width:${t.progress||0}%"></div></div>
-                      <span>${t.progress||0}%</span>
-                    </div>
-                  </td>
-                  <td class="py-1.5">${getStatusBadge(t.status)}</td>
-                </tr>`).join('') : `<tr><td colspan="7" class="py-8 text-center text-gray-400 text-sm">Chưa có task nào trong dự án này</td></tr>`}
-              </tbody>
+              <tbody id="projTasksTbody" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="projTasksPagination" class="mt-3"></div>
         </div>
 
         <!-- Chat panel (lazy-loaded) -->
@@ -1349,6 +1798,14 @@ async function openProjectDetail(id, openChatTab = false) {
     window._currentProjectDetailId = project.id
 
     navigate('project-detail')
+
+    // Render paginated task list (after DOM is ready)
+    setTimeout(() => {
+      _projTaskAllData = tasks
+      _projTaskPage = 1
+      renderProjTaskRows()
+      renderProjTaskPagination()
+    }, 0)
 
     // Always show unread badge on the chat tab button immediately
     setTimeout(() => updateProjectChatTabBadge(project.id), 50)
@@ -2131,16 +2588,90 @@ function updateTaskCategoryFilter(selectedProjectId = '') {
 }
 
 
+// ── Task list pagination state ────────────────────────────────────────────
+const TASK_PAGE_SIZE = 20
+let _taskCurrentPage = 1
+let _taskAllData     = []   // full filtered dataset
+
+function taskPaginatedData() {
+  const start = (_taskCurrentPage - 1) * TASK_PAGE_SIZE
+  return _taskAllData.slice(start, start + TASK_PAGE_SIZE)
+}
+
+function renderTaskPagination() {
+  const container = $('taskPagination')
+  if (!container) return
+  const total = _taskAllData.length
+  const totalPages = Math.max(1, Math.ceil(total / TASK_PAGE_SIZE))
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+
+  const p = _taskCurrentPage
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages = [1]
+    if (p > 3) pages.push('...')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(i)
+    if (p < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  const btn = (label, page, disabled = false, active = false) =>
+    `<button onclick="taskGoPage(${page})" ${disabled ? 'disabled' : ''}
+      class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+      ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+  const from = total === 0 ? 0 : (p - 1) * TASK_PAGE_SIZE + 1
+  const to   = Math.min(p * TASK_PAGE_SIZE, total)
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+      <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> công việc</p>
+      <div class="flex items-center gap-1">
+        ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+        ${pages.map(pg => pg === '...'
+            ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+            : btn(pg, pg, false, pg === p)
+          ).join('')}
+        ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+      </div>
+    </div>`
+}
+
+function taskGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_taskAllData.length / TASK_PAGE_SIZE))
+  _taskCurrentPage = Math.max(1, Math.min(page, totalPages))
+  renderTaskRows()
+  renderTaskPagination()
+  const table = $('tasksTable')
+  if (table) table.closest('.overflow-x-auto')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function renderTasksTable(tasks) {
+  const tbody = $('tasksTable')
+  if (!tbody) return
+
+  // Save full dataset, reset to page 1
+  _taskAllData     = tasks
+  _taskCurrentPage = 1
+
+  renderTaskRows()
+  renderTaskPagination()
+}
+
+function renderTaskRows() {
   const tbody = $('tasksTable')
   if (!tbody) return
   const effGlobal = getEffectiveGlobalRole()
 
-  if (!tasks.length) {
+  if (_taskAllData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="12" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
     return
   }
 
+  const tasks = taskPaginatedData()
   tbody.innerHTML = tasks.map(t => {
     const isAssigned = t.assigned_to === currentUser?.id
     const isCreatedByMe = t.assigned_by === currentUser?.id
@@ -2558,17 +3089,20 @@ async function openTaskModal(taskId = null, projectId = null) {
       const isLimitedEdit = isMember && !isOwnTask
 
       if (isLimitedEdit) {
-        // Disable các fields admin-only, chỉ cho sửa status/progress/actual_hours
-        const limitedFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
+        // Disable các fields admin-only; giữ taskEstHours để member tự lên kế hoạch giờ
+        const limitedFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate']
         limitedFields.forEach(fid => { const el = $(fid); if(el) { el.disabled = true; el.style.opacity = '0.5' } })
         // Disable project combobox
         const projInput = document.getElementById('taskProjectComboboxModalInput')
         if (projInput) { projInput.disabled = true; projInput.style.opacity = '0.5' }
-        // Hiện banner thông báo
+        // Hiển thị trường giờ dự kiến với style nổi bật để member biết có thể chỉnh
+        const estEl = $('taskEstHours')
+        if (estEl) { estEl.disabled = false; estEl.style.opacity = ''; estEl.style.borderColor = '#059669' }
+        // Hiện banner thông báo cập nhật
         if (memberBanner) {
           memberBanner.style.display = ''
           memberBanner.className = 'mb-4 p-3 rounded-lg text-sm bg-blue-50 border border-blue-200 text-blue-800'
-          memberBanner.innerHTML = '<i class="fas fa-info-circle mr-2 text-blue-500"></i>Task này do quản lý tạo. Bạn chỉ có thể cập nhật <strong>Trạng thái</strong> và <strong>% tiến độ</strong>.'
+          memberBanner.innerHTML = '<i class="fas fa-info-circle mr-2 text-blue-500"></i>Task này do quản lý tạo. Bạn có thể cập nhật <strong>Trạng thái</strong>, <strong>% tiến độ</strong> và <strong>Giờ dự kiến</strong>.'
         }
         $('taskModalTitle').textContent = 'Cập nhật tiến độ Task'
       }
@@ -2816,7 +3350,7 @@ async function openTaskDetail(id, openChatTab = false) {
           <div class="space-y-1 max-h-32 overflow-y-auto">
             ${task.history.map(h => `
               <div class="flex gap-2 text-xs text-gray-500 py-1 border-b">
-                <span class="text-gray-400 flex-shrink-0">${dayjs(h.created_at).format('DD/MM HH:mm')}</span>
+                <span class="text-gray-400 flex-shrink-0">${toLocalDayjs(h.created_at).format('DD/MM HH:mm')}</span>
                 <span class="font-medium text-gray-700 flex-shrink-0">${h.changed_by_name}</span>
                 <span class="truncate">→ ${h.field_changed}: ${h.new_value || '-'}</span>
               </div>
@@ -3059,7 +3593,7 @@ function renderChatMessages(container, msgs, contextType, contextId) {
   let lastDate = ''
   container.innerHTML = msgs.map(msg => {
     const isMe = msg.sender_id === currentUser?.id
-    const dt = dayjs(msg.created_at)
+    const dt = toLocalDayjs(msg.created_at)
     const dateLabel = dt.format('DD/MM/YYYY')
     let dateSep = ''
     if (dateLabel !== lastDate) {
@@ -3504,7 +4038,266 @@ function openSubtaskModal(taskId, sub = null) {
     const el = $(id); if (el) el.disabled = !canEditAll
   })
 
+  // Ẩn/hiện tab bar: chỉ show khi thêm mới, ẩn khi sửa
+  const tabBar = $('subtaskTabBar')
+  if (tabBar) tabBar.style.display = sub ? 'none' : 'flex'
+
+  // Khi thêm mới: reset về tab single; khi sửa: ở lại tab single
+  switchSubtaskTab('single')
+
+  // Reset import state
+  clearSubtaskImport()
+
   openModal('subtaskModal')
+}
+
+// ── Subtask Modal Tabs ──────────────────────────────────────────
+function switchSubtaskTab(tab) {
+  ;['single','bulk','import'].forEach(t => {
+    const btn = $(`stab-${t}`)
+    const panel = $(`stpanel-${t}`)
+    if (!btn || !panel) return
+    const active = t === tab
+    btn.classList.toggle('border-primary', active)
+    btn.classList.toggle('text-primary', active)
+    btn.classList.toggle('border-transparent', !active)
+    btn.classList.toggle('text-gray-500', !active)
+    panel.style.display = active ? '' : 'none'
+  })
+  // Init bulk rows nếu chưa có
+  if (tab === 'bulk') initBulkRows()
+}
+
+// ── Bulk subtask (thêm nhiều) ────────────────────────────────────
+let _bulkSubtaskRows = []
+
+function initBulkRows() {
+  const container = $('bulkSubtaskRows')
+  if (!container) return
+  if (container.children.length === 0) {
+    _bulkSubtaskRows = []
+    addBulkSubtaskRow()
+    addBulkSubtaskRow()
+    addBulkSubtaskRow()
+  }
+}
+
+function addBulkSubtaskRow(title = '', dueDate = '', priority = 'medium', estHours = '') {
+  const container = $('bulkSubtaskRows')
+  if (!container) return
+  const idx = Date.now() + Math.random()
+  const div = document.createElement('div')
+  div.className = 'flex items-center gap-2'
+  div.dataset.rowId = idx
+  div.innerHTML = `
+    <input type="text" placeholder="Tên subtask *" value="${title.replace(/"/g,'&quot;')}"
+      class="input-field flex-1 text-sm py-1.5" oninput="updateBulkCount()">
+    <input type="date" value="${dueDate}" class="input-field text-sm py-1.5" style="width:130px">
+    <select class="select-field text-sm py-1.5" style="width:100px">
+      <option value="low" ${priority==='low'?'selected':''}>Thấp</option>
+      <option value="medium" ${priority==='medium'?'selected':''}>Trung bình</option>
+      <option value="high" ${priority==='high'?'selected':''}>Cao</option>
+    </select>
+    <input type="number" placeholder="Giờ" value="${estHours}" min="0" step="0.5"
+      class="input-field text-sm py-1.5" style="width:70px">
+    <button type="button" onclick="removeBulkRow(this)" class="text-gray-300 hover:text-red-400 flex-shrink-0 w-6 h-6 flex items-center justify-center">
+      <i class="fas fa-times text-sm"></i>
+    </button>
+  `
+  container.appendChild(div)
+  updateBulkCount()
+  // Focus first input if it's the first row added manually
+  if (title === '') div.querySelector('input[type=text]')?.focus()
+}
+
+function removeBulkRow(btn) {
+  btn.closest('[data-row-id]')?.remove()
+  updateBulkCount()
+}
+
+function updateBulkCount() {
+  const container = $('bulkSubtaskRows')
+  if (!container) return
+  const filled = [...container.querySelectorAll('[data-row-id]')]
+    .filter(row => row.querySelector('input[type=text]')?.value.trim()).length
+  const el = $('bulkSubtaskCount')
+  if (el) el.textContent = `${filled} subtask`
+}
+
+async function saveBulkSubtasks() {
+  const taskId = parseInt($('subtaskTaskId').value)
+  const container = $('bulkSubtaskRows')
+  if (!container) return
+
+  const rows = [...container.querySelectorAll('[data-row-id]')]
+  const subtasks = rows.map(row => {
+    const inputs = row.querySelectorAll('input')
+    const sel = row.querySelector('select')
+    return {
+      title:           inputs[0]?.value.trim() || '',
+      due_date:        inputs[1]?.value || null,
+      priority:        sel?.value || 'medium',
+      estimated_hours: parseFloat(inputs[2]?.value) || 0
+    }
+  }).filter(s => s.title)
+
+  if (!subtasks.length) { toast('Vui lòng nhập ít nhất 1 tên subtask', 'warning'); return }
+
+  try {
+    const r = await api(`/tasks/${taskId}/subtasks/bulk`, { method: 'post', data: { subtasks } })
+    toast(`Đã thêm ${r.created} subtask`)
+    closeModal('subtaskModal')
+    await _refreshSubtaskPanelAfterSave(taskId)
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+// ── Import Excel ─────────────────────────────────────────────────
+let _importedSubtasks = []
+
+function handleSubtaskFileDrop(e) {
+  e.preventDefault()
+  $('subtaskDropZone').classList.remove('border-primary','bg-primary/5')
+  const file = e.dataTransfer.files[0]
+  if (file) parseSubtaskExcel(file)
+}
+
+function handleSubtaskFileSelect(input) {
+  const file = input.files[0]
+  if (file) parseSubtaskExcel(file)
+  input.value = ''  // reset để có thể chọn lại cùng file
+}
+
+function parseSubtaskExcel(file) {
+  if (!window.XLSX) { toast('Thư viện đọc Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return }
+  const reader = new FileReader()
+  reader.onload = e => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+      // Dòng 0 = header (bỏ qua), từ dòng 1 trở đi là data
+      const data = rows.slice(1).map(r => ({
+        title:           String(r[0] || '').trim(),
+        due_date:        parseDateCell(r[1]),
+        priority:        normalizePriority(String(r[2] || '')),
+        estimated_hours: parseFloat(r[3]) || 0,
+        notes:           String(r[4] || '').trim() || null
+      })).filter(s => s.title)
+
+      if (!data.length) { toast('Không tìm thấy dữ liệu hợp lệ trong file', 'warning'); return }
+
+      _importedSubtasks = data
+      renderImportPreview(data)
+    } catch (err) { toast('Lỗi đọc file: ' + err.message, 'error') }
+  }
+  reader.readAsArrayBuffer(file)
+}
+
+function parseDateCell(val) {
+  if (!val) return null
+  if (val instanceof Date) {
+    const y = val.getFullYear(), m = String(val.getMonth()+1).padStart(2,'0'), d = String(val.getDate()).padStart(2,'0')
+    return `${y}-${m}-${d}`
+  }
+  const s = String(val).trim()
+  // DD/MM/YYYY
+  const m1 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (m1) return `${m1[3]}-${m1[2].padStart(2,'0')}-${m1[1].padStart(2,'0')}`
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  return null
+}
+
+function normalizePriority(v) {
+  const map = { low:'low', thấp:'low', medium:'medium', 'trung bình':'medium', high:'high', cao:'high' }
+  return map[v.toLowerCase()] || 'medium'
+}
+
+function renderImportPreview(data) {
+  const preview = $('subtaskImportPreview')
+  const tbody = $('subtaskImportRows')
+  const info = $('subtaskImportInfo')
+  const count = $('subtaskImportCount')
+  const btn = $('btnImportSubtasks')
+  if (!preview || !tbody) return
+
+  const priorityLabel = { low:'Thấp', medium:'Trung bình', high:'Cao' }
+  tbody.innerHTML = data.map((s, i) => `
+    <tr class="hover:bg-gray-50">
+      <td class="px-3 py-1.5 text-gray-400">${i+1}</td>
+      <td class="px-3 py-1.5 font-medium text-gray-800">${s.title}</td>
+      <td class="px-3 py-1.5 text-gray-500">${s.due_date || '—'}</td>
+      <td class="px-3 py-1.5">
+        <span class="px-1.5 py-0.5 rounded text-xs font-medium ${
+          s.priority==='high' ? 'bg-red-100 text-red-700' :
+          s.priority==='low'  ? 'bg-gray-100 text-gray-600' :
+                                'bg-yellow-100 text-yellow-700'
+        }">${priorityLabel[s.priority]||'Trung bình'}</span>
+      </td>
+      <td class="px-3 py-1.5 text-gray-500">${s.estimated_hours||'—'}</td>
+    </tr>
+  `).join('')
+
+  info.textContent = `${data.length} subtask từ file Excel`
+  count.textContent = `Sẵn sàng import ${data.length} subtask`
+  preview.style.display = ''
+  btn.disabled = false
+
+  // Ẩn drop zone
+  $('subtaskDropZone').style.display = 'none'
+}
+
+function clearSubtaskImport() {
+  _importedSubtasks = []
+  const preview = $('subtaskImportPreview')
+  const dz = $('subtaskDropZone')
+  const btn = $('btnImportSubtasks')
+  if (preview) preview.style.display = 'none'
+  if (dz) dz.style.display = ''
+  if (btn) btn.disabled = true
+  const count = $('subtaskImportCount')
+  if (count) count.textContent = ''
+}
+
+async function saveImportedSubtasks() {
+  if (!_importedSubtasks.length) { toast('Chưa có dữ liệu để import', 'warning'); return }
+  const taskId = parseInt($('subtaskTaskId').value)
+  try {
+    const r = await api(`/tasks/${taskId}/subtasks/bulk`, { method: 'post', data: { subtasks: _importedSubtasks } })
+    toast(`Đã import ${r.created} subtask từ Excel`)
+    closeModal('subtaskModal')
+    await _refreshSubtaskPanelAfterSave(taskId)
+  } catch (e) { toast('Lỗi import: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+// ── Helper: refresh panel sau khi lưu bulk/import ───────────────
+async function _refreshSubtaskPanelAfterSave(taskId) {
+  // Luôn fetch subtasks mới nhất 1 lần
+  const subtasks = await api(`/tasks/${taskId}/subtasks`).catch(() => [])
+  const task = allTasks.find(t => t.id === taskId) || {}
+  const effForTask = getEffectiveRoleForProject(task.project_id)
+  const isAssigned = task.assigned_to === currentUser?.id
+  const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(effForTask)
+
+  // 1. Refresh inline panel trong task table (nếu đang mở)
+  const panel = document.getElementById(`subtask-panel-${taskId}`)
+  const containerRow = document.getElementById(`subtask-rows-${taskId}`)
+  if (panel && containerRow && containerRow.style.display !== 'none') {
+    panel.dataset.loaded = '1'
+    renderSubtaskPanel(taskId, subtasks, isAdminOrLeader || isAssigned, isAssigned)
+  }
+
+  // 2. Refresh badge/toggle trên task row (dù panel đóng hay mở)
+  refreshSubtaskBadge(taskId, subtasks)
+  await refreshTaskRowSubtaskCount(taskId)
+
+  // 3. Refresh task detail modal (nếu đang mở) — dùng openTaskDetail để re-render toàn bộ
+  if ($('taskDetailModal')?.style.display !== 'none') {
+    await openTaskDetail(taskId)
+    // Giữ lại tab subtasks đang xem
+    switchTaskDetailTab('subtasks')
+  }
 }
 
 $('subtaskForm').addEventListener('submit', async (e) => {
@@ -3528,21 +4321,11 @@ $('subtaskForm').addEventListener('submit', async (e) => {
       toast('Đã thêm subtask')
     }
     closeModal('subtaskModal')
+    await _refreshSubtaskPanelAfterSave(taskId)
 
-    // Refresh inline panel in task table (if visible)
-    const panel = document.getElementById(`subtask-panel-${taskId}`)
+    // Nếu panel chưa mở → refresh badge/toggle
     const containerRow = document.getElementById(`subtask-rows-${taskId}`)
-    if (panel && containerRow && containerRow.style.display !== 'none') {
-      const subtasks = await api(`/tasks/${taskId}/subtasks`)
-      panel.dataset.loaded = '1'
-      const task = allTasks.find(t => t.id === taskId) || {}
-      const effForTask = getEffectiveRoleForProject(task.project_id)
-      const isAssigned = task.assigned_to === currentUser?.id
-      renderSubtaskPanel(taskId, subtasks, ['system_admin','project_admin','project_leader'].includes(effForTask) || isAssigned, isAssigned)
-      refreshSubtaskBadge(taskId, subtasks)
-    } else {
-      // If panel not open yet, just re-open toggle or refresh task detail
-      // Also refresh the expand button if task now has subtasks
+    if (!containerRow || containerRow.style.display === 'none') {
       await refreshTaskRowSubtaskCount(taskId)
     }
 
@@ -3625,6 +4408,69 @@ async function deleteSubtask(subId, taskId) {
 let _tsDropdownsInitialised = false   // run dropdown population only once per page visit
 let _tsMembersCache = []              // cached result from /api/timesheets/members
 let _tsProjectsCache = []             // cached result from /api/timesheets/projects
+
+// ── Pagination state ──────────────────────────────────────────────
+const TS_PAGE_SIZE = 20               // rows per page
+let _tsCurrentPage = 1                // current page (1-based)
+let _tsAllData     = []               // full dataset after filter (set by renderTimesheetTable)
+
+function tsPaginatedData() {
+  const start = (_tsCurrentPage - 1) * TS_PAGE_SIZE
+  return _tsAllData.slice(start, start + TS_PAGE_SIZE)
+}
+
+function renderTsPagination() {
+  const container = $('tsPagination')
+  if (!container) return
+  const total = _tsAllData.length
+  const totalPages = Math.max(1, Math.ceil(total / TS_PAGE_SIZE))
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+
+  const p = _tsCurrentPage
+  // Build page buttons (show max 7 around current)
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages = [1]
+    if (p > 3) pages.push('...')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(i)
+    if (p < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  const btn = (label, page, disabled = false, active = false) =>
+    `<button onclick="tsGoPage(${page})" ${disabled ? 'disabled' : ''}
+      class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+      ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+  const from = total === 0 ? 0 : (p - 1) * TS_PAGE_SIZE + 1
+  const to   = Math.min(p * TS_PAGE_SIZE, total)
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+      <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> bản ghi</p>
+      <div class="flex items-center gap-1">
+        ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+        ${pages.map(pg => pg === '...'
+            ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+            : btn(pg, pg, false, pg === p)
+          ).join('')}
+        ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+      </div>
+    </div>`
+}
+
+function tsGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_tsAllData.length / TS_PAGE_SIZE))
+  _tsCurrentPage = Math.max(1, Math.min(page, totalPages))
+  renderTsRows()
+  renderTsPagination()
+  // Scroll to top of table
+  const table = $('timesheetTable')
+  if (table) table.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 // Initialise dropdowns ONCE using /api/timesheets/members & /api/timesheets/projects
 async function initTsFilterDropdowns() {
@@ -4030,6 +4876,10 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
   const canSeeAll   = isAdmin || isProjAdmin
   const canApprove  = isAdmin || isProjAdmin
 
+  // Save full dataset for pagination, reset to page 1 on new data load
+  _tsAllData     = timesheets
+  _tsCurrentPage = 1
+
   // Use API summary if available (avoids JS re-sum from potentially stale allTimesheets)
   let totalReg, totalOT
   if (apiSummary) {
@@ -4048,27 +4898,46 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
     el.style.display = canSeeAll ? '' : 'none'
   })
 
+  // Render current page rows + pagination
+  renderTsRows()
+  renderTsPagination()
+}
+
+// ── Render chỉ rows của trang hiện tại ──────────────────────────────────────
+function renderTsRows() {
+  const tbody = $('timesheetTable')
+  if (!tbody) return
+
+  const isAdmin     = currentUser.role === 'system_admin'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
+  const canSeeAll   = isAdmin || isProjAdmin
+  const canApprove  = isAdmin || isProjAdmin
+
   const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
   const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
+  const emptyColspan  = canSeeAll ? 10 : 9
 
-  const emptyColspan = canSeeAll ? 10 : 9
+  const pageData = tsPaginatedData()
 
-  tbody.innerHTML = timesheets.map(t => {
+  if (_tsAllData.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="${emptyColspan}" class="text-center py-8 text-gray-400">
+      <i class="fas fa-clock text-3xl mb-2 block"></i>
+      ${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào. Nhấn "+ Thêm timesheet" để bắt đầu.'}
+    </td></tr>`
+    return
+  }
+
+  tbody.innerHTML = pageData.map(t => {
     const isOwner   = t.user_id === currentUser.id
     const isDraft   = t.status === 'draft'
     const isRejected = t.status === 'rejected'
     const isSubmitted = t.status === 'submitted'
 
-    // Quyền edit: admin/projAdmin luôn được; member chỉ khi draft/rejected của mình
-    const canEdit   = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
-    // Quyền xóa: admin luôn được; projAdmin được; member chỉ khi draft/rejected của mình
-    const canDelete = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
-    // Nút submit (gửi duyệt) — chỉ owner, khi đang draft
-    const canSubmit = isOwner && isDraft
-    // Nút approve — admin/projAdmin, khi submitted
+    const canEdit      = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
+    const canDelete    = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
+    const canSubmit    = isOwner && isDraft
     const canApproveBt = canApprove && isSubmitted
-    // Nút reject — admin/projAdmin, khi submitted
-    const canRejectBt = canApprove && isSubmitted
+    const canRejectBt  = canApprove && isSubmitted
 
     return `
     <tr class="table-row ${isOwner && !canSeeAll ? 'bg-green-50/30' : ''}">
@@ -4088,18 +4957,15 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
       <td class="py-2 pr-3"><span class="badge ${statusColors[t.status] || 'badge-todo'}">${statusLabels[t.status] || t.status}</span></td>
       <td class="py-2">
         <div class="flex gap-1 flex-wrap">
-          ${canSubmit ? `<button onclick="submitTimesheet(${t.id})" class="btn-secondary text-xs px-2 py-1 text-blue-600 border-blue-300" title="Gửi duyệt"><i class="fas fa-paper-plane"></i></button>` : ''}
-          ${canEdit   ? `<button onclick="openTimesheetModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
+          ${canSubmit    ? `<button onclick="submitTimesheet(${t.id})" class="btn-secondary text-xs px-2 py-1 text-blue-600 border-blue-300" title="Gửi duyệt"><i class="fas fa-paper-plane"></i></button>` : ''}
+          ${canEdit      ? `<button onclick="openTimesheetModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
           ${canApproveBt ? `<button onclick="approveTimesheet(${t.id})" class="btn-primary text-xs px-2 py-1" title="Duyệt"><i class="fas fa-check"></i></button>` : ''}
           ${canRejectBt  ? `<button onclick="rejectTimesheet(${t.id})" class="text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-1 text-xs" title="Từ chối"><i class="fas fa-times"></i></button>` : ''}
-          ${canDelete ? `<button onclick="deleteTimesheet(${t.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
+          ${canDelete    ? `<button onclick="deleteTimesheet(${t.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
         </div>
       </td>
     </tr>`
-  }).join('') || `<tr><td colspan="${emptyColspan}" class="text-center py-8 text-gray-400">
-    <i class="fas fa-clock text-3xl mb-2 block"></i>
-    ${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào. Nhấn "+ Thêm timesheet" để bắt đầu.'}
-  </td></tr>`
+  }).join('')
 }
 
 // ── Biến lưu trạng thái locked hiện tại của modal ────────────────────────────
@@ -5040,10 +5906,19 @@ async function loadCostDashboard() {
     const totalShared = sharedSummary?.total_shared_cost || 0
     const totalSharedAllocated = sharedByProj.reduce((s, p) => s + (p.allocated_cost || 0), 0)
 
+    // Kiểm tra chênh lệch giữa pool_total_labor (tổng đã nhập) và project_labor_total (đã phân bổ)
+    const poolTotalLabor = summary.pool_total_labor || 0
+    const projLaborTotal = summary.project_labor_total || 0
+    const laborDiff = poolTotalLabor - projLaborTotal
+    const hasLaborDiff = poolTotalLabor > 0 && Math.abs(laborDiff) > 1000 // > 1,000đ thì mới cảnh báo
+
     $('costKpiRevenue').textContent = fmtMoney(totalRevenue)
     $('costKpiCost').innerHTML = fmtMoney(totalCost) +
       (totalSharedAllocated > 0
         ? `<br><span class="text-xs font-normal text-yellow-600" title="Đã bao gồm ${fmtMoney(totalSharedAllocated)} chi phí chung phân bổ"><i class="fas fa-share-alt mr-1"></i>Gồm ${fmtMoney(totalSharedAllocated)} chi phí chung</span>`
+        : '') +
+      (hasLaborDiff
+        ? `<br><span class="text-xs font-normal text-orange-500" title="Chi phí lương đã nhập tổng thể: ${fmtMoney(poolTotalLabor)} — Đã phân bổ vào dự án: ${fmtMoney(projLaborTotal)}. Chênh lệch ${fmtMoney(laborDiff)} do chưa đồng bộ (Sync) chi phí lương."><i class="fas fa-exclamation-triangle mr-1"></i>Lương chưa sync đủ: ${fmtMoney(laborDiff)}</span>`
         : '')
     $('costKpiProfit').innerHTML = fmtMoney(profit)
     const profitEl = $('costKpiProfit')
@@ -5697,7 +6572,6 @@ async function openCostModal(id = null) {
   }
   _populateAllCostTypeDropdowns()
 
-  $('costMode').value = 'cost'
   $('costModalTitle').textContent = id ? 'Sửa Chi phí' : 'Thêm Chi phí'
   $('costId').value = id || ''
 
@@ -6425,10 +7299,84 @@ async function loadUsers() {
   } catch (e) { toast('Lỗi tải nhân sự: ' + e.message, 'error') }
 }
 
+// ── User list pagination state ────────────────────────────────────────────
+const USER_PAGE_SIZE = 20
+let _userCurrentPage = 1
+let _userAllData     = []
+
+function userPaginatedData() {
+  const start = (_userCurrentPage - 1) * USER_PAGE_SIZE
+  return _userAllData.slice(start, start + USER_PAGE_SIZE)
+}
+
+function renderUserPagination() {
+  const container = $('userPagination')
+  if (!container) return
+  const total = _userAllData.length
+  const totalPages = Math.max(1, Math.ceil(total / USER_PAGE_SIZE))
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+
+  const p = _userCurrentPage
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages = [1]
+    if (p > 3) pages.push('...')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(i)
+    if (p < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  const btn = (label, page, disabled = false, active = false) =>
+    `<button onclick="userGoPage(${page})" ${disabled ? 'disabled' : ''}
+      class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+      ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+  const from = total === 0 ? 0 : (p - 1) * USER_PAGE_SIZE + 1
+  const to   = Math.min(p * USER_PAGE_SIZE, total)
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+      <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> nhân sự</p>
+      <div class="flex items-center gap-1">
+        ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+        ${pages.map(pg => pg === '...'
+            ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+            : btn(pg, pg, false, pg === p)
+          ).join('')}
+        ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+      </div>
+    </div>`
+}
+
+function userGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_userAllData.length / USER_PAGE_SIZE))
+  _userCurrentPage = Math.max(1, Math.min(page, totalPages))
+  renderUserRows()
+  renderUserPagination()
+  const tbody = $('usersTable')
+  if (tbody) tbody.closest('.overflow-x-auto')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function renderUsersTable(users) {
+  _userAllData     = users
+  _userCurrentPage = 1
+  renderUserRows()
+  renderUserPagination()
+}
+
+function renderUserRows() {
   const tbody = $('usersTable')
   if (!tbody) return
-  tbody.innerHTML = users.map(u => `
+
+  if (_userAllData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400">Không có nhân sự</td></tr>'
+    return
+  }
+
+  tbody.innerHTML = userPaginatedData().map(u => `
     <tr class="table-row">
       <td class="py-2 pr-3">
         <div class="flex items-center gap-2">
@@ -6450,12 +7398,12 @@ function renderUsersTable(users) {
         <div class="flex gap-1 items-center">
           <button onclick="openUserModal(${u.id})" class="btn-secondary text-xs px-2 py-1" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
           ${u.id !== currentUser.id ? `
-            <button onclick="toggleUserStatus(${u.id}, ${u.is_active})" 
-              class="${u.is_active ? 'text-orange-400 hover:text-orange-600' : 'text-green-400 hover:text-green-600'} px-1.5 text-sm" 
+            <button onclick="toggleUserStatus(${u.id}, ${u.is_active})"
+              class="${u.is_active ? 'text-orange-400 hover:text-orange-600' : 'text-green-400 hover:text-green-600'} px-1.5 text-sm"
               title="${u.is_active ? 'Vô hiệu hóa' : 'Kích hoạt'}">
               <i class="fas fa-${u.is_active ? 'ban' : 'check-circle'}"></i>
             </button>
-            <button onclick="confirmDeleteUser(${u.id}, '${u.full_name.replace(/'/g,"\\'")}')" 
+            <button onclick="confirmDeleteUser(${u.id}, '${u.full_name.replace(/'/g,"\\'")}')"
               class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa vĩnh viễn">
               <i class="fas fa-trash"></i>
             </button>
@@ -6463,7 +7411,7 @@ function renderUsersTable(users) {
         </div>
       </td>
     </tr>
-  `).join('') || '<tr><td colspan="7" class="text-center py-8 text-gray-400">Không có nhân sự</td></tr>'
+  `).join('')
 }
 
 function filterUsers() {
@@ -6624,8 +7572,9 @@ function switchMGuideTab(tab) {
 }
 
 async function loadProfile() {
+  let user = null
   try {
-    const user = await api('/auth/me')
+    user = await api('/auth/me')
     currentUser = { ...currentUser, ...user }
 
     const initials = user.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
@@ -6645,12 +7594,15 @@ async function loadProfile() {
   // Show email settings card only for system_admin
   const emailCard = $('emailSettingsCard')
   if (emailCard) {
-    if (user.role === 'system_admin') {
+    if (user?.role === 'system_admin') {
       emailCard.classList.remove('hidden')
     } else {
       emailCard.classList.add('hidden')
     }
   }
+
+  // Render browser push notification toggle
+  renderPushButton()
 }
 
 // ================================================================
@@ -6925,13 +7877,13 @@ function toggleApiKeyVisibility() {
 
 async function refreshEmailLogs() {
   try {
-    const logs = await api('/email-logs?limit=100')
+    const logs = await api('/email-logs?limit=20')
     _emailLogsCache = logs || []
     renderEmailLogs(_emailLogsCache)
 
     // Stats
-    const today = new Date().toISOString().split('T')[0]
-    const todayLogs = _emailLogsCache.filter(l => l.sent_at?.startsWith(today))
+    const today = toLocalDayjs(new Date().toISOString()).format('YYYY-MM-DD')
+    const todayLogs = _emailLogsCache.filter(l => l.sent_at && toLocalDayjs(l.sent_at).format('YYYY-MM-DD') === today)
     const sentToday = todayLogs.filter(l => l.status === 'sent').length
     const failedToday = todayLogs.filter(l => l.status === 'failed').length
 
@@ -6968,6 +7920,60 @@ function filterEmailLogs() {
   renderEmailLogs(filtered)
 }
 
+// ── Overdue reminder: xem trước + gửi mail ──────────────────────
+async function previewOverdueTasks() {
+  const listEl   = $('overduePreviewList')
+  const tbodyEl  = $('overduePreviewTbody')
+  const resultEl = $('overdueReminderResult')
+  if (!listEl || !tbodyEl) return
+
+  resultEl.textContent = 'Đang tải...'
+  try {
+    const tasks = await api('/admin/overdue-tasks-preview')
+    if (!tasks.length) {
+      resultEl.textContent = '✅ Không có task quá hạn nào'
+      listEl.classList.add('hidden')
+      return
+    }
+    resultEl.textContent = `Tìm thấy ${tasks.length} task quá hạn`
+    tbodyEl.innerHTML = tasks.map(t => {
+      const days = Math.floor((Date.now() - new Date(t.due_date).getTime()) / 86400000)
+      return `<tr class="table-row">
+        <td class="py-1.5 pr-3 font-medium text-gray-800 max-w-[200px] truncate">${t.title}</td>
+        <td class="py-1.5 pr-3 text-gray-500">${t.project_code}</td>
+        <td class="py-1.5 pr-3 font-medium">${t.assignee_name}</td>
+        <td class="py-1.5 pr-3 text-blue-600">${t.assignee_email}</td>
+        <td class="py-1.5 pr-3 text-red-600 font-bold">${t.due_date} <span class="text-red-400 font-normal">(+${days}ngày)</span></td>
+        <td class="py-1.5"><span class="badge badge-inprogress text-xs">${t.status}</span></td>
+      </tr>`
+    }).join('')
+    listEl.classList.remove('hidden')
+  } catch(e) {
+    resultEl.textContent = '❌ Lỗi: ' + e.message
+  }
+}
+
+async function sendOverdueReminders() {
+  const resultEl = $('overdueReminderResult')
+  if (!confirm('Gửi email nhắc ⚠️ quá hạn đến tất cả nhân sự phụ trách task chưa hoàn thành?')) return
+  if (resultEl) resultEl.textContent = 'Đang gửi...'
+  try {
+    const res = await api('/admin/send-overdue-reminders', { method: 'POST' })
+    if (resultEl) {
+      if (res.sent === 0) {
+        resultEl.textContent = `✅ ${res.message || 'Không có task quá hạn nào'}`
+      } else {
+        resultEl.textContent = `✅ Đã gửi ${res.sent}/${res.total_overdue} email thành công`
+      }
+    }
+    toast(`✅ Đã gửi ${res.sent} email nhắc deadline`, 'success', 4000)
+    setTimeout(() => refreshEmailLogs(), 2000)
+  } catch(e) {
+    if (resultEl) resultEl.textContent = '❌ Lỗi: ' + e.message
+    toast('Lỗi gửi mail: ' + e.message, 'error')
+  }
+}
+
 const EMAIL_EVENT_LABELS = {
   task_assigned:        '📌 Giao task',
   task_status_updated:  '🔄 Cập nhật task',
@@ -6981,28 +7987,61 @@ const EMAIL_EVENT_LABELS = {
 }
 
 function renderEmailLogs(logs) {
-  const tbody = $('emailLogsTable')
-  if (!tbody) return
+  const container = $('emailLogsContainer')
+  if (!container) return
+
   if (!logs.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="py-10 text-center text-gray-400"><i class="fas fa-inbox mr-2"></i>Chưa có email nào được gửi</td></tr>'
+    container.innerHTML = '<div class="py-8 text-center text-gray-400 text-sm"><i class="fas fa-inbox mr-2 text-lg block mb-2"></i>Chưa có email nào được gửi</div>'
     return
   }
-  tbody.innerHTML = logs.map(l => {
-    const timeStr = l.sent_at ? new Date(l.sent_at.replace(' ', 'T')).toLocaleString('vi-VN') : '-'
-    const statusBadge = l.status === 'sent'
-      ? '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-semibold">✅ Thành công</span>'
-      : '<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-semibold">❌ Thất bại</span>'
-    const eventLabel = EMAIL_EVENT_LABELS[l.event_type] || l.event_type
-    const recipient = l.full_name ? `<div class="font-medium text-gray-800 text-xs">${l.full_name}</div><div class="text-gray-400 text-xs">${l.to_email}</div>` : `<div class="text-gray-700 text-xs">${l.to_email}</div>`
-    const errorTip = l.error_msg ? `<span class="text-red-500 text-xs cursor-help" title="${l.error_msg}">⚠️ Xem lỗi</span>` : '<span class="text-gray-300 text-xs">—</span>'
-    return `<tr class="hover:bg-gray-50">
-      <td class="py-3 pr-3 text-xs text-gray-500 whitespace-nowrap">${timeStr}</td>
-      <td class="py-3 pr-3">${recipient}</td>
-      <td class="py-3 pr-3 text-xs text-gray-700 max-w-xs truncate" title="${l.subject}">${l.subject}</td>
-      <td class="py-3 pr-3"><span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">${eventLabel}</span></td>
-      <td class="py-3 pr-3">${statusBadge}</td>
-      <td class="py-3">${errorTip}</td>
-    </tr>`
+
+  const EVENT_ICON = {
+    task_assigned:       '📌', task_status_updated: '🔄', task_overdue: '⚠️',
+    project_added:       '🏗️', project_created:     '🆕', project_status_changed: '🔄',
+    timesheet_reviewed:  '✅', timesheet_bulk_approved: '✅',
+    payment_request_new: '💰', payment_status_changed: '💳',
+    chat_mention:        '💬', member_added_to_project: '👤', test: '🧪',
+  }
+  const EVENT_SHORT = {
+    task_assigned:       'Giao task',       task_status_updated: 'Cập nhật task',
+    task_overdue:        'Quá hạn',         project_added:       'Tham gia dự án',
+    project_created:     'Dự án mới',       project_status_changed: 'TT dự án',
+    timesheet_reviewed:  'Duyệt timesheet', timesheet_bulk_approved: 'Duyệt TS',
+    payment_request_new: 'Đề nghị TT',      payment_status_changed: 'Cập nhật TT',
+    chat_mention:        '@Mention',         member_added_to_project: 'Thành viên mới',
+    test:                'Test',
+  }
+
+  container.innerHTML = logs.map(l => {
+    // Compact time: "08:15 · 26/3"
+    let timeStr = '-'
+    if (l.sent_at) {
+      const d = toLocalDayjs(l.sent_at)
+      timeStr = `${d.format('HH:mm')} · ${d.format('D/M')}`
+    }
+    const icon = EVENT_ICON[l.event_type] || '📧'
+    const label = EVENT_SHORT[l.event_type] || l.event_type
+    const name = l.full_name || l.to_email || '—'
+    const isOk = l.status === 'sent'
+    const statusDot = isOk
+      ? '<span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0 mt-0.5" title="Thành công"></span>'
+      : '<span class="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 mt-0.5" title="Thất bại"></span>'
+    const errorHint = l.error_msg
+      ? `<span class="text-red-400 text-xs truncate max-w-[140px]" title="${l.error_msg}">⚠️ ${l.error_msg.slice(0,40)}...</span>`
+      : ''
+
+    return `<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors group">
+      ${statusDot}
+      <span class="text-base flex-shrink-0 w-5 text-center">${icon}</span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-semibold text-gray-700">${name}</span>
+          <span class="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">${label}</span>
+          ${errorHint}
+        </div>
+      </div>
+      <span class="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">${timeStr}</span>
+    </div>`
   }).join('')
 }
 
@@ -7153,6 +8192,104 @@ async function loadProductivity(skipReinit = false) {
   } catch(e) { toast('Lỗi tải năng suất: ' + e.message, 'error') }
 }
 
+// ── Productivity pagination ──────────────────────────────────────
+const PROD_PAGE_SIZE = 20
+let _prodCurrentPage = 1
+let _prodAllData = []
+
+function prodPaginatedData() {
+  const start = (_prodCurrentPage - 1) * PROD_PAGE_SIZE
+  return _prodAllData.slice(start, start + PROD_PAGE_SIZE)
+}
+
+function renderProdRows() {
+  const tbody = $('productivityTable')
+  if (!tbody) return
+  const data = prodPaginatedData()
+  const getScoreColor = s => s >= 75 ? 'text-green-600' : s >= 50 ? 'text-yellow-600' : 'text-red-600'
+  const getBadgeClass  = s => s >= 75 ? 'badge-completed' : s >= 50 ? 'badge-review' : 'badge-overdue'
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400"><i class="fas fa-inbox text-2xl mb-2 block"></i>Không có dữ liệu</td></tr>'
+    return
+  }
+  tbody.innerHTML = data.map(u => {
+    const completionRate = u.completion_rate || 0
+    const ontimeRate     = u.ontime_rate     || 0
+    const productivity   = u.productivity    || 0
+    const score          = u.score           || 0
+    return `
+    <tr class="table-row">
+      <td class="py-2 pr-3">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(u.full_name||'?').split(' ').pop()?.charAt(0)}</div>
+          <div><div class="font-medium text-gray-800 text-sm">${u.full_name || '—'}</div></div>
+        </div>
+      </td>
+      <td class="py-2 pr-3 text-xs text-gray-500">${u.department || '—'}</td>
+      <td class="py-2 pr-3 text-center font-medium">${u.total_tasks}</td>
+      <td class="py-2 pr-3 text-center font-medium text-green-600">${u.completed_tasks}</td>
+      <td class="py-2 pr-3 text-center"><span class="${getScoreColor(completionRate)} font-medium">${completionRate}%</span></td>
+      <td class="py-2 pr-3 text-center text-green-600">${u.ontime_tasks}</td>
+      <td class="py-2 pr-3 text-center text-red-500">${u.late_completed}</td>
+      <td class="py-2 pr-3 text-center">
+        <div class="flex items-center gap-1 justify-center">
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${ontimeRate}%;background:#0066CC"></div></div>
+          <span class="text-xs text-blue-600">${ontimeRate}%</span>
+        </div>
+      </td>
+      <td class="py-2 pr-3 text-center">
+        <div class="flex items-center gap-1 justify-center">
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${productivity}%;background:#F59E0B"></div></div>
+          <span class="text-xs ${getScoreColor(productivity)}">${productivity}%</span>
+        </div>
+      </td>
+      <td class="py-2 text-center"><span class="badge font-bold text-sm px-3 ${getBadgeClass(score)}">${score}</span></td>
+    </tr>`
+  }).join('')
+}
+
+function renderProdPagination() {
+  const container = $('prodPagination')
+  if (!container) return
+  const total = _prodAllData.length
+  const totalPages = Math.ceil(total / PROD_PAGE_SIZE)
+  if (totalPages <= 1) { container.innerHTML = ''; return }
+  const p = _prodCurrentPage
+  const start = (p - 1) * PROD_PAGE_SIZE + 1
+  const end = Math.min(p * PROD_PAGE_SIZE, total)
+  const btn = (pg, label, disabled, active) =>
+    `<button onclick="prodGoPage(${pg})" class="px-3 py-1 rounded text-sm border ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}" ${disabled ? 'disabled' : ''}>${label}</button>`
+  let pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(btn(i, i, false, i === p))
+  } else {
+    pages.push(btn(1, 1, false, p === 1))
+    if (p > 3) pages.push('<span class="px-2 text-gray-400">…</span>')
+    for (let i = Math.max(2, p - 1); i <= Math.min(totalPages - 1, p + 1); i++) pages.push(btn(i, i, false, i === p))
+    if (p < totalPages - 2) pages.push('<span class="px-2 text-gray-400">…</span>')
+    pages.push(btn(totalPages, totalPages, false, p === totalPages))
+  }
+  container.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2">
+      <span class="text-xs text-gray-500">Hiển thị ${start}–${end} / ${total} nhân sự</span>
+      <div class="flex items-center gap-1">
+        ${btn(p - 1, '‹ Trước', p <= 1, false)}
+        ${pages.join('')}
+        ${btn(p + 1, 'Tiếp ›', p >= totalPages, false)}
+      </div>
+    </div>`
+}
+
+function prodGoPage(page) {
+  const totalPages = Math.ceil(_prodAllData.length / PROD_PAGE_SIZE)
+  if (page < 1 || page > totalPages) return
+  _prodCurrentPage = page
+  renderProdRows()
+  renderProdPagination()
+  const el = $('productivityTable')
+  if (el) el.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function sortProductivity(key) {
   prodSortKey = key
   // Map display sort keys to actual data keys
@@ -7202,9 +8339,6 @@ function renderProductivityPage(data) {
   })
   console.groupEnd()
 
-  const getScoreColor = s => s >= 75 ? 'text-green-600' : s >= 50 ? 'text-yellow-600' : 'text-red-600'
-  const getBadgeClass = s => s >= 75 ? 'badge-completed' : s >= 50 ? 'badge-review' : 'badge-overdue'
-
   // ---- Bar chart: 4 datasets ----
   destroyChart('prodBar')
   const ctx1 = $('prodBarChart')
@@ -7253,6 +8387,8 @@ function renderProductivityPage(data) {
     const topP = data.filter(u => u.completed_tasks > 0).slice(0, 8)
     const colors = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#F59E0B','#EF4444','#10B981','#3B82F6']
     if (topP.length) {
+      // Legend position: bottom on small screens, right on larger screens
+      const isSmallScreen = window.innerWidth < 768
       charts['prodPie'] = safeChart(ctx2, {
         type: 'pie',
         data: {
@@ -7261,62 +8397,21 @@ function renderProductivityPage(data) {
         },
         options: {
           responsive: true,
-          plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } }
+          maintainAspectRatio: false,
+          plugins: { legend: {
+            position: isSmallScreen ? 'bottom' : 'right',
+            labels: { font: { size: 11 }, boxWidth: 12, padding: 8 }
+          }}
         }
       })
     }
   }
 
-  // ---- Table ----
-  const tbody = $('productivityTable')
-  if (!tbody) return
-
-  if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400"><i class="fas fa-inbox text-2xl mb-2 block"></i>Không có dữ liệu</td></tr>'
-    return
-  }
-
-  tbody.innerHTML = data.map((u, i) => {
-    const completionRate = u.completion_rate || 0   // % Hoàn Thành = completed/total×100
-    const ontimeRate     = u.ontime_rate     || 0   // Chính xác    = ontime/completed×100
-    const productivity   = u.productivity    || 0   // Năng suất    = (%Hoàn + Chính xác)/2
-    const score          = u.score           || 0   // Điểm         = (Năng suất + Chính xác)/2
-
-    return `
-    <tr class="table-row">
-      <td class="py-2 pr-3">
-        <div class="flex items-center gap-2">
-          <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(u.full_name||'?').split(' ').pop()?.charAt(0)}</div>
-          <div>
-            <div class="font-medium text-gray-800 text-sm">${u.full_name || '—'}</div>
-          </div>
-        </div>
-      </td>
-      <td class="py-2 pr-3 text-xs text-gray-500">${u.department || '—'}</td>
-      <td class="py-2 pr-3 text-center font-medium">${u.total_tasks}</td>
-      <td class="py-2 pr-3 text-center font-medium text-green-600">${u.completed_tasks}</td>
-      <td class="py-2 pr-3 text-center">
-        <span class="${getScoreColor(completionRate)} font-medium">${completionRate}%</span>
-      </td>
-      <td class="py-2 pr-3 text-center text-green-600">${u.ontime_tasks}</td>
-      <td class="py-2 pr-3 text-center text-red-500">${u.late_completed}</td>
-      <td class="py-2 pr-3 text-center">
-        <div class="flex items-center gap-1 justify-center">
-          <div class="progress-bar w-12"><div class="progress-fill" style="width:${ontimeRate}%;background:#0066CC"></div></div>
-          <span class="text-xs text-blue-600">${ontimeRate}%</span>
-        </div>
-      </td>
-      <td class="py-2 pr-3 text-center">
-        <div class="flex items-center gap-1 justify-center">
-          <div class="progress-bar w-12"><div class="progress-fill" style="width:${productivity}%;background:#F59E0B"></div></div>
-          <span class="text-xs ${getScoreColor(productivity)}">${productivity}%</span>
-        </div>
-      </td>
-      <td class="py-2 text-center">
-        <span class="badge font-bold text-sm px-3 ${getBadgeClass(score)}">${score}</span>
-      </td>
-    </tr>`
-  }).join('')
+  // ---- Table (pagination) ----
+  _prodAllData = data
+  _prodCurrentPage = 1
+  renderProdRows()
+  renderProdPagination()
 }
 
 // ================================================================
@@ -7337,7 +8432,12 @@ async function loadFinanceProjectPage() {
         onchange: (val) => { if (val) loadFinanceProject() }
       })
     }
-    // Khởi tạo finYearFilter động
+    // Khởi tạo finNtcYearFilter động (NTC)
+    const fntcf = $('finNtcYearFilter')
+    if (fntcf && fntcf.options.length === 0) {
+      await initCostYearFilter(fntcf)
+    }
+    // Khởi tạo finYearFilter động (dương lịch)
     const fyf = $('finYearFilter')
     if (fyf && fyf.options.length === 0) {
       await initCalendarYearFilter(fyf)
@@ -7353,16 +8453,18 @@ async function loadFinanceProjectPage() {
 // Period-type toggle for Finance Project page
 function onFinPeriodTypeChange() {
   const pt = $('finPeriodType')?.value || 'all_time'
-  const yearCtrl   = $('finYearCtrl')
-  const singleCtrl = $('finSingleMonthCtrl')
-  const multiCtrl  = $('finMultiMonthCtrl')
-  const rangeCtrl  = $('finRangeCtrl')
+  const ntcYearCtrl = $('finNtcYearCtrl')
+  const yearCtrl    = $('finYearCtrl')
+  const singleCtrl  = $('finSingleMonthCtrl')
+  const multiCtrl   = $('finMultiMonthCtrl')
+  const rangeCtrl   = $('finRangeCtrl')
 
   // Show/hide controls based on mode
-  if (yearCtrl)   yearCtrl.classList.toggle('hidden',   !['year','months','month'].includes(pt))
-  if (singleCtrl) singleCtrl.classList.toggle('hidden', pt !== 'month')
-  if (multiCtrl)  multiCtrl.classList.toggle('hidden',  pt !== 'months')
-  if (rangeCtrl)  rangeCtrl.classList.toggle('hidden',  pt !== 'range')
+  if (ntcYearCtrl) ntcYearCtrl.classList.toggle('hidden', pt !== 'ntc')
+  if (yearCtrl)    yearCtrl.classList.toggle('hidden',   !['year','months','month'].includes(pt))
+  if (singleCtrl)  singleCtrl.classList.toggle('hidden', pt !== 'month')
+  if (multiCtrl)   multiCtrl.classList.toggle('hidden',  pt !== 'months')
+  if (rangeCtrl)   rangeCtrl.classList.toggle('hidden',  pt !== 'range')
 
   // Reset checkboxes when switching to months mode
   if (pt === 'months') {
@@ -7387,11 +8489,14 @@ async function loadFinanceProject() {
   try {
     const periodMode = $('finPeriodType')?.value || 'all_time'
     const year = $('finYearFilter')?.value || String(new Date().getFullYear())
+    const ntcYear = $('finNtcYearFilter')?.value || String(new Date().getFullYear())
 
     // Build query params based on mode
     let query = `/finance/project/${projectId}?mode=${periodMode}`
 
-    if (periodMode === 'year') {
+    if (periodMode === 'ntc') {
+      query += `&year=${ntcYear}`
+    } else if (periodMode === 'year') {
       query += `&year=${year}`
     } else if (periodMode === 'month') {
       const mf = $('finMonthFilter')?.value || String(new Date().getMonth() + 1)
@@ -7924,16 +9029,22 @@ async function loadLaborCost() {
       }
       if ($('laborYearlyTitle')) $('laborYearlyTitle').textContent = fyLabel
       if ($('laborYearlySubtitle')) $('laborYearlySubtitle').textContent = `${aggData.projects_count} dự án có dữ liệu`
-      // Ưu tiên pool_total (tổng đã nhập) làm tổng hiển thị, fallback grand_total
-      const displayTotal = aggData.pool_total > 0 ? aggData.pool_total : aggData.grand_total_labor_cost
+      // displayTotal = grand_total_labor_cost (phân bổ thực tế theo timesheet)
+      // pool_total = tổng ngân sách lương đã nhập thủ công (tham chiếu)
+      const displayTotal = aggData.grand_total_labor_cost
+      const poolRef = aggData.pool_total || 0
       if ($('laborYearlyTotalCost')) {
         $('laborYearlyTotalCost').textContent = fmtMoney(displayTotal)
-        // Nếu pool_total khác grand_total → hiển thị ghi chú
-        const diff = displayTotal - aggData.grand_total_labor_cost
+        // Hiển thị pool_total (ngân sách) bên dưới như thông tin tham chiếu
         const diffEl = $('laborYearlyPoolDiff')
         if (diffEl) {
-          if (aggData.pool_total > 0 && Math.abs(diff) > 0) {
-            diffEl.textContent = `Đã phân bổ: ${fmtMoney(aggData.grand_total_labor_cost)}`
+          if (poolRef > 0) {
+            const poolDiff = poolRef - displayTotal
+            const poolDiffSign = poolDiff >= 0 ? '+' : ''
+            const color = Math.abs(poolDiff) < 1000 ? 'text-green-600' : (poolDiff > 0 ? 'text-orange-500' : 'text-red-500')
+            diffEl.innerHTML = `<span class="${color}">Ngân sách nhập: ${fmtMoney(poolRef)}` +
+              (Math.abs(poolDiff) > 1000 ? ` <span class="text-xs">(${poolDiffSign}${fmtMoney(poolDiff)})</span>` : ' ✓') +
+              `</span>`
             diffEl.classList.remove('hidden')
           } else {
             diffEl.classList.add('hidden')
@@ -8005,50 +9116,67 @@ async function loadLaborCost() {
         })
       }
 
-      // KPI cards — dùng pool_total (tổng lương đã nhập) làm KPI chính
-      const kpiTotal = aggData.pool_total > 0 ? aggData.pool_total : aggData.grand_total_labor_cost
+      // KPI cards — dùng grand_total_labor_cost (phân bổ thực tế) làm KPI chính
+      const kpiTotal = aggData.grand_total_labor_cost
       if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(kpiTotal)
       if ($('laborKpiSource'))   $('laborKpiSource').textContent   = periodType === 'all' ? `🗓️ NTC ${year}` : `📆 Nhiều tháng NTC ${year}`
       if ($('laborKpiHours'))    $('laborKpiHours').textContent    = fmt(totalHrs) + 'h'
       if ($('laborKpiRate'))     $('laborKpiRate').textContent     = fmtMoney(Math.round(avgRate)) + '/h'
       if ($('laborKpiProjects')) $('laborKpiProjects').textContent = aggData.projects_count || 0
 
-      // Monthly breakdown table — dùng cal_pairs từ API (đã convert fiscal→calendar)
+      // Monthly breakdown table — dùng monthly_totals từ API (phân bổ thực tế)
+      // Đồng thời load monthly_labor_costs để hiển thị ngân sách nhập (tham chiếu)
       const monthlyBreakTbody = $('laborMonthlyBreakdownTable')
-      const calPairsData = aggData.cal_pairs || []
-      if (monthlyBreakTbody && calPairsData.length > 0) {
+      const monthlyTotalsData = aggData.monthly_totals || []
+      if (monthlyBreakTbody && monthlyTotalsData.length > 0) {
         try {
+          // Load ngân sách nhập thủ công để hiển thị tham chiếu
           const mlcList = await api(`/monthly-labor-costs`)
           const mlcMap = {}
           for (const r of mlcList) mlcMap[`${r.month}-${r.year}`] = r
 
-          const rows = calPairsData.map(p => {
-            const key = `${p.calMonth}-${p.calYear}`
-            const entry = mlcMap[key]
-            // Dùng fiscalIdx (T1..T12) làm nhãn NTC, kèm tháng dương lịch để rõ ràng
-            const ntcLabel = `T${p.fiscalIdx}`
-            const calLabel = `(${p.calMonth}/${p.calYear})`
-            const cph = aggData.grand_avg_cost_per_hour || 0
-            if (!entry) return `<tr class="border-b border-blue-100">
-              <td class="py-1 pr-3">
-                <span class="font-medium text-blue-700">${ntcLabel}</span>
-                <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
-              </td>
-              <td colspan="3" class="py-1 text-xs text-gray-400 text-center">Chưa nhập</td>
-            </tr>`
+          const cph = aggData.grand_avg_cost_per_hour || 0
+          const rows = monthlyTotalsData.map(mt => {
+            const ntcLabel = `T${mt.fiscal_idx}`
+            const calLabel = `(${mt.cal_month}/${mt.cal_year})`
+            const mlcEntry = mlcMap[`${mt.cal_month}-${mt.cal_year}`]
+            const budgetAmt = mlcEntry?.total_labor_cost || 0
+            const hrs = mt.raw_hours || 0
+            const allocated = mt.allocated || 0
+            const cphRow = hrs > 0 && allocated > 0 ? Math.round(allocated / hrs) : cph
+
+            if (hrs === 0 && allocated === 0) {
+              // Không có timesheet tháng này
+              return `<tr class="border-b border-blue-100">
+                <td class="py-1 pr-3">
+                  <span class="font-medium text-blue-700">${ntcLabel}</span>
+                  <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
+                </td>
+                <td colspan="4" class="py-1 text-xs text-gray-400 text-center">Chưa có timesheet</td>
+              </tr>`
+            }
+
+            // So sánh phân bổ TT vs ngân sách nhập
+            const budgetDiff = budgetAmt > 0 ? allocated - budgetAmt : 0
+            const budgetDiffStr = budgetAmt > 0
+              ? `<span class="text-xs ${Math.abs(budgetDiff) < 1000 ? 'text-green-500' : (budgetDiff > 0 ? 'text-red-400' : 'text-orange-400')}" title="Ngân sách nhập: ${fmtMoney(budgetAmt)}">${' / NS: ' + fmtMoney(budgetAmt)}</span>`
+              : ''
+
             return `<tr class="border-b border-blue-100">
               <td class="py-1 pr-3">
                 <span class="font-medium text-blue-700">${ntcLabel}</span>
                 <span class="text-xs text-blue-400 ml-1">${calLabel}</span>
               </td>
-              <td class="py-1 pr-3 text-right">—</td>
-              <td class="py-1 pr-3 text-right text-purple-600">${cph > 0 ? fmtMoney(Math.round(cph)) + '/h' : '—'}</td>
-              <td class="py-1 text-right font-semibold text-green-700">${fmtMoney(entry.total_labor_cost)}</td>
+              <td class="py-1 pr-3 text-right">${hrs > 0 ? fmt(hrs) + 'h' : '—'}</td>
+              <td class="py-1 pr-3 text-right text-purple-600">${cphRow > 0 ? fmtMoney(cphRow) + '/h' : '—'}</td>
+              <td class="py-1 text-right font-semibold text-green-700">
+                ${fmtMoney(allocated)}${budgetDiffStr}
+              </td>
             </tr>`
           }).join('')
           monthlyBreakTbody.innerHTML = rows
           $('laborMonthlyTableWrap')?.classList.remove('hidden')
-        } catch(e2) { /* ignore monthly breakdown errors */ }
+        } catch(e2) { console.warn('Monthly breakdown error:', e2) }
       }
       return
     } catch(e) { toast('Lỗi tải dữ liệu tổng hợp: ' + e.message, 'error'); return }
@@ -9175,39 +10303,104 @@ async function renderHealthTab(force = false) {
                 <th class="pb-2">Vấn đề</th>
               </tr>
             </thead>
-            <tbody>
-              ${projects.sort((a,b) => a.health_score - b.health_score).map(p => `
-                <tr class="border-b hover:bg-gray-50">
-                  <td class="py-3 pr-4">
-                    <div class="font-medium text-gray-800">${p.name}</div>
-                    <div class="text-xs text-gray-400">${p.code}</div>
-                  </td>
-                  <td class="py-3 pr-4 text-center">
-                    <span class="inline-flex items-center justify-center w-12 h-8 rounded-lg font-bold text-sm health-${p.health_status}">${p.health_score}</span>
-                  </td>
-                  <td class="py-3 pr-4 text-center">
-                    <span class="px-2 py-1 rounded-full text-xs font-medium health-${p.health_status}">${healthLabel[p.health_status]}</span>
-                  </td>
-                  <td class="py-3 pr-4 text-center">
-                    <div class="flex items-center gap-2">
-                      <div class="flex-1 bg-gray-200 rounded-full h-2">
-                        <div class="h-2 rounded-full ${p.completion_rate>=80?'bg-green-500':p.completion_rate>=50?'bg-blue-500':'bg-red-400'}" style="width:${p.completion_rate}%"></div>
-                      </div>
-                      <span class="text-xs text-gray-600 w-8">${p.completion_rate}%</span>
-                    </div>
-                  </td>
-                  <td class="py-3 pr-4 text-center">
-                    <span class="${p.overdue_tasks > 0 ? 'text-red-600 font-bold' : 'text-gray-400'}">${p.overdue_tasks}</span>
-                  </td>
-                  <td class="py-3 pr-4 text-center text-gray-600">${p.team_size} người</td>
-                  <td class="py-3 text-xs text-gray-500">${p.issues.length ? p.issues.slice(0,2).join(', ') : '<span class="text-green-600">Không có vấn đề</span>'}</td>
-                </tr>
-              `).join('')}
-            </tbody>
+            <tbody id="healthProjectsTbody"></tbody>
           </table>
         </div>
+        <div id="healthProjectsPagination"></div>
       </div>
     `
+
+    // ── Health projects pagination ──────────────────────────────
+    const HEALTH_PAGE_SIZE = 15
+    const healthSorted = [...projects].sort((a, b) => a.health_score - b.health_score)
+    let _healthPage = 1
+
+    function renderHealthRows() {
+      const tbody = document.getElementById('healthProjectsTbody')
+      if (!tbody) return
+      const start = (_healthPage - 1) * HEALTH_PAGE_SIZE
+      const pageData = healthSorted.slice(start, start + HEALTH_PAGE_SIZE)
+      tbody.innerHTML = pageData.map(p => `
+        <tr class="border-b hover:bg-gray-50">
+          <td class="py-3 pr-4">
+            <div class="font-medium text-gray-800">${p.name}</div>
+            <div class="text-xs text-gray-400">${p.code}</div>
+          </td>
+          <td class="py-3 pr-4 text-center">
+            <span class="inline-flex items-center justify-center w-12 h-8 rounded-lg font-bold text-sm health-${p.health_status}">${p.health_score}</span>
+          </td>
+          <td class="py-3 pr-4 text-center">
+            <span class="px-2 py-1 rounded-full text-xs font-medium health-${p.health_status}">${healthLabel[p.health_status]}</span>
+          </td>
+          <td class="py-3 pr-4 text-center">
+            <div class="flex items-center gap-2">
+              <div class="flex-1 bg-gray-200 rounded-full h-2">
+                <div class="h-2 rounded-full ${p.completion_rate>=80?'bg-green-500':p.completion_rate>=50?'bg-blue-500':'bg-red-400'}" style="width:${p.completion_rate}%"></div>
+              </div>
+              <span class="text-xs text-gray-600 w-8">${p.completion_rate}%</span>
+            </div>
+          </td>
+          <td class="py-3 pr-4 text-center">
+            <span class="${p.overdue_tasks > 0 ? 'text-red-600 font-bold' : 'text-gray-400'}">${p.overdue_tasks}</span>
+          </td>
+          <td class="py-3 pr-4 text-center text-gray-600">${p.team_size} người</td>
+          <td class="py-3 text-xs text-gray-500">${p.issues.length ? p.issues.slice(0,2).join(', ') : '<span class="text-green-600">Không có vấn đề</span>'}</td>
+        </tr>
+      `).join('')
+    }
+
+    function renderHealthPagination() {
+      const container = document.getElementById('healthProjectsPagination')
+      if (!container) return
+      const total = healthSorted.length
+      const totalPages = Math.max(1, Math.ceil(total / HEALTH_PAGE_SIZE))
+      if (totalPages <= 1) { container.innerHTML = ''; return }
+
+      const p = _healthPage
+      let pages = []
+      if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) pages.push(i)
+      } else {
+        pages = [1]
+        if (p > 3) pages.push('...')
+        for (let i = Math.max(2, p-1); i <= Math.min(totalPages-1, p+1); i++) pages.push(i)
+        if (p < totalPages - 2) pages.push('...')
+        pages.push(totalPages)
+      }
+
+      const from = (p - 1) * HEALTH_PAGE_SIZE + 1
+      const to   = Math.min(p * HEALTH_PAGE_SIZE, total)
+
+      // Expose goPage to window scope so onclick works
+      window._healthGoPage = (page) => {
+        _healthPage = Math.max(1, Math.min(page, totalPages))
+        renderHealthRows()
+        renderHealthPagination()
+      }
+
+      const btn = (label, pg, disabled = false, active = false) =>
+        `<button onclick="_healthGoPage(${pg})" ${disabled ? 'disabled' : ''}
+          class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+          ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+          ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+      container.innerHTML = `
+        <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+          <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> dự án</p>
+          <div class="flex items-center gap-1">
+            ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+            ${pages.map(pg => pg === '...'
+                ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+                : btn(pg, pg, false, pg === p)
+              ).join('')}
+            ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+          </div>
+        </div>`
+    }
+
+    renderHealthRows()
+    renderHealthPagination()
+    // ─────────────────────────────────────────────────────────────
 
     // Draw charts
     destroyAnalyticsChart('healthDist')
@@ -9300,28 +10493,90 @@ async function renderPerformanceTab(force = false) {
               <th class="pb-2 pr-4 text-right">Nhóm</th>
               <th class="pb-2 text-right">Tiến độ</th>
             </tr></thead>
-            <tbody>
-              ${projects.map(p => `
-                <tr class="border-b hover:bg-gray-50">
-                  <td class="py-3 pr-4"><div class="font-medium text-gray-800">${p.name}</div><div class="text-xs text-gray-400">${p.code}</div></td>
-                  <td class="py-3 pr-4"><span class="px-2 py-1 rounded-full text-xs font-medium" style="background:${statusColor[p.status]}22;color:${statusColor[p.status]}">${statusLabel[p.status]||p.status}</span></td>
-                  <td class="py-3 pr-4 text-right font-medium">${p.completed_tasks||0}/${p.total_tasks||0}</td>
-                  <td class="py-3 pr-4 text-right"><span class="${p.overdue_tasks>0?'text-red-600 font-bold':'text-gray-400'}">${p.overdue_tasks||0}</span></td>
-                  <td class="py-3 pr-4 text-right text-gray-600">${(p.total_hours||0).toFixed(1)}h</td>
-                  <td class="py-3 pr-4 text-right text-gray-600">${p.member_count||0}</td>
-                  <td class="py-3 text-right">
-                    <div class="flex items-center justify-end gap-2">
-                      <div class="w-16 bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full bg-green-500" style="width:${p.progress||0}%"></div></div>
-                      <span class="text-xs text-gray-600 w-8">${p.progress||0}%</span>
-                    </div>
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
+            <tbody id="perfProjectsTbody"></tbody>
           </table>
         </div>
+        <div id="perfProjectsPagination"></div>
       </div>
     `
+
+    // ── Performance projects pagination ──────────────────────────────────
+    const PERF_PAGE_SIZE = 15
+    let _perfPage = 1
+
+    function renderPerfRows() {
+      const tbody = document.getElementById('perfProjectsTbody')
+      if (!tbody) return
+      const start = (_perfPage - 1) * PERF_PAGE_SIZE
+      const pageData = projects.slice(start, start + PERF_PAGE_SIZE)
+      tbody.innerHTML = pageData.map(p => `
+        <tr class="border-b hover:bg-gray-50">
+          <td class="py-3 pr-4"><div class="font-medium text-gray-800">${p.name}</div><div class="text-xs text-gray-400">${p.code}</div></td>
+          <td class="py-3 pr-4"><span class="px-2 py-1 rounded-full text-xs font-medium" style="background:${statusColor[p.status]}22;color:${statusColor[p.status]}">${statusLabel[p.status]||p.status}</span></td>
+          <td class="py-3 pr-4 text-right font-medium">${p.completed_tasks||0}/${p.total_tasks||0}</td>
+          <td class="py-3 pr-4 text-right"><span class="${p.overdue_tasks>0?'text-red-600 font-bold':'text-gray-400'}">${p.overdue_tasks||0}</span></td>
+          <td class="py-3 pr-4 text-right text-gray-600">${(p.total_hours||0).toFixed(1)}h</td>
+          <td class="py-3 pr-4 text-right text-gray-600">${p.member_count||0}</td>
+          <td class="py-3 text-right">
+            <div class="flex items-center justify-end gap-2">
+              <div class="w-16 bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full bg-green-500" style="width:${p.progress||0}%"></div></div>
+              <span class="text-xs text-gray-600 w-8">${p.progress||0}%</span>
+            </div>
+          </td>
+        </tr>
+      `).join('')
+    }
+
+    function renderPerfPagination() {
+      const container = document.getElementById('perfProjectsPagination')
+      if (!container) return
+      const total = projects.length
+      const totalPages = Math.max(1, Math.ceil(total / PERF_PAGE_SIZE))
+      if (totalPages <= 1) { container.innerHTML = ''; return }
+
+      const p = _perfPage
+      let pages = []
+      if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) pages.push(i)
+      } else {
+        pages = [1]
+        if (p > 3) pages.push('...')
+        for (let i = Math.max(2, p-1); i <= Math.min(totalPages-1, p+1); i++) pages.push(i)
+        if (p < totalPages - 2) pages.push('...')
+        pages.push(totalPages)
+      }
+      const from = (p - 1) * PERF_PAGE_SIZE + 1
+      const to   = Math.min(p * PERF_PAGE_SIZE, total)
+
+      window._perfGoPage = (page) => {
+        _perfPage = Math.max(1, Math.min(page, totalPages))
+        renderPerfRows()
+        renderPerfPagination()
+      }
+
+      const btn = (label, pg, disabled = false, active = false) =>
+        `<button onclick="_perfGoPage(${pg})" ${disabled ? 'disabled' : ''}
+          class="min-w-[32px] h-8 px-2 rounded-lg text-xs font-medium border transition-colors
+          ${active ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary'}
+          ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}">${label}</button>`
+
+      container.innerHTML = `
+        <div class="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-gray-100 mt-3">
+          <p class="text-xs text-gray-500">Hiển thị <strong>${from}–${to}</strong> / <strong>${total}</strong> dự án</p>
+          <div class="flex items-center gap-1">
+            ${btn('<i class="fas fa-chevron-left"></i>', p - 1, p === 1)}
+            ${pages.map(pg => pg === '...'
+                ? `<span class="px-1 text-gray-400 text-xs">…</span>`
+                : btn(pg, pg, false, pg === p)
+              ).join('')}
+            ${btn('<i class="fas fa-chevron-right"></i>', p + 1, p === totalPages)}
+          </div>
+        </div>`
+    }
+
+    renderPerfRows()
+    renderPerfPagination()
+    // ─────────────────────────────────────────────────────────────────────
 
     destroyAnalyticsChart('perfTasks'); destroyAnalyticsChart('perfHours')
     const top10 = [...projects].sort((a,b) => (b.total_tasks||0) - (a.total_tasks||0)).slice(0, 10)
@@ -9507,40 +10762,108 @@ async function renderTeamTab(force = false) {
         </div>
       </div>
 
-      <!-- Member Detail Table -->
-      <div class="card">
-        <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-table mr-2 text-gray-500"></i>Bảng năng suất chi tiết (${year})</h3>
+      <!-- Member Detail Table with pagination -->
+      <div class="card" id="teamProdTableCard">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-semibold text-gray-700"><i class="fas fa-table mr-2 text-gray-500"></i>Bảng năng suất chi tiết (${year})</h3>
+          <span class="text-xs text-gray-400" id="teamProdCount"></span>
+        </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
-            <thead><tr class="border-b text-left text-gray-500 text-xs uppercase">
-              <th class="pb-2 pr-4">Nhân sự</th><th class="pb-2 pr-4">Phòng ban</th>
-              <th class="pb-2 pr-4 text-right">Giờ thường</th><th class="pb-2 pr-4 text-right">Giờ TC</th>
-              <th class="pb-2 pr-4 text-right">Tổng giờ</th><th class="pb-2 pr-4 text-right">Task xong/giao</th>
-              <th class="pb-2 text-right">Hiệu suất task</th>
+            <thead><tr class="border-b text-left text-gray-500 text-xs uppercase bg-gray-50">
+              <th class="py-2 px-3">Nhân sự</th>
+              <th class="py-2 px-3">Phòng ban</th>
+              <th class="py-2 px-3 text-right">Giờ thường</th>
+              <th class="py-2 px-3 text-right">Giờ TC</th>
+              <th class="py-2 px-3 text-right">Tổng giờ</th>
+              <th class="py-2 px-3 text-right">Task xong/giao</th>
+              <th class="py-2 px-3 text-right">Hiệu suất task</th>
             </tr></thead>
-            <tbody>
-              ${members.sort((a,b)=>(b.total_hours||0)-(a.total_hours||0)).map(m => {
-                const rate = pct(m.completed_tasks||0, m.assigned_tasks||1)
-                return `<tr class="border-b hover:bg-gray-50">
-                  <td class="py-3 pr-4 font-medium text-gray-800">${m.full_name}</td>
-                  <td class="py-3 pr-4 text-gray-500 text-xs">${m.department||'-'}</td>
-                  <td class="py-3 pr-4 text-right">${(m.regular_hours||0).toFixed(1)}h</td>
-                  <td class="py-3 pr-4 text-right text-orange-600">${(m.overtime_hours||0).toFixed(1)}h</td>
-                  <td class="py-3 pr-4 text-right font-semibold">${(m.total_hours||0).toFixed(1)}h</td>
-                  <td class="py-3 pr-4 text-right">${m.completed_tasks||0}/${m.assigned_tasks||0}</td>
-                  <td class="py-3 text-right">
-                    <div class="flex items-center justify-end gap-2">
-                      <div class="w-16 bg-gray-200 rounded-full h-2"><div class="h-2 rounded-full ${rate>=80?'bg-green-500':rate>=50?'bg-blue-500':'bg-red-400'}" style="width:${rate}%"></div></div>
-                      <span class="text-xs text-gray-600 w-8">${rate}%</span>
-                    </div>
-                  </td>
-                </tr>`
-              }).join('')}
-            </tbody>
+            <tbody id="teamProdTbody"></tbody>
           </table>
+        </div>
+        <!-- Pagination -->
+        <div class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100" id="teamProdPager">
+          <div class="flex items-center gap-2 text-xs text-gray-500" id="teamProdPageInfo"></div>
+          <div class="flex items-center gap-1" id="teamProdPageBtns"></div>
         </div>
       </div>
     `
+
+    // ── Pagination for detail table ──────────────────────────────────
+    const PROD_PAGE_SIZE = 15
+    const sortedMembers = members.slice().sort((a,b)=>(b.total_hours||0)-(a.total_hours||0))
+    let _prodPage = 1
+
+    function renderProdTable(page) {
+      _prodPage = page
+      const total   = sortedMembers.length
+      const pages   = Math.max(1, Math.ceil(total / PROD_PAGE_SIZE))
+      const start   = (page - 1) * PROD_PAGE_SIZE
+      const slice   = sortedMembers.slice(start, start + PROD_PAGE_SIZE)
+
+      const tbody = document.getElementById('teamProdTbody')
+      const info  = document.getElementById('teamProdPageInfo')
+      const btns  = document.getElementById('teamProdPageBtns')
+      const count = document.getElementById('teamProdCount')
+      if (!tbody) return
+
+      // Count label
+      if (count) count.textContent = `${total} nhân sự`
+
+      // Rows
+      tbody.innerHTML = slice.map((m, idx) => {
+        const rate = m.assigned_tasks > 0 ? Math.min(100, Math.round((m.completed_tasks||0) / m.assigned_tasks * 100)) : 0
+        const barColor = rate >= 80 ? 'bg-green-500' : rate >= 50 ? 'bg-blue-500' : rate > 0 ? 'bg-red-400' : 'bg-gray-300'
+        const rowBg = (start + idx) % 2 === 1 ? 'bg-gray-50/40' : ''
+        return `<tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
+          <td class="py-2.5 px-3 font-medium text-gray-800 text-sm">${m.full_name}</td>
+          <td class="py-2.5 px-3 text-gray-500 text-xs">${m.department||'—'}</td>
+          <td class="py-2.5 px-3 text-right text-sm">${(m.regular_hours||0).toFixed(1)}h</td>
+          <td class="py-2.5 px-3 text-right text-orange-600 text-sm">${(m.overtime_hours||0).toFixed(1)}h</td>
+          <td class="py-2.5 px-3 text-right font-semibold text-sm">${(m.total_hours||0).toFixed(1)}h</td>
+          <td class="py-2.5 px-3 text-right text-sm">${m.completed_tasks||0}/${m.assigned_tasks||0}</td>
+          <td class="py-2.5 px-3 text-right">
+            <div class="flex items-center justify-end gap-2">
+              <div class="w-16 bg-gray-200 rounded-full h-2 flex-shrink-0">
+                <div class="h-2 rounded-full ${barColor}" style="width:${rate}%"></div>
+              </div>
+              <span class="text-xs font-medium w-8 text-right ${rate>=80?'text-green-600':rate>=50?'text-blue-600':rate>0?'text-red-500':'text-gray-400'}">${rate}%</span>
+            </div>
+          </td>
+        </tr>`
+      }).join('')
+
+      // Page info
+      if (info) info.innerHTML = `<span>Hiển thị <b>${start+1}–${Math.min(start+PROD_PAGE_SIZE,total)}</b> / ${total} nhân sự</span>`
+
+      // Page buttons
+      if (btns) {
+        const maxBtn = 7
+        let html = ''
+        // Prev
+        html += `<button onclick="renderProdTable(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded text-xs border ${page<=1?'text-gray-300 border-gray-200 cursor-not-allowed':'text-gray-600 border-gray-300 hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i></button>`
+        // Page numbers
+        let startP = Math.max(1, page - Math.floor(maxBtn/2))
+        let endP   = Math.min(pages, startP + maxBtn - 1)
+        if (endP - startP < maxBtn - 1) startP = Math.max(1, endP - maxBtn + 1)
+        if (startP > 1) html += `<button onclick="renderProdTable(1)" class="px-2.5 py-1 rounded text-xs border border-gray-300 hover:bg-gray-100 text-gray-600">1</button>${startP>2?'<span class="text-gray-400 text-xs px-1">…</span>':''}`
+        for (let p = startP; p <= endP; p++) {
+          html += `<button onclick="renderProdTable(${p})" class="px-2.5 py-1 rounded text-xs border ${p===page?'bg-green-600 text-white border-green-600 font-semibold':'border-gray-300 hover:bg-gray-100 text-gray-600'}">${p}</button>`
+        }
+        if (endP < pages) html += `${endP<pages-1?'<span class="text-gray-400 text-xs px-1">…</span>':''}<button onclick="renderProdTable(${pages})" class="px-2.5 py-1 rounded text-xs border border-gray-300 hover:bg-gray-100 text-gray-600">${pages}</button>`
+        // Next
+        html += `<button onclick="renderProdTable(${page+1})" ${page>=pages?'disabled':''} class="px-2 py-1 rounded text-xs border ${page>=pages?'text-gray-300 border-gray-200 cursor-not-allowed':'text-gray-600 border-gray-300 hover:bg-gray-100'}"><i class="fas fa-chevron-right"></i></button>`
+        btns.innerHTML = html
+      }
+
+      // Hide pager if only 1 page
+      const pager = document.getElementById('teamProdPager')
+      if (pager) pager.style.display = pages <= 1 ? 'none' : 'flex'
+    }
+
+    // Initial render
+    renderProdTable(1)
 
     destroyAnalyticsChart('teamTopHours'); destroyAnalyticsChart('teamTaskRate')
     const top10 = members.slice(0, 10)
@@ -10154,6 +11477,7 @@ async function renderProjectFinancialTab(force = false) {
       : `/analytics/financial-by-project?year=${year}`
     const data = await api(url)
     _projFinData = data
+    window._projFinRaw = { ...data, fiscal_year_label: data.fiscal_year_label || `NTC ${year}` }
     _projFinYear = year + '_' + mode
     const projects = data.projects || []
     const totals   = data.totals  || {}
@@ -10268,36 +11592,54 @@ async function renderProjectFinancialTab(force = false) {
     ` : ''
 
     // ── Bảng chi tiết per-project ────────────────────────────────────
+    // Dùng 1 table duy nhất với sticky thead/tfoot để tránh lệch cột khi tên dài
+    const nameColW  = isLifetime ? 200 : 220   // px — cột tên dự án cố định
+    const timeColW  = isLifetime ? 100 : 0
+    const numCols   = [95, 95, 85, 85, 85, 75, 85, 85, 65, 110]  // GTHĐ, DT đã thu, DT chờ, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
+    const totalMinW = nameColW + (isLifetime ? timeColW : 0) + numCols.reduce((a,b)=>a+b,0)
+    const colgroup  = `<colgroup>
+        <col style="width:${nameColW}px;min-width:${nameColW}px;max-width:${nameColW}px">
+        ${isLifetime ? `<col style="width:${timeColW}px;min-width:${timeColW}px">` : ''}
+        ${numCols.map(w => `<col style="width:${w}px;min-width:${w}px">`).join('')}
+      </colgroup>`
+
     const tableHtml = `
       <div class="card">
         <div class="flex items-center justify-between mb-4">
           <h3 class="font-semibold text-gray-700 text-sm">
             <i class="fas fa-table mr-2 text-gray-500"></i>Chi tiết tài chính từng dự án — ${fyLabel}
           </h3>
-          <div class="flex items-center gap-2 text-xs text-gray-400">
-            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-500 inline-block"></span>Doanh thu đã thu</span>
-            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-400 inline-block"></span>Tổng chi phí</span>
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2 text-xs text-gray-400">
+              <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-500 inline-block"></span>Doanh thu đã thu</span>
+              <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-400 inline-block"></span>Tổng chi phí</span>
+            </div>
+            <button onclick="exportFinDetailExcel()" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors shadow-sm">
+              <i class="fas fa-file-excel"></i> Xuất Excel
+            </button>
           </div>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm border-collapse">
-            <thead>
+          <div style="max-height:580px;overflow-y:auto;position:relative;" id="finDetailScrollBody">
+          <table class="text-sm border-collapse" style="table-layout:fixed;width:100%;min-width:${totalMinW}px" id="finDetailTable">
+            ${colgroup}
+            <thead style="position:sticky;top:0;z-index:2">
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
-                <th class="text-left py-3 px-3 font-semibold border-b border-gray-200 min-w-[180px]">Dự án</th>
+                <th class="text-left py-3 px-3 font-semibold border-b border-gray-200" style="overflow:hidden">Dự án</th>
                 ${isLifetime ? `<th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Thời gian</th>` : ''}
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT đã thu</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT chờ thu</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT chờ</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP trực tiếp</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP lương</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP chung</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Tổng CP</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Lợi nhuận</th>
                 <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Biên LN</th>
-                <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 min-w-[120px]">Tiến độ GTHĐ</th>
+                <th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Tiến độ</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody id="finDetailTbody">
               ${sorted.map((p, idx) => {
                 const hasData = p.revenue_total > 0 || p.total_cost > 0
                 const rowBg = !hasData ? 'bg-gray-50 opacity-60' : idx % 2 === 0 ? '' : 'bg-gray-50/50'
@@ -10308,14 +11650,14 @@ async function renderProjectFinancialTab(force = false) {
                   : ''
                 return `
                   <tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
-                    <td class="py-3 px-3">
+                    <td class="py-2 px-3" style="overflow:hidden;max-width:${nameColW}px">
                       <div class="flex items-center gap-2">
                         <div class="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
                           style="background:${!hasData?'#d1d5db':p.margin>=30?'#00A651':p.margin>=10?'#3b82f6':p.margin>=0?'#f59e0b':'#ef4444'}">
                           ${p.code?.substring(0,3)||'?'}
                         </div>
-                        <div>
-                          <div class="font-semibold text-gray-800 text-xs leading-tight">${p.name}</div>
+                        <div style="min-width:0;flex:1;overflow:hidden">
+                          <div class="font-semibold text-gray-800 text-xs leading-tight" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.name.replace(/"/g,'&quot;')}">${p.name}</div>
                           <div class="flex items-center gap-1 mt-0.5">
                             <span class="text-gray-400 text-xs">${p.code}</span>
                             <span class="badge ${statusColor[p.status]||'badge-planning'} text-xs py-0 px-1.5" style="font-size:9px">${statusLabel[p.status]||p.status}</span>
@@ -10323,79 +11665,80 @@ async function renderProjectFinancialTab(force = false) {
                         </div>
                       </div>
                     </td>
-                    ${isLifetime ? `<td class="py-3 px-3 text-center">${timespan||'<span class="text-gray-300 text-xs">—</span>'}</td>` : ''}
-                    <td class="py-3 px-3 text-right">
+                    ${isLifetime ? `<td class="py-2 px-3 text-center">${timespan||'<span class="text-gray-300 text-xs">—</span>'}</td>` : ''}
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-indigo-700">${p.contract_value > 0 ? fmtM(p.contract_value) : '<span class="text-gray-300">—</span>'}</span>
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-emerald-600">${p.revenue_collected > 0 ? fmtM(p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
-                      ${p.revenue_collected > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400">${pct(p.revenue_collected, p.contract_value)}% GTHĐ</div>` : ''}
+                      ${p.revenue_collected > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${pct(p.revenue_collected, p.contract_value)}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.revenue_pending > 0 ? 'text-amber-600 font-medium' : 'text-gray-300'}">${p.revenue_pending > 0 ? fmtM(p.revenue_pending) : '—'}</span>
+                      ${p.revenue_pending > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${pct(p.revenue_pending, p.contract_value)}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.direct_cost > 0 ? 'text-blue-600' : 'text-gray-300'}">${p.direct_cost > 0 ? fmtM(p.direct_cost) : '—'}</span>
-                      ${p.direct_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_direct}%</div>` : ''}
+                      ${p.direct_cost > 0 && p.pct_direct > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_direct}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.labor_cost > 0 ? 'text-orange-600' : 'text-gray-300'}">${p.labor_cost > 0 ? fmtM(p.labor_cost) : '—'}</span>
-                      ${p.labor_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_labor}%</div>` : ''}
+                      ${p.labor_cost > 0 && p.pct_labor > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_labor}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.shared_cost > 0 ? 'text-yellow-600' : 'text-gray-300'}">${p.shared_cost > 0 ? fmtM(p.shared_cost) : '—'}</span>
-                      ${p.shared_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_shared}%</div>` : ''}
+                      ${p.shared_cost > 0 && p.pct_shared > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_shared}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-red-500">${p.total_cost > 0 ? fmtM(p.total_cost) : '<span class="text-gray-300">—</span>'}</span>
-                      ${p.total_cost > 0 && p.revenue_collected > 0 ? `<div class="text-xs text-gray-400">${p.pct_cost}%</div>` : ''}
+                      ${p.total_cost > 0 && p.pct_cost > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_cost}%</div>` : ''}
                     </td>
-                    <td class="py-3 px-3 text-right">
+                    <td class="py-2 px-3 text-right whitespace-nowrap">
                       ${(p.revenue_collected > 0 || p.total_cost > 0)
                         ? `<span class="font-bold ${profitColor(p.profit)}">${fmtM(p.profit)}</span>`
                         : '<span class="text-gray-300">—</span>'
                       }
                     </td>
-                    <td class="py-3 px-3 text-center">
+                    <td class="py-2 px-3 text-center">
                       ${p.revenue_collected > 0
-                        ? `<span class="inline-block px-2 py-1 rounded-lg text-xs font-bold ${marginBg(p.margin)}">${p.margin}%</span>`
+                        ? `<span class="inline-block px-2 py-0.5 rounded-lg text-xs font-bold ${marginBg(p.margin)}">${p.margin}%</span>`
                         : '<span class="text-gray-300 text-xs">—</span>'
                       }
                     </td>
-                    <td class="py-3 px-3">
+                    <td class="py-2 px-3">
                       ${p.contract_value > 0 ? `
-                        <div class="flex items-center gap-1.5">
-                          <div class="flex-1 bg-gray-200 rounded-full h-2">
-                            <div class="h-2 rounded-full ${progColor}" style="width:${cProg}%"></div>
+                        <div class="flex items-center gap-1">
+                          <div class="flex-1 bg-gray-200 rounded-full h-1.5">
+                            <div class="h-1.5 rounded-full ${progColor}" style="width:${cProg}%"></div>
                           </div>
-                          <span class="text-xs font-semibold text-gray-600 w-8 text-right">${p.contract_progress}%</span>
+                          <span class="text-xs font-semibold text-gray-600 whitespace-nowrap">${p.contract_progress}%</span>
                         </div>
-                      ` : '<span class="text-xs text-gray-300">Chưa có GTHĐ</span>'}
+                      ` : '<span class="text-xs text-gray-300">—</span>'}
                     </td>
                   </tr>
                 `
               }).join('')}
             </tbody>
-            <!-- Totals row -->
-            <tfoot>
+            <tfoot style="position:sticky;bottom:0;z-index:2">
               <tr class="bg-gray-100 font-bold text-sm border-t-2 border-gray-300">
-                <td class="py-3 px-3 text-gray-700" ${isLifetime ? '' : ''}><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
+                <td class="py-3 px-3 text-gray-700 whitespace-nowrap" style="overflow:hidden;text-overflow:ellipsis;max-width:${nameColW}px"><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
                 ${isLifetime ? `<td class="py-3 px-3 text-center text-gray-400 text-xs">—</td>` : ''}
-                <td class="py-3 px-3 text-right text-indigo-700">${fmtM(totals.contract_value)}</td>
-                <td class="py-3 px-3 text-right text-emerald-600">${fmtM(totals.revenue_collected)}</td>
-                <td class="py-3 px-3 text-right text-amber-600">${fmtM(totals.revenue_pending)}</td>
-                <td class="py-3 px-3 text-right text-blue-600">${fmtM(totals.direct_cost)}</td>
-                <td class="py-3 px-3 text-right text-orange-600">${fmtM(totals.labor_cost)}</td>
-                <td class="py-3 px-3 text-right text-yellow-600">${fmtM(totals.shared_cost)}</td>
-                <td class="py-3 px-3 text-right text-red-500">${fmtM(totals.total_cost)}</td>
-                <td class="py-3 px-3 text-right ${profitColor(totals.profit)}">${fmtM(totals.profit)}</td>
+                <td class="py-3 px-3 text-right text-indigo-700 whitespace-nowrap">${fmtM(totals.contract_value)}</td>
+                <td class="py-3 px-3 text-right text-emerald-600 whitespace-nowrap">${fmtM(totals.revenue_collected)}</td>
+                <td class="py-3 px-3 text-right text-amber-600 whitespace-nowrap">${fmtM(totals.revenue_pending)}</td>
+                <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap">${fmtM(totals.direct_cost)}</td>
+                <td class="py-3 px-3 text-right text-orange-600 whitespace-nowrap">${fmtM(totals.labor_cost)}</td>
+                <td class="py-3 px-3 text-right text-yellow-600 whitespace-nowrap">${fmtM(totals.shared_cost)}</td>
+                <td class="py-3 px-3 text-right text-red-500 whitespace-nowrap">${fmtM(totals.total_cost)}</td>
+                <td class="py-3 px-3 text-right whitespace-nowrap ${profitColor(totals.profit)}">${fmtM(totals.profit)}</td>
                 <td class="py-3 px-3 text-center">
-                  <span class="inline-block px-2 py-1 rounded-lg text-xs font-bold ${marginBg(totals.margin)}">${totals.margin}%</span>
+                  <span class="inline-block px-2 py-0.5 rounded-lg text-xs font-bold ${marginBg(totals.margin)}">${totals.margin}%</span>
                 </td>
-                <td class="py-3 px-3 text-center text-gray-500 text-xs">${totals.contract_progress}%</td>
+                <td class="py-3 px-3 text-center text-gray-500 text-xs whitespace-nowrap">${totals.contract_progress}%</td>
               </tr>
             </tfoot>
           </table>
+          </div><!-- end scroll wrapper -->
         </div>
       </div>
     `
@@ -10455,8 +11798,10 @@ async function renderProjectFinancialTab(force = false) {
     el.innerHTML = html
     _projFinCache = html
 
-    // Draw charts after DOM update
-    requestAnimationFrame(() => _drawProjectFinCharts(data))
+    // Single table with sticky thead/tfoot — no column sync needed
+    requestAnimationFrame(() => {
+      _drawProjectFinCharts(data)
+    })
 
   } catch(e) {
     el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-triangle text-2xl mb-3"></i><p>${e.message}</p></div>`
@@ -10464,6 +11809,157 @@ async function renderProjectFinancialTab(force = false) {
 }
 
 let _projFinData = null
+
+// ── Xuất Excel bảng chi tiết tài chính từng dự án ────────────────
+function exportFinDetailExcel() {
+  if (typeof XLSX === 'undefined') {
+    toast('Thư viện Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return
+  }
+
+  // Lấy data từ DOM table hiện tại
+  const table = document.getElementById('finDetailTable')
+  if (!table) { toast('Không tìm thấy bảng dữ liệu', 'error'); return }
+
+  const isLifetime = document.querySelector('#analyticsProjectFinanceContent h3')
+    ?.textContent?.includes('Toàn vòng đời') || false
+
+  // Lấy tiêu đề từ heading bảng
+  const titleEl = document.querySelector('#analyticsProjectFinanceContent .card h3')
+  const title   = titleEl?.textContent?.trim().replace(/^\s*\S+\s*/, '') || 'Chi tiết tài chính'
+
+  // Thu thập rows từ thead + tbody + tfoot
+  const wb = XLSX.utils.book_new()
+
+  // Màu sắc header
+  const headerStyle = {
+    font: { bold: true, color: { rgb: 'FFFFFF' }, sz: 10 },
+    fill: { fgColor: { rgb: '1F7A4D' } },
+    alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+    border: { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } }
+  }
+  const numStyle = {
+    numFmt: '#,##0',
+    alignment: { horizontal: 'right', vertical: 'center' }
+  }
+  const pctStyle = {
+    numFmt: '0.0"%"',
+    alignment: { horizontal: 'center', vertical: 'center' }
+  }
+  const totalStyle = {
+    font: { bold: true, sz: 10 },
+    fill: { fgColor: { rgb: 'F3F4F6' } },
+    alignment: { horizontal: 'right', vertical: 'center' },
+    numFmt: '#,##0'
+  }
+
+  // ── Header rows ──
+  const headers1 = isLifetime
+    ? ['Dự án', 'Mã', 'Trạng thái', 'Thời gian', 'GTHĐ', 'DT đã thu', '% GTHĐ', 'DT chờ thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ HĐ (%)']
+    : ['Dự án', 'Mã', 'Trạng thái', 'GTHĐ', 'DT đã thu', '% GTHĐ', 'DT chờ thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ HĐ (%)']
+
+  // ── Lấy dữ liệu từ _projFinData nếu có ──
+  const rawData    = window._projFinRaw || {}
+  const projects   = rawData.projects || []
+  const totals     = rawData.totals   || {}
+  const fyLabel    = rawData.fiscal_year_label || ''
+  const statusLbl  = { active:'Đang chạy', planning:'Kế hoạch', on_hold:'Tạm dừng', completed:'Hoàn thành', cancelled:'Đã hủy' }
+
+  // Sort same as UI
+  const sorted = [...projects].sort((a, b) => {
+    const scoreA = (a.revenue_total > 0 ? 2 : 0) + (a.total_cost > 0 ? 1 : 0)
+    const scoreB = (b.revenue_total > 0 ? 2 : 0) + (b.total_cost > 0 ? 1 : 0)
+    if (scoreB !== scoreA) return scoreB - scoreA
+    return b.revenue_collected - a.revenue_collected
+  })
+
+  const aoa = []
+  // Title row
+  aoa.push([`Chi tiết tài chính từng dự án — ${fyLabel || title}`])
+  aoa.push([]) // blank
+  aoa.push(headers1)
+
+  sorted.forEach(p => {
+    const cv  = p.contract_value    || 0
+    const rc  = p.revenue_collected || 0
+    const rp  = p.revenue_pending   || 0
+    const dc  = p.direct_cost       || 0
+    const lc  = p.labor_cost        || 0
+    const sc  = p.shared_cost       || 0
+    const tc  = p.total_cost        || 0
+    const pf  = p.profit            || 0
+    const base = cv > 0 ? cv : rc
+    const pctOf = (v) => base > 0 ? Math.round(v / base * 1000) / 10 : ''
+    const timespan = (p.start_date || p.end_date)
+      ? `${(p.start_date||'?').substring(0,7)} → ${(p.end_date||'?').substring(0,7)}`
+      : ''
+
+    if (isLifetime) {
+      aoa.push([
+        p.name, p.code, statusLbl[p.status]||p.status, timespan,
+        cv||'', rc||'', pctOf(rc), rp||'', pctOf(rp),
+        dc||'', pctOf(dc), lc||'', pctOf(lc), sc||'', pctOf(sc),
+        tc||'', pctOf(tc), pf, p.margin||'', p.contract_progress||''
+      ])
+    } else {
+      aoa.push([
+        p.name, p.code, statusLbl[p.status]||p.status,
+        cv||'', rc||'', pctOf(rc), rp||'', pctOf(rp),
+        dc||'', pctOf(dc), lc||'', pctOf(lc), sc||'', pctOf(sc),
+        tc||'', pctOf(tc), pf, p.margin||'', p.contract_progress||''
+      ])
+    }
+  })
+
+  // Totals row
+  const tbase = (totals.contract_value||0) > 0 ? totals.contract_value : (totals.revenue_collected||0)
+  const tpctOf = (v) => tbase > 0 ? Math.round((v||0) / tbase * 1000) / 10 : ''
+  if (isLifetime) {
+    aoa.push([
+      'TỔNG CỘNG', '', '', '',
+      totals.contract_value||0, totals.revenue_collected||0, tpctOf(totals.revenue_collected),
+      totals.revenue_pending||0, tpctOf(totals.revenue_pending),
+      totals.direct_cost||0, tpctOf(totals.direct_cost),
+      totals.labor_cost||0,  tpctOf(totals.labor_cost),
+      totals.shared_cost||0, tpctOf(totals.shared_cost),
+      totals.total_cost||0,  tpctOf(totals.total_cost),
+      totals.profit||0, totals.margin||'', totals.contract_progress||''
+    ])
+  } else {
+    aoa.push([
+      'TỔNG CỘNG', '', '',
+      totals.contract_value||0, totals.revenue_collected||0, tpctOf(totals.revenue_collected),
+      totals.revenue_pending||0, tpctOf(totals.revenue_pending),
+      totals.direct_cost||0, tpctOf(totals.direct_cost),
+      totals.labor_cost||0,  tpctOf(totals.labor_cost),
+      totals.shared_cost||0, tpctOf(totals.shared_cost),
+      totals.total_cost||0,  tpctOf(totals.total_cost),
+      totals.profit||0, totals.margin||'', totals.contract_progress||''
+    ])
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+  // Column widths
+  const colWidths = isLifetime
+    ? [40, 10, 12, 20, 14, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 10, 10]
+    : [40, 10, 12, 14, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 10, 10]
+  ws['!cols'] = colWidths.map(w => ({ wch: w }))
+
+  // Merge title across all cols
+  const totalCols = headers1.length
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }]
+
+  // Row heights
+  ws['!rows'] = [{ hpt: 22 }, { hpt: 4 }, { hpt: 32 }]
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Tài chính dự án')
+
+  // Tên file
+  const safeLabel = (fyLabel || title).replace(/[/\\?*[\]]/g, '-').substring(0, 40)
+  const fname = `TaiChinh_DuAn_${safeLabel}_${new Date().toISOString().slice(0,10)}.xlsx`
+  XLSX.writeFile(wb, fname)
+  toast('Xuất Excel thành công!', 'success')
+}
 
 function _drawProjectFinCharts(data) {
   if (!data) return
@@ -10623,22 +12119,21 @@ const PAYMENT_STATUS_COLORS = {
 
 // ── Navigate to Legal page ───────────────────────────────────────────────────
 async function loadLegal() {
-  // Populate project select
-  const sel = $('legalProjectSelect')
-  if (sel && allProjects.length === 0) {
+  // Load projects if needed
+  if (allProjects.length === 0) {
     try { allProjects = (await api('/projects')).projects || [] } catch(e) {}
   }
-  if (sel) {
-    const cur = sel.value
-    sel.innerHTML = '<option value="">-- Chọn dự án --</option>'
-    allProjects.forEach(p => {
-      const opt = document.createElement('option')
-      opt.value = p.id
-      opt.textContent = `[${p.code}] ${p.name}`
-      sel.appendChild(opt)
-    })
-    if (cur) sel.value = cur
-  }
+
+  // Build searchable combobox for project selection
+  const items = allProjects.map(p => ({ value: String(p.id), label: `[${p.code}] ${p.name}` }))
+  const currentVal = _legalCurrentProjectId ? String(_legalCurrentProjectId) : ''
+  createCombobox('legalProjectSelectCombobox', {
+    placeholder: '-- Chọn dự án --',
+    items,
+    value: currentVal,
+    minWidth: '240px',
+    onchange: (val) => _onLegalProjectComboChange(val)
+  })
 
   // If project already selected, reload
   if (_legalCurrentProjectId) {
@@ -10646,9 +12141,8 @@ async function loadLegal() {
   }
 }
 
-async function onLegalProjectChange() {
-  const sel = $('legalProjectSelect')
-  const projectId = parseInt(sel.value)
+async function _onLegalProjectComboChange(val) {
+  const projectId = parseInt(val)
   if (!projectId) {
     _legalCurrentProjectId = null
     $('legalStagesContainer').innerHTML = `<div class="card text-center py-16 text-gray-400">
@@ -10661,6 +12155,12 @@ async function onLegalProjectChange() {
     return
   }
   await loadLegalProject(projectId)
+}
+
+// Keep backward compat if any inline onchange still references this
+async function onLegalProjectChange() {
+  const val = _cbGetValue('legalProjectSelectCombobox')
+  await _onLegalProjectComboChange(val)
 }
 
 async function loadLegalProject(projectId) {
@@ -11674,7 +13174,9 @@ const _legalItemTasksCache = {}
 
 // ── Toggle trạng thái task nhanh (click vào vòng tròn) ───────────────────────
 async function toggleLegalTaskStatus(taskId, currentStatus, itemId) {
-  const next = { todo:'in_progress', in_progress:'done', done:'todo', completed:'todo' }
+  // Chu kỳ status khớp với enum của bảng tasks: todo → in_progress → review → completed → todo
+  // Không dùng 'done' vì không phải giá trị hợp lệ trong DB
+  const next = { todo:'in_progress', in_progress:'review', review:'completed', completed:'todo', done:'completed' }
   const newStatus = next[currentStatus] || 'todo'
   try {
     await api(`/tasks/${taskId}`, { method: 'PUT', data: { status: newStatus } })
@@ -11731,10 +13233,12 @@ function renderLegalItemTasks(itemId, tasks) {
     high:   { color:'#ef4444', bg:'#fef2f2', label:'Cao',        icon:'fa-arrow-up' }
   }
   const STATUS_META = {
-    todo:       { color:'#64748b', bg:'#f1f5f9', label:'Chưa làm',  dot:'#94a3b8' },
-    in_progress:{ color:'#2563eb', bg:'#dbeafe', label:'Đang làm',  dot:'#3b82f6' },
-    done:       { color:'#059669', bg:'#d1fae5', label:'Xong',      dot:'#10b981' },
-    completed:  { color:'#059669', bg:'#d1fae5', label:'Xong',      dot:'#10b981' }
+    todo:       { color:'#64748b', bg:'#f1f5f9', label:'Chưa làm',   dot:'#94a3b8' },
+    in_progress:{ color:'#2563eb', bg:'#dbeafe', label:'Đang làm',   dot:'#3b82f6' },
+    review:     { color:'#d97706', bg:'#fef3c7', label:'Đang duyệt', dot:'#f59e0b' },
+    completed:  { color:'#059669', bg:'#d1fae5', label:'Hoàn thành', dot:'#10b981' },
+    cancelled:  { color:'#6b7280', bg:'#f3f4f6', label:'Đã hủy',     dot:'#9ca3af' },
+    done:       { color:'#059669', bg:'#d1fae5', label:'Hoàn thành', dot:'#10b981' }
   }
 
   const done  = tasks.filter(t => t.status === 'done' || t.status === 'completed').length
@@ -11891,12 +13395,13 @@ function renderLegalSubtasksList(taskId, subtasks) {
   const ST_META = {
     todo:       { color:'#64748b', bg:'#f1f5f9', dot:'#94a3b8', label:'Chưa làm' },
     in_progress:{ color:'#2563eb', bg:'#dbeafe', dot:'#3b82f6', label:'Đang làm' },
-    done:       { color:'#059669', bg:'#d1fae5', dot:'#10b981', label:'Xong'      }
+    done:       { color:'#059669', bg:'#d1fae5', dot:'#10b981', label:'Xong'      },
+    completed:  { color:'#059669', bg:'#d1fae5', dot:'#10b981', label:'Xong'      }
   }
   let html = `<div style="background:#f8fafc;border-top:1px solid #f0f0f0;padding:4px 10px 2px 38px">`
   subtasks.forEach((st, i) => {
     const m      = ST_META[st.status] || ST_META.todo
-    const isDone = st.status === 'done'
+    const isDone = st.status === 'done' || st.status === 'completed'
     html += `
     <div id="lst_${st.id}" class="subtask-row-legal"
       style="display:flex;align-items:center;gap:8px;padding:5px 2px;${i < subtasks.length-1 ? 'border-bottom:1px dashed #f0f0f0' : ''}">

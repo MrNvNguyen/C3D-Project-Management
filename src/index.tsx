@@ -267,6 +267,26 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       }
     }
 
+    case 'chat_message': {
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;"><strong style="color:#374151;">${data.senderName}</strong> vừa gửi tin nhắn ${data.contextType === 'task' ? 'trong task' : 'trong dự án'}:</p>
+        ${emailCard(data.contextType === 'task' ? '📌 Task' : '🏗️ Dự án', data.contextName)}
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0;">
+          <tr>
+            <td style="background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:14px 18px;">
+              <p style="margin:0;color:#374151;font-size:14px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">"${data.message}"</p>
+            </td>
+          </tr>
+        </table>
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập để xem và phản hồi tin nhắn này.</p>`
+      return {
+        subject: `[OneCad BIM] 💬 ${data.senderName}: "${data.message?.slice(0,40)}${data.message?.length > 40 ? '…' : ''}"`,
+        html: emailBase(`💬 Tin nhắn mới`, body)
+      }
+    }
+
     case 'chat_mention': {
       const body = `
         <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
@@ -444,14 +464,13 @@ async function sendEmail(env: Bindings, opts: {
     apiKey = dbConfig?.value || ''
     console.log(`[sendEmail] apiKey from DB: ${apiKey ? 'SET' : 'EMPTY'}`)
   }
+  // 4 mandatory events — always send email regardless of user preference
+  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_overdue', 'project_added', 'chat_mention'])
+
   if (!apiKey) {
     console.log(`[sendEmail] ABORT — no RESEND_API_KEY`)
-    return   // No API key → skip silently
+    return
   }
-
-  // Check user email preference
-  // 4 mandatory events — always send regardless of user preference
-  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_overdue', 'project_added', 'chat_mention'])
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
     const pref = await opts.db.prepare(
@@ -517,6 +536,27 @@ async function sendEmail(env: Bindings, opts: {
       `INSERT INTO email_logs (user_id, to_email, subject, event_type, related_type, related_id, status, error_msg) VALUES (?,?,?,?,?,?,?,?)`
     ).bind(opts.userId || null, opts.to, subject, opts.eventType, opts.relatedType || null, opts.relatedId || null, status, errorMsg).run()
   } catch { /* ignore log error */ }
+
+  // Web Push — fire and forget for mandatory events (requires userId)
+  if (opts.userId) {
+    const eventIconMap: Record<string, string> = {
+      task_assigned:   '📋',
+      task_overdue:    '⏰',
+      project_added:   '🏗️',
+      chat_mention:    '💬',
+      chat_message:    '💬',
+    }
+    const icon = eventIconMap[opts.eventType] || '🔔'
+    sendWebPush(opts.db, opts.userId, {
+      title:       `${icon} ${subject}`,
+      body:        opts.data?.taskTitle || opts.data?.projectName || opts.data?.message || opts.toName,
+      tag:         `${opts.eventType}-${opts.relatedId || opts.userId}`,
+      url:         '/',
+      notifId:     null,
+      relatedType: opts.relatedType || null,
+      relatedId:   opts.relatedId   || null,
+    }).catch(() => { /* silent */ })
+  }
 }
 
 // ---- Helper: get user email info ----
@@ -890,7 +930,7 @@ app.get('/api/projects', authMiddleware, async (c) => {
         u2.full_name as leader_name,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) as total_tasks,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'completed') as completed_tasks,
-        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.is_overdue = 1) as overdue_tasks,
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')) as overdue_tasks,
         (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) as member_count,
         (SELECT pm2.role FROM project_members pm2 WHERE pm2.project_id = p.id AND pm2.user_id = ${user.id} LIMIT 1) as my_project_role
       FROM projects p
@@ -942,13 +982,28 @@ app.get('/api/projects/:id', authMiddleware, async (c) => {
       WHERE pm.project_id = ?
     `).bind(id).all()
 
+    // Task stats thực tế (không bị lọc RBAC) — dùng cho tiến độ tổng và số trễ hạn
+    const taskStats = await db.prepare(`
+      SELECT
+        COUNT(*) as total_tasks,
+        SUM(CASE WHEN status IN ('completed','review') THEN 1 ELSE 0 END) as done_tasks,
+        SUM(CASE WHEN due_date < date('now') AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks
+      FROM tasks WHERE project_id = ?
+    `).bind(id).first() as any
+
+    const taskStatsObj = {
+      total_tasks:   taskStats?.total_tasks   || 0,
+      done_tasks:    taskStats?.done_tasks     || 0,
+      overdue_tasks: taskStats?.overdue_tasks  || 0
+    }
+
     // Hide financial data from non-system_admin
     const user = c.get('user') as any
     if (user.role !== 'system_admin') {
       const { contract_value, budget, ...safeProject } = project as any
-      return c.json({ ...safeProject, members: members.results })
+      return c.json({ ...safeProject, members: members.results, task_stats: taskStatsObj })
     }
-    return c.json({ ...project, members: members.results })
+    return c.json({ ...project, members: members.results, task_stats: taskStatsObj })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1647,11 +1702,14 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
 
     // - Admin/Project admin/leader: sửa toàn bộ fields
     // - Member tự tạo task (assigned_by = user.id): sửa toàn bộ fields (task của mình)
-    // - Member được giao task nhưng không phải người tạo: chỉ sửa status/progress/actual_hours
+    // - Member được giao task nhưng không phải người tạo: sửa status/progress/actual_hours + estimated_hours (tự lên kế hoạch)
     const isFullAccess = isAdmin || isProjAdmin || isCreator
     const fields = isFullAccess
       ? ['title', 'description', 'discipline_code', 'phase', 'priority', 'status', 'assigned_to', 'start_date', 'due_date', 'actual_start_date', 'actual_end_date', 'estimated_hours', 'actual_hours', 'progress', 'category_id']
-      : ['status', 'progress', 'actual_hours', 'actual_end_date']
+      : ['status', 'progress', 'actual_hours', 'actual_end_date', 'estimated_hours']
+    // Normalize legacy status 'done' → 'completed' (tasks table không có 'done')
+    if (data.status === 'done') data.status = 'completed'
+
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
 
@@ -1681,20 +1739,23 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
       }
     }
 
-    // ── Email: task_status_updated (chỉ khi status thay đổi) ──
-    if (data.status && data.status !== task.status) {
-      const notifyUserId = task.assigned_to && task.assigned_to !== user.id ? task.assigned_to : null
-      if (notifyUserId) {
-        const emailUser = await getUserEmailInfo(db, notifyUserId)
-        const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
-        if (emailUser) {
-          await sendEmail(c.env, {
-            to: emailUser.email, toName: emailUser.full_name,
-            eventType: 'task_status_updated',
-            data: { taskTitle: task.title, projectName: projInfo?.name, oldStatus: task.status, newStatus: data.status, updatedBy: user.full_name },
-            db, userId: notifyUserId, relatedType: 'task', relatedId: id
-          })
-        }
+    // ── Email: task_status_updated → chỉ gửi cho người tạo task (assigned_by) ──
+    if (data.status && data.status !== task.status && task.assigned_by && task.assigned_by !== user.id) {
+      const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
+      const creator = await getUserEmailInfo(db, task.assigned_by)
+      if (creator?.email) {
+        await sendEmail(c.env, {
+          to: creator.email, toName: creator.full_name,
+          eventType: 'task_status_updated',
+          data: {
+            taskTitle:   task.title,
+            projectName: projInfo?.name,
+            oldStatus:   task.status,
+            newStatus:   data.status,
+            updatedBy:   user.full_name
+          },
+          db, userId: task.assigned_by, relatedType: 'task', relatedId: id
+        })
       }
     }
 
@@ -2740,6 +2801,41 @@ app.post('/api/tasks/:id/subtasks', authMiddleware, async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
+// POST /api/tasks/:id/subtasks/bulk — tạo nhiều subtask cùng lúc
+app.post('/api/tasks/:id/subtasks/bulk', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const taskId = parseInt(c.req.param('id'))
+
+    const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(taskId).first() as any
+    if (!task) return c.json({ error: 'Task không tồn tại' }, 404)
+
+    const { subtasks } = await c.req.json()
+    if (!Array.isArray(subtasks) || subtasks.length === 0) {
+      return c.json({ error: 'Danh sách subtask không được để trống' }, 400)
+    }
+
+    const results: number[] = []
+    for (const item of subtasks) {
+      const title = (item.title || '').trim()
+      if (!title) continue  // bỏ qua dòng trống
+      const r = await db.prepare(`
+        INSERT INTO subtasks (task_id, title, description, status, priority, assigned_to, due_date, estimated_hours, notes, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        taskId, title, item.description || null,
+        item.status || 'todo', item.priority || 'medium',
+        item.assigned_to || user.id,
+        item.due_date || null, item.estimated_hours || 0, item.notes || null, user.id
+      ).run()
+      if (r.meta?.last_row_id) results.push(r.meta.last_row_id as number)
+    }
+
+    return c.json({ success: true, created: results.length, ids: results }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // PUT /api/subtasks/:id — cập nhật subtask
 app.put('/api/subtasks/:id', authMiddleware, async (c) => {
   try {
@@ -2989,16 +3085,24 @@ app.post('/api/messages', authMiddleware, async (c) => {
       const title = context_type === 'task'
         ? `💬 Tin nhắn mới trong task`
         : `💬 Tin nhắn mới trong dự án`
+      const msgBody = `${user.full_name} đã gửi tin trong "${contextName}": ${snippet}`
+
+      // In-app notification
       await db.prepare(
         `INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)`
-      ).bind(
-        uid,
+      ).bind(uid, title, msgBody, 'chat_message', context_type, parseInt(context_id)).run()
+      notifiedIds.add(uid)
+
+      // Browser push only — NO email for normal chat messages
+      sendWebPush(db, uid, {
         title,
-        `${user.full_name} đã gửi tin trong "${contextName}": ${snippet}`,
-        'chat_message',
-        context_type,
-        parseInt(context_id)
-      ).run()
+        body:        msgBody,
+        tag:         `chat_message-${context_type}-${context_id}`,
+        url:         '/',
+        notifId:     null,
+        relatedType: context_type,
+        relatedId:   parseInt(context_id),
+      }).catch(() => {})
     }
     // ── End notifications ──────────────────────────────────────────────────
 
@@ -3051,11 +3155,12 @@ app.delete('/api/messages/:id', authMiddleware, async (c) => {
 })
 
 // ===================================================
-// COST MANAGEMENT ROUTES (Admin Only)
+// COST MANAGEMENT ROUTES (Admin + Project Admin/Leader)
 // ===================================================
-app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
+app.get('/api/costs', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
     const { project_id, cost_type, year } = c.req.query()
 
     let query = `
@@ -3067,10 +3172,18 @@ app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
       WHERE 1=1
     `
     const params: any[] = []
+
+    // Non system_admin chỉ xem được chi phí của dự án họ quản lý
+    if (user.role !== 'system_admin') {
+      query += ` AND (p.admin_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = pc.project_id AND pm.user_id = ? AND pm.role IN ('project_admin','project_leader')
+      ))`
+      params.push(user.id, user.id)
+    }
+
     if (project_id) { query += ` AND pc.project_id = ?`; params.push(parseInt(project_id)) }
     if (cost_type) { query += ` AND pc.cost_type = ?`; params.push(cost_type) }
     if (year) {
-      // Dùng fiscal year date range thay vì calendar year
       const fySettings = await getFiscalYearSettings(db)
       const { startDate, endDate } = getFiscalYearDateRange(parseInt(year), fySettings)
       query += ` AND pc.cost_date >= ? AND pc.cost_date <= ?`
@@ -3085,7 +3198,7 @@ app.get('/api/costs', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-app.post('/api/costs', authMiddleware, adminOnly, async (c) => {
+app.post('/api/costs', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
@@ -3094,6 +3207,12 @@ app.post('/api/costs', authMiddleware, adminOnly, async (c) => {
 
     if (!project_id || !cost_type || !description || !amount) {
       return c.json({ error: 'Missing required fields' }, 400)
+    }
+
+    // Kiểm tra quyền: system_admin hoặc project_admin/leader của dự án này
+    if (user.role !== 'system_admin') {
+      const canManage = await isProjectAdmin(db, user.id, project_id)
+      if (!canManage) return c.json({ error: 'Chỉ System Admin hoặc Quản lý dự án mới được thêm chi phí' }, 403)
     }
 
     const result = await db.prepare(
@@ -3108,10 +3227,20 @@ app.post('/api/costs', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-app.put('/api/costs/:id', authMiddleware, adminOnly, async (c) => {
+app.put('/api/costs/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
     const id = parseInt(c.req.param('id'))
+
+    // Kiểm tra quyền
+    if (user.role !== 'system_admin') {
+      const cost = await db.prepare('SELECT project_id FROM project_costs WHERE id = ?').bind(id).first() as any
+      if (!cost) return c.json({ error: 'Not found' }, 404)
+      const canManage = await isProjectAdmin(db, user.id, cost.project_id)
+      if (!canManage) return c.json({ error: 'Chỉ System Admin hoặc Quản lý dự án mới được sửa chi phí' }, 403)
+    }
+
     const data = await c.req.json()
     const fields = ['cost_type', 'description', 'amount', 'currency', 'cost_date', 'invoice_number', 'vendor', 'notes']
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
@@ -3125,10 +3254,20 @@ app.put('/api/costs/:id', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-app.delete('/api/costs/:id', authMiddleware, adminOnly, async (c) => {
+app.delete('/api/costs/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
+    const user = c.get('user') as any
     const id = parseInt(c.req.param('id'))
+
+    // Kiểm tra quyền
+    if (user.role !== 'system_admin') {
+      const cost = await db.prepare('SELECT project_id FROM project_costs WHERE id = ?').bind(id).first() as any
+      if (!cost) return c.json({ error: 'Not found' }, 404)
+      const canManage = await isProjectAdmin(db, user.id, cost.project_id)
+      if (!canManage) return c.json({ error: 'Chỉ System Admin hoặc Quản lý dự án mới được xóa chi phí' }, 403)
+    }
+
     await db.prepare('DELETE FROM project_costs WHERE id = ?').bind(id).run()
     return c.json({ success: true })
   } catch (e: any) {
@@ -3650,54 +3789,40 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       poolTotal += poolRow?.v || 0
     }
 
-    // ── HYBRID: tính từng tháng calendar, ưu tiên synced → fallback real-time ──
+    // ── PURE REALTIME: luôn tính từ monthly_labor_costs + timesheets ──
+    // Không dùng project_labor_costs (synced) vì có thể bị lệch so với tổng lương thực tế
+    // Mỗi tháng: cph = total_labor_cost / tổng giờ quy đổi toàn công ty
+    //            chi phí dự án = giờ quy đổi dự án × cph
     const projectMap: Record<number, any> = {}
-    let hasSynced = false, hasRealtime = false
     let grandEffHours = 0
+    // monthly_totals: tổng phân bổ thực tế từng tháng (để UI so sánh với ngân sách nhập)
+    const monthlyTotals: Record<string, { allocated: number; raw_hours: number; eff_hours: number; source: string }> = {}
 
     for (const { calYear, calMonth, fiscalIdx } of calPairs) {
       const calY = String(calYear)
       const calM = String(calMonth).padStart(2, '0')
+      const monthKey = `${calYear}-${calM}`
 
-      // 1. Kiểm tra project_labor_costs (synced) cho (calYear, calMonth) này
-      const syncedRows = await db.prepare(`
-        SELECT p.id as project_id, p.code as project_code, p.name as project_name,
-               plc.total_labor_cost, plc.total_hours, plc.cost_per_hour
-        FROM project_labor_costs plc
-        JOIN projects p ON plc.project_id = p.id
-        WHERE plc.year = ? AND plc.month = ?
-      `).bind(calYear, calMonth).all()
-
-      if ((syncedRows.results as any[]).length > 0) {
-        hasSynced = true
-        for (const row of syncedRows.results as any[]) {
-          const pid = row.project_id
-          if (!projectMap[pid]) projectMap[pid] = { project_id: pid, project_code: row.project_code, project_name: row.project_name, total_labor_cost: 0, total_hours: 0, _eff_hours: 0, months_count: 0 }
-          projectMap[pid].total_labor_cost += row.total_labor_cost || 0
-          projectMap[pid].total_hours      += row.total_hours      || 0
-          const effH = row.cost_per_hour > 0 ? (row.total_labor_cost / row.cost_per_hour) : (row.total_hours || 0)
-          projectMap[pid]._eff_hours += effH
-          grandEffHours += effH
-          projectMap[pid].months_count++
-        }
-        continue
-      }
-
-      // 2. Fallback real-time: monthly_labor_costs + timesheets
+      // Lấy tổng lương đã nhập cho tháng này
       const mlcRow = await db.prepare(
         `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
       ).bind(calMonth, calYear).first() as any
       if (!mlcRow?.total_labor_cost) continue
 
+      // Tổng giờ quy đổi toàn công ty trong tháng
       const compHrsRow = await db.prepare(`
-        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff,
+               SUM(regular_hours + IFNULL(overtime_hours,0))     as comp_raw
         FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
       `).bind(OVERTIME_FACTOR, calY, calM).first() as any
       const compEff = compHrsRow?.comp_eff || 0
+      const compRaw = compHrsRow?.comp_raw || 0
       if (compEff <= 0) continue
 
+      // Đơn giá lương/giờ quy đổi = tổng lương / tổng giờ quy đổi toàn cty
       const cph = mlcRow.total_labor_cost / compEff
 
+      // Giờ làm theo dự án trong tháng
       const projRows = await db.prepare(`
         SELECT project_id,
                SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
@@ -3709,7 +3834,6 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       `).bind(OVERTIME_FACTOR, calY, calM).all()
 
       if ((projRows.results as any[]).length === 0) continue
-      hasRealtime = true
 
       const projIds = (projRows.results as any[]).map((r: any) => r.project_id)
       const projInfoRows = await db.prepare(
@@ -3718,6 +3842,7 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       const projInfoMap: Record<number, any> = {}
       for (const p of projInfoRows.results as any[]) projInfoMap[p.id] = p
 
+      let mAllocated = 0, mEffHours = 0
       for (const row of projRows.results as any[]) {
         const pid = row.project_id
         const projRaw = row.proj_raw || 0
@@ -3734,7 +3859,10 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
         projectMap[pid]._eff_hours       += projEff
         grandEffHours += projEff
         projectMap[pid].months_count++
+        mAllocated += mc
+        mEffHours += projEff
       }
+      monthlyTotals[monthKey] = { allocated: Math.round(mAllocated), raw_hours: Math.round(compRaw), eff_hours: Math.round(mEffHours), source: 'realtime' }
     }
 
     const projectsArr = Object.values(projectMap)
@@ -3745,12 +3873,28 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
     const grandRawHours = projectsArr.reduce((s: number, r: any) => s + (r.total_hours || 0), 0)
     const grandAvgCph   = grandEffHours > 0 ? grandTotal / grandEffHours : 0
 
-    const dataSource = hasSynced && hasRealtime ? 'mixed' : hasSynced ? 'synced' : hasRealtime ? 'realtime' : 'none'
+    const dataSource = grandTotal > 0 ? 'realtime' : 'none'
 
     // Xóa field nội bộ _eff_hours trước khi trả về
     const projectsOut = projectsArr.map((r: any) => {
       const { _eff_hours, ...rest } = r
       return rest
+    })
+
+    // Xây dựng monthly_totals array: mỗi tháng NTC kèm allocated thực tế + budget đã nhập
+    const monthlyTotalsArr = calPairs.map(p => {
+      const calM = String(p.calMonth).padStart(2, '0')
+      const monthKey = `${p.calYear}-${calM}`
+      const mt = monthlyTotals[monthKey]
+      return {
+        fiscal_idx: p.fiscalIdx,
+        cal_year: p.calYear,
+        cal_month: p.calMonth,
+        allocated: mt?.allocated || 0,
+        raw_hours: mt?.raw_hours || 0,
+        eff_hours: mt?.eff_hours || 0,
+        source: mt?.source || 'none'
+      }
     })
 
     return c.json({
@@ -3764,12 +3908,13 @@ app.get('/api/financial-summary/labor-costs-all-projects', authMiddleware, admin
       grand_total_eff_hours: Math.round(grandEffHours),
       grand_avg_cost_per_hour: Math.round(grandAvgCph),
       projects_count: projectsArr.length,
-      // Tổng ngân sách lương đã nhập (monthly_labor_costs pool)
+      // pool_total = tổng ngân sách lương đã nhập (monthly_labor_costs) — chỉ dùng tham chiếu
       pool_total: Math.round(poolTotal),
+      // monthly_totals: phân bổ thực tế + giờ làm từng tháng NTC
+      monthly_totals: monthlyTotalsArr,
       // Danh sách tháng NTC đã tính (chỉ số fiscal T1..T12)
       fiscal_months_included: calPairs.map(p => p.fiscalIdx),
       // Danh sách calendar pairs để UI render đúng nhãn tháng
-      // fiscalIdx = chỉ số NTC T1..T12; calMonth/calYear = tháng dương lịch tương ứng
       cal_pairs: calPairs.map(p => ({ fiscalIdx: p.fiscalIdx, calYear: p.calYear, calMonth: p.calMonth }))
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -3841,9 +3986,10 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
       revDateFilter  = `AND pr.revenue_date >= '${fyStart}' AND pr.revenue_date <= '${fyEnd}'`
     }
 
-    // ── Step 1: Labor cost — HYBRID từng tháng ──────────────────────
-    // Mỗi tháng: ưu tiên project_labor_costs (đã sync), fallback real-time.
-    // Cộng dồn tất cả → đúng kể cả khi chỉ sync 1 phần tháng trong NTC.
+    // ── Step 1: Labor cost — PURE REALTIME từng tháng ──────────────────
+    // Luôn tính từ monthly_labor_costs + timesheets (không dùng project_labor_costs)
+    // CPH tháng = monthly_labor_cost / tổng giờ quy đổi toàn cty
+    // Chi phí dự án tháng = giờ quy đổi dự án × CPH
     const monthsToCalcCRS: number[] = selectedMonths !== null
       ? selectedMonths
       : (() => {
@@ -3855,39 +4001,22 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
 
     let laborCost   = 0
     let laborHours  = 0
-    let laborPerHour = 0
+    let laborEffHours = 0  // tổng giờ quy đổi để tính CPH bình quân
     let laborMonthsCount = 0
     let laborSource = 'none'
-    let crsHasSynced = false; let crsHasRealtime = false
-    let crsCphSum = 0; let crsCphCount = 0
 
     for (const lm of monthsToCalcCRS) {
       const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
       const calY = String(calYear)
       const calM = String(calMonth).padStart(2, '0')
 
-      // Ưu tiên cached
-      const cachedRow = await db.prepare(
-        `SELECT total_labor_cost, total_hours, cost_per_hour
-         FROM project_labor_costs plc WHERE plc.project_id = ? AND plc.month = ? AND plc.year = ?`
-      ).bind(projectId, calMonth, calYear).first() as any
-
-      if (cachedRow?.total_labor_cost) {
-        laborCost += cachedRow.total_labor_cost
-        laborHours += cachedRow.total_hours || 0
-        crsCphSum += cachedRow.cost_per_hour || 0
-        crsCphCount++
-        laborMonthsCount++
-        crsHasSynced = true
-        continue
-      }
-
-      // Fallback real-time
+      // Lấy tổng lương đã nhập cho tháng
       const mlcRow = await db.prepare(
         `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
       ).bind(calMonth, calYear).first() as any
       if (!mlcRow?.total_labor_cost) continue
 
+      // Giờ quy đổi dự án và toàn cty trong tháng
       const projHrsRow = await db.prepare(`
         SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
                SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
@@ -3908,22 +4037,21 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
 
       const cph = mlcRow.total_labor_cost / compEff
       const mc  = Math.round(projEff * cph)
-      laborCost += mc; laborHours += projRaw
-      crsCphSum += cph; crsCphCount++
+      laborCost    += mc
+      laborHours   += projRaw
+      laborEffHours += projEff
       laborMonthsCount++
-      crsHasRealtime = true
     }
 
-    laborPerHour = crsCphCount > 0 ? crsCphSum / crsCphCount : 0
-    laborSource = laborCost > 0
-      ? (crsHasSynced && crsHasRealtime ? 'mixed' : crsHasSynced ? 'project_labor_costs' : 'realtime')
-      : 'none'
+    // CPH bình quân = tổng chi phí / tổng giờ quy đổi (chính xác hơn trung bình CPH)
+    const laborPerHour = laborEffHours > 0 ? laborCost / laborEffHours : 0
+    laborSource = laborCost > 0 ? 'realtime' : 'none'
 
-    // ── Validate labor cost cap ─────────────────────────────────────
+    // ── Validate labor cost (chỉ cảnh báo, KHÔNG cap) ──────────────
     const validation_warnings: string[] = []
     if (contractValue > 0 && laborCost > contractValue) {
       validation_warnings.push(`Chi phí lương (${fmtNum(laborCost)} ₫) vượt giá trị hợp đồng`)
-      laborCost = contractValue
+      // KHÔNG cap laborCost — hiển thị đúng chi phí thực tế
     }
 
     // ── Step 2: Other costs (project_costs, exclude salary) ─────────
@@ -4061,36 +4189,45 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
     const contractValue = proj.contract_value || 0
     const validation_warnings: string[] = []
 
-    // --- Chi phí lương: ưu tiên project_labor_costs, fallback tính real-time ---
-    const cachedLabor = await db.prepare(
-      `SELECT total_labor_cost, total_hours, cost_per_hour FROM project_labor_costs
-       WHERE project_id = ? AND month = ? AND year = ?`
-    ).bind(projectId, mInt, yInt).first() as any
+    // --- Chi phí lương: PURE REALTIME từ monthly_labor_costs + timesheets ---
+    // Không dùng project_labor_costs (sync) để đảm bảo nhất quán với tổng lương thực tế
+    let laborCost: number, projectHrs: number, projectEffHrs: number, costPerHourFinal: number, laborSource: string
 
-    let laborCost: number, projectHrs: number, costPerHourFinal: number, laborSource: string
-    if (cachedLabor) {
-      laborCost = cachedLabor.total_labor_cost
-      projectHrs = cachedLabor.total_hours
-      costPerHourFinal = cachedLabor.cost_per_hour
-      laborSource = 'project_labor_costs'
-    } else {
-      // Real-time từ monthly_labor_costs / salary_pool + timesheets
-      const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
-      const projHours = await db.prepare(
-        `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
-         FROM timesheets WHERE project_id = ?
-         AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
-      ).bind(projectId, y, m).first() as any
-      projectHrs = projHours?.total || 0
-      costPerHourFinal = costPerHour
-      laborCost = Math.round(projectHrs * costPerHour)
+    const mlcSingle = await db.prepare(
+      `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+    ).bind(mInt, yInt).first() as any
+
+    const projHrsRowSingle = await db.prepare(`
+      SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
+             SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+      FROM timesheets WHERE project_id = ?
+      AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+    `).bind(OVERTIME_FACTOR, projectId, y, m).first() as any
+
+    const compHrsRowSingle = await db.prepare(`
+      SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+      FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+    `).bind(OVERTIME_FACTOR, y, m).first() as any
+
+    projectHrs     = projHrsRowSingle?.proj_raw || 0
+    projectEffHrs  = projHrsRowSingle?.proj_eff || 0
+    const compEffSingle = compHrsRowSingle?.comp_eff || 0
+
+    if (mlcSingle?.total_labor_cost && compEffSingle > 0) {
+      const cphSingle = mlcSingle.total_labor_cost / compEffSingle
+      costPerHourFinal = cphSingle
+      laborCost = Math.round(projectEffHrs * cphSingle)
       laborSource = 'realtime'
+    } else {
+      costPerHourFinal = 0
+      laborCost = 0
+      laborSource = 'none'
     }
 
-    // Validation: labor cost > contract value
+    // Validation: labor cost > contract value (chỉ cảnh báo, KHÔNG cap)
     if (contractValue > 0 && laborCost > contractValue) {
       validation_warnings.push(`Chi phí lương (${fmtNum(laborCost)} ₫) vượt giá trị hợp đồng (${fmtNum(contractValue)} ₫)`)
-      laborCost = contractValue // Cap tại contract value
+      // KHÔNG cap laborCost — hiển thị đúng chi phí thực tế
     }
 
     // --- Chi phí khác (project_costs, không tính loại 'salary') ---
@@ -6356,29 +6493,47 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     `).all()
 
     // Member productivity — use subqueries to avoid Cartesian product between tasks and timesheets
-    const memberProductivity = await db.prepare(`
+    const memberProductivityRaw = await db.prepare(`
       SELECT u.id, u.full_name, u.department,
-        COALESCE(tsk.total_tasks, 0)     AS total_tasks,
+        COALESCE(tsk.total_tasks,     0) AS total_tasks,
         COALESCE(tsk.completed_tasks, 0) AS completed_tasks,
-        COALESCE(ts.total_hours, 0)      AS total_hours
+        COALESCE(tsk.ontime_tasks,    0) AS ontime_tasks,
+        COALESCE(ts.total_hours,      0) AS total_hours
       FROM users u
       LEFT JOIN (
         SELECT assigned_to,
-          COUNT(DISTINCT id)                                                          AS total_tasks,
-          COUNT(DISTINCT CASE WHEN status IN ('completed','review') THEN id END)     AS completed_tasks
+          COUNT(DISTINCT id) AS total_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review') THEN id END) AS completed_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review')
+            AND actual_end_date IS NOT NULL
+            AND actual_end_date <= due_date THEN id END) AS ontime_tasks
         FROM tasks
         GROUP BY assigned_to
       ) tsk ON tsk.assigned_to = u.id
       LEFT JOIN (
         SELECT user_id,
-          SUM(regular_hours + overtime_hours) AS total_hours
+          SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours
         FROM timesheets
         WHERE work_date >= date('now', '-30 days')
         GROUP BY user_id
       ) ts ON ts.user_id = u.id
       WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')
-      ORDER BY total_hours DESC
+      ORDER BY completed_tasks DESC, total_hours DESC
     `).all()
+
+    // Tính các chỉ số năng suất (cùng công thức với /api/productivity)
+    const memberProductivity = {
+      results: (memberProductivityRaw.results as any[]).map(r => {
+        const task_giao       = Math.max(0, r.total_tasks)
+        const da_xong         = Math.min(task_giao, Math.max(0, r.completed_tasks))
+        const dung_han        = Math.min(da_xong, Math.max(0, r.ontime_tasks))
+        const completion_rate = task_giao > 0 ? Math.min(100, Math.round((da_xong / task_giao) * 100)) : 0
+        const ontime_rate     = da_xong > 0   ? Math.min(100, Math.round((dung_han / da_xong) * 100)) : 0
+        const productivity    = Math.round((completion_rate + ontime_rate) / 2)
+        const score           = Math.round((productivity + ontime_rate) / 2)
+        return { ...r, completion_rate, ontime_rate, productivity, score }
+      })
+    }
 
     // ── Extra stats for secondary KPI widgets ──────────────────────────
     const curYear  = new Date().getFullYear()
@@ -6701,45 +6856,34 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       GROUP BY p.id, pc.cost_type
     `).bind(fyStart, fyEnd).all()
 
-    // Labor costs: ưu tiên project_labor_costs (đã sync)
-    // NTC bắc qua 2 năm lịch → cần lấy cả 2 năm
+    // Labor costs: PURE REALTIME — luôn tính từ monthly_labor_costs + timesheets
+    // Không dùng project_labor_costs (sync) để đảm bảo nhất quán với tổng lương thực tế
     const fyEnd1Year = fySettings.start_month === 1 ? fyYear : fyYear + 1
-    let laborWhereSynced: string       // dùng trong JOIN ON ... (có alias plc.)
     let laborWhereSimple: string       // dùng trong WHERE standalone (không có alias)
     let laborParamsSynced: any[]
     if (fySettings.start_month === 1) {
-      laborWhereSynced = `plc.year = ?`
       laborWhereSimple = `year = ?`
       laborParamsSynced = [fyYear]
     } else {
-      laborWhereSynced = `((plc.year = ? AND plc.month >= ?) OR (plc.year = ? AND plc.month < ?))`
       laborWhereSimple = `((year = ? AND month >= ?) OR (year = ? AND month < ?))`
       laborParamsSynced = [fyYear, fySettings.start_month, fyEnd1Year, fySettings.start_month]
     }
 
-    const laborByProjectSynced = await db.prepare(`
-      SELECT p.id, p.code, p.name,
-        COALESCE(SUM(plc.total_labor_cost), 0) as labor_cost,
-        COALESCE(SUM(plc.total_hours), 0) as total_hours,
-        COUNT(DISTINCT plc.month) as months_with_data
-      FROM projects p
-      LEFT JOIN project_labor_costs plc ON plc.project_id = p.id AND ${laborWhereSynced}
-      WHERE p.status NOT IN ('cancelled','completed')
-      GROUP BY p.id
-    `).bind(...laborParamsSynced).all()
+    // Lấy danh sách dự án (không cancelled) để build map
+    const projectListRows = await db.prepare(`
+      SELECT id, code, name FROM projects WHERE status != 'cancelled'
+    `).all()
+    const realtimeMap: Record<number, { rt_labor_cost: number; rt_hours: number; code: string; name: string }> = {}
+    for (const p of (projectListRows.results as any[])) {
+      realtimeMap[p.id] = { rt_labor_cost: 0, rt_hours: 0, code: p.code, name: p.name }
+    }
 
-    // Real-time fallback: tính từng tháng NTC (có thể bắc qua 2 năm lịch)
-    const realtimeMap: Record<number, { rt_labor_cost: number; rt_hours: number }> = {}
+    // Tính realtime từng tháng NTC (có thể bắc qua 2 năm lịch)
     {
       const sm = fySettings.start_month
-      const monthsInFY: Array<{ calYear: number; calMonth: number }> = []
       for (let i = 0; i < 12; i++) {
         const lm = ((sm - 1 + i) % 12) + 1
         const { calYear, calMonth } = fiscalMonthToCalendar(lm, fyYear, fySettings)
-        monthsInFY.push({ calYear, calMonth })
-      }
-
-      for (const { calYear, calMonth } of monthsInFY) {
         const calY = String(calYear)
         const calM = String(calMonth).padStart(2, '0')
 
@@ -6769,50 +6913,45 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
         for (const pr of (projRows.results as any[])) {
           if ((pr.proj_raw || 0) <= 0) continue
           const mc = Math.round((pr.proj_eff || 0) * cph)
-          if (!realtimeMap[pr.project_id]) realtimeMap[pr.project_id] = { rt_labor_cost: 0, rt_hours: 0 }
-          realtimeMap[pr.project_id].rt_labor_cost += mc
-          realtimeMap[pr.project_id].rt_hours += pr.proj_raw || 0
+          const pid = pr.project_id
+          if (!realtimeMap[pid]) {
+            // dự án không trong danh sách ban đầu (đã cancelled) — bỏ qua
+            continue
+          }
+          realtimeMap[pid].rt_labor_cost += mc
+          realtimeMap[pid].rt_hours += pr.proj_raw || 0
         }
       }
     }
 
-    // Merge: dùng synced nếu có, fallback realtime
-    const laborByProject = (laborByProjectSynced.results as any[]).map((p: any) => {
-      if ((p.labor_cost || 0) > 0) return { ...p, labor_source: 'synced' }
-      const rt = realtimeMap[p.id]
-      if (rt && (rt.rt_labor_cost || 0) > 0) {
-        return { ...p, labor_cost: Math.round(rt.rt_labor_cost), total_hours: rt.rt_hours || 0, labor_source: 'realtime' }
-      }
-      return { ...p, labor_source: 'none' }
-    })
+    // Xây dựng laborByProject từ realtime map
+    const laborByProject = Object.entries(realtimeMap).map(([idStr, rt]) => ({
+      id: parseInt(idStr),
+      code: rt.code,
+      name: rt.name,
+      labor_cost: Math.round(rt.rt_labor_cost),
+      total_hours: rt.rt_hours,
+      months_with_data: 0,
+      labor_source: 'realtime'
+    }))
 
-    // Monthly labor costs summary — ưu tiên project_labor_costs, fallback monthly_labor_costs
+    // Monthly labor costs summary — luôn từ monthly_labor_costs (tổng lương thực tế)
     // Bao gồm cả 2 năm lịch nếu NTC bắc qua 2 năm
-    const plcMonthly = await db.prepare(`
-      SELECT PRINTF('%d-%02d', year, month) as month,
-        SUM(total_labor_cost) as total_cost, 'salary' as cost_type
-      FROM project_labor_costs WHERE ${laborWhereSimple}
-      GROUP BY month ORDER BY month ASC
-    `).bind(...laborParamsSynced).all()
-
-    // Nếu project_labor_costs trống, lấy từ monthly_labor_costs (tổng công ty)
-    let monthlyLaborSummary = plcMonthly
-    if (!plcMonthly.results?.length) {
-      if (fySettings.start_month === 1) {
-        monthlyLaborSummary = await db.prepare(`
-          SELECT PRINTF('%d-%02d', year, month) as month,
-            total_labor_cost as total_cost, 'salary' as cost_type
-          FROM monthly_labor_costs WHERE year = ?
-          ORDER BY month ASC
-        `).bind(fyYear).all()
-      } else {
-        monthlyLaborSummary = await db.prepare(`
-          SELECT PRINTF('%d-%02d', year, month) as month,
-            total_labor_cost as total_cost, 'salary' as cost_type
-          FROM monthly_labor_costs WHERE ${laborWhereSimple}
-          ORDER BY month ASC
-        `).bind(...laborParamsSynced).all()
-      }
+    let monthlyLaborSummary: any
+    if (fySettings.start_month === 1) {
+      monthlyLaborSummary = await db.prepare(`
+        SELECT PRINTF('%d-%02d', year, month) as month,
+          total_labor_cost as total_cost, 'salary' as cost_type
+        FROM monthly_labor_costs WHERE year = ?
+        ORDER BY month ASC
+      `).bind(fyYear).all()
+    } else {
+      monthlyLaborSummary = await db.prepare(`
+        SELECT PRINTF('%d-%02d', year, month) as month,
+          total_labor_cost as total_cost, 'salary' as cost_type
+        FROM monthly_labor_costs WHERE ${laborWhereSimple}
+        ORDER BY month ASC
+      `).bind(...laborParamsSynced).all()
     }
 
     // Monthly summary: other non-salary costs from project_costs trong NTC
@@ -6839,6 +6978,26 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       ...(monthlyLaborSummary.results || [])
     ]
 
+    // Pool total: tổng monthly_labor_costs đã nhập cho kỳ NTC này
+    // Dùng để phát hiện chênh lệch giữa chi phí đã nhập tổng thể và chi phí đã sync từng dự án
+    let poolTotalLabor = 0
+    for (const { calYear, calMonth } of (() => {
+      const sm = fySettings.start_month
+      return Array.from({ length: 12 }, (_, i) => {
+        const rawCal = sm - 1 + i + 1
+        const calMonth = ((rawCal - 1) % 12) + 1
+        const calYear = rawCal > 12 ? fyYear + 1 : fyYear
+        return { calYear, calMonth }
+      })
+    })()) {
+      const pr = await db.prepare(
+        `SELECT COALESCE(total_labor_cost, 0) as v FROM monthly_labor_costs WHERE month = ? AND year = ?`
+      ).bind(calMonth, calYear).first() as any
+      poolTotalLabor += pr?.v || 0
+    }
+
+    const projectLaborTotal = (laborByProject as any[]).reduce((s: number, p: any) => s + (p.labor_cost || 0), 0)
+
     return c.json({
       fiscal_year: fyYear,
       fiscal_year_label: getFiscalYearLabel(fyYear, fySettings),
@@ -6848,7 +7007,9 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       cost_by_project: costByProject.results,
       labor_by_project: laborByProject,
       monthly_summary: allMonthlyCosts,
-      timesheet_cost: timesheetCost.results
+      timesheet_cost: timesheetCost.results,
+      pool_total_labor: Math.round(poolTotalLabor),         // Tổng chi phí lương đã nhập (monthly_labor_costs)
+      project_labor_total: Math.round(projectLaborTotal)    // Tổng chi phí lương đã phân bổ theo dự án
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -7104,9 +7265,109 @@ app.post('/api/admin/dedup-tasks', authMiddleware, adminOnly, async (c) => {
 })
 
 // ===================================================
+// SEND OVERDUE REMINDERS — gửi mail nhắc deadline cho đúng người phụ trách
+// POST /api/admin/send-overdue-reminders
+// Gửi mail task_overdue cho assigned_to của mỗi task quá hạn chưa hoàn thành
+// Có thể gọi từ cron job bên ngoài (VD: Cloudflare CRON, GitHub Actions...)
+// ===================================================
+app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    // Lấy tất cả task quá hạn, chưa hoàn thành, có assigned_to
+    const overdueRows = await db.prepare(`
+      SELECT
+        t.id, t.title, t.due_date, t.status, t.progress,
+        t.assigned_to,
+        u.email AS assignee_email, u.full_name AS assignee_name,
+        p.name AS project_name, p.code AS project_code
+      FROM tasks t
+      JOIN users u ON u.id = t.assigned_to AND u.is_active = 1
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.due_date < date('now')
+        AND t.status NOT IN ('completed', 'review', 'cancelled')
+        AND t.assigned_to IS NOT NULL
+        AND u.email IS NOT NULL AND u.email != ''
+      ORDER BY t.due_date ASC
+    `).all()
+
+    const tasks = overdueRows.results as any[]
+    if (tasks.length === 0) {
+      return c.json({ success: true, sent: 0, message: 'Không có task quá hạn nào cần nhắc' })
+    }
+
+    let sent = 0
+    const errors: string[] = []
+
+    for (const task of tasks) {
+      try {
+        // Tính số ngày quá hạn
+        const dueDate = new Date(task.due_date)
+        const today   = new Date()
+        today.setHours(0, 0, 0, 0)
+        const daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / 86400000)
+
+        await sendEmail(c.env, {
+          to:        task.assignee_email,
+          toName:    task.assignee_name,
+          eventType: 'task_overdue',
+          data: {
+            taskTitle:     task.title,
+            projectName:   `${task.project_code} – ${task.project_name}`,
+            deadline:      task.due_date,
+            daysOverdue:   daysOverdue,
+            status:        task.status,
+            recipientName: task.assignee_name,
+          },
+          db,
+          userId:      task.assigned_to,
+          relatedType: 'task',
+          relatedId:   task.id,
+        })
+        sent++
+      } catch (e: any) {
+        errors.push(`task#${task.id}: ${e.message}`)
+      }
+    }
+
+    return c.json({
+      success: true,
+      total_overdue: tasks.length,
+      sent,
+      errors: errors.length ? errors : undefined,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/admin/overdue-tasks-preview — xem trước danh sách sẽ nhận mail
+app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const rows = await db.prepare(`
+      SELECT
+        t.id, t.title, t.due_date, t.status,
+        u.email AS assignee_email, u.full_name AS assignee_name,
+        p.code AS project_code
+      FROM tasks t
+      JOIN users u ON u.id = t.assigned_to AND u.is_active = 1
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.due_date < date('now')
+        AND t.status NOT IN ('completed', 'review', 'cancelled')
+        AND t.assigned_to IS NOT NULL
+        AND u.email IS NOT NULL AND u.email != ''
+      ORDER BY t.due_date ASC
+    `).all()
+    return c.json(rows.results)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
 // COST TYPES (System Admin CRUD)
 // ===================================================
-app.get('/api/cost-types', authMiddleware, adminOnly, async (c) => {
+app.get('/api/cost-types', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const rows = await db.prepare(`
@@ -7191,10 +7452,19 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     const projectEnd   = project.end_date   || today
 
     if (periodMode === 'all_time' || !mode) {
-      // Toàn bộ thời gian dự án (start_date → today hoặc end_date nếu đã xong)
+      // Toàn bộ thời gian dự án: từ start_date đến ngày có timesheet cuối cùng (hoặc today)
+      // KHÔNG giới hạn tại end_date vì timesheet thực tế có thể vượt qua end_date
+      const lastTsRow = await db.prepare(
+        `SELECT MAX(work_date) as last_date FROM timesheets WHERE project_id = ?`
+      ).bind(projectId).first() as any
+      const lastTimesheetDate = lastTsRow?.last_date || null
       dateFrom = projectStart
-      dateTo   = project.status === 'completed' ? projectEnd : today
-      const endLabel = project.status === 'completed' ? projectEnd.slice(0,7) : 'hiện tại'
+      // dateTo = max(end_date, lastTimesheetDate, today) để bao phủ toàn bộ dữ liệu
+      const candidates = [projectEnd, lastTimesheetDate, today].filter(Boolean) as string[]
+      dateTo = candidates.sort().reverse()[0]  // lấy ngày lớn nhất
+      const endLabel = lastTimesheetDate && lastTimesheetDate > projectEnd
+        ? lastTimesheetDate.slice(0,7)
+        : project.status === 'completed' ? projectEnd.slice(0,7) : 'hiện tại'
       periodLabel = `Toàn dự án (${projectStart.slice(0,7)} → ${endLabel})`
       periodMode = 'all_time'
     } else if (periodMode === 'ytd') {
@@ -7203,6 +7473,14 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       dateFrom = `${currentYear}-01-01`
       dateTo   = today
       periodLabel = `Lũy kế ${currentYear} (01/${currentYear} → hiện tại)`
+    } else if (periodMode === 'ntc' && year) {
+      // Năm Tài Chính (NTC): dùng fiscal year settings
+      const fySettings = await getFiscalYearSettings(db)
+      const fyYear = parseInt(year)
+      const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(fyYear, fySettings)
+      dateFrom = fyStart
+      dateTo   = fyEnd
+      periodLabel = getFiscalYearLabel(fyYear, fySettings)
     } else if (periodMode === 'year' && year) {
       // Cả năm dương lịch
       dateFrom = `${year}-01-01`
@@ -7244,20 +7522,13 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
         ).bind(projectId).all()
         const totalOtherCostR = (otherCostsR.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
-        // Labor: hybrid per calendar month
-        let laborCostR = 0, laborHoursR = 0, totalCphSumR = 0, totalCphCountR = 0
-        let laborMonthsCountR = 0, hasSyncedR = false, hasRealtimeR = false
+        // Labor: PURE REALTIME per calendar month (không dùng project_labor_costs)
+        let laborCostR = 0, laborHoursR = 0, laborEffHoursR = 0
+        let laborMonthsCountR = 0
         for (const calMonth of monthArr) {
           const calYear = parseInt(year)
           const calY = year
           const calM = String(calMonth).padStart(2, '0')
-          const cachedRowR = await db.prepare(
-            `SELECT total_labor_cost, total_hours, cost_per_hour FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
-          ).bind(projectId, calMonth, calYear).first() as any
-          if (cachedRowR?.total_labor_cost) {
-            laborCostR += cachedRowR.total_labor_cost; laborHoursR += cachedRowR.total_hours || 0
-            totalCphSumR += cachedRowR.cost_per_hour || 0; totalCphCountR++; laborMonthsCountR++; hasSyncedR = true; continue
-          }
           const mlcRowR = await db.prepare(`SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`).bind(calMonth, calYear).first() as any
           if (!mlcRowR?.total_labor_cost) continue
           const projHrsRowR = await db.prepare(`SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as proj_raw, SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
@@ -7265,11 +7536,11 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
           const projRawR = projHrsRowR?.proj_raw || 0; const projEffR = projHrsRowR?.proj_eff || 0; const compEffR = compHrsRowR?.comp_eff || 0
           if (projRawR <= 0 || compEffR <= 0) continue
           const cphR = mlcRowR.total_labor_cost / compEffR; const mcR = Math.round(projEffR * cphR)
-          laborCostR += mcR; laborHoursR += projRawR; totalCphSumR += cphR; totalCphCountR++; laborMonthsCountR++; hasRealtimeR = true
+          laborCostR += mcR; laborHoursR += projRawR; laborEffHoursR += projEffR; laborMonthsCountR++
         }
-        const laborPerHourR = totalCphCountR > 0 ? totalCphSumR / totalCphCountR : 0
-        const laborSourceR  = laborCostR > 0 ? (hasSyncedR && hasRealtimeR ? 'mixed' : hasSyncedR ? 'project_labor_costs' : 'realtime') : 'none'
-        if (contractValue > 0 && laborCostR > contractValue) { validation_warnings.push(`Chi phí lương vượt giá trị HĐ`); laborCostR = contractValue }
+        const laborPerHourR = laborEffHoursR > 0 ? laborCostR / laborEffHoursR : 0
+        const laborSourceR  = laborCostR > 0 ? 'realtime' : 'none'
+        if (contractValue > 0 && laborCostR > contractValue) { validation_warnings.push(`Chi phí lương vượt giá trị HĐ`) /* KHÔNG cap — hiển thị đúng chi phí thực tế */ }
 
         const revsR = await db.prepare(`SELECT SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total, SUM(CASE WHEN payment_status = 'pending' THEN amount ELSE 0 END) as pending_total FROM project_revenues WHERE project_id = ? ${revDateFilter}`).bind(projectId).first() as any
         const totalRevenueR = revsR?.total || 0; const pendingRevenueR = revsR?.pending_total || 0
@@ -7294,15 +7565,13 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
           ...(otherCostsR.results as any[]).map((c: any) => ({ ...c, label: costTypeNamesR[c.cost_type] || c.cost_type, is_auto: false })),
           ...(sharedTotalR > 0 ? [{ cost_type: 'shared', total: sharedTotalR, label: 'Chi phí chung (phân bổ)', is_auto: true, shared_count: sharedCountR }] : [])
         ]
-        // Build labor_timeline per month for months mode
+        // Build labor_timeline per month for months mode — pure realtime
         const laborTimelineMapR: Record<string, number> = {}
         for (const calMonth of monthArr) {
           const calYear = parseInt(year)
           const calY = year
           const calM = String(calMonth).padStart(2, '0')
           const key = `${calYear}-${calM}`
-          const cachedR2 = await db.prepare(`SELECT total_labor_cost FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`).bind(projectId, calMonth, calYear).first() as any
-          if (cachedR2?.total_labor_cost) { laborTimelineMapR[key] = cachedR2.total_labor_cost; continue }
           const mlcR2 = await db.prepare(`SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`).bind(calMonth, calYear).first() as any
           if (!mlcR2?.total_labor_cost) continue
           const phR2 = await db.prepare(`SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
@@ -7337,6 +7606,8 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     // ── Lọc theo khoảng ngày (dateFrom → dateTo) ──────────────────────────
     const costDateFilter = `AND cost_date >= '${dateFrom}' AND cost_date <= '${dateTo}'`
     // Revenue: khi all_time không giới hạn dateTo (bao gồm cả thanh toán tương lai đã ghi nhận)
+    // all_time: không giới hạn dateTo cho revenue (bao gồm thanh toán tương lai đã ghi nhận)
+    // ntc/year/month/range: dùng dateTo thực tế của kỳ báo cáo
     const revDateTo = periodMode === 'all_time' ? '9999-12-31' : dateTo
     const revDateFilter  = `AND revenue_date >= '${dateFrom}' AND revenue_date <= '${revDateTo}'`
 
@@ -7347,11 +7618,11 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     ).bind(projectId).all()
     const totalOtherCost = (otherCosts.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
-    // ── Labor cost: HYBRID per calendar month trong khoảng dateFrom→dateTo ──
+    // ── Labor cost: PURE REALTIME per calendar month trong khoảng dateFrom→dateTo ──
     // Tìm tất cả tháng dương lịch nằm trong [dateFrom, dateTo]
-    // Với mỗi tháng: ưu tiên project_labor_costs (synced), fallback real-time
-    let laborCost = 0, laborHours = 0, totalCphSum = 0, totalCphCount = 0
-    let laborMonthsCount = 0, hasSynced = false, hasRealtime = false
+    // Với mỗi tháng: monthly_labor_costs × (giờ quy đổi dự án / tổng giờ quy đổi công ty)
+    let laborCost = 0, laborHours = 0, laborEffHours = 0
+    let laborMonthsCount = 0
 
     // Tạo danh sách {calYear, calMonth} trong khoảng dateFrom→dateTo
     interface CalMonthPair { calYear: number; calMonth: number }
@@ -7371,19 +7642,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       const calY = String(calYear)
       const calM = String(calMonth).padStart(2, '0')
 
-      // 1. Synced project_labor_costs
-      const cachedRow = await db.prepare(
-        `SELECT total_labor_cost, total_hours, cost_per_hour
-         FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
-      ).bind(projectId, calMonth, calYear).first() as any
-      if (cachedRow?.total_labor_cost) {
-        laborCost += cachedRow.total_labor_cost
-        laborHours += cachedRow.total_hours || 0
-        totalCphSum += cachedRow.cost_per_hour || 0
-        totalCphCount++; laborMonthsCount++; hasSynced = true; continue
-      }
-
-      // 2. Real-time từ monthly_labor_costs + timesheets
+      // Pure realtime: monthly_labor_costs + timesheets
       const mlcRow = await db.prepare(
         `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
       ).bind(calMonth, calYear).first() as any
@@ -7406,18 +7665,18 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
 
       const cph = mlcRow.total_labor_cost / compEff
       const mc  = Math.round(projEff * cph)
-      laborCost += mc; laborHours += projRaw; totalCphSum += cph; totalCphCount++
-      laborMonthsCount++; hasRealtime = true
+      laborCost    += mc
+      laborHours   += projRaw
+      laborEffHours += projEff
+      laborMonthsCount++
     }
 
-    const laborPerHour = totalCphCount > 0 ? totalCphSum / totalCphCount : 0
-    const laborSource  = laborCost > 0
-      ? (hasSynced && hasRealtime ? 'mixed' : hasSynced ? 'project_labor_costs' : 'realtime')
-      : 'none'
+    const laborPerHour = laborEffHours > 0 ? laborCost / laborEffHours : 0
+    const laborSource  = laborCost > 0 ? 'realtime' : 'none'
 
     if (contractValue > 0 && laborCost > contractValue) {
       validation_warnings.push(`Chi phí lương (${fmtNum(laborCost)} ₫) vượt giá trị hợp đồng`)
-      laborCost = contractValue
+      // KHÔNG cap laborCost — hiển thị đúng chi phí thực tế
     }
 
     // ── Revenue ──────────────────────────────────────────────────────────
@@ -7445,41 +7704,29 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       GROUP BY month ORDER BY month
     `).bind(projectId).all()
 
-    // Timeline lương từng tháng (từ project_labor_costs đã sync)
+    // Timeline lương từng tháng — PURE REALTIME (không dùng project_labor_costs)
     // Dùng calMonthsInRange đã tính ở trên để lấy đúng tháng trong khoảng
     const laborTimelineMap: Record<string, number> = {}
     for (const { calYear, calMonth } of calMonthsInRange) {
-      const row = await db.prepare(
-        `SELECT total_labor_cost FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
-      ).bind(projectId, calMonth, calYear).first() as any
-      if (row?.total_labor_cost) {
-        const key = `${calYear}-${String(calMonth).padStart(2,'0')}`
-        laborTimelineMap[key] = (laborTimelineMap[key] || 0) + row.total_labor_cost
-      } else {
-        // Fallback real-time nếu chưa sync
-        const calY = String(calYear)
-        const calM = String(calMonth).padStart(2,'0')
-        const mlcRow = await db.prepare(
-          `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
-        ).bind(calMonth, calYear).first() as any
-        if (mlcRow?.total_labor_cost) {
-          const projHrsRow = await db.prepare(`
-            SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as proj_raw,
-                   SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
-            FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-          `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
-          const compHrsRow = await db.prepare(`
-            SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
-            FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-          `).bind(OVERTIME_FACTOR, calY, calM).first() as any
-          const projEff = projHrsRow?.proj_eff || 0
-          const compEff = compHrsRow?.comp_eff || 0
-          if (projEff > 0 && compEff > 0) {
-            const cph = mlcRow.total_labor_cost / compEff
-            const key = `${calYear}-${calM}`
-            laborTimelineMap[key] = (laborTimelineMap[key] || 0) + Math.round(projEff * cph)
-          }
-        }
+      const calY = String(calYear)
+      const calM = String(calMonth).padStart(2,'0')
+      const mlcRow = await db.prepare(
+        `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+      ).bind(calMonth, calYear).first() as any
+      if (!mlcRow?.total_labor_cost) continue
+      const projHrsRow = await db.prepare(`
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+        FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+      `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
+      const compHrsRow = await db.prepare(`
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+        FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+      `).bind(OVERTIME_FACTOR, calY, calM).first() as any
+      const projEff = projHrsRow?.proj_eff || 0
+      const compEff = compHrsRow?.comp_eff || 0
+      if (projEff > 0 && compEff > 0) {
+        const key = `${calYear}-${calM}`
+        laborTimelineMap[key] = Math.round(projEff * (mlcRow.total_labor_cost / compEff))
       }
     }
     const laborTimeline = Object.entries(laborTimelineMap)
@@ -7587,7 +7834,18 @@ app.get('/api/monthly-labor-costs', authMiddleware, adminOnly, async (c) => {
     const rows = params.length
       ? await db.prepare(sql).bind(...params).all()
       : await db.prepare(sql).all()
-    return c.json(rows.results)
+
+    // Enrich each row with total_hours from timesheets (sum all projects that month)
+    const enriched = await Promise.all((rows.results as any[]).map(async (r: any) => {
+      const calM = String(r.month).padStart(2, '0')
+      const calY = String(r.year)
+      const hRow = await db.prepare(
+        `SELECT COALESCE(SUM(regular_hours + IFNULL(overtime_hours,0)), 0) as total_hours
+         FROM timesheets WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+      ).bind(calY, calM).first() as any
+      return { ...r, total_hours: hRow?.total_hours || 0 }
+    }))
+    return c.json(enriched)
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -8562,6 +8820,15 @@ app.get('/api/analytics/team-productivity', authMiddleware, adminOnly, async (c)
     const dateFilter = month ? `AND strftime('%Y-%m', ts.work_date) = '${y}-${month.padStart(2,'0')}'`
                               : `AND strftime('%Y', ts.work_date) = '${y}'`
 
+    // taskFilter theo năm: task được giao (created_at trong năm hoặc start_date trong năm)
+    // completed: task hoàn thành có actual_end_date trong năm (fallback: updated_at trong năm)
+    const taskYearFilter = month
+      ? `AND strftime('%Y-%m', COALESCE(t.start_date, t.created_at)) = '${y}-${month.padStart(2,'0')}'`
+      : `AND strftime('%Y', COALESCE(t.start_date, t.created_at)) = '${y}'`
+    const taskDoneFilter = month
+      ? `AND strftime('%Y-%m', COALESCE(t.actual_end_date, t.updated_at)) = '${y}-${month.padStart(2,'0')}'`
+      : `AND strftime('%Y', COALESCE(t.actual_end_date, t.updated_at)) = '${y}'`
+
     const members = await db.prepare(`
       SELECT
         u.id, u.full_name, u.department, u.role,
@@ -8570,13 +8837,22 @@ app.get('/api/analytics/team-productivity', authMiddleware, adminOnly, async (c)
         COALESCE(SUM(ts.overtime_hours), 0) as overtime_hours,
         COALESCE(SUM(ts.regular_hours + ts.overtime_hours), 0) as total_hours,
         COALESCE(SUM(CASE WHEN ts.status='approved' THEN ts.regular_hours+ts.overtime_hours ELSE 0 END),0) as approved_hours,
-        COUNT(DISTINCT t.id) as assigned_tasks,
-        SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) as completed_tasks,
-        SUM(CASE WHEN t.is_overdue=1 AND t.status!='completed' THEN 1 ELSE 0 END) as overdue_tasks,
+        COALESCE(tsk.assigned_tasks, 0) as assigned_tasks,
+        COALESCE(tsk.completed_tasks, 0) as completed_tasks,
+        COALESCE(tsk.overdue_tasks, 0) as overdue_tasks,
         COUNT(DISTINCT pm.project_id) as active_projects
       FROM users u
       LEFT JOIN timesheets ts ON ts.user_id = u.id ${dateFilter}
-      LEFT JOIN tasks t ON t.assigned_to = u.id
+      LEFT JOIN (
+        SELECT
+          assigned_to,
+          COUNT(DISTINCT id) as assigned_tasks,
+          COUNT(DISTINCT CASE WHEN status IN ('completed','review') ${taskDoneFilter} THEN id END) as completed_tasks,
+          COUNT(DISTINCT CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN id END) as overdue_tasks
+        FROM tasks t
+        WHERE assigned_to IS NOT NULL ${taskYearFilter}
+        GROUP BY assigned_to
+      ) tsk ON tsk.assigned_to = u.id
       LEFT JOIN project_members pm ON pm.user_id = u.id
       WHERE u.is_active = 1
       GROUP BY u.id
@@ -8711,7 +8987,8 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       GROUP BY strftime('%Y-%m', cost_date)
     `).bind(fyStart, fyEnd).all()
 
-    // ── 3. Labor costs trong NTC (ưu tiên project_labor_costs)
+    // ── 3. Labor costs trong NTC — PURE REALTIME từ monthly_labor_costs
+    // Không dùng project_labor_costs để đảm bảo khớp với tổng lương thực tế đã nhập
     const fyEnd1Year = fySettings.start_month === 1 ? fyYear : fyYear + 1
     let laborWhereSimple: string
     let laborParams: any[]
@@ -8723,24 +9000,14 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       laborParams = [fyYear, fySettings.start_month, fyEnd1Year, fySettings.start_month]
     }
 
-    const plcMonthly = await db.prepare(`
+    // Luôn dùng monthly_labor_costs (tổng lương thực tế nhập theo tháng)
+    const mlcMonthly = await db.prepare(`
       SELECT PRINTF('%d-%02d', year, month) as month,
-        SUM(total_labor_cost) as labor_cost
-      FROM project_labor_costs WHERE ${laborWhereSimple}
-      GROUP BY month ORDER BY month
+        total_labor_cost as labor_cost
+      FROM monthly_labor_costs WHERE ${laborWhereSimple}
+      ORDER BY month
     `).bind(...laborParams).all()
-
-    // Fallback: monthly_labor_costs nếu project_labor_costs trống
-    let laborMonthly = plcMonthly.results as any[]
-    if (!laborMonthly.length) {
-      const mlc = await db.prepare(`
-        SELECT PRINTF('%d-%02d', year, month) as month,
-          total_labor_cost as labor_cost
-        FROM monthly_labor_costs WHERE ${laborWhereSimple}
-        ORDER BY month
-      `).bind(...laborParams).all()
-      laborMonthly = mlc.results as any[]
-    }
+    const laborMonthly = mlcMonthly.results as any[]
 
     // ── 4. Shared costs trong NTC
     const sharedRows = await db.prepare(`
@@ -8900,35 +9167,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       GROUP BY project_id
     `).bind(fyStart, fyEnd).all()
 
-    // ── 4. Chi phí lương theo dự án (project_labor_costs trong NTC, fallback realtime)
-    const fySettings2 = fySettings
-    const fyEnd1Year = fySettings2.start_month === 1 ? fyYear : fyYear + 1
-    let laborWhere: string
-    let laborParams: any[]
-    if (fySettings2.start_month === 1) {
-      laborWhere = `year = ?`
-      laborParams = [fyYear]
-    } else {
-      laborWhere = `((year = ? AND month >= ?) OR (year = ? AND month < ?))`
-      laborParams = [fyYear, fySettings2.start_month, fyEnd1Year, fySettings2.start_month]
-    }
-    const laborCostRows = await db.prepare(`
-      SELECT project_id, SUM(total_labor_cost) as labor_cost, SUM(total_hours) as labor_hours
-      FROM project_labor_costs WHERE ${laborWhere}
-      GROUP BY project_id
-    `).bind(...laborParams).all()
-
-    // Fallback: nếu project_labor_costs trống → tính realtime từ timesheets + monthly_labor_costs
+    // ── 4. Chi phí lương theo dự án — PURE REALTIME từ monthly_labor_costs + timesheets
+    // Không dùng project_labor_costs để đảm bảo nhất quán với tổng lương thực tế đã nhập
     const OVERTIME_FACTOR_FIN = await getOvertimeFactor(db)
-    let laborMap: Record<number, any>
-    if ((laborCostRows.results as any[]).length > 0) {
-      laborMap = {}
-      ;(laborCostRows.results as any[]).forEach((r: any) => { laborMap[r.project_id] = r })
-    } else {
-      const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_FIN, fyStart, fyEnd)
-      laborMap = {}
-      rtMap.forEach((v, pid) => { laborMap[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
-    }
+    const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_FIN, fyStart, fyEnd)
+    const laborMap: Record<number, any> = {}
+    rtMap.forEach((v, pid) => { laborMap[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
     const sharedAllocRows = await db.prepare(`
       SELECT sca.project_id, SUM(sca.allocated_amount) as shared_cost
       FROM shared_cost_allocations sca
@@ -8968,11 +9212,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
       // Tỷ lệ doanh thu đã thu / GTHĐ
       const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
-      // Tỷ lệ % từng khoản trên doanh thu đã thu (để thể hiện cơ cấu chi phí)
-      const pctDirect = revenueCollected > 0 ? Math.round((directCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctLabor  = revenueCollected > 0 ? Math.round((laborCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctShared = revenueCollected > 0 ? Math.round((sharedCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctCost   = revenueCollected > 0 ? Math.round((totalCost / revenueCollected) * 100 * 10) / 10 : 0
+      // Tỷ lệ % từng khoản trên GTHĐ (khi có); nếu không có GTHĐ thì trên doanh thu đã thu
+      const pctBase   = contractValue > 0 ? contractValue : revenueCollected
+      const pctDirect = pctBase > 0 ? Math.round((directCost / pctBase) * 100 * 10) / 10 : 0
+      const pctLabor  = pctBase > 0 ? Math.round((laborCost  / pctBase) * 100 * 10) / 10 : 0
+      const pctShared = pctBase > 0 ? Math.round((sharedCost / pctBase) * 100 * 10) / 10 : 0
+      const pctCost   = pctBase > 0 ? Math.round((totalCost  / pctBase) * 100 * 10) / 10 : 0
 
       return {
         id: p.id,
@@ -9026,14 +9271,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
     totals.contract_progress = totals.contract_value > 0
       ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
-    totals.pct_cost = totals.revenue_collected > 0
-      ? Math.round((totals.total_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_direct = totals.revenue_collected > 0
-      ? Math.round((totals.direct_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_labor = totals.revenue_collected > 0
-      ? Math.round((totals.labor_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_shared = totals.revenue_collected > 0
-      ? Math.round((totals.shared_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+    // % tổng tính trên tổng GTHĐ; nếu không có thì trên tổng DT đã thu
+    const totalsPctBase = totals.contract_value > 0 ? totals.contract_value : totals.revenue_collected
+    totals.pct_cost   = totalsPctBase > 0 ? Math.round((totals.total_cost   / totalsPctBase) * 100 * 10) / 10 : 0
+    totals.pct_direct = totalsPctBase > 0 ? Math.round((totals.direct_cost  / totalsPctBase) * 100 * 10) / 10 : 0
+    totals.pct_labor  = totalsPctBase > 0 ? Math.round((totals.labor_cost   / totalsPctBase) * 100 * 10) / 10 : 0
+    totals.pct_shared = totalsPctBase > 0 ? Math.round((totals.shared_cost  / totalsPctBase) * 100 * 10) / 10 : 0
 
     return c.json({
       projects: projectData,
@@ -9089,26 +9332,11 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       GROUP BY project_id
     `).all()
 
-    // ── 4. Chi phí lương theo dự án (TOÀN BỘ: project_labor_costs, fallback realtime)
-    const laborCostRowsLT = await db.prepare(`
-      SELECT project_id,
-        SUM(total_labor_cost) as labor_cost,
-        SUM(total_hours) as labor_hours
-      FROM project_labor_costs
-      GROUP BY project_id
-    `).all()
-
+    // ── 4. Chi phí lương theo dự án — PURE REALTIME toàn bộ lịch sử (không lọc ngày)
     const OVERTIME_FACTOR_LT = await getOvertimeFactor(db)
-    let laborMapLT: Record<number, any>
-    if ((laborCostRowsLT.results as any[]).length > 0) {
-      laborMapLT = {}
-      ;(laborCostRowsLT.results as any[]).forEach((r: any) => { laborMapLT[r.project_id] = r })
-    } else {
-      // Fallback: tính realtime toàn bộ lịch sử (không lọc ngày)
-      const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_LT)
-      laborMapLT = {}
-      rtMap.forEach((v, pid) => { laborMapLT[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
-    }
+    const rtMapLT = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_LT)
+    const laborMapLT: Record<number, any> = {}
+    rtMapLT.forEach((v, pid) => { laborMapLT[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
 
     // ── 5. Chi phí chung phân bổ (TOÀN BỘ)
     const sharedAllocRows = await db.prepare(`
@@ -9147,10 +9375,12 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       const profit           = revenueCollected - totalCost
       const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
       const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
-      const pctDirect = revenueCollected > 0 ? Math.round((directCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctLabor  = revenueCollected > 0 ? Math.round((laborCost  / revenueCollected) * 100 * 10) / 10 : 0
-      const pctShared = revenueCollected > 0 ? Math.round((sharedCost / revenueCollected) * 100 * 10) / 10 : 0
-      const pctCost   = revenueCollected > 0 ? Math.round((totalCost  / revenueCollected) * 100 * 10) / 10 : 0
+      // Tỷ lệ % từng khoản trên GTHĐ (khi có); nếu không có GTHĐ thì trên doanh thu đã thu
+      const pctBaseLT = contractValue > 0 ? contractValue : revenueCollected
+      const pctDirect = pctBaseLT > 0 ? Math.round((directCost / pctBaseLT) * 100 * 10) / 10 : 0
+      const pctLabor  = pctBaseLT > 0 ? Math.round((laborCost  / pctBaseLT) * 100 * 10) / 10 : 0
+      const pctShared = pctBaseLT > 0 ? Math.round((sharedCost / pctBaseLT) * 100 * 10) / 10 : 0
+      const pctCost   = pctBaseLT > 0 ? Math.round((totalCost  / pctBaseLT) * 100 * 10) / 10 : 0
 
       // Tính thời gian dự án
       const startDate = p.start_date || ''
@@ -9210,10 +9440,12 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
     totals.contract_progress = totals.contract_value > 0
       ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
-    totals.pct_cost   = totals.revenue_collected > 0 ? Math.round((totals.total_cost  / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_direct = totals.revenue_collected > 0 ? Math.round((totals.direct_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_labor  = totals.revenue_collected > 0 ? Math.round((totals.labor_cost  / totals.revenue_collected) * 100 * 10) / 10 : 0
-    totals.pct_shared = totals.revenue_collected > 0 ? Math.round((totals.shared_cost / totals.revenue_collected) * 100 * 10) / 10 : 0
+    // % tổng tính trên tổng GTHĐ; nếu không có thì trên tổng DT đã thu
+    const totalsPctBaseLT = totals.contract_value > 0 ? totals.contract_value : totals.revenue_collected
+    totals.pct_cost   = totalsPctBaseLT > 0 ? Math.round((totals.total_cost   / totalsPctBaseLT) * 100 * 10) / 10 : 0
+    totals.pct_direct = totalsPctBaseLT > 0 ? Math.round((totals.direct_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
+    totals.pct_labor  = totalsPctBaseLT > 0 ? Math.round((totals.labor_cost   / totalsPctBaseLT) * 100 * 10) / 10 : 0
+    totals.pct_shared = totalsPctBaseLT > 0 ? Math.round((totals.shared_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
 
     return c.json({
       projects: projectData,
@@ -10803,8 +11035,215 @@ function parseSheetXml(xml: string, sharedStrings: string[]): Array<Array<any>> 
 // ===================================================
 app.use('/static/*', serveStatic({ root: './' }))
 
+// ============================================================
+// WEB PUSH — VAPID + Subscriptions
+// ============================================================
+
+// ── VAPID helpers (pure Web Crypto, no lib needed) ──────────
+function b64url(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
+  let str = ''
+  bytes.forEach(b => str += String.fromCharCode(b))
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+}
+function b64urlDecode(str: string): Uint8Array {
+  const s = str.replace(/-/g, '+').replace(/_/g, '/')
+  const bin = atob(s + '='.repeat((4 - s.length % 4) % 4))
+  return Uint8Array.from(bin, c => c.charCodeAt(0))
+}
+
+async function generateVapidKeys(): Promise<{ publicKey: string; privateKey: string }> {
+  const kp = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey'])
+  const pub  = await crypto.subtle.exportKey('raw', kp.publicKey)
+  const priv = await crypto.subtle.exportKey('pkcs8', kp.privateKey)
+  return { publicKey: b64url(pub), privateKey: b64url(priv) }
+}
+
+async function makeVapidJWT(subject: string, audience: string, privateKeyB64: string): Promise<string> {
+  const header  = b64url(new TextEncoder().encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })))
+  const now     = Math.floor(Date.now() / 1000)
+  const payload = b64url(new TextEncoder().encode(JSON.stringify({ aud: audience, exp: now + 12 * 3600, sub: subject })))
+  const sigInput = `${header}.${payload}`
+
+  const pkcs8 = b64urlDecode(privateKeyB64)
+  const key = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(sigInput))
+  return `${sigInput}.${b64url(sig)}`
+}
+
+async function sendWebPush(db: D1Database, userId: number, payload: object): Promise<void> {
+  // Load VAPID config
+  const rows = await db.prepare(
+    `SELECT key, value FROM system_config WHERE key IN ('vapid_public_key','vapid_private_key','vapid_subject')`
+  ).all()
+  const cfg: Record<string, string> = {}
+  rows.results.forEach((r: any) => { cfg[r.key] = r.value })
+
+  if (!cfg.vapid_public_key || !cfg.vapid_private_key) return  // Not configured
+
+  const subject = cfg.vapid_subject || 'mailto:admin@bimonecadvn.com'
+  const bodyStr = JSON.stringify(payload)
+
+  // Load all subscriptions for user
+  const subs = await db.prepare(
+    'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?'
+  ).bind(userId).all()
+
+  for (const sub of subs.results as any[]) {
+    try {
+      const url    = new URL(sub.endpoint)
+      const aud    = `${url.protocol}//${url.host}`
+      const jwt    = await makeVapidJWT(subject, aud, cfg.vapid_private_key)
+      const vapidAuth = `vapid t=${jwt},k=${cfg.vapid_public_key}`
+
+      // Encrypt payload with ECDH + AES-GCM (RFC 8291)
+      const encrypted = await encryptPushPayload(bodyStr, sub.p256dh, sub.auth)
+
+      const res = await fetch(sub.endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization':  vapidAuth,
+          'Content-Type':   'application/octet-stream',
+          'Content-Encoding': 'aes128gcm',
+          'TTL':            '86400',
+        },
+        body: encrypted,
+      })
+
+      if (res.status === 410 || res.status === 404) {
+        // Subscription expired — remove it
+        await db.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(sub.id).run()
+      }
+      // Update last_used_at
+      await db.prepare('UPDATE push_subscriptions SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?').bind(sub.id).run()
+    } catch { /* silent — don't block notification flow */ }
+  }
+}
+
+// RFC 8291 AES-GCM encryption for Web Push payload
+async function encryptPushPayload(plaintext: string, p256dhB64: string, authB64: string): Promise<Uint8Array> {
+  const encoder    = new TextEncoder()
+  const receiverPub = b64urlDecode(p256dhB64)
+  const authSecret  = b64urlDecode(authB64)
+
+  // Generate sender ephemeral key pair
+  const senderKP = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey', 'deriveBits'])
+  const senderPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', senderKP.publicKey))
+
+  // Import receiver public key
+  const receiverKey = await crypto.subtle.importKey('raw', receiverPub, { name: 'ECDH', namedCurve: 'P-256' }, false, [])
+
+  // ECDH shared secret
+  const sharedBits = await crypto.subtle.deriveBits({ name: 'ECDH', public: receiverKey }, senderKP.privateKey, 256)
+  const sharedSecret = new Uint8Array(sharedBits)
+
+  // Salt
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+
+  // HKDF PRK (auth secret)
+  const prkKey = await crypto.subtle.importKey('raw', authSecret, { name: 'HKDF' }, false, ['deriveBits'])
+  const ikm = await crypto.subtle.importKey('raw', sharedSecret, { name: 'HKDF' }, false, ['deriveBits'])
+
+  // key_info and nonce_info as per RFC 8291
+  const authInfo = concat(encoder.encode('WebPush: info\0'), receiverPub, senderPubRaw)
+  const prkBits  = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: authSecret, info: authInfo }, ikm, 256)
+  const prk = await crypto.subtle.importKey('raw', prkBits, { name: 'HKDF' }, false, ['deriveBits'])
+
+  const keyInfo   = encoder.encode('Content-Encoding: aes128gcm\0')
+  const nonceInfo = encoder.encode('Content-Encoding: nonce\0')
+
+  const cekBits   = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: keyInfo   }, prk, 128)
+  const nonceBits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: nonceInfo }, prk, 96)
+
+  const cek   = await crypto.subtle.importKey('raw', cekBits, { name: 'AES-GCM' }, false, ['encrypt'])
+  const nonce = new Uint8Array(nonceBits)
+
+  // Pad plaintext (add 0x02 padding delimiter)
+  const data = concat(encoder.encode(plaintext), new Uint8Array([2]))
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, cek, data))
+
+  // Build RFC 8291 header: salt(16) + rs(4) + idlen(1) + keyid + ciphertext
+  const rs      = new Uint8Array(4); new DataView(rs.buffer).setUint32(0, 4096, false)
+  const keyId   = senderPubRaw
+  const idLen   = new Uint8Array([keyId.length])
+  return concat(salt, rs, idLen, keyId, ciphertext)
+}
+
+function concat(...arrays: Uint8Array[]): Uint8Array {
+  const len = arrays.reduce((s, a) => s + a.length, 0)
+  const out = new Uint8Array(len)
+  let off = 0
+  for (const a of arrays) { out.set(a, off); off += a.length }
+  return out
+}
+
+// ── GET /api/push/vapid-public-key — trả public key cho client ──
+app.get('/api/push/vapid-public-key', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    let row = await db.prepare(`SELECT value FROM system_config WHERE key = 'vapid_public_key'`).first() as any
+
+    if (!row?.value) {
+      // Auto-generate keys on first call
+      const keys = await generateVapidKeys()
+      await db.prepare(`UPDATE system_config SET value = ? WHERE key = 'vapid_public_key'`).bind(keys.publicKey).run()
+      await db.prepare(`UPDATE system_config SET value = ? WHERE key = 'vapid_private_key'`).bind(keys.privateKey).run()
+      return c.json({ publicKey: keys.publicKey })
+    }
+    return c.json({ publicKey: row.value })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── POST /api/push/subscribe — lưu subscription ─────────────
+app.post('/api/push/subscribe', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const { endpoint, keys } = await c.req.json()
+    if (!endpoint || !keys?.p256dh || !keys?.auth) return c.json({ error: 'Invalid subscription' }, 400)
+
+    const ua = c.req.header('User-Agent')?.slice(0, 200) || ''
+    await db.prepare(
+      `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, endpoint) DO UPDATE SET
+         p256dh = excluded.p256dh, auth = excluded.auth, last_used_at = CURRENT_TIMESTAMP`
+    ).bind(user.id, endpoint, keys.p256dh, keys.auth, ua).run()
+
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── DELETE /api/push/unsubscribe — xóa subscription ─────────
+app.delete('/api/push/unsubscribe', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const { endpoint } = await c.req.json()
+    if (endpoint) {
+      await db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').bind(user.id, endpoint).run()
+    } else {
+      await db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').bind(user.id).run()
+    }
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // Health check
 app.get('/health', (c) => c.json({ status: 'ok', version: '1.0.0' }))
+
+// Service Worker — must be served from root scope with correct MIME type
+app.get('/sw.js', serveStatic({ path: './sw.js' }))
+
+// Push notification icons
+app.get('/icon-192.png',  serveStatic({ path: './icon-192.png' }))
+app.get('/badge-72.png',  serveStatic({ path: './badge-72.png' }))
 
 // SPA - serve index.html as static asset via Cloudflare Pages
 // The _routes.json excludes /index.html and /static/* from the worker
