@@ -8184,13 +8184,23 @@ function _renderStaffTableRows() {
 function exportUserTableCSV() {
   const data = _staffTableData.length ? _staffTableData : allUsers
   const roleLabel = r => ({system_admin:'System Admin',project_admin:'Project Admin',project_leader:'Project Leader',member:'Member'}[r]||r)
+  const genderLabel = g => ({male:'Nam', female:'Nữ', other:'Khác'}[g] || '')
   const fmtDate = s => {
     if (!s) return ''
     const d = new Date(s)
     if (isNaN(d)) return s
     return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
   }
-  const headers = ['STT','Họ và tên','Tài khoản','Phòng ban','Vai trò','Trạng thái','Email','Điện thoại','Số CCCD','Ngày sinh','Thường trú','Nơi ở hiện tại','Trình độ','Chuyên ngành','Trường ĐH','Năm TN','Ngày tạo']
+  const headers = [
+    'STT','Họ và tên','Tài khoản','Phòng ban','Vai trò','Trạng thái',
+    'Email','Điện thoại','Giới tính','Chức danh','Ngày vào công ty',
+    'Số CCCD','Ngày cấp CCCD','Nơi cấp CCCD','Ngày sinh',
+    'Thường trú','Nơi ở hiện tại',
+    'Mã số BHXH','Mã số thuế (MST)',
+    'Số tài khoản NH','Tên ngân hàng','Chi nhánh NH',
+    'Trình độ','Chuyên ngành','Trường ĐH','Năm TN',
+    'Ngày tạo'
+  ]
   const rows = data.map((u, i) => [
     i+1,
     u.full_name||'',
@@ -8200,10 +8210,20 @@ function exportUserTableCSV() {
     u.is_active ? 'Hoạt động' : 'Ngưng',
     u.email||'',
     u.phone||'',
+    genderLabel(u.gender),
+    u.job_title||'',
+    fmtDate(u.join_date),
     u.cccd||'',
+    fmtDate(u.cccd_issue_date),
+    u.cccd_issue_place||'',
     fmtDate(u.birthday),
     u.address||'',
     u.current_address||'',
+    u.social_insurance_number||'',
+    u.tax_number||'',
+    u.bank_account||'',
+    u.bank_name||'',
+    u.bank_branch||'',
     u.degree||'',
     u.major||'',
     u.university||'',
