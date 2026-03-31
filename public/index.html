@@ -920,6 +920,9 @@
             <label class="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" id="taskOverdueFilter" onchange="filterTasks()"> Chỉ task trễ hạn
             </label>
+            <button onclick="_taskSetSort('default')" class="flex items-center gap-1.5 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 hover:border-indigo-300 rounded px-2.5 py-1.5 transition-colors" id="taskSortResetBtn" title="Sắp xếp mặc định: theo trạng thái + ngày hạn">
+              <i class="fas fa-sort-amount-down text-xs"></i> Mặc định
+            </button>
           </div>
         </div>
 
@@ -928,16 +931,16 @@
             <table class="w-full text-sm">
               <thead><tr class="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
                 <th class="pb-3 pr-3 font-medium" style="width:32px"></th>
-                <th class="pb-3 pr-3 font-medium min-w-48">Tên công việc</th>
-                <th class="pb-3 pr-3 font-medium">Dự án</th>
+                <th class="pb-3 pr-3 font-medium min-w-48 cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="title" onclick="_taskSetSort('title')" title="Sắp xếp theo tên">Tên công việc<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="project" onclick="_taskSetSort('project')" title="Sắp xếp theo dự án">Dự án<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
                 <th class="pb-3 pr-3 font-medium">Hạng mục</th>
                 <th class="pb-3 pr-3 font-medium">Giai đoạn</th>
                 <th class="pb-3 pr-3 font-medium">Bộ môn</th>
-                <th class="pb-3 pr-3 font-medium">Ưu tiên</th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="priority" onclick="_taskSetSort('priority')" title="Sắp xếp theo ưu tiên">Ưu tiên<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
                 <th class="pb-3 pr-3 font-medium">Phụ trách</th>
-                <th class="pb-3 pr-3 font-medium">Hạn</th>
-                <th class="pb-3 pr-3 font-medium">Tiến độ</th>
-                <th class="pb-3 pr-3 font-medium">Trạng thái</th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="due_date" onclick="_taskSetSort('due_date')" title="Sắp xếp theo ngày hạn">Hạn<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="progress" onclick="_taskSetSort('progress')" title="Sắp xếp theo tiến độ">Tiến độ<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="status" onclick="_taskSetSort('status')" title="Sắp xếp theo trạng thái">Trạng thái<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
                 <th class="pb-3 font-medium">Thao tác</th>
               </tr></thead>
               <tbody id="tasksTable" class="divide-y"></tbody>
@@ -1687,40 +1690,170 @@
             <h1 class="text-2xl font-bold text-gray-800">Quản lý Nhân sự</h1>
             <p class="text-gray-500 text-sm">Danh sách tài khoản và phân quyền</p>
           </div>
-          <button onclick="openUserModal()" class="btn-primary flex items-center gap-2">
-            <i class="fas fa-user-plus"></i>Tạo tài khoản
+          <div class="flex gap-2">
+            <button onclick="openDeptModal()" class="btn-secondary flex items-center gap-2 text-sm" id="btnManageDept" style="display:none">
+              <i class="fas fa-building"></i>Quản lý Phòng ban
+            </button>
+            <button onclick="openUserModal()" class="btn-primary flex items-center gap-2">
+              <i class="fas fa-user-plus"></i>Tạo tài khoản
+            </button>
+          </div>
+        </div>
+
+        <!-- KPI Stats Bar -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5" id="userStatsBar">
+          <div class="card py-3 px-4 flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0"><i class="fas fa-users text-primary"></i></div>
+            <div><p class="text-xs text-gray-400">Tổng nhân sự</p><p class="text-xl font-bold text-gray-800" id="statTotalUsers">-</p></div>
+          </div>
+          <div class="card py-3 px-4 flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center flex-shrink-0"><i class="fas fa-user-check text-green-600"></i></div>
+            <div><p class="text-xs text-gray-400">Đang hoạt động</p><p class="text-xl font-bold text-gray-800" id="statActiveUsers">-</p></div>
+          </div>
+          <div class="card py-3 px-4 flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0"><i class="fas fa-building text-blue-600"></i></div>
+            <div><p class="text-xs text-gray-400">Phòng ban</p><p class="text-xl font-bold text-gray-800" id="statTotalDepts">-</p></div>
+          </div>
+          <div class="card py-3 px-4 flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-purple-100 flex items-center justify-center flex-shrink-0"><i class="fas fa-user-tie text-purple-600"></i></div>
+            <div><p class="text-xs text-gray-400">Có hồ sơ đầy đủ</p><p class="text-xl font-bold text-gray-800" id="statCompleteProfile">-</p></div>
+          </div>
+        </div>
+
+        <!-- Tab: Danh sách / Bảng / Thống kê -->
+        <div class="flex gap-1 mb-4 bg-gray-100 p-1 rounded-xl w-fit">
+          <button id="tabUserList" onclick="switchUserTab('list')" class="px-5 py-2 rounded-lg text-sm font-medium bg-white text-primary shadow-sm transition-all">
+            <i class="fas fa-list mr-1.5"></i>Danh sách
+          </button>
+          <button id="tabUserTable" onclick="switchUserTab('table')" class="px-5 py-2 rounded-lg text-sm font-medium text-gray-500 hover:text-gray-700 transition-all">
+            <i class="fas fa-table mr-1.5"></i>Bảng nhân viên
+          </button>
+          <button id="tabUserStats" onclick="switchUserTab('stats')" class="px-5 py-2 rounded-lg text-sm font-medium text-gray-500 hover:text-gray-700 transition-all">
+            <i class="fas fa-chart-bar mr-1.5"></i>Thống kê
           </button>
         </div>
 
-        <div class="card mb-4">
-          <div class="flex gap-3 flex-wrap">
-            <input type="text" id="userSearch" placeholder="🔍 Tìm nhân sự..." class="input-field" style="width:220px" oninput="filterUsers()">
-            <select id="userRoleFilter" class="select-field" style="width:160px" onchange="filterUsers()">
-              <option value="">Tất cả vai trò</option>
-              <option value="system_admin">System Admin</option>
-              <option value="project_admin">Project Admin</option>
-              <option value="project_leader">Project Leader</option>
-              <option value="member">Member</option>
-            </select>
+        <!-- Panel: Danh sách -->
+        <div id="panelUserList">
+          <div class="card mb-4">
+            <div class="flex gap-3 flex-wrap">
+              <input type="text" id="userSearch" placeholder="🔍 Tìm nhân sự..." class="input-field" style="width:220px" oninput="filterUsers()">
+              <select id="userRoleFilter" class="select-field" style="width:160px" onchange="filterUsers()">
+                <option value="">Tất cả vai trò</option>
+                <option value="system_admin">System Admin</option>
+                <option value="project_admin">Project Admin</option>
+                <option value="project_leader">Project Leader</option>
+                <option value="member">Member</option>
+              </select>
+              <select id="userDeptFilter" class="select-field" style="width:180px" onchange="filterUsers()">
+                <option value="">Tất cả phòng ban</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                  <th class="pb-3 pr-3">Nhân viên</th>
+                  <th class="pb-3 pr-3">Tài khoản</th>
+                  <th class="pb-3 pr-3">Email</th>
+                  <th class="pb-3 pr-3">Phòng ban</th>
+                  <th class="pb-3 pr-3">Vai trò</th>
+                  <th class="pb-3 pr-3">Trạng thái</th>
+                  <th class="pb-3">Thao tác</th>
+                </tr></thead>
+                <tbody id="usersTable" class="divide-y"></tbody>
+              </table>
+            </div>
+            <div id="userPagination"></div>
           </div>
         </div>
 
-        <div class="card">
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
-                <th class="pb-3 pr-3">Nhân viên</th>
-                <th class="pb-3 pr-3">Tài khoản</th>
-                <th class="pb-3 pr-3">Email</th>
-                <th class="pb-3 pr-3">Phòng ban</th>
-                <th class="pb-3 pr-3">Vai trò</th>
-                <th class="pb-3 pr-3">Trạng thái</th>
-                <th class="pb-3">Thao tác</th>
-              </tr></thead>
-              <tbody id="usersTable" class="divide-y"></tbody>
-            </table>
+        <!-- Panel: Bảng nhân viên (toàn bộ thông tin) -->
+        <div id="panelUserTable" class="hidden">
+          <div class="card mb-4">
+            <div class="flex flex-wrap gap-3 items-center justify-between">
+              <div class="flex flex-wrap gap-3">
+                <input type="text" id="tableUserSearch" placeholder="🔍 Tìm theo tên, tài khoản, CCCD..." class="input-field" style="width:260px" oninput="filterUserTable()">
+                <select id="tableUserDeptFilter" class="select-field" style="width:180px" onchange="filterUserTable()">
+                  <option value="">Tất cả phòng ban</option>
+                </select>
+                <select id="tableUserRoleFilter" class="select-field" style="width:160px" onchange="filterUserTable()">
+                  <option value="">Tất cả vai trò</option>
+                  <option value="system_admin">System Admin</option>
+                  <option value="project_admin">Project Admin</option>
+                  <option value="project_leader">Project Leader</option>
+                  <option value="member">Member</option>
+                </select>
+                <select id="tableUserStatusFilter" class="select-field" style="width:140px" onchange="filterUserTable()">
+                  <option value="">Tất cả trạng thái</option>
+                  <option value="1">Đang hoạt động</option>
+                  <option value="0">Ngưng hoạt động</option>
+                </select>
+              </div>
+              <button onclick="exportUserTableCSV()" class="btn-secondary flex items-center gap-2 text-sm">
+                <i class="fas fa-file-csv"></i>Xuất CSV
+              </button>
+            </div>
           </div>
-          <div id="userPagination"></div>
+          <div class="card">
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm" id="staffFullTable">
+                <thead>
+                  <tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
+                    <th class="py-3 px-3 whitespace-nowrap">#</th>
+                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('full_name')">Họ và tên <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                    <th class="py-3 px-3 whitespace-nowrap">Điện thoại</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Số CCCD</th>
+                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('birthday')">Ngày sinh <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                    <th class="py-3 px-3 whitespace-nowrap">Thường trú</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Nơi ở hiện tại</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Trình độ</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Chuyên ngành</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Trường ĐH</th>
+                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('graduation_year')">Năm TN <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('created_at')">Ngày tạo <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                  </tr>
+                </thead>
+                <tbody id="staffFullTableBody" class="divide-y"></tbody>
+              </table>
+            </div>
+            <div id="userTablePagination" class="mt-4"></div>
+          </div>
+        </div>
+
+        <!-- Panel: Thống kê -->
+        <div id="panelUserStats" class="hidden">
+          <!-- Biểu đồ + bảng -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
+            <div class="card">
+              <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-building text-primary mr-2"></i>Nhân sự theo Phòng ban</h3>
+              <canvas id="chartDeptDist" height="220"></canvas>
+            </div>
+            <div class="card">
+              <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-user-tag text-primary mr-2"></i>Nhân sự theo Vai trò</h3>
+              <canvas id="chartRoleDist" height="220"></canvas>
+            </div>
+          </div>
+          <div class="card">
+            <h3 class="font-bold text-gray-700 mb-4 text-sm"><i class="fas fa-table text-primary mr-2"></i>Tổng hợp chi tiết theo Phòng ban</h3>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                  <th class="pb-2 pr-4">Phòng ban</th>
+                  <th class="pb-2 pr-4 text-center">Tổng</th>
+                  <th class="pb-2 pr-4 text-center">Hoạt động</th>
+                  <th class="pb-2 pr-4 text-center">Admin</th>
+                  <th class="pb-2 pr-4 text-center">Leader</th>
+                  <th class="pb-2 pr-4 text-center">Member</th>
+                  <th class="pb-2 pr-4 text-center">Có Email</th>
+                  <th class="pb-2 text-center">Hồ sơ đầy đủ</th>
+                </tr></thead>
+                <tbody id="statsDeptTable" class="divide-y"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1938,14 +2071,35 @@
       <div id="page-profile" class="page">
         <h1 class="text-2xl font-bold text-gray-800 mb-6">Hồ sơ cá nhân</h1>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <!-- Avatar card -->
           <div class="card text-center">
-            <div class="w-24 h-24 rounded-full bg-primary flex items-center justify-center text-white text-4xl font-bold mx-auto mb-4" id="profileAvatar">A</div>
+            <!-- Avatar với nút thay đổi -->
+            <div class="relative inline-block mx-auto mb-4">
+              <div class="w-28 h-28 rounded-full bg-primary flex items-center justify-center text-white text-4xl font-bold overflow-hidden" id="profileAvatarWrap">
+                <img id="profileAvatarImg" src="" alt="" class="w-full h-full object-cover hidden" />
+                <span id="profileAvatar">A</span>
+              </div>
+              <!-- Nút camera overlay -->
+              <label for="avatarFileInput" class="absolute bottom-0 right-0 w-8 h-8 bg-primary hover:bg-green-700 text-white rounded-full flex items-center justify-center cursor-pointer shadow-md transition-colors" title="Thay đổi ảnh đại diện">
+                <i class="fas fa-camera text-xs"></i>
+              </label>
+              <input type="file" id="avatarFileInput" accept="image/*" class="hidden" onchange="handleAvatarUpload(event)">
+            </div>
             <h3 class="text-xl font-bold text-gray-800" id="profileName">Admin</h3>
             <p class="text-gray-500 text-sm" id="profileRole">System Admin</p>
             <p class="text-gray-400 text-sm mt-1" id="profileDept">-</p>
-            <div class="mt-4 pt-4 border-t text-sm text-gray-600 space-y-2">
-              <div class="flex items-center gap-2"><i class="fas fa-envelope text-primary w-4"></i><span id="profileEmail">-</span></div>
+            <div class="mt-4 pt-4 border-t text-sm text-gray-600 space-y-2 text-left">
+              <div class="flex items-center gap-2"><i class="fas fa-envelope text-primary w-4"></i><span id="profileEmail" class="truncate">-</span></div>
               <div class="flex items-center gap-2"><i class="fas fa-phone text-primary w-4"></i><span id="profilePhone">-</span></div>
+              <div class="flex items-center gap-2"><i class="fas fa-building text-primary w-4"></i><span id="profileDeptDisplay">-</span></div>
+              <div class="flex items-center gap-2"><i class="fas fa-award text-primary w-4"></i><span id="profileDegreeDisplay">-</span></div>
+              <div class="flex items-center gap-2"><i class="fas fa-id-card text-primary w-4"></i><span id="profileCccdDisplay">-</span></div>
+              <div class="flex items-center gap-2"><i class="fas fa-birthday-cake text-primary w-4"></i><span id="profileBirthdayDisplay">-</span></div>
+              <div class="flex items-start gap-2"><i class="fas fa-map-marker-alt text-primary w-4 mt-0.5"></i><span id="profileAddressDisplay" class="break-words">-</span></div>
+              <div class="flex items-start gap-2"><i class="fas fa-home text-primary w-4 mt-0.5"></i><span id="profileCurrentAddressDisplay" class="break-words">-</span></div>
+              <div class="flex items-center gap-2"><i class="fas fa-graduation-cap text-primary w-4"></i><span id="profileMajorDisplay">-</span></div>
+              <div class="flex items-center gap-2"><i class="fas fa-university text-primary w-4"></i><span id="profileUniversityDisplay">-</span></div>
+              <div class="flex items-center gap-2"><i class="fas fa-calendar-check text-primary w-4"></i><span id="profileGraduationYearDisplay">-</span></div>
             </div>
           </div>
           <div class="md:col-span-2 space-y-6">
@@ -1966,10 +2120,62 @@
                 </div>
                 <div>
                   <label class="label">Phòng ban/Bộ môn</label>
-                  <input type="text" id="profileDeptInput" class="input-field" placeholder="VD: Kiến trúc, MEP...">
+                  <select id="profileDeptInput" class="select-field">
+                    <option value="">-- Chọn phòng ban --</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label">Số CCCD</label>
+                  <input type="text" id="profileCccdInput" class="input-field" placeholder="12 chữ số" maxlength="12">
+                </div>
+                <div>
+                  <label class="label">Ngày tháng năm sinh</label>
+                  <input type="date" id="profileBirthdayInput" class="input-field">
+                </div>
+                <div class="col-span-2">
+                  <label class="label">Thường trú</label>
+                  <input type="text" id="profileAddressInput" class="input-field" placeholder="Địa chỉ thường trú đầy đủ...">
+                </div>
+                <div class="col-span-2">
+                  <label class="label">Nơi ở hiện tại</label>
+                  <input type="text" id="profileCurrentAddressInput" class="input-field" placeholder="Địa chỉ nơi ở hiện tại...">
                 </div>
               </div>
-              <button onclick="updateProfile()" class="btn-primary mt-4 px-6">Lưu thay đổi</button>
+
+              <!-- Học vấn -->
+              <div class="border-t pt-4 mt-2">
+                <h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3"><i class="fas fa-graduation-cap mr-1.5"></i>Thông tin học vấn</h4>
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="label">Trình độ</label>
+                    <select id="profileDegreeInput" class="select-field">
+                      <option value="">-- Chọn trình độ --</option>
+                      <option value="Trung cấp">Trung cấp</option>
+                      <option value="Cao đẳng">Cao đẳng</option>
+                      <option value="Đại học">Đại học</option>
+                      <option value="Kỹ sư">Kỹ sư</option>
+                      <option value="Thạc sĩ">Thạc sĩ</option>
+                      <option value="Tiến sĩ">Tiến sĩ</option>
+                      <option value="Phó Giáo sư">Phó Giáo sư</option>
+                      <option value="Giáo sư">Giáo sư</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="label">Chuyên ngành</label>
+                    <input type="text" id="profileMajorInput" class="input-field" placeholder="VD: Kỹ thuật công trình, Kiến trúc...">
+                  </div>
+                  <div>
+                    <label class="label">Trường đại học</label>
+                    <input type="text" id="profileUniversityInput" class="input-field" placeholder="Tên trường...">
+                  </div>
+                  <div>
+                    <label class="label">Năm tốt nghiệp</label>
+                    <input type="number" id="profileGraduationYearInput" class="input-field" placeholder="VD: 2020" min="1970" max="2099">
+                  </div>
+                </div>
+              </div>
+
+              <button onclick="updateProfile()" class="btn-primary mt-4 px-6"><i class="fas fa-save mr-2"></i>Lưu thay đổi</button>
             </div>
             <div class="card">
               <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-lock text-primary mr-2"></i>Đổi mật khẩu</h3>
@@ -4355,6 +4561,65 @@
 </div>
 
 <!-- User Modal -->
+<!-- ========== MODAL CHI TIẾT NHÂN SỰ ========== -->
+<div id="userDetailDrawer" style="display:none;position:fixed;inset:0;z-index:1000;display:none">
+  <div onclick="closeUserDetail()" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+  <div id="userDetailPanel" style="position:absolute;top:0;right:0;height:100%;width:100%;max-width:520px;background:#fff;box-shadow:-4px 0 32px rgba(0,0,0,.12);overflow-y:auto;transform:translateX(100%);transition:transform .3s cubic-bezier(.4,0,.2,1)">
+    <!-- Header -->
+    <div class="flex items-center justify-between px-6 py-4 border-b sticky top-0 bg-white z-10">
+      <h3 class="font-bold text-gray-800 text-base"><i class="fas fa-id-badge text-primary mr-2"></i>Hồ sơ nhân sự</h3>
+      <div class="flex gap-2">
+        <button id="btnEditFromDetail" onclick="" class="btn-secondary text-xs px-3 py-1.5"><i class="fas fa-edit mr-1"></i>Chỉnh sửa</button>
+        <button onclick="closeUserDetail()" class="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center text-gray-400"><i class="fas fa-times"></i></button>
+      </div>
+    </div>
+    <!-- Body -->
+    <div id="userDetailBody" class="p-6"></div>
+  </div>
+</div>
+
+<!-- ========== MODAL QUẢN LÝ PHÒNG BAN ========== -->
+<div id="deptModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:560px">
+    <div class="flex justify-between items-center mb-5">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-building text-primary mr-2"></i>Quản lý Phòng ban / Bộ môn</h3>
+      <button onclick="closeModal('deptModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+
+    <!-- Form thêm/sửa -->
+    <div class="bg-gray-50 rounded-xl p-4 mb-4">
+      <h4 class="text-sm font-semibold text-gray-600 mb-3" id="deptFormTitle"><i class="fas fa-plus-circle mr-1 text-primary"></i>Thêm phòng ban mới</h4>
+      <input type="hidden" id="deptEditId">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="col-span-2">
+          <label class="label">Tên phòng ban <span class="text-red-500">*</span></label>
+          <input type="text" id="deptName" class="input-field" placeholder="VD: Kiến trúc, MEP, Kết cấu...">
+        </div>
+        <div class="col-span-2">
+          <label class="label">Mô tả</label>
+          <input type="text" id="deptDescription" class="input-field" placeholder="Mô tả ngắn...">
+        </div>
+        <div>
+          <label class="label">Thứ tự hiển thị</label>
+          <input type="number" id="deptSortOrder" class="input-field" placeholder="0" min="0">
+        </div>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <button onclick="saveDept()" class="btn-primary px-5 text-sm"><i class="fas fa-save mr-1.5"></i><span id="deptSaveLabel">Thêm mới</span></button>
+        <button onclick="cancelDeptEdit()" id="btnCancelDeptEdit" class="btn-secondary px-4 text-sm hidden"><i class="fas fa-times mr-1.5"></i>Hủy</button>
+      </div>
+    </div>
+
+    <!-- Danh sách -->
+    <div>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Danh sách hiện tại</p>
+      <div id="deptList" class="space-y-2 max-h-72 overflow-y-auto pr-1">
+        <div class="animate-pulse bg-gray-100 h-10 rounded-lg"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="userModal" class="modal-overlay" style="display:none">
   <div class="modal p-6">
     <div class="flex justify-between items-center mb-4">
@@ -4402,14 +4667,6 @@
           <label class="label">Phòng ban/Bộ môn</label>
           <select id="userDepartment" class="select-field">
             <option value="">-- Chọn phòng ban --</option>
-            <option value="BIM/Design">BIM/Design</option>
-            <option value="Kiến trúc">Kiến trúc</option>
-            <option value="Kết cấu">Kết cấu</option>
-            <option value="MEP">MEP</option>
-            <option value="Quản lý dự án">Quản lý dự án</option>
-            <option value="Hạ tầng">Hạ tầng</option>
-            <option value="Support">Support</option>
-            <option value="Quản lý hệ thống">Quản lý hệ thống</option>
           </select>
         </div>
       </div>

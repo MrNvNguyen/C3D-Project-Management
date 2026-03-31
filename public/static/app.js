@@ -504,6 +504,12 @@ $('loginForm').addEventListener('submit', async (e) => {
     currentUser = res.user
     localStorage.setItem('bim_token', authToken)
     localStorage.setItem('bim_user', JSON.stringify(currentUser))
+    // Load thêm avatar từ /auth/me (login chưa trả về avatar)
+    try {
+      const meData = await api('/auth/me')
+      currentUser = { ...currentUser, ...meData }
+      localStorage.setItem('bim_user', JSON.stringify(currentUser))
+    } catch (_) {}
     initApp()
   } catch (err) {
     toast(err.response?.data?.error || 'Sai tên đăng nhập hoặc mật khẩu', 'error')
@@ -699,6 +705,11 @@ async function initApp() {
   // Sync mini avatar
   const avatarMini = $('sidebarAvatarMini')
   if (avatarMini) avatarMini.textContent = initials
+
+  // Hiển thị avatar ảnh nếu có
+  if (currentUser.avatar && currentUser.avatar.startsWith('data:image/')) {
+    _applyAvatarToTopbar(currentUser.avatar)
+  }
 
   // Khôi phục trạng thái sidebar đã lưu
   restoreSidebarState()
@@ -2725,6 +2736,121 @@ const TASK_PAGE_SIZE = 20
 let _taskCurrentPage = 1
 let _taskAllData     = []   // full filtered dataset
 
+// ── Task sort state ───────────────────────────────────────────────────────
+// Default: status order (pending→in_progress→review→approved→completed→cancelled)
+// then due_date asc, then title asc
+const STATUS_ORDER = { pending: 0, in_progress: 1, review: 2, approved: 3, completed: 4, cancelled: 5 }
+let _taskSortField = 'default'   // 'default'|'title'|'project'|'due_date'|'progress'|'status'|'priority'
+let _taskSortDir   = 'asc'       // 'asc' | 'desc'
+
+const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 }
+
+function _taskSortCompare(a, b) {
+  if (_taskSortField === 'default') {
+    // Primary: status order (active tasks first)
+    const sd = (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+    if (sd !== 0) return sd
+    // Secondary: due_date ascending (soonest first), null last
+    const da = a.due_date ? new Date(a.due_date) : new Date('9999-12-31')
+    const db2 = b.due_date ? new Date(b.due_date) : new Date('9999-12-31')
+    const dd = da - db2
+    if (dd !== 0) return dd
+    // Tertiary: title
+    return (a.title || '').localeCompare(b.title || '', 'vi')
+  }
+
+  let va, vb
+  switch (_taskSortField) {
+    case 'title':
+      va = (a.title || '').toLowerCase()
+      vb = (b.title || '').toLowerCase()
+      break
+    case 'project':
+      va = (a.project_code || '').toLowerCase()
+      vb = (b.project_code || '').toLowerCase()
+      break
+    case 'due_date':
+      va = a.due_date ? new Date(a.due_date) : (_taskSortDir === 'asc' ? new Date('9999-12-31') : new Date('0000-01-01'))
+      vb = b.due_date ? new Date(b.due_date) : (_taskSortDir === 'asc' ? new Date('9999-12-31') : new Date('0000-01-01'))
+      break
+    case 'progress':
+      va = a.progress || 0
+      vb = b.progress || 0
+      break
+    case 'status':
+      va = STATUS_ORDER[a.status] ?? 9
+      vb = STATUS_ORDER[b.status] ?? 9
+      break
+    case 'priority':
+      va = PRIORITY_ORDER[a.priority] ?? 9
+      vb = PRIORITY_ORDER[b.priority] ?? 9
+      break
+    default:
+      va = ''; vb = ''
+  }
+
+  let cmp = 0
+  if (va < vb) cmp = -1
+  else if (va > vb) cmp = 1
+
+  // If equal, fall back to due_date asc then title
+  if (cmp === 0) {
+    const da = a.due_date ? new Date(a.due_date) : new Date('9999-12-31')
+    const db2 = b.due_date ? new Date(b.due_date) : new Date('9999-12-31')
+    cmp = da - db2
+  }
+  if (cmp === 0) cmp = (a.title || '').localeCompare(b.title || '', 'vi')
+
+  return _taskSortDir === 'asc' ? cmp : -cmp
+}
+
+function _taskApplySort(tasks) {
+  return [...tasks].sort(_taskSortCompare)
+}
+
+function _taskSetSort(field) {
+  if (_taskSortField === field && field !== 'default') {
+    // Toggle direction
+    _taskSortDir = _taskSortDir === 'asc' ? 'desc' : 'asc'
+  } else {
+    _taskSortField = field
+    _taskSortDir = 'asc'
+  }
+  // Re-render with current data
+  _taskAllData = _taskApplySort(_taskAllData)
+  _taskCurrentPage = 1
+  renderTaskRows()
+  renderTaskPagination()
+  _updateTaskSortHeaders()
+}
+
+function _updateTaskSortHeaders() {
+  document.querySelectorAll('th[data-sort-field]').forEach(th => {
+    const f = th.dataset.sortField
+    const icon = th.querySelector('.sort-icon')
+    if (!icon) return
+    const isActive = f === _taskSortField
+    if (isActive) {
+      icon.className = `sort-icon fas ${_taskSortDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down'} ml-1 text-indigo-500`
+      th.classList.add('text-indigo-600')
+    } else {
+      icon.className = 'sort-icon fas fa-sort ml-1 text-gray-300'
+      th.classList.remove('text-indigo-600')
+    }
+  })
+  // Highlight reset button when in default sort
+  const resetBtn = $('taskSortResetBtn')
+  if (resetBtn) {
+    if (_taskSortField === 'default') {
+      resetBtn.classList.add('text-indigo-600', 'border-indigo-300', 'bg-indigo-50')
+      resetBtn.classList.remove('text-gray-500', 'border-gray-200')
+    } else {
+      resetBtn.classList.remove('text-indigo-600', 'border-indigo-300', 'bg-indigo-50')
+      resetBtn.classList.add('text-gray-500', 'border-gray-200')
+    }
+  }
+}
+
 function taskPaginatedData() {
   const start = (_taskCurrentPage - 1) * TASK_PAGE_SIZE
   return _taskAllData.slice(start, start + TASK_PAGE_SIZE)
@@ -2785,12 +2911,13 @@ function renderTasksTable(tasks) {
   const tbody = $('tasksTable')
   if (!tbody) return
 
-  // Save full dataset, reset to page 1
-  _taskAllData     = tasks
+  // Apply current sort, save full dataset, reset to page 1
+  _taskAllData     = _taskApplySort(tasks)
   _taskCurrentPage = 1
 
   renderTaskRows()
   renderTaskPagination()
+  _updateTaskSortHeaders()
 }
 
 function renderTaskRows() {
@@ -7729,10 +7856,38 @@ async function loadAssetDeprDetail() {
 // ================================================================
 async function loadUsers() {
   try {
-    // show_inactive=1: admin quản lý nhân sự cần thấy cả người bị vô hiệu hóa
     allUsers = await api('/users?show_inactive=1')
     renderUsersTable(allUsers)
+    _renderUserKpi(allUsers)
+    // Hiện nút Quản lý Phòng ban + load departments cho modal nếu là system_admin
+    if (currentUser?.role === 'system_admin') {
+      const btn = $('btnManageDept')
+      if (btn) btn.style.display = ''
+    }
+    await loadDepartments()
+    _populateUserDeptFilter()
   } catch (e) { toast('Lỗi tải nhân sự: ' + e.message, 'error') }
+}
+
+function _renderUserKpi(users) {
+  const total = users.length
+  const active = users.filter(u => u.is_active).length
+  const depts = new Set(users.map(u => u.department).filter(Boolean)).size
+  const complete = users.filter(u => u.email && u.phone && u.department && u.cccd && u.birthday).length
+  if ($('statTotalUsers')) $('statTotalUsers').textContent = total
+  if ($('statActiveUsers')) $('statActiveUsers').textContent = active
+  if ($('statTotalDepts')) $('statTotalDepts').textContent = depts
+  if ($('statCompleteProfile')) $('statCompleteProfile').textContent = complete
+}
+
+function _populateUserDeptFilter() {
+  const sel = $('userDeptFilter')
+  if (!sel) return
+  const current = sel.value
+  sel.innerHTML = '<option value="">Tất cả phòng ban</option>'
+  const depts = [...new Set(allUsers.map(u => u.department).filter(Boolean))].sort()
+  depts.forEach(d => { const o = document.createElement('option'); o.value = d; o.textContent = d; sel.appendChild(o) })
+  if (current) sel.value = current
 }
 
 // ── User list pagination state ────────────────────────────────────────────
@@ -7813,7 +7968,7 @@ function renderUserRows() {
   }
 
   tbody.innerHTML = userPaginatedData().map(u => `
-    <tr class="table-row">
+    <tr class="table-row cursor-pointer hover:bg-primary/5 transition-colors" onclick="openUserDetail(${u.id})">
       <td class="py-2 pr-3">
         <div class="flex items-center gap-2">
           <div class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${u.full_name?.split(' ').pop()?.charAt(0)||'U'}</div>
@@ -7830,7 +7985,7 @@ function renderUserRows() {
       <td class="py-2 pr-3">
         <span class="badge ${u.is_active ? 'badge-completed' : 'badge-cancelled'}">${u.is_active ? 'Hoạt động' : 'Vô hiệu'}</span>
       </td>
-      <td class="py-2">
+      <td class="py-2" onclick="event.stopPropagation()">
         <div class="flex gap-1 items-center">
           <button onclick="openUserModal(${u.id})" class="btn-secondary text-xs px-2 py-1" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
           ${u.id !== currentUser.id ? `
@@ -7853,12 +8008,417 @@ function renderUserRows() {
 function filterUsers() {
   const search = $('userSearch').value.toLowerCase()
   const role = $('userRoleFilter').value
+  const dept = $('userDeptFilter')?.value || ''
   const filtered = allUsers.filter(u =>
-    (!search || u.full_name.toLowerCase().includes(search) || u.username.toLowerCase().includes(search)) &&
-    (!role || u.role === role)
+    (!search || u.full_name.toLowerCase().includes(search) || u.username.toLowerCase().includes(search) || (u.email||'').toLowerCase().includes(search)) &&
+    (!role || u.role === role) &&
+    (!dept || u.department === dept)
   )
   renderUsersTable(filtered)
 }
+
+// ================================================================
+// USER DETAIL DRAWER
+// ================================================================
+let _userStatsCharts = {}
+
+function switchUserTab(tab) {
+  const isList  = tab === 'list'
+  const isTable = tab === 'table'
+  const isStats = tab === 'stats'
+
+  $('panelUserList').classList.toggle('hidden', !isList)
+  $('panelUserTable') && $('panelUserTable').classList.toggle('hidden', !isTable)
+  $('panelUserStats').classList.toggle('hidden', !isStats)
+
+  const activeClass  = 'px-5 py-2 rounded-lg text-sm font-medium bg-white text-primary shadow-sm transition-all'
+  const inactiveClass = 'px-5 py-2 rounded-lg text-sm font-medium text-gray-500 hover:text-gray-700 transition-all'
+  $('tabUserList').className  = isList  ? activeClass : inactiveClass
+  $('tabUserTable') && ($('tabUserTable').className = isTable ? activeClass : inactiveClass)
+  $('tabUserStats').className = isStats ? activeClass : inactiveClass
+
+  if (isStats) _renderUserStatsPanel()
+  if (isTable) _renderStaffFullTable()
+}
+
+// ========================
+// BẢNG NHÂN VIÊN ĐẦY ĐỦ
+// ========================
+let _staffTableData = []
+let _staffTableSort = { key: 'full_name', dir: 1 }
+let _staffTablePage = 1
+const STAFF_TABLE_PAGE_SIZE = 20
+
+function _renderStaffFullTable() {
+  // Điền department filter từ _departmentsCache (đầy đủ phòng ban hệ thống)
+  const deptSel = $('tableUserDeptFilter')
+  if (deptSel) {
+    const current = deptSel.value
+    deptSel.innerHTML = '<option value="">Tất cả phòng ban</option>'
+    const depts = (_departmentsCache && _departmentsCache.length)
+      ? _departmentsCache.map(d => d.name).sort()
+      : [...new Set(allUsers.map(u => u.department).filter(Boolean))].sort()
+    depts.forEach(d => {
+      const o = document.createElement('option')
+      o.value = d; o.textContent = d
+      deptSel.appendChild(o)
+    })
+    if (current) deptSel.value = current
+  }
+  filterUserTable()
+}
+
+function filterUserTable() {
+  const search = ($('tableUserSearch')?.value || '').toLowerCase().trim()
+  const dept   = $('tableUserDeptFilter')?.value || ''
+  const role   = $('tableUserRoleFilter')?.value || ''
+  const status = $('tableUserStatusFilter')?.value
+
+  _staffTableData = allUsers.filter(u => {
+    const matchSearch = !search || (u.full_name||'').toLowerCase().includes(search)
+      || (u.username||'').toLowerCase().includes(search)
+      || (u.cccd||'').toLowerCase().includes(search)
+      || (u.email||'').toLowerCase().includes(search)
+    const matchDept   = !dept   || u.department === dept
+    const matchRole   = !role   || u.role === role
+    const matchStatus = status === undefined || status === '' || String(u.is_active) === status
+    return matchSearch && matchDept && matchRole && matchStatus
+  })
+
+  // Sort
+  _staffTableData.sort((a, b) => {
+    const va = (a[_staffTableSort.key] || '').toString().toLowerCase()
+    const vb = (b[_staffTableSort.key] || '').toString().toLowerCase()
+    return va < vb ? -_staffTableSort.dir : va > vb ? _staffTableSort.dir : 0
+  })
+
+  _staffTablePage = 1
+  _renderStaffTableRows()
+}
+
+function sortUserTable(key) {
+  if (_staffTableSort.key === key) _staffTableSort.dir *= -1
+  else { _staffTableSort.key = key; _staffTableSort.dir = 1 }
+  filterUserTable()
+}
+
+function _renderStaffTableRows() {
+  const tbody = $('staffFullTableBody')
+  if (!tbody) return
+
+  const total   = _staffTableData.length
+  const pages   = Math.ceil(total / STAFF_TABLE_PAGE_SIZE) || 1
+  _staffTablePage = Math.min(_staffTablePage, pages)
+  const start   = (_staffTablePage - 1) * STAFF_TABLE_PAGE_SIZE
+  const slice   = _staffTableData.slice(start, start + STAFF_TABLE_PAGE_SIZE)
+
+  const roleLabel = r => ({
+    system_admin:'System Admin', project_admin:'Project Admin',
+    project_leader:'Project Leader', member:'Member'
+  }[r] || r)
+  const roleBadgeClass = r => ({
+    system_admin:'bg-purple-100 text-purple-700',
+    project_admin:'bg-blue-100 text-blue-700',
+    project_leader:'bg-green-100 text-green-600',
+    member:'bg-gray-100 text-gray-600'
+  }[r] || 'bg-gray-100 text-gray-600')
+
+  if (!slice.length) {
+    tbody.innerHTML = `<tr><td colspan="12" class="py-12 text-center text-gray-400"><i class="fas fa-search text-3xl mb-2 block"></i>Không tìm thấy nhân viên nào</td></tr>`
+  } else {
+    tbody.innerHTML = slice.map((u, i) => {
+      const avatar = u.avatar?.startsWith('data:image/')
+        ? `<img src="${u.avatar}" class="w-8 h-8 rounded-full object-cover flex-shrink-0" />`
+        : `<div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white text-xs font-bold flex-shrink-0">${(u.full_name||'?').split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase()}</div>`
+      const fmtDate = s => {
+        if (!s) return '<span class="text-gray-300">—</span>'
+        const d = new Date(s)
+        if (isNaN(d)) return s
+        return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
+      }
+      const cell = v => v ? `<span class="text-gray-800">${v}</span>` : '<span class="text-gray-300">—</span>'
+      return `<tr class="hover:bg-blue-50/30 transition-colors cursor-pointer" onclick="openUserDetail(${u.id})">
+        <td class="py-2.5 px-3 text-gray-400 text-xs">${start + i + 1}</td>
+        <td class="py-2.5 px-3">
+          <div class="flex items-center gap-2 min-w-[160px]">
+            ${avatar}
+            <div>
+              <p class="font-medium text-gray-800 text-sm whitespace-nowrap">${u.full_name || '—'}</p>
+              ${u.department ? `<p class="text-xs text-gray-400">${u.department}</p>` : ''}
+            </div>
+          </div>
+        </td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.phone)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.cccd)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${fmtDate(u.birthday)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 max-w-[160px]"><div class="truncate" title="${u.address||''}">${cell(u.address)}</div></td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 max-w-[160px]"><div class="truncate" title="${u.current_address||''}">${cell(u.current_address)}</div></td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.degree)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.major)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap max-w-[160px]"><div class="truncate" title="${u.university||''}">${cell(u.university)}</div></td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.graduation_year)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-400 whitespace-nowrap">${fmtDate(u.created_at)}</td>
+      </tr>`
+    }).join('')
+  }
+
+  // Pagination
+  const pagDiv = $('userTablePagination')
+  if (pagDiv) {
+    if (pages <= 1) { pagDiv.innerHTML = ''; return }
+    let btns = `<div class="flex items-center gap-2 justify-end mt-3 text-sm">`
+    btns += `<span class="text-gray-500 text-xs">Hiển thị ${start+1}–${Math.min(start+STAFF_TABLE_PAGE_SIZE, total)} / ${total} nhân viên</span>`
+    btns += `<div class="flex gap-1 ml-3">`
+    for (let p = 1; p <= pages; p++) {
+      if (pages > 7 && p > 2 && p < pages-1 && Math.abs(p - _staffTablePage) > 1) {
+        if (p === 3 || p === pages-2) btns += `<span class="px-2 py-1 text-gray-400">…</span>`
+        continue
+      }
+      btns += `<button onclick="_staffTablePage=${p};_renderStaffTableRows()" class="px-3 py-1 rounded-lg border text-xs transition-colors ${p===_staffTablePage?'bg-primary text-white border-primary':'border-gray-200 text-gray-600 hover:bg-gray-50'}">${p}</button>`
+    }
+    btns += `</div></div>`
+    pagDiv.innerHTML = btns
+  }
+}
+
+function exportUserTableCSV() {
+  const data = _staffTableData.length ? _staffTableData : allUsers
+  const roleLabel = r => ({system_admin:'System Admin',project_admin:'Project Admin',project_leader:'Project Leader',member:'Member'}[r]||r)
+  const fmtDate = s => {
+    if (!s) return ''
+    const d = new Date(s)
+    if (isNaN(d)) return s
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
+  }
+  const headers = ['STT','Họ và tên','Tài khoản','Phòng ban','Vai trò','Trạng thái','Email','Điện thoại','Số CCCD','Ngày sinh','Thường trú','Nơi ở hiện tại','Trình độ','Chuyên ngành','Trường ĐH','Năm TN','Ngày tạo']
+  const rows = data.map((u, i) => [
+    i+1,
+    u.full_name||'',
+    u.username||'',
+    u.department||'',
+    roleLabel(u.role),
+    u.is_active ? 'Hoạt động' : 'Ngưng',
+    u.email||'',
+    u.phone||'',
+    u.cccd||'',
+    fmtDate(u.birthday),
+    u.address||'',
+    u.current_address||'',
+    u.degree||'',
+    u.major||'',
+    u.university||'',
+    u.graduation_year||'',
+    fmtDate(u.created_at)
+  ].map(v => `"${String(v).replace(/"/g,'""')}"`))
+
+  const bom = '\uFEFF'
+  const csv = bom + [headers.join(','), ...rows.map(r=>r.join(','))].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href = url
+  a.download = `danh_sach_nhan_vien_${new Date().toISOString().slice(0,10)}.csv`
+  document.body.appendChild(a); a.click()
+  document.body.removeChild(a); URL.revokeObjectURL(url)
+  showToast('Đã xuất file CSV thành công!', 'success')
+}
+
+function _renderUserStatsPanel() {
+  const users = allUsers
+  if (!users.length) return
+
+  // --- Biểu đồ phòng ban ---
+  const deptMap = {}
+  users.forEach(u => {
+    const d = u.department || '(Chưa phân công)'
+    deptMap[d] = (deptMap[d] || 0) + 1
+  })
+  const deptLabels = Object.keys(deptMap).sort((a, b) => deptMap[b] - deptMap[a])
+  const deptData   = deptLabels.map(k => deptMap[k])
+  const palette = ['#00A651','#0066CC','#FF6B00','#8B5CF6','#EC4899','#14B8A6','#F59E0B','#6366F1','#EF4444','#10B981']
+
+  const ctxDept = $('chartDeptDist')?.getContext('2d')
+  if (ctxDept) {
+    if (_userStatsCharts.dept) _userStatsCharts.dept.destroy()
+    _userStatsCharts.dept = new Chart(ctxDept, {
+      type: 'bar',
+      data: {
+        labels: deptLabels,
+        datasets: [{ label: 'Nhân sự', data: deptData,
+          backgroundColor: deptLabels.map((_, i) => palette[i % palette.length] + 'CC'),
+          borderColor: deptLabels.map((_, i) => palette[i % palette.length]),
+          borderWidth: 1.5, borderRadius: 6 }]
+      },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+    })
+  }
+
+  // --- Biểu đồ vai trò ---
+  const roleLabels = ['System Admin','Project Admin','Project Leader','Member']
+  const roleKeys   = ['system_admin','project_admin','project_leader','member']
+  const roleData   = roleKeys.map(r => users.filter(u => u.role === r).length)
+  const ctxRole = $('chartRoleDist')?.getContext('2d')
+  if (ctxRole) {
+    if (_userStatsCharts.role) _userStatsCharts.role.destroy()
+    _userStatsCharts.role = new Chart(ctxRole, {
+      type: 'doughnut',
+      data: { labels: roleLabels, datasets: [{ data: roleData,
+        backgroundColor: ['#8B5CF6CC','#0066CCCC','#00A651CC','#F59E0BCC'],
+        borderColor: ['#8B5CF6','#0066CC','#00A651','#F59E0B'], borderWidth: 2 }] },
+      options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+    })
+  }
+
+  // --- Bảng tổng hợp theo phòng ban ---
+  const tbody = $('statsDeptTable')
+  if (!tbody) return
+  const allDepts = [...new Set(users.map(u => u.department || '(Chưa phân công)'))].sort()
+  tbody.innerHTML = allDepts.map(dept => {
+    const grp = users.filter(u => (u.department || '(Chưa phân công)') === dept)
+    const active = grp.filter(u => u.is_active).length
+    const admins = grp.filter(u => ['system_admin','project_admin'].includes(u.role)).length
+    const leaders = grp.filter(u => u.role === 'project_leader').length
+    const members = grp.filter(u => u.role === 'member').length
+    const hasEmail = grp.filter(u => u.email).length
+    const fullProfile = grp.filter(u => u.email && u.phone && u.cccd && u.birthday).length
+    const pct = grp.length ? Math.round(fullProfile / grp.length * 100) : 0
+    return `<tr class="hover:bg-gray-50 transition-colors">
+      <td class="py-2.5 pr-4 font-medium text-gray-800 text-sm">${dept}</td>
+      <td class="py-2.5 pr-4 text-center"><span class="font-bold text-gray-800">${grp.length}</span></td>
+      <td class="py-2.5 pr-4 text-center"><span class="text-green-600 font-medium">${active}</span></td>
+      <td class="py-2.5 pr-4 text-center text-purple-600">${admins || '-'}</td>
+      <td class="py-2.5 pr-4 text-center text-blue-600">${leaders || '-'}</td>
+      <td class="py-2.5 pr-4 text-center text-gray-600">${members || '-'}</td>
+      <td class="py-2.5 pr-4 text-center text-sm">${hasEmail}/${grp.length}</td>
+      <td class="py-2.5 text-center">
+        <div class="flex items-center gap-2 justify-center">
+          <div class="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div class="h-full rounded-full ${pct>=80?'bg-green-500':pct>=50?'bg-yellow-400':'bg-red-400'}" style="width:${pct}%"></div>
+          </div>
+          <span class="text-xs font-medium text-gray-600">${pct}%</span>
+        </div>
+      </td>
+    </tr>`
+  }).join('')
+}
+
+// --- Drawer chi tiết nhân sự ---
+async function openUserDetail(userId) {
+  const user = allUsers.find(u => u.id === userId)
+  if (!user) return
+  // Lấy thêm chi tiết đầy đủ từ server (có cccd, birthday, degree...)
+  let detail = user
+  try { detail = await api(`/users/${userId}/detail`) } catch(_) {}
+
+  const drawer = $('userDetailDrawer')
+  const panel  = $('userDetailPanel')
+  drawer.style.display = 'block'
+  setTimeout(() => panel.style.transform = 'translateX(0)', 10)
+
+  // Nút chỉnh sửa
+  const editBtn = $('btnEditFromDetail')
+  if (editBtn) editBtn.onclick = () => { closeUserDetail(); openUserModal(userId) }
+
+  // Render nội dung
+  const initials = detail.full_name?.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() || 'U'
+  const avatarHtml = detail.avatar?.startsWith('data:image/')
+    ? `<img src="${detail.avatar}" class="w-20 h-20 rounded-full object-cover" />`
+    : `<div class="w-20 h-20 rounded-full bg-primary flex items-center justify-center text-white text-2xl font-bold">${initials}</div>`
+
+  const row = (icon, label, val, cls='') => val
+    ? `<div class="flex gap-3 py-2 border-b border-gray-50 last:border-0">
+        <i class="fas fa-${icon} text-primary w-4 mt-0.5 flex-shrink-0 text-sm"></i>
+        <div class="min-w-0"><p class="text-xs text-gray-400">${label}</p><p class="text-sm font-medium text-gray-800 break-words ${cls}">${val}</p></div>
+       </div>` : ''
+
+  $('userDetailBody').innerHTML = `
+    <!-- Avatar + tên -->
+    <div class="flex items-center gap-4 mb-6">
+      ${avatarHtml}
+      <div>
+        <h2 class="text-xl font-bold text-gray-800">${detail.full_name}</h2>
+        <div class="flex items-center gap-2 mt-1">${getRoleBadge(detail.role)}</div>
+        <p class="text-sm text-gray-400 mt-1 font-mono">@${detail.username}</p>
+      </div>
+      <div class="ml-auto">
+        <span class="badge ${detail.is_active ? 'badge-completed' : 'badge-cancelled'} text-xs">${detail.is_active ? 'Hoạt động' : 'Vô hiệu'}</span>
+      </div>
+    </div>
+
+    <!-- Thông tin liên hệ -->
+    <div class="mb-5">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-address-card mr-1.5"></i>Thông tin liên hệ</p>
+      <div class="bg-gray-50 rounded-xl px-4">
+        ${row('envelope','Email',detail.email)}
+        ${row('phone','Số điện thoại',detail.phone)}
+        ${row('building','Phòng ban/Bộ môn',detail.department)}
+        ${row('id-card','Số CCCD',detail.cccd)}
+        ${row('birthday-cake','Ngày sinh',detail.birthday ? formatBirthday(detail.birthday) : null)}
+        ${row('map-marker-alt','Thường trú',detail.address)}
+        ${row('home','Nơi ở hiện tại',detail.current_address)}
+      </div>
+    </div>
+
+    <!-- Học vấn -->
+    ${(detail.degree || detail.major || detail.university || detail.graduation_year) ? `
+    <div class="mb-5">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-graduation-cap mr-1.5"></i>Học vấn</p>
+      <div class="bg-gray-50 rounded-xl px-4">
+        ${row('award','Trình độ',detail.degree)}
+        ${row('book','Chuyên ngành',detail.major)}
+        ${row('university','Trường đại học',detail.university)}
+        ${row('calendar-check','Năm tốt nghiệp',detail.graduation_year)}
+      </div>
+    </div>` : ''}
+
+    <!-- Hồ sơ hoàn thiện -->
+    <div class="mt-4">
+      ${_profileCompletenessHtml(detail)}
+    </div>
+  `
+}
+
+function _profileCompletenessHtml(u) {
+  const fields = [
+    { label: 'Email',       ok: !!u.email },
+    { label: 'SĐT',        ok: !!u.phone },
+    { label: 'Phòng ban',  ok: !!u.department },
+    { label: 'CCCD',       ok: !!u.cccd },
+    { label: 'Ngày sinh',  ok: !!u.birthday },
+    { label: 'Thường trú', ok: !!u.address },
+    { label: 'Nơi ở HT',  ok: !!u.current_address },
+    { label: 'Trình độ',   ok: !!u.degree },
+    { label: 'Chuyên ngành',ok:!!u.major },
+    { label: 'Trường ĐH',  ok: !!u.university },
+  ]
+  const done = fields.filter(f => f.ok).length
+  const pct  = Math.round(done / fields.length * 100)
+  const color = pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-400' : 'bg-red-400'
+  return `
+    <div class="bg-gray-50 rounded-xl p-4">
+      <div class="flex justify-between items-center mb-2">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Mức độ hoàn thiện hồ sơ</p>
+        <span class="text-sm font-bold ${pct>=80?'text-green-600':pct>=50?'text-yellow-500':'text-red-500'}">${pct}%</span>
+      </div>
+      <div class="w-full h-2 bg-gray-200 rounded-full mb-3 overflow-hidden">
+        <div class="${color} h-full rounded-full transition-all" style="width:${pct}%"></div>
+      </div>
+      <div class="flex flex-wrap gap-1.5">
+        ${fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full font-medium ${f.ok ? 'bg-green-100 text-green-700' : 'bg-red-50 text-red-400 line-through'}">${f.label}</span>`).join('')}
+      </div>
+    </div>`
+}
+
+function closeUserDetail() {
+  const panel = $('userDetailPanel')
+  const drawer = $('userDetailDrawer')
+  if (panel) panel.style.transform = 'translateX(100%)'
+  setTimeout(() => { if (drawer) drawer.style.display = 'none' }, 300)
+}
+
+// Đóng drawer khi nhấn Escape
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeUserDetail() })
 
 async function openUserModal(userId = null) {
   $('userModalTitle').textContent = userId ? 'Chỉnh sửa tài khoản' : 'Tạo tài khoản mới'
@@ -7891,22 +8451,9 @@ async function openUserModal(userId = null) {
       $('userEmail').value = user.email || ''
       $('userPhone').value = user.phone || ''
       $('userRole').value = user.role || 'member'
-      // Handle department dropdown
-      const deptEl = $('userDepartment')
-      if (deptEl) {
-        if (deptEl.tagName === 'SELECT') {
-          let found = false
-          for (const opt of deptEl.options) { if (opt.value === user.department) { found = true; break } }
-          if (!found && user.department) {
-            const opt = document.createElement('option')
-            opt.value = user.department; opt.textContent = user.department
-            deptEl.appendChild(opt)
-          }
-          deptEl.value = user.department || ''
-        } else {
-          deptEl.value = user.department || ''
-        }
-      }
+      // Populate department dropdown từ cache rồi set giá trị
+      _populateDeptDropdowns()
+      $('userDepartment').value = user.department || ''
       $('userSalary').value = user.salary_monthly || ''
       $('userPassword').value = ''
     }
@@ -8007,25 +8554,193 @@ function switchMGuideTab(tab) {
   })
 }
 
+// ================================================================
+// DEPARTMENTS — Quản lý phòng ban
+// ================================================================
+let _departmentsCache = []
+
+async function loadDepartments() {
+  try {
+    _departmentsCache = await api('/departments')
+  } catch (e) {
+    _departmentsCache = []
+  }
+  _populateDeptDropdowns()
+  return _departmentsCache
+}
+
+// Điền options vào tất cả <select> phòng ban trong trang
+function _populateDeptDropdowns() {
+  const selectors = ['#profileDeptInput', '#userDepartment']
+  selectors.forEach(sel => {
+    const el = document.querySelector(sel)
+    if (!el) return
+    const current = el.value
+    // Giữ option đầu tiên (-- Chọn phòng ban --)
+    el.innerHTML = '<option value="">-- Chọn phòng ban --</option>'
+    _departmentsCache.forEach(d => {
+      const opt = document.createElement('option')
+      opt.value = d.name
+      opt.textContent = d.name
+      el.appendChild(opt)
+    })
+    // Khôi phục giá trị đang chọn
+    if (current) el.value = current
+  })
+}
+
+// ---- Modal quản lý phòng ban (System Admin only) ----
+async function openDeptModal() {
+  cancelDeptEdit()
+  await _renderDeptList()
+  openModal('deptModal')
+}
+
+async function _renderDeptList() {
+  const listEl = $('deptList')
+  if (!listEl) return
+  try {
+    const depts = await api('/departments')
+    _departmentsCache = depts
+    if (!depts.length) {
+      listEl.innerHTML = '<p class="text-center text-gray-400 py-4 text-sm">Chưa có phòng ban nào</p>'
+      return
+    }
+    listEl.innerHTML = depts.map(d => `
+      <div class="flex items-center gap-3 bg-white border border-gray-100 rounded-xl px-4 py-2.5 hover:border-primary/30 transition-colors">
+        <span class="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold flex-shrink-0">${d.sort_order || '·'}</span>
+        <div class="flex-1 min-w-0">
+          <p class="font-medium text-gray-800 text-sm">${d.name}</p>
+          ${d.description ? `<p class="text-xs text-gray-400 truncate">${d.description}</p>` : ''}
+        </div>
+        <div class="flex gap-1.5 flex-shrink-0">
+          <button onclick="editDept(${d.id},'${d.name.replace(/'/g,"\\'")}','${(d.description||'').replace(/'/g,"\\'")}',${d.sort_order||0})"
+            class="w-7 h-7 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-600 flex items-center justify-center transition-colors" title="Sửa">
+            <i class="fas fa-pen text-xs"></i>
+          </button>
+          <button onclick="deleteDept(${d.id},'${d.name.replace(/'/g,"\\'")}')"
+            class="w-7 h-7 rounded-lg bg-red-50 hover:bg-red-100 text-red-500 flex items-center justify-center transition-colors" title="Xóa">
+            <i class="fas fa-trash text-xs"></i>
+          </button>
+        </div>
+      </div>`).join('')
+  } catch (e) {
+    listEl.innerHTML = '<p class="text-center text-red-400 py-4 text-sm">Lỗi tải danh sách</p>'
+  }
+}
+
+function editDept(id, name, description, sortOrder) {
+  $('deptEditId').value = id
+  $('deptName').value = name
+  $('deptDescription').value = description
+  $('deptSortOrder').value = sortOrder
+  $('deptFormTitle').innerHTML = '<i class="fas fa-pen mr-1 text-blue-500"></i>Chỉnh sửa phòng ban'
+  $('deptSaveLabel').textContent = 'Lưu thay đổi'
+  $('btnCancelDeptEdit').classList.remove('hidden')
+  $('deptName').focus()
+}
+
+function cancelDeptEdit() {
+  $('deptEditId').value = ''
+  $('deptName').value = ''
+  $('deptDescription').value = ''
+  $('deptSortOrder').value = ''
+  $('deptFormTitle').innerHTML = '<i class="fas fa-plus-circle mr-1 text-primary"></i>Thêm phòng ban mới'
+  $('deptSaveLabel').textContent = 'Thêm mới'
+  $('btnCancelDeptEdit').classList.add('hidden')
+}
+
+async function saveDept() {
+  const id = $('deptEditId').value
+  const name = $('deptName').value.trim()
+  const description = $('deptDescription').value.trim()
+  const sortOrder = parseInt($('deptSortOrder').value) || 0
+  if (!name) { toast('Nhập tên phòng ban', 'warning'); return }
+  try {
+    if (id) {
+      await api(`/departments/${id}`, { method: 'put', data: { name, description, sort_order: sortOrder } })
+      toast('Đã cập nhật phòng ban', 'success')
+    } else {
+      await api('/departments', { method: 'post', data: { name, description, sort_order: sortOrder } })
+      toast('Đã thêm phòng ban mới', 'success')
+    }
+    cancelDeptEdit()
+    await _renderDeptList()
+    await loadDepartments()   // Refresh dropdowns khắp trang
+  } catch (e) {
+    toast(e.response?.data?.error || e.message, 'error')
+  }
+}
+
+async function deleteDept(id, name) {
+  if (!confirm(`Xóa phòng ban "${name}"?\nKhông thể xóa nếu còn nhân sự thuộc phòng ban này.`)) return
+  try {
+    await api(`/departments/${id}`, { method: 'delete' })
+    toast('Đã xóa phòng ban', 'success')
+    await _renderDeptList()
+    await loadDepartments()
+  } catch (e) {
+    toast(e.response?.data?.error || e.message, 'error')
+  }
+}
+
 async function loadProfile() {
+  // Load departments trước để populate dropdown
+  await loadDepartments()
+
   let user = null
   try {
     user = await api('/auth/me')
     currentUser = { ...currentUser, ...user }
 
+    // --- Avatar ---
+    const avatarImg = $('profileAvatarImg')
+    const avatarText = $('profileAvatar')
+    if (user.avatar && user.avatar.startsWith('data:image/')) {
+      avatarImg.src = user.avatar
+      avatarImg.classList.remove('hidden')
+      avatarText.classList.add('hidden')
+    } else {
+      const initials = user.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
+      avatarText.textContent = initials
+      avatarImg.classList.add('hidden')
+      avatarText.classList.remove('hidden')
+    }
+
+    // --- Thẻ trái ---
     const initials = user.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
-    $('profileAvatar').textContent = initials
     $('profileName').textContent = user.full_name
     $('profileRole').textContent = getRoleLabel(user.role)
     $('profileDept').textContent = user.department || '-'
+    $('profileDeptDisplay').textContent = user.department || '-'
+    $('profileDegreeDisplay').textContent = user.degree || '-'
     $('profileEmail').textContent = user.email || '-'
     $('profilePhone').textContent = user.phone || '-'
+    $('profileCccdDisplay').textContent = user.cccd || '-'
+    $('profileBirthdayDisplay').textContent = user.birthday ? formatBirthday(user.birthday) : '-'
+    $('profileAddressDisplay').textContent = user.address || '-'
+    $('profileCurrentAddressDisplay').textContent = user.current_address || '-'
+    $('profileMajorDisplay').textContent = user.major || '-'
+    $('profileUniversityDisplay').textContent = user.university || '-'
+    $('profileGraduationYearDisplay').textContent = user.graduation_year || '-'
 
+    // --- Form inputs ---
     $('profileFullName').value = user.full_name || ''
     $('profileEmailInput').value = user.email || ''
     $('profilePhoneInput').value = user.phone || ''
     $('profileDeptInput').value = user.department || ''
+    $('profileDegreeInput').value = user.degree || ''
+    $('profileCccdInput').value = user.cccd || ''
+    $('profileBirthdayInput').value = user.birthday || ''
+    $('profileAddressInput').value = user.address || ''
+    $('profileCurrentAddressInput').value = user.current_address || ''
+    $('profileMajorInput').value = user.major || ''
+    $('profileUniversityInput').value = user.university || ''
+    $('profileGraduationYearInput').value = user.graduation_year || ''
   } catch (e) { toast('Lỗi tải profile', 'error') }
+
+  // Sync avatar lên topbar/sidebar
+  _syncTopbarAvatar()
 
   // Show email settings card only for system_admin
   const emailCard = $('emailSettingsCard')
@@ -8045,6 +8760,99 @@ async function loadProfile() {
 // EMAIL NOTIFICATION SETTINGS (removed — all 4 events are always-on)
 // Settings card is shown only to system_admin (handled in loadProfile)
 // ================================================================
+
+// ================================================================
+// PROFILE HELPERS
+// ================================================================
+function formatBirthday(dateStr) {
+  if (!dateStr) return '-'
+  // dateStr là dạng YYYY-MM-DD
+  const parts = dateStr.split('-')
+  if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`
+  return dateStr
+}
+
+function _syncTopbarAvatar() {
+  // Cập nhật avatar/chữ tắt trên topbar và sidebar
+  const user = currentUser
+  if (!user) return
+  const initials = user.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
+  const sidebarAvatar = $('sidebarAvatar')
+  const sidebarAvatarMini = $('sidebarAvatarMini')
+  if (sidebarAvatar) sidebarAvatar.textContent = initials
+  if (sidebarAvatarMini) sidebarAvatarMini.textContent = initials
+  if (user.avatar && user.avatar.startsWith('data:image/')) {
+    _applyAvatarToTopbar(user.avatar)
+  }
+}
+
+// Thay chữ tắt trên topbar/sidebar bằng ảnh avatar
+function _applyAvatarToTopbar(avatarDataUrl) {
+  // topbar avatar
+  const topbarEl = $('topbarAvatar')
+  if (topbarEl) {
+    topbarEl.innerHTML = `<img src="${avatarDataUrl}" alt="avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`
+  }
+  // sidebar avatar
+  const sidebarEl = $('sidebarAvatar')
+  if (sidebarEl) {
+    sidebarEl.innerHTML = `<img src="${avatarDataUrl}" alt="avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`
+  }
+}
+
+// Upload avatar: đọc file → base64 → POST API
+async function handleAvatarUpload(event) {
+  const file = event.target.files[0]
+  if (!file) return
+  if (!file.type.startsWith('image/')) { toast('Vui lòng chọn file ảnh', 'warning'); return }
+  if (file.size > 600 * 1024) { toast('Ảnh quá lớn, vui lòng chọn ảnh nhỏ hơn 600KB', 'warning'); return }
+
+  // Resize ảnh xuống tối đa 200x200 trước khi upload
+  const base64 = await _resizeImageToBase64(file, 200)
+
+  try {
+    toast('Đang tải ảnh lên...', 'info')
+    const res = await api('/auth/upload-avatar', { method: 'post', data: { avatar: base64 } })
+    if (res.success) {
+      // Hiển thị ảnh mới ngay lập tức
+      const avatarImg = $('profileAvatarImg')
+      const avatarText = $('profileAvatar')
+      avatarImg.src = base64
+      avatarImg.classList.remove('hidden')
+      avatarText.classList.add('hidden')
+      currentUser.avatar = base64
+      toast('Cập nhật ảnh đại diện thành công!', 'success')
+    }
+  } catch (e) {
+    toast('Lỗi tải ảnh: ' + (e.response?.data?.error || e.message), 'error')
+  }
+  // Reset input để có thể chọn lại cùng file
+  event.target.value = ''
+}
+
+// Resize ảnh về maxSize x maxSize, trả về base64 string
+function _resizeImageToBase64(file, maxSize) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        let w = img.width, h = img.height
+        if (w > h) { if (w > maxSize) { h = Math.round(h * maxSize / w); w = maxSize } }
+        else { if (h > maxSize) { w = Math.round(w * maxSize / h); h = maxSize } }
+        canvas.width = w; canvas.height = h
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0, w, h)
+        resolve(canvas.toDataURL('image/jpeg', 0.85))
+      }
+      img.onerror = reject
+      img.src = e.target.result
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
 
 // ================================================================
 // EMAIL ADMIN PAGE
@@ -8482,6 +9290,17 @@ function renderEmailLogs(logs) {
 }
 
 async function updateProfile() {
+  // Validate CCCD
+  const cccd = $('profileCccdInput').value.trim()
+  if (cccd && !/^\d{12}$/.test(cccd)) {
+    toast('Số CCCD phải đúng 12 chữ số', 'warning'); return
+  }
+  // Validate năm tốt nghiệp
+  const gradYearRaw = $('profileGraduationYearInput').value.trim()
+  const gradYear = gradYearRaw ? parseInt(gradYearRaw) : null
+  if (gradYear && (gradYear < 1970 || gradYear > 2099)) {
+    toast('Năm tốt nghiệp không hợp lệ (1970–2099)', 'warning'); return
+  }
   try {
     await api(`/users/${currentUser.id}`, {
       method: 'put',
@@ -8489,12 +9308,20 @@ async function updateProfile() {
         full_name: $('profileFullName').value,
         email: $('profileEmailInput').value,
         phone: $('profilePhoneInput').value,
-        department: $('profileDeptInput').value
+        department: $('profileDeptInput').value || null,
+        degree: $('profileDegreeInput').value || null,
+        cccd: cccd || null,
+        birthday: $('profileBirthdayInput').value || null,
+        address: $('profileAddressInput').value.trim() || null,
+        current_address: $('profileCurrentAddressInput').value.trim() || null,
+        major: $('profileMajorInput').value.trim() || null,
+        university: $('profileUniversityInput').value.trim() || null,
+        graduation_year: gradYear
       }
     })
-    toast('Cập nhật thông tin thành công')
+    toast('Cập nhật thông tin thành công', 'success')
     loadProfile()
-  } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 }
 
 async function changePassword() {

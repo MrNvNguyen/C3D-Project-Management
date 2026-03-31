@@ -760,8 +760,95 @@ app.post('/api/auth/change-password', authMiddleware, async (c) => {
 app.get('/api/auth/me', authMiddleware, async (c) => {
   const user = c.get('user') as any
   const db = c.env.DB
-  const dbUser = await db.prepare('SELECT id, username, full_name, email, phone, role, department, avatar FROM users WHERE id = ?').bind(user.id).first()
+  const dbUser = await db.prepare('SELECT id, username, full_name, email, phone, role, department, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree FROM users WHERE id = ?').bind(user.id).first()
   return c.json(dbUser)
+})
+
+// POST /api/auth/upload-avatar — Upload avatar dạng base64
+app.post('/api/auth/upload-avatar', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { avatar } = await c.req.json()
+    if (!avatar) return c.json({ error: 'Thiếu dữ liệu avatar' }, 400)
+    // Giới hạn kích thước: ~500KB sau base64
+    if (avatar.length > 700000) return c.json({ error: 'Ảnh quá lớn, vui lòng chọn ảnh nhỏ hơn 500KB' }, 400)
+    // Chỉ chấp nhận data URI image
+    if (!avatar.startsWith('data:image/')) return c.json({ error: 'Định dạng ảnh không hợp lệ' }, 400)
+    await db.prepare('UPDATE users SET avatar = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(avatar, user.id).run()
+    return c.json({ success: true, avatar })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ===================================================
+// DEPARTMENTS ROUTES
+// ===================================================
+
+// GET /api/departments — lấy danh sách phòng ban (tất cả user)
+app.get('/api/departments', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const { results } = await db.prepare(
+      'SELECT id, name, description, sort_order, is_active FROM departments WHERE is_active = 1 ORDER BY sort_order ASC, name ASC'
+    ).all()
+    return c.json(results)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/departments — tạo phòng ban (System Admin only)
+app.post('/api/departments', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { name, description, sort_order } = await c.req.json()
+    if (!name?.trim()) return c.json({ error: 'Tên phòng ban không được để trống' }, 400)
+    const existing = await db.prepare('SELECT id FROM departments WHERE name = ?').bind(name.trim()).first()
+    if (existing) return c.json({ error: 'Phòng ban đã tồn tại' }, 400)
+    const result = await db.prepare(
+      'INSERT INTO departments (name, description, sort_order, created_by) VALUES (?, ?, ?, ?)'
+    ).bind(name.trim(), description || null, sort_order || 0, user.id).run()
+    return c.json({ success: true, id: result.meta.last_row_id })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PUT /api/departments/:id — cập nhật phòng ban (System Admin only)
+app.put('/api/departments/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const { name, description, sort_order, is_active } = await c.req.json()
+    if (!name?.trim()) return c.json({ error: 'Tên phòng ban không được để trống' }, 400)
+    const existing = await db.prepare('SELECT id FROM departments WHERE name = ? AND id != ?').bind(name.trim(), id).first()
+    if (existing) return c.json({ error: 'Tên phòng ban đã tồn tại' }, 400)
+    await db.prepare(
+      'UPDATE departments SET name = ?, description = ?, sort_order = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+    ).bind(name.trim(), description || null, sort_order ?? 0, is_active ?? 1, id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// DELETE /api/departments/:id — xóa phòng ban (System Admin only)
+app.delete('/api/departments/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const dept = await db.prepare('SELECT name FROM departments WHERE id = ?').bind(id).first() as any
+    if (!dept) return c.json({ error: 'Không tìm thấy phòng ban' }, 404)
+    const userCount = await db.prepare('SELECT COUNT(*) as cnt FROM users WHERE department = ?').bind(dept.name).first() as any
+    if (userCount?.cnt > 0) return c.json({ error: `Không thể xóa: còn ${userCount.cnt} nhân sự thuộc phòng ban này` }, 400)
+    await db.prepare('DELETE FROM departments WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
 })
 
 // ===================================================
@@ -773,7 +860,7 @@ app.get('/api/users', authMiddleware, async (c) => {
     const user = c.get('user') as any
     // show_inactive=1 only for system_admin (e.g. from the Users management page)
     const showInactive = user.role === 'system_admin' && c.req.query('show_inactive') === '1'
-    let query = 'SELECT id, username, full_name, email, phone, role, department, is_active, created_at FROM users'
+    let query = 'SELECT id, username, full_name, email, phone, role, department, is_active, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, salary_monthly, created_at FROM users'
     if (!showInactive) {
       query += ' WHERE is_active = 1'
     }
@@ -834,6 +921,14 @@ app.put('/api/users/:id', authMiddleware, async (c) => {
     if (email !== undefined) { updateFields.push('email = ?'); values.push(email) }
     if (phone !== undefined) { updateFields.push('phone = ?'); values.push(phone) }
     if (department !== undefined) { updateFields.push('department = ?'); values.push(department) }
+    if (data.cccd !== undefined) { updateFields.push('cccd = ?'); values.push(data.cccd) }
+    if (data.birthday !== undefined) { updateFields.push('birthday = ?'); values.push(data.birthday) }
+    if (data.address !== undefined) { updateFields.push('address = ?'); values.push(data.address) }
+    if (data.current_address !== undefined) { updateFields.push('current_address = ?'); values.push(data.current_address) }
+    if (data.major !== undefined) { updateFields.push('major = ?'); values.push(data.major) }
+    if (data.university !== undefined) { updateFields.push('university = ?'); values.push(data.university) }
+    if (data.graduation_year !== undefined) { updateFields.push('graduation_year = ?'); values.push(data.graduation_year) }
+    if (data.degree !== undefined) { updateFields.push('degree = ?'); values.push(data.degree) }
 
     // Chỉ system_admin mới được đổi username, role, salary, status
     if (user.role === 'system_admin') {
@@ -861,6 +956,23 @@ app.put('/api/users/:id', authMiddleware, async (c) => {
 
     await db.prepare(`UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`).bind(...values).run()
     return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/users/:id/detail — chi tiết đầy đủ một user (admin hoặc chính user đó)
+app.get('/api/users/:id/detail', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const me = c.get('user') as any
+    const id = parseInt(c.req.param('id'))
+    if (me.role !== 'system_admin' && me.id !== id) return c.json({ error: 'Access denied' }, 403)
+    const user = await db.prepare(
+      'SELECT id, username, full_name, email, phone, role, department, is_active, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, created_at FROM users WHERE id = ?'
+    ).bind(id).first()
+    if (!user) return c.json({ error: 'Không tìm thấy' }, 404)
+    return c.json(user)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
