@@ -760,7 +760,7 @@ app.post('/api/auth/change-password', authMiddleware, async (c) => {
 app.get('/api/auth/me', authMiddleware, async (c) => {
   const user = c.get('user') as any
   const db = c.env.DB
-  const dbUser = await db.prepare('SELECT id, username, full_name, email, phone, role, department, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree FROM users WHERE id = ?').bind(user.id).first()
+  const dbUser = await db.prepare('SELECT id, username, full_name, email, phone, role, department, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users WHERE id = ?').bind(user.id).first()
   return c.json(dbUser)
 })
 
@@ -860,7 +860,7 @@ app.get('/api/users', authMiddleware, async (c) => {
     const user = c.get('user') as any
     // show_inactive=1 only for system_admin (e.g. from the Users management page)
     const showInactive = user.role === 'system_admin' && c.req.query('show_inactive') === '1'
-    let query = 'SELECT id, username, full_name, email, phone, role, department, is_active, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, salary_monthly, created_at FROM users'
+    let query = 'SELECT id, username, full_name, email, phone, role, department, is_active, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, salary_monthly, created_at, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users'
     if (!showInactive) {
       query += ' WHERE is_active = 1'
     }
@@ -929,6 +929,16 @@ app.put('/api/users/:id', authMiddleware, async (c) => {
     if (data.university !== undefined) { updateFields.push('university = ?'); values.push(data.university) }
     if (data.graduation_year !== undefined) { updateFields.push('graduation_year = ?'); values.push(data.graduation_year) }
     if (data.degree !== undefined) { updateFields.push('degree = ?'); values.push(data.degree) }
+    if (data.cccd_issue_date !== undefined) { updateFields.push('cccd_issue_date = ?'); values.push(data.cccd_issue_date) }
+    if (data.cccd_issue_place !== undefined) { updateFields.push('cccd_issue_place = ?'); values.push(data.cccd_issue_place) }
+    if (data.gender !== undefined) { updateFields.push('gender = ?'); values.push(data.gender) }
+    if (data.join_date !== undefined) { updateFields.push('join_date = ?'); values.push(data.join_date) }
+    if (data.job_title !== undefined) { updateFields.push('job_title = ?'); values.push(data.job_title) }
+    if (data.social_insurance_number !== undefined) { updateFields.push('social_insurance_number = ?'); values.push(data.social_insurance_number) }
+    if (data.tax_number !== undefined) { updateFields.push('tax_number = ?'); values.push(data.tax_number) }
+    if (data.bank_account !== undefined) { updateFields.push('bank_account = ?'); values.push(data.bank_account) }
+    if (data.bank_name !== undefined) { updateFields.push('bank_name = ?'); values.push(data.bank_name) }
+    if (data.bank_branch !== undefined) { updateFields.push('bank_branch = ?'); values.push(data.bank_branch) }
 
     // Chỉ system_admin mới được đổi username, role, salary, status
     if (user.role === 'system_admin') {
@@ -969,7 +979,7 @@ app.get('/api/users/:id/detail', authMiddleware, async (c) => {
     const id = parseInt(c.req.param('id'))
     if (me.role !== 'system_admin' && me.id !== id) return c.json({ error: 'Access denied' }, 403)
     const user = await db.prepare(
-      'SELECT id, username, full_name, email, phone, role, department, is_active, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, created_at FROM users WHERE id = ?'
+      'SELECT id, username, full_name, email, phone, role, department, is_active, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, created_at, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users WHERE id = ?'
     ).bind(id).first()
     if (!user) return c.json({ error: 'Không tìm thấy' }, 404)
     return c.json(user)

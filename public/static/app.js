@@ -8714,6 +8714,9 @@ async function loadProfile() {
     $('profileDept').textContent = user.department || '-'
     $('profileDeptDisplay').textContent = user.department || '-'
     $('profileDegreeDisplay').textContent = user.degree || '-'
+    $('profileJobTitleDisplay').textContent = user.job_title || '-'
+    $('profileGenderDisplay').textContent = ({male:'Nam', female:'Nữ', other:'Khác'}[user.gender]) || '-'
+    $('profileJoinDateDisplay').textContent = user.join_date ? formatBirthday(user.join_date) : '-'
     $('profileEmail').textContent = user.email || '-'
     $('profilePhone').textContent = user.phone || '-'
     $('profileCccdDisplay').textContent = user.cccd || '-'
@@ -8729,11 +8732,21 @@ async function loadProfile() {
     $('profileEmailInput').value = user.email || ''
     $('profilePhoneInput').value = user.phone || ''
     $('profileDeptInput').value = user.department || ''
+    $('profileGenderInput').value = user.gender || ''
+    $('profileJobTitleInput').value = user.job_title || ''
+    $('profileJoinDateInput').value = user.join_date || ''
     $('profileDegreeInput').value = user.degree || ''
     $('profileCccdInput').value = user.cccd || ''
+    $('profileCccdIssueDateInput').value = user.cccd_issue_date || ''
+    $('profileCccdIssuePlaceInput').value = user.cccd_issue_place || ''
     $('profileBirthdayInput').value = user.birthday || ''
     $('profileAddressInput').value = user.address || ''
     $('profileCurrentAddressInput').value = user.current_address || ''
+    $('profileSocialInsuranceInput').value = user.social_insurance_number || ''
+    $('profileTaxNumberInput').value = user.tax_number || ''
+    $('profileBankAccountInput').value = user.bank_account || ''
+    $('profileBankNameInput').value = user.bank_name || ''
+    $('profileBankBranchInput').value = user.bank_branch || ''
     $('profileMajorInput').value = user.major || ''
     $('profileUniversityInput').value = user.university || ''
     $('profileGraduationYearInput').value = user.graduation_year || ''
@@ -9309,11 +9322,21 @@ async function updateProfile() {
         email: $('profileEmailInput').value,
         phone: $('profilePhoneInput').value,
         department: $('profileDeptInput').value || null,
+        gender: $('profileGenderInput').value || null,
+        job_title: $('profileJobTitleInput').value.trim() || null,
+        join_date: $('profileJoinDateInput').value || null,
         degree: $('profileDegreeInput').value || null,
         cccd: cccd || null,
+        cccd_issue_date: $('profileCccdIssueDateInput').value || null,
+        cccd_issue_place: $('profileCccdIssuePlaceInput').value.trim() || null,
         birthday: $('profileBirthdayInput').value || null,
         address: $('profileAddressInput').value.trim() || null,
         current_address: $('profileCurrentAddressInput').value.trim() || null,
+        social_insurance_number: $('profileSocialInsuranceInput').value.trim() || null,
+        tax_number: $('profileTaxNumberInput').value.trim() || null,
+        bank_account: $('profileBankAccountInput').value.trim() || null,
+        bank_name: $('profileBankNameInput').value.trim() || null,
+        bank_branch: $('profileBankBranchInput').value.trim() || null,
         major: $('profileMajorInput').value.trim() || null,
         university: $('profileUniversityInput').value.trim() || null,
         graduation_year: gradYear
