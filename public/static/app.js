@@ -8124,7 +8124,7 @@ function _renderStaffTableRows() {
   }[r] || 'bg-gray-100 text-gray-600')
 
   if (!slice.length) {
-    tbody.innerHTML = `<tr><td colspan="12" class="py-12 text-center text-gray-400"><i class="fas fa-search text-3xl mb-2 block"></i>Không tìm thấy nhân viên nào</td></tr>`
+    tbody.innerHTML = `<tr><td colspan="22" class="py-12 text-center text-gray-400"><i class="fas fa-search text-3xl mb-2 block"></i>Không tìm thấy nhân viên nào</td></tr>`
   } else {
     tbody.innerHTML = slice.map((u, i) => {
       const avatar = u.avatar?.startsWith('data:image/')
@@ -8137,10 +8137,12 @@ function _renderStaffTableRows() {
         return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
       }
       const cell = v => v ? `<span class="text-gray-800">${v}</span>` : '<span class="text-gray-300">—</span>'
-      return `<tr class="hover:bg-blue-50/30 transition-colors cursor-pointer" onclick="openUserDetail(${u.id})">
-        <td class="py-2.5 px-3 text-gray-400 text-xs">${start + i + 1}</td>
-        <td class="py-2.5 px-3">
-          <div class="flex items-center gap-2 min-w-[160px]">
+      const genderTxt = {male:'Nam', female:'Nữ', other:'Khác'}[u.gender] || null
+      const rowBg = (i % 2 === 0) ? '#ffffff' : '#f9fafb'
+      return `<tr class="hover:bg-blue-50 transition-colors cursor-pointer" onmouseover="this.querySelectorAll('.sticky-col').forEach(c=>c.style.background='#eff6ff')" onmouseout="this.querySelectorAll('.sticky-col').forEach(c=>c.style.background='${rowBg}')" onclick="openUserDetail(${u.id})">
+        <td class="sticky-col py-2.5 px-3 text-gray-400 text-xs border-r border-gray-100" style="position:sticky;left:0;z-index:10;background:${rowBg};min-width:42px">${start + i + 1}</td>
+        <td class="sticky-col py-2.5 px-3 border-r border-gray-200" style="position:sticky;left:42px;z-index:10;background:${rowBg};min-width:200px;box-shadow:2px 0 6px rgba(0,0,0,0.08)">
+          <div class="flex items-center gap-2">
             ${avatar}
             <div>
               <p class="font-medium text-gray-800 text-sm whitespace-nowrap">${u.full_name || '—'}</p>
@@ -8148,14 +8150,24 @@ function _renderStaffTableRows() {
             </div>
           </div>
         </td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.job_title)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(genderTxt)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${fmtDate(u.join_date)}</td>
         <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.phone)}</td>
         <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.cccd)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${fmtDate(u.cccd_issue_date)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap max-w-[150px]"><div class="truncate" title="${u.cccd_issue_place||''}">${cell(u.cccd_issue_place)}</div></td>
         <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${fmtDate(u.birthday)}</td>
-        <td class="py-2.5 px-3 text-xs text-gray-600 max-w-[160px]"><div class="truncate" title="${u.address||''}">${cell(u.address)}</div></td>
-        <td class="py-2.5 px-3 text-xs text-gray-600 max-w-[160px]"><div class="truncate" title="${u.current_address||''}">${cell(u.current_address)}</div></td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 max-w-[150px]"><div class="truncate" title="${u.address||''}">${cell(u.address)}</div></td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 max-w-[150px]"><div class="truncate" title="${u.current_address||''}">${cell(u.current_address)}</div></td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.social_insurance_number)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.tax_number)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.bank_account)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.bank_name)}</td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap max-w-[130px]"><div class="truncate" title="${u.bank_branch||''}">${cell(u.bank_branch)}</div></td>
         <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.degree)}</td>
-        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.major)}</td>
-        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap max-w-[160px]"><div class="truncate" title="${u.university||''}">${cell(u.university)}</div></td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap max-w-[160px]"><div class="truncate" title="${u.major||''}">${cell(u.major)}</div></td>
+        <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap max-w-[150px]"><div class="truncate" title="${u.university||''}">${cell(u.university)}</div></td>
         <td class="py-2.5 px-3 text-xs text-gray-600 whitespace-nowrap">${cell(u.graduation_year)}</td>
         <td class="py-2.5 px-3 text-xs text-gray-400 whitespace-nowrap">${fmtDate(u.created_at)}</td>
       </tr>`
@@ -8352,37 +8364,87 @@ async function openUserDetail(userId) {
         <div class="min-w-0"><p class="text-xs text-gray-400">${label}</p><p class="text-sm font-medium text-gray-800 break-words ${cls}">${val}</p></div>
        </div>` : ''
 
+  const fmtD = s => {
+    if (!s) return null
+    const d = new Date(s)
+    if (isNaN(d)) return s
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
+  }
+  const genderTxt = {male:'Nam', female:'Nữ', other:'Khác'}[detail.gender] || null
+
   $('userDetailBody').innerHTML = `
     <!-- Avatar + tên -->
     <div class="flex items-center gap-4 mb-6">
       ${avatarHtml}
-      <div>
+      <div class="min-w-0">
         <h2 class="text-xl font-bold text-gray-800">${detail.full_name}</h2>
         <div class="flex items-center gap-2 mt-1">${getRoleBadge(detail.role)}</div>
-        <p class="text-sm text-gray-400 mt-1 font-mono">@${detail.username}</p>
+        ${detail.job_title ? `<p class="text-sm text-gray-500 mt-0.5"><i class="fas fa-briefcase mr-1 text-primary"></i>${detail.job_title}</p>` : ''}
+        <p class="text-sm text-gray-400 mt-0.5 font-mono">@${detail.username}</p>
       </div>
-      <div class="ml-auto">
+      <div class="ml-auto flex-shrink-0">
         <span class="badge ${detail.is_active ? 'badge-completed' : 'badge-cancelled'} text-xs">${detail.is_active ? 'Hoạt động' : 'Vô hiệu'}</span>
       </div>
     </div>
 
-    <!-- Thông tin liên hệ -->
-    <div class="mb-5">
-      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-address-card mr-1.5"></i>Thông tin liên hệ</p>
+    <!-- Thông tin cá nhân -->
+    <div class="mb-4">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-user mr-1.5"></i>Thông tin cá nhân</p>
       <div class="bg-gray-50 rounded-xl px-4">
         ${row('envelope','Email',detail.email)}
         ${row('phone','Số điện thoại',detail.phone)}
         ${row('building','Phòng ban/Bộ môn',detail.department)}
-        ${row('id-card','Số CCCD',detail.cccd)}
-        ${row('birthday-cake','Ngày sinh',detail.birthday ? formatBirthday(detail.birthday) : null)}
-        ${row('map-marker-alt','Thường trú',detail.address)}
-        ${row('home','Nơi ở hiện tại',detail.current_address)}
+        ${row('venus-mars','Giới tính',genderTxt)}
+        ${row('birthday-cake','Ngày sinh',fmtD(detail.birthday))}
+        ${row('calendar-plus','Ngày vào công ty',fmtD(detail.join_date))}
       </div>
     </div>
 
+    <!-- Giấy tờ tùy thân -->
+    ${(detail.cccd || detail.cccd_issue_date || detail.cccd_issue_place) ? `
+    <div class="mb-4">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-id-card mr-1.5"></i>Giấy tờ tùy thân</p>
+      <div class="bg-gray-50 rounded-xl px-4">
+        ${row('id-card','Số CCCD',detail.cccd)}
+        ${row('calendar','Ngày cấp CCCD',fmtD(detail.cccd_issue_date))}
+        ${row('map-pin','Nơi cấp CCCD',detail.cccd_issue_place)}
+      </div>
+    </div>` : ''}
+
+    <!-- Địa chỉ -->
+    ${(detail.address || detail.current_address) ? `
+    <div class="mb-4">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-map-marker-alt mr-1.5"></i>Địa chỉ</p>
+      <div class="bg-gray-50 rounded-xl px-4">
+        ${row('map-marker-alt','Thường trú',detail.address)}
+        ${row('home','Nơi ở hiện tại',detail.current_address)}
+      </div>
+    </div>` : ''}
+
+    <!-- Bảo hiểm & Thuế -->
+    ${(detail.social_insurance_number || detail.tax_number) ? `
+    <div class="mb-4">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-shield-alt mr-1.5"></i>Bảo hiểm & Thuế</p>
+      <div class="bg-gray-50 rounded-xl px-4">
+        ${row('shield-alt','Mã số BHXH',detail.social_insurance_number)}
+        ${row('file-invoice','Mã số thuế (MST)',detail.tax_number)}
+      </div>
+    </div>` : ''}
+
+    <!-- Ngân hàng -->
+    ${(detail.bank_account || detail.bank_name || detail.bank_branch) ? `
+    <div class="mb-4">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-university mr-1.5"></i>Thông tin ngân hàng</p>
+      <div class="bg-gray-50 rounded-xl px-4">
+        ${row('credit-card','Số tài khoản',detail.bank_account)}
+        ${row('university','Tên ngân hàng',detail.bank_name)}
+        ${row('code-branch','Chi nhánh',detail.bank_branch)}
+      </div>
+    </div>` : ''}
+
     <!-- Học vấn -->
     ${(detail.degree || detail.major || detail.university || detail.graduation_year) ? `
-    <div class="mb-5">
+    <div class="mb-4">
       <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"><i class="fas fa-graduation-cap mr-1.5"></i>Học vấn</p>
       <div class="bg-gray-50 rounded-xl px-4">
         ${row('award','Trình độ',detail.degree)}
@@ -8401,16 +8463,25 @@ async function openUserDetail(userId) {
 
 function _profileCompletenessHtml(u) {
   const fields = [
-    { label: 'Email',       ok: !!u.email },
-    { label: 'SĐT',        ok: !!u.phone },
-    { label: 'Phòng ban',  ok: !!u.department },
-    { label: 'CCCD',       ok: !!u.cccd },
-    { label: 'Ngày sinh',  ok: !!u.birthday },
-    { label: 'Thường trú', ok: !!u.address },
-    { label: 'Nơi ở HT',  ok: !!u.current_address },
-    { label: 'Trình độ',   ok: !!u.degree },
-    { label: 'Chuyên ngành',ok:!!u.major },
-    { label: 'Trường ĐH',  ok: !!u.university },
+    { label: 'Email',        ok: !!u.email },
+    { label: 'SĐT',         ok: !!u.phone },
+    { label: 'Phòng ban',   ok: !!u.department },
+    { label: 'Giới tính',   ok: !!u.gender },
+    { label: 'Chức danh',   ok: !!u.job_title },
+    { label: 'Ngày vào CT', ok: !!u.join_date },
+    { label: 'CCCD',        ok: !!u.cccd },
+    { label: 'Ngày cấp CC', ok: !!u.cccd_issue_date },
+    { label: 'Nơi cấp CC',  ok: !!u.cccd_issue_place },
+    { label: 'Ngày sinh',   ok: !!u.birthday },
+    { label: 'Thường trú',  ok: !!u.address },
+    { label: 'Nơi ở HT',   ok: !!u.current_address },
+    { label: 'BHXH',        ok: !!u.social_insurance_number },
+    { label: 'MST',         ok: !!u.tax_number },
+    { label: 'Số TK NH',    ok: !!u.bank_account },
+    { label: 'Tên NH',      ok: !!u.bank_name },
+    { label: 'Trình độ',    ok: !!u.degree },
+    { label: 'Chuyên ngành',ok: !!u.major },
+    { label: 'Trường ĐH',   ok: !!u.university },
   ]
   const done = fields.filter(f => f.ok).length
   const pct  = Math.round(done / fields.length * 100)

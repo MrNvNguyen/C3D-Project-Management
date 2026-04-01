@@ -1798,17 +1798,27 @@
             </div>
           </div>
           <div class="card">
-            <div class="overflow-x-auto">
-              <table class="w-full text-sm" id="staffFullTable">
-                <thead>
+            <div class="overflow-x-auto" style="max-height:70vh;overflow-y:auto;">
+              <table class="w-full text-sm" id="staffFullTable" style="border-collapse:separate;border-spacing:0;">
+                <thead style="position:sticky;top:0;z-index:20;">
                   <tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
-                    <th class="py-3 px-3 whitespace-nowrap">#</th>
-                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('full_name')">Họ và tên <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                    <th class="py-3 px-3 whitespace-nowrap bg-gray-50 border-r border-gray-200" style="position:sticky;left:0;z-index:30;min-width:42px">#</th>
+                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary bg-gray-50 border-r border-gray-200" style="position:sticky;left:42px;z-index:30;min-width:200px;box-shadow:2px 0 6px rgba(0,0,0,0.08)" onclick="sortUserTable('full_name')">Họ và tên <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('job_title')">Chức danh <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                    <th class="py-3 px-3 whitespace-nowrap">Giới tính</th>
+                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('join_date')">Ngày vào CT <i class="fas fa-sort ml-1 text-gray-300"></i></th>
                     <th class="py-3 px-3 whitespace-nowrap">Điện thoại</th>
                     <th class="py-3 px-3 whitespace-nowrap">Số CCCD</th>
+                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('cccd_issue_date')">Ngày cấp CCCD <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                    <th class="py-3 px-3 whitespace-nowrap">Nơi cấp CCCD</th>
                     <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('birthday')">Ngày sinh <i class="fas fa-sort ml-1 text-gray-300"></i></th>
                     <th class="py-3 px-3 whitespace-nowrap">Thường trú</th>
                     <th class="py-3 px-3 whitespace-nowrap">Nơi ở hiện tại</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Mã số BHXH</th>
+                    <th class="py-3 px-3 whitespace-nowrap">MST</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Số tài khoản NH</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Tên ngân hàng</th>
+                    <th class="py-3 px-3 whitespace-nowrap">Chi nhánh NH</th>
                     <th class="py-3 px-3 whitespace-nowrap">Trình độ</th>
                     <th class="py-3 px-3 whitespace-nowrap">Chuyên ngành</th>
                     <th class="py-3 px-3 whitespace-nowrap">Trường ĐH</th>
