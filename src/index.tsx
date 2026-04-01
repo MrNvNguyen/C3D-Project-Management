@@ -8302,7 +8302,7 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS message_attachments (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER NOT NULL, file_name TEXT NOT NULL, file_type TEXT NOT NULL, file_size INTEGER DEFAULT 0, data TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(context_type, context_id)`,
       `CREATE INDEX IF NOT EXISTS idx_msg_attachments ON message_attachments(message_id)`,
-      `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER, task_id INTEGER, work_date DATE NOT NULL, day_type TEXT NOT NULL DEFAULT 'work', regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, work_date))`,
+      `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER, task_id INTEGER, work_date DATE NOT NULL, day_type TEXT NOT NULL DEFAULT 'work', regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, project_id, work_date))`,
       `CREATE TABLE IF NOT EXISTS timesheet_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, timesheet_id INTEGER NOT NULL, task_id INTEGER, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (timesheet_id) REFERENCES timesheets(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_timesheet_tasks_ts ON timesheet_tasks(timesheet_id)`,
       `CREATE TABLE IF NOT EXISTS project_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, cost_type TEXT NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', cost_date DATE, invoice_number TEXT, vendor TEXT, approved_by INTEGER, notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
@@ -8353,10 +8353,10 @@ app.post('/api/system/init', async (c) => {
             approved_at DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, work_date)
+            UNIQUE(user_id, project_id, work_date)
           )
         `).run()
-        // Step 2: copy existing data (dedup by user_id+work_date, keep latest)
+        // Step 2: copy existing data (dedup by user_id+project_id+work_date, keep latest — new unique key)
         await db.prepare(`
           INSERT OR IGNORE INTO timesheets_new
             (id, user_id, project_id, task_id, work_date, day_type,
@@ -8374,13 +8374,64 @@ app.post('/api/system/init', async (c) => {
       }
     } catch (_migErr) { /* ignore — migration already applied or DB already correct */ }
 
+    // ---- CRITICAL FIX: Change UNIQUE(user_id, work_date) → UNIQUE(user_id, project_id, work_date) ----
+    // This allows bulk-import of multiple projects for the same person on the same date
+    try {
+      const tsInfo = await db.prepare(`PRAGMA index_list(timesheets)`).all()
+      const indexes = (tsInfo.results as any[])
+      // Check if old (user_id, work_date) unique index exists without project_id
+      // The safest check: try to insert two rows with same user+date but different project
+      // Instead, we recreate the table if old unique constraint detected
+      const tableInfo = await db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='timesheets'`).first() as any
+      const tableSql: string = tableInfo?.sql || ''
+      // Old constraint: UNIQUE(user_id, work_date) — no project_id
+      const hasOldConstraint = tableSql.includes('UNIQUE(user_id, work_date)') || 
+                               tableSql.includes('UNIQUE(user_id,work_date)')
+      if (hasOldConstraint) {
+        // Recreate with new constraint
+        await db.prepare(`
+          CREATE TABLE IF NOT EXISTS timesheets_fix (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            project_id INTEGER,
+            task_id INTEGER,
+            work_date DATE NOT NULL,
+            day_type TEXT NOT NULL DEFAULT 'work',
+            regular_hours REAL DEFAULT 0,
+            overtime_hours REAL DEFAULT 0,
+            description TEXT,
+            status TEXT DEFAULT 'draft',
+            approved_by INTEGER,
+            approved_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, project_id, work_date)
+          )
+        `).run()
+        await db.prepare(`
+          INSERT OR IGNORE INTO timesheets_fix
+            (id, user_id, project_id, task_id, work_date, day_type,
+             regular_hours, overtime_hours, description, status,
+             approved_by, approved_at, created_at, updated_at)
+          SELECT id, user_id, project_id, task_id, work_date,
+            COALESCE(day_type, 'work'), regular_hours, overtime_hours,
+            description, status, approved_by, approved_at, created_at, updated_at
+          FROM timesheets ORDER BY id ASC
+        `).run()
+        await db.prepare(`DROP TABLE timesheets`).run()
+        await db.prepare(`ALTER TABLE timesheets_fix RENAME TO timesheets`).run()
+        await db.prepare(`CREATE INDEX IF NOT EXISTS idx_timesheets_user_date ON timesheets(user_id, work_date)`).run()
+        await db.prepare(`CREATE INDEX IF NOT EXISTS idx_timesheets_project ON timesheets(project_id)`).run()
+      }
+    } catch (_fixErr) { /* ignore */ }
+
     // ---- CRITICAL: Always dedup timesheets BEFORE seeding new data ----
-    // New unique key is (user_id, work_date) — one record per person per day
+    // Unique key is now (user_id, project_id, work_date) — one record per person per project per day
     try {
       await db.prepare(`
         DELETE FROM timesheets
         WHERE id NOT IN (
-          SELECT MAX(id) FROM timesheets GROUP BY user_id, work_date
+          SELECT MAX(id) FROM timesheets GROUP BY user_id, project_id, work_date
         )
       `).run()
     } catch (_) { /* ignore */ }
