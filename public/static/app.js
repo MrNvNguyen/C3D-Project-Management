@@ -4950,6 +4950,8 @@ async function loadTimesheets() {
           memberMap[mk].total_hours    += (t.regular_hours  || 0) + (t.overtime_hours || 0)
 
           const pk = String(t.project_id)
+          // Skip orphaned timesheets (project has been deleted — no project_code/name)
+          if (!t.project_code && !t.project_name) return
           if (!projMap[pk]) projMap[pk] = {
             project_id: t.project_id,
             code: t.project_code || '?', name: t.project_name || '?',
@@ -5027,6 +5029,19 @@ async function loadTimesheets() {
               if (dupWarn) dupWarn.classList.add('hidden')
               if (dupSt)   dupSt.classList.add('hidden')
             }
+
+            // Orphan check — timesheets with deleted project/user
+            try {
+              const orphanCheck = await api('/timesheets/cleanup-orphans')
+              const orphanCount = orphanCheck.total_orphans || 0
+              if (orphanCount > 0) {
+                // Auto-cleanup silently
+                const cleaned = await api('/timesheets/cleanup-orphans', { method: 'post', data: {} })
+                if (cleaned.deleted > 0) {
+                  loadTimesheets()  // reload after cleanup
+                }
+              }
+            } catch (_) { /* silent */ }
           } catch (_) { /* silent */ }
         }
       } else {
@@ -5878,9 +5893,10 @@ function _tsBulkAddRow() {
   const idx  = _tsBulkRowCount
   const mode = document.querySelector('input[name="tsBulkMode"]:checked')?.value || 'year'
 
-  const projOptions = allProjects.map(p =>
-    `<option value="${p.id}">${p.code ? p.code + ' – ' : ''}${p.name}</option>`
-  ).join('')
+  const projItems = allProjects.map(p => ({
+    value: String(p.id),
+    label: (p.code ? p.code + ' – ' : '') + p.name
+  }))
 
   const monthOptions = _MONTHS.map((m, i) =>
     `<option value="${i+1}" ${(i+1) === new Date().getMonth()+1 ? 'selected' : ''}>${m}</option>`
@@ -5895,9 +5911,10 @@ function _tsBulkAddRow() {
   if (mode === 'month') {
     div.style.gridTemplateColumns = '3fr 1.5fr 1.5fr 1.5fr 0.5fr'
     div.innerHTML = `
-      <select id="tsBulkProj_${idx}" class="input-field text-sm">
-        <option value="">-- Chọn dự án --</option>${projOptions}
-      </select>
+      <div>
+        <div id="tsBulkProjCb_${idx}"></div>
+        <input type="hidden" id="tsBulkProj_${idx}">
+      </div>
       <select id="tsBulkMonth_${idx}" class="input-field text-sm">${monthOptions}</select>
       <input type="number" id="tsBulkReg_${idx}" class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
       <input type="number" id="tsBulkOT_${idx}"  class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
@@ -5907,9 +5924,10 @@ function _tsBulkAddRow() {
   } else {
     div.style.gridTemplateColumns = '4fr 2fr 2fr 0.5fr'
     div.innerHTML = `
-      <select id="tsBulkProj_${idx}" class="input-field text-sm">
-        <option value="">-- Chọn dự án --</option>${projOptions}
-      </select>
+      <div>
+        <div id="tsBulkProjCb_${idx}"></div>
+        <input type="hidden" id="tsBulkProj_${idx}">
+      </div>
       <input type="number" id="tsBulkReg_${idx}" class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
       <input type="number" id="tsBulkOT_${idx}"  class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
       <button type="button" onclick="_tsBulkRemoveRow(${idx})" class="text-red-400 hover:text-red-600 flex justify-center">
@@ -5917,6 +5935,20 @@ function _tsBulkAddRow() {
       </button>`
   }
   rowsEl.appendChild(div)
+
+  // Init searchable combobox for project after DOM is ready
+  createCombobox(`tsBulkProjCb_${idx}`, {
+    placeholder: '🔍 Tìm / chọn dự án...',
+    items: projItems,
+    fullWidth: true,
+    teleport: true,
+    panelMaxWidth: '480px',
+    dropdownMaxHeight: '260px',
+    onchange: (val) => {
+      const hidden = $(`tsBulkProj_${idx}`)
+      if (hidden) hidden.value = val
+    }
+  })
 }
 
 function _tsBulkRemoveRow(idx) {

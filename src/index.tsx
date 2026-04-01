@@ -2056,6 +2056,49 @@ app.get('/api/members', authMiddleware, async (c) => {
 })
 
 // ===================================================
+// ===================================================
+// GET /api/timesheets/cleanup-orphans — check orphaned timesheets (deleted project/user)
+// POST /api/timesheets/cleanup-orphans — delete them
+// ===================================================
+app.get('/api/timesheets/cleanup-orphans', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const orphanProj = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM timesheets ts
+      LEFT JOIN projects p ON ts.project_id = p.id
+      WHERE p.id IS NULL
+    `).first() as any
+    const orphanUser = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM timesheets ts
+      LEFT JOIN users u ON ts.user_id = u.id
+      WHERE u.id IS NULL
+    `).first() as any
+    return c.json({
+      orphaned_project: orphanProj?.cnt || 0,
+      orphaned_user: orphanUser?.cnt || 0,
+      total_orphans: (orphanProj?.cnt || 0) + (orphanUser?.cnt || 0)
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+app.post('/api/timesheets/cleanup-orphans', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const before = await db.prepare('SELECT COUNT(*) as cnt FROM timesheets').first() as any
+    // Delete timesheets where project no longer exists
+    await db.prepare(`
+      DELETE FROM timesheets WHERE project_id NOT IN (SELECT id FROM projects)
+    `).run()
+    // Delete timesheets where user no longer exists
+    await db.prepare(`
+      DELETE FROM timesheets WHERE user_id NOT IN (SELECT id FROM users)
+    `).run()
+    const after = await db.prepare('SELECT COUNT(*) as cnt FROM timesheets').first() as any
+    const deleted = (before?.cnt || 0) - (after?.cnt || 0)
+    return c.json({ success: true, deleted, remaining: after?.cnt || 0 })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // POST /api/admin/dedup-timesheets — remove duplicate timesheet rows
 // (same user_id, project_id, work_date) keeping earliest id
 // ===================================================
