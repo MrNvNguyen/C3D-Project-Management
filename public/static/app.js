@@ -432,7 +432,9 @@ function getStatusBadge(status) {
   const labels = { todo: 'Chờ làm', in_progress: 'Đang làm', review: 'Đang duyệt', completed: 'Hoàn thành', done: 'Hoàn thành', cancelled: 'Đã hủy', active: 'Hoạt động', planning: 'Lập kế hoạch', on_hold: 'Tạm dừng' }
   // Normalise legacy 'done' → display as 'completed' badge class
   const badgeClass = status === 'done' ? 'completed' : status
-  return `<span class="badge badge-${badgeClass}">${labels[status] || status}</span>`
+  const icons = { active: '●', completed: '✓', planning: '◷', on_hold: '⏸', cancelled: '✕' }
+  const icon = icons[badgeClass] ? `<span style="margin-right:3px;font-size:10px">${icons[badgeClass]}</span>` : ''
+  return `<span class="badge badge-${badgeClass}">${icon}${labels[status] || status}</span>`
 }
 
 function getPriorityBadge(p) {
@@ -1012,20 +1014,42 @@ function renderHoursChart(data) {
   destroyChart('hours')
   const ctx = $('hoursChart')
   if (!ctx) return
-  const months = data?.map(d => d.month) || []
+
+  // Build a full 12-month label list (last 12 months up to current)
+  const full12 = []
+  const now = new Date()
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    full12.push(`${y}-${m}`)
+  }
+
+  // Index existing data by month key
+  const dataMap = {}
+  ;(data || []).forEach(d => { dataMap[d.month] = d })
+
+  // Fill missing months with zeros
+  const labels   = full12
+  const regular  = full12.map(m => dataMap[m]?.regular  || 0)
+  const overtime = full12.map(m => dataMap[m]?.overtime || 0)
+
   charts['hours'] = safeChart(ctx, {
     type: 'line',
     data: {
-      labels: months,
+      labels,
       datasets: [
-        { label: 'Giờ hành chính', data: data?.map(d => d.regular || 0) || [], borderColor: '#00A651', backgroundColor: 'rgba(0,166,81,0.1)', fill: true, tension: 0.4 },
-        { label: 'Tăng ca', data: data?.map(d => d.overtime || 0) || [], borderColor: '#FF6B00', backgroundColor: 'rgba(255,107,0,0.1)', fill: true, tension: 0.4 }
+        { label: 'Giờ hành chính', data: regular,  borderColor: '#00A651', backgroundColor: 'rgba(0,166,81,0.1)',   fill: true, tension: 0.4, pointRadius: 3 },
+        { label: 'Tăng ca',        data: overtime, borderColor: '#FF6B00', backgroundColor: 'rgba(255,107,0,0.1)', fill: true, tension: 0.4, pointRadius: 3 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
-      scales: { y: { beginAtZero: true } }
+      scales: {
+        x: { ticks: { font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { font: { size: 11 } } }
+      }
     }
   })
 }
@@ -5203,6 +5227,7 @@ function renderTsRows() {
     holiday:      { label: 'Nghỉ lễ',      cls: 'bg-purple-50 text-purple-700',icon: '🎉' },
     sick_leave:   { label: 'Nghỉ ốm',      cls: 'bg-orange-50 text-orange-700',icon: '🤒' },
     compensatory: { label: 'Nghỉ bù',      cls: 'bg-amber-50 text-amber-700',  icon: '🔄' },
+    business_trip: { label: 'Đi công tác',  cls: 'bg-indigo-50 text-indigo-700', icon: '✈️' },
   }
   const emptyColspan  = canSeeAll ? 11 : 10
 
@@ -5230,7 +5255,7 @@ function renderTsRows() {
 
     const dt   = dayTypeInfo[t.day_type || 'work'] || dayTypeInfo.work
     // Full leave = no project/hours; half_day = has project/hours, just highlight differently
-    const isFullLeaveRow = !['work','half_day_am','half_day_pm'].includes(t.day_type || 'work')
+    const isFullLeaveRow = !['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
     const isHalfDayRow   = t.day_type === 'half_day_am' || t.day_type === 'half_day_pm'
     const isLeaveRow     = isFullLeaveRow  // backward compat variable (row highlight)
     // Multi-task: task_entries array with > 0 items
@@ -5525,9 +5550,9 @@ async function openTimesheetModal(tsId = null) {
     // Mở modal trước để DOM đã render rồi mới fill task
     openModal('timesheetModal')
 
-    // Ẩn gợi ý khi đang sửa (không cần thiết)
-    const _hintEl = document.getElementById('tsDateHint')
-    if (_hintEl) _hintEl.style.display = 'none'
+    // Hiển thị gợi ý + giờ HC còn lại (trừ bản ghi đang sửa)
+    const _editTargetUid = isAdmin ? (parseInt($('tsTargetUserHidden').value) || currentUser.id) : null
+    _updateTsDateHint(ts.work_date, ts.id, _editTargetUid)
 
     // Load & init task combobox với task đang chọn sẵn + đúng locked
     // Reset multi-task về single mode mặc định
@@ -5577,6 +5602,13 @@ async function openTimesheetModal(tsId = null) {
     // Hiển thị gợi ý dự án đã khai báo cho ngày hôm nay
     const targetUid = isAdmin ? (parseInt($('tsTargetUserHidden').value) || currentUser.id) : null
     _updateTsDateHint(today(), null, targetUid)
+    // Cập nhật giờ HC mặc định = số giờ còn lại hôm nay
+    const _usedToday = allTimesheets.filter(t =>
+      t.work_date === today() && t.user_id === (targetUid || currentUser.id) &&
+      ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
+    ).reduce((s, t) => s + (t.regular_hours || 0), 0)
+    const _remToday = Math.max(0, 8 - _usedToday)
+    if ($('tsRegularHours')) $('tsRegularHours').value = _remToday
   }
 }
 
@@ -5586,7 +5618,7 @@ function tsDayTypeChanged() {
   const workFields  = document.getElementById('tsWorkFields')
   const leaveNotice = document.getElementById('tsLeaveNotice')
   const leaveText   = document.getElementById('tsLeaveNoticeText')
-  const isLeave = !['work','half_day_am','half_day_pm'].includes(dayType)
+  const isLeave = !['work','half_day_am','half_day_pm','business_trip'].includes(dayType)
   const isHalf  = dayType === 'half_day_am' || dayType === 'half_day_pm'
 
   if (workFields)  workFields.style.display  = isLeave ? 'none' : ''
@@ -5601,6 +5633,7 @@ function tsDayTypeChanged() {
         holiday:       '🎉 Nghỉ lễ — giờ công ghi nhận 0h.',
         sick_leave:    '🤒 Nghỉ ốm — giờ công ghi nhận 0h.',
         compensatory:  '🔄 Nghỉ bù — giờ công ghi nhận 0h.',
+        business_trip: '✈️ Đi công tác — khai báo dự án và giờ làm việc bình thường.',
       }
       leaveText.textContent = labels[dayType] || 'Ngày nghỉ — giờ công ghi nhận 0h.'
     }
@@ -5772,26 +5805,65 @@ function _getCurrentWeekRange() {
 function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overrideUserId = null) {
   const hint      = document.getElementById('tsDateHint')
   const hintProjs = document.getElementById('tsDateHintProjects')
+  const hintUsed  = document.getElementById('tsDateHintUsed')
+  const hintRemain= document.getElementById('tsDateHintRemain')
+  const regInput  = document.getElementById('tsRegularHours')
+  const regLabel  = document.getElementById('tsRegLabel')
   if (!hint || !hintProjs) return
 
-  if (!selectedDate) { hint.style.display = 'none'; return }
+  if (!selectedDate) {
+    hint.style.display = 'none'
+    if (regInput) { regInput.max = 8; regInput.value = Math.min(parseFloat(regInput.value)||8, 8) }
+    if (regLabel) regLabel.textContent = '(tối đa 8h/ngày)'
+    return
+  }
 
   // Lọc timesheets cùng ngày, cùng user, loại trừ bản ghi đang sửa
   const userId = overrideUserId || currentUser.id
   const sameDay = allTimesheets.filter(t =>
     t.work_date === selectedDate &&
     t.user_id   === userId &&
-    (excludeTimesheetId == null || t.id !== excludeTimesheetId)
+    (excludeTimesheetId == null || t.id !== excludeTimesheetId) &&
+    ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
   )
+
+  // Tính tổng giờ HC đã dùng trong ngày (trừ bản ghi đang sửa)
+  const usedReg = sameDay.reduce((s, t) => s + (t.regular_hours || 0), 0)
+  const remaining = Math.max(0, 8 - usedReg)
+
+  // Cập nhật max trên input giờ HC
+  if (regInput) {
+    regInput.max = remaining
+    // Nếu giá trị hiện tại > remaining → auto-cap
+    const cur = parseFloat(regInput.value) || 0
+    if (cur > remaining) regInput.value = remaining
+  }
+  if (regLabel) {
+    if (remaining <= 0) {
+      regLabel.innerHTML = '<span class="text-red-500 font-semibold">⛔ Đã đủ 8h HC hôm nay</span>'
+    } else {
+      regLabel.innerHTML = `<span class="text-green-700">(còn ${remaining}h HC hôm nay)</span>`
+    }
+  }
 
   if (!sameDay.length) { hint.style.display = 'none'; return }
 
-  // Lấy tên dự án (dùng allProjects nếu có, fallback project_name từ timesheet)
+  // Lấy tên dự án
   const projNames = sameDay.map(t => {
     const proj = allProjects.find(p => p.id === t.project_id)
-    return proj ? (proj.code ? `${proj.code}` : proj.name) : (t.project_name || `#${t.project_id}`)
+    return proj ? (proj.code ? proj.code : proj.name) : (t.project_name || `#${t.project_id}`)
   })
   hintProjs.textContent = projNames.join(', ')
+
+  // Hiển thị số giờ HC đã dùng / còn lại
+  if (hintUsed)   hintUsed.textContent   = `⏱ Đã dùng: ${usedReg}h HC`
+  if (hintRemain) {
+    if (remaining <= 0) {
+      hintRemain.innerHTML = '<span class="text-red-600 font-bold">⛔ Đã đủ 8h — không thể thêm giờ HC</span>'
+    } else {
+      hintRemain.textContent = `✅ Còn lại: ${remaining}h HC`
+    }
+  }
   hint.style.display = ''
 }
 
@@ -5869,8 +5941,8 @@ function _tsBulkRenderHeader(mode) {
   const hdr = $('tsBulkHeader')
   if (!hdr) return
   if (mode === 'month') {
-    hdr.className = 'grid gap-2 mb-1 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide'
-    hdr.style.gridTemplateColumns = '3fr 1.5fr 1.5fr 1.5fr 0.5fr'
+    hdr.className = 'grid gap-2 mb-1 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide items-center'
+    hdr.style.gridTemplateColumns = 'minmax(0,1fr) 110px 90px 90px 28px'
     hdr.innerHTML = `
       <div>Dự án</div>
       <div class="text-center">Tháng</div>
@@ -5878,12 +5950,12 @@ function _tsBulkRenderHeader(mode) {
       <div class="text-center">Giờ OT</div>
       <div></div>`
   } else {
-    hdr.className = 'grid gap-2 mb-1 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide'
-    hdr.style.gridTemplateColumns = '4fr 2fr 2fr 0.5fr'
+    hdr.className = 'grid gap-2 mb-1 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide items-center'
+    hdr.style.gridTemplateColumns = 'minmax(0,1fr) 110px 110px 28px'
     hdr.innerHTML = `
       <div>Dự án</div>
-      <div class="text-center">Tổng giờ HC (cả năm)</div>
-      <div class="text-center">Tổng giờ OT (cả năm)</div>
+      <div class="text-center">Giờ HC (cả năm)</div>
+      <div class="text-center">Giờ OT (cả năm)</div>
       <div></div>`
   }
 }
@@ -5909,28 +5981,28 @@ function _tsBulkAddRow() {
   div.className = 'grid gap-2 items-center'
 
   if (mode === 'month') {
-    div.style.gridTemplateColumns = '3fr 1.5fr 1.5fr 1.5fr 0.5fr'
+    div.style.gridTemplateColumns = 'minmax(0,1fr) 110px 90px 90px 28px'
     div.innerHTML = `
-      <div>
-        <div id="tsBulkProjCb_${idx}"></div>
+      <div style="min-width:0">
+        <div id="tsBulkProjCb_${idx}" style="width:100%"></div>
         <input type="hidden" id="tsBulkProj_${idx}">
       </div>
-      <select id="tsBulkMonth_${idx}" class="input-field text-sm">${monthOptions}</select>
-      <input type="number" id="tsBulkReg_${idx}" class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
-      <input type="number" id="tsBulkOT_${idx}"  class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
-      <button type="button" onclick="_tsBulkRemoveRow(${idx})" class="text-red-400 hover:text-red-600 flex justify-center">
+      <select id="tsBulkMonth_${idx}" class="input-field text-sm w-full">${monthOptions}</select>
+      <input type="number" id="tsBulkReg_${idx}" class="input-field text-sm text-center w-full" placeholder="0" min="0" step="0.5" value="0">
+      <input type="number" id="tsBulkOT_${idx}"  class="input-field text-sm text-center w-full" placeholder="0" min="0" step="0.5" value="0">
+      <button type="button" onclick="_tsBulkRemoveRow(${idx})" class="text-red-400 hover:text-red-600 flex justify-center items-center h-full">
         <i class="fas fa-times"></i>
       </button>`
   } else {
-    div.style.gridTemplateColumns = '4fr 2fr 2fr 0.5fr'
+    div.style.gridTemplateColumns = 'minmax(0,1fr) 110px 110px 28px'
     div.innerHTML = `
-      <div>
-        <div id="tsBulkProjCb_${idx}"></div>
+      <div style="min-width:0">
+        <div id="tsBulkProjCb_${idx}" style="width:100%"></div>
         <input type="hidden" id="tsBulkProj_${idx}">
       </div>
-      <input type="number" id="tsBulkReg_${idx}" class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
-      <input type="number" id="tsBulkOT_${idx}"  class="input-field text-sm text-center" placeholder="0" min="0" step="0.5" value="0">
-      <button type="button" onclick="_tsBulkRemoveRow(${idx})" class="text-red-400 hover:text-red-600 flex justify-center">
+      <input type="number" id="tsBulkReg_${idx}" class="input-field text-sm text-center w-full" placeholder="0" min="0" step="0.5" value="0">
+      <input type="number" id="tsBulkOT_${idx}"  class="input-field text-sm text-center w-full" placeholder="0" min="0" step="0.5" value="0">
+      <button type="button" onclick="_tsBulkRemoveRow(${idx})" class="text-red-400 hover:text-red-600 flex justify-center items-center h-full">
         <i class="fas fa-times"></i>
       </button>`
   }
@@ -6032,7 +6104,7 @@ $('tsForm').addEventListener('submit', async (e) => {
 
   const dayType = $('tsDayType')?.value || 'work'
   // half_day_am / half_day_pm vẫn là ngày làm việc (có dự án/task/giờ)
-  const isLeaveDay = !['work','half_day_am','half_day_pm'].includes(dayType)
+  const isLeaveDay = !['work','half_day_am','half_day_pm','business_trip'].includes(dayType)
 
   // Detect multi-task mode
   const isMultiMode = document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
@@ -6047,6 +6119,43 @@ $('tsForm').addEventListener('submit', async (e) => {
   if (!isLeaveDay && !projId) {
     toast('Vui lòng chọn dự án', 'warning')
     return
+  }
+
+  // === Validate tổng giờ HC trong ngày không vượt 8h ===
+  if (!isLeaveDay) {
+    const workDate = $('tsDate').value
+    const editingId = id ? parseInt(id) : null
+    const userId = (currentUser.role === 'system_admin' && parseInt($('tsTargetUserHidden')?.value))
+      ? parseInt($('tsTargetUserHidden').value)
+      : currentUser.id
+    // Tổng giờ HC đã khai trong ngày (trừ bản ghi đang sửa)
+    const usedReg = allTimesheets
+      .filter(t =>
+        t.work_date === workDate &&
+        t.user_id   === userId &&
+        (editingId == null || t.id !== editingId) &&
+        ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
+      )
+      .reduce((s, t) => s + (t.regular_hours || 0), 0)
+    const remaining = Math.max(0, 8 - usedReg)
+
+    // Tính giờ HC sẽ submit
+    let submitReg = 0
+    if (isMultiMode) {
+      _tsMultiRows.forEach(r => {
+        const regEl = document.getElementById(`tsMultiReg_${r.idx}`)
+        submitReg += parseFloat(regEl ? regEl.value : r.reg) || 0
+      })
+    } else {
+      submitReg = parseFloat($('tsRegularHours')?.value) || 0
+    }
+
+    if (submitReg > remaining + 0.001) {
+      toast(`⛔ Tổng giờ HC vượt giới hạn! Ngày ${workDate} đã dùng ${usedReg}h, còn lại ${remaining}h. Bạn đang nhập ${submitReg}h.`, 'error')
+      // Auto-cap
+      if (!isMultiMode && $('tsRegularHours')) $('tsRegularHours').value = remaining
+      return
+    }
   }
 
   // Multi-task mode: validate có ít nhất 1 dòng task
@@ -6161,7 +6270,7 @@ $('tsForm').addEventListener('submit', async (e) => {
     } else {
       result = await api('/timesheets', { method: 'post', data })
       // Backend returns action: 'updated' if it auto-updated an existing record
-      const leaveLabels = { half_day_am: 'Nghỉ nửa ngày (sáng)', half_day_pm: 'Nghỉ nửa ngày (chiều)', annual_leave: 'Nghỉ phép năm', unpaid_leave: 'Nghỉ không lương', holiday: 'Nghỉ lễ', sick_leave: 'Nghỉ ốm', compensatory: 'Nghỉ bù' }
+      const leaveLabels = { half_day_am: 'Nghỉ nửa ngày (sáng)', half_day_pm: 'Nghỉ nửa ngày (chiều)', annual_leave: 'Nghỉ phép năm', unpaid_leave: 'Nghỉ không lương', holiday: 'Nghỉ lễ', sick_leave: 'Nghỉ ốm', compensatory: 'Nghỉ bù', business_trip: 'Đi công tác' }
       if (result && result.action === 'updated') {
         toast('✅ Đã cập nhật timesheet cho ngày này (đã tồn tại)', 'success')
       } else if (data.day_type && !['work'].includes(data.day_type)) {
@@ -6196,6 +6305,11 @@ $('tsForm').addEventListener('submit', async (e) => {
     // 422 week_limit — hiển thị cảnh báo nổi bật
     if (e.response?.status === 422 && e.response?.data?.week_limit) {
       toast('⏰ ' + errMsg, 'warning')
+    } else if (e.response?.status === 422 && e.response?.data?.hours_exceeded) {
+      toast('⛔ ' + errMsg, 'error')
+      // Auto-cap giờ HC về giờ còn lại
+      const rem = e.response?.data?.remaining ?? 0
+      if ($('tsRegularHours')) $('tsRegularHours').value = rem
     } else if (e.response?.status === 409 && e.response?.data?.exists) {
       toast('⚠️ ' + errMsg, 'warning')
     } else {
@@ -7173,12 +7287,14 @@ async function openCostModal(id = null) {
   const typeGroup = $('costTypeGroup')
   typeGroup.style.display = 'block'
 
-  $('costProject').innerHTML = '<option value="">-- Chọn dự án --</option>' + allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
+  // Build project items for combobox
+  const costProjItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} – ${p.name}` }))
 
+  let initProjVal = ''
   if (id) {
     const item = allCosts.find(c => c.id === id)
     if (item) {
-      $('costProject').value = item.project_id || ''
+      initProjVal = String(item.project_id || '')
       $('costDescription').value = item.description || ''
       $('costAmount').value = item.amount || ''
       $('costDate').value = item.cost_date || ''
@@ -7188,7 +7304,6 @@ async function openCostModal(id = null) {
       $('costType').value = item.cost_type || ''
     }
   } else {
-    $('costProject').value = ''
     $('costDescription').value = ''
     $('costAmount').value = ''
     $('costDate').value = today()
@@ -7197,6 +7312,20 @@ async function openCostModal(id = null) {
     $('costNotes').value = ''
     if ($('costType').options.length) $('costType').selectedIndex = 0
   }
+
+  // Render searchable combobox for project selection
+  createCombobox('costProjectCombobox', {
+    placeholder: '🔍 Tìm / chọn dự án...',
+    items: costProjItems,
+    value: initProjVal,
+    fullWidth: true,
+    panelMaxWidth: '480px',
+    dropdownMaxHeight: '260px',
+    teleport: true,
+    onchange: (val) => { $('costProject').value = val }
+  })
+  // Sync hidden input with initial value
+  $('costProject').value = initProjVal
 
   openModal('costModal')
 }
@@ -8384,6 +8513,17 @@ async function openUserDetail(userId) {
   const editBtn = $('btnEditFromDetail')
   if (editBtn) editBtn.onclick = () => { closeUserDetail(); openUserModal(userId) }
 
+  // Nút reset mật khẩu (chỉ system_admin)
+  const resetPwBtn = $('btnResetPwFromDetail')
+  if (resetPwBtn) {
+    if (currentUser.role === 'system_admin') {
+      resetPwBtn.style.display = ''
+      resetPwBtn.onclick = () => resetUserPassword(userId, detail.full_name || detail.username)
+    } else {
+      resetPwBtn.style.display = 'none'
+    }
+  }
+
   // Render nội dung
   const initials = detail.full_name?.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() || 'U'
   const avatarHtml = detail.avatar?.startsWith('data:image/')
@@ -8531,6 +8671,19 @@ function _profileCompletenessHtml(u) {
         ${fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full font-medium ${f.ok ? 'bg-green-100 text-green-700' : 'bg-red-50 text-red-400 line-through'}">${f.label}</span>`).join('')}
       </div>
     </div>`
+}
+
+async function resetUserPassword(userId, fullName) {
+  const defaultPw = 'Bim@2024'
+  const custom = prompt(`Đặt lại mật khẩu cho "${fullName}".\nNhập mật khẩu mới (để trống = dùng mặc định: ${defaultPw}):`)
+  if (custom === null) return  // user cancelled
+  const newPw = custom.trim() || defaultPw
+  try {
+    const res = await api(`/users/${userId}/reset-password`, { method: 'post', data: { password: newPw } })
+    toast(`✅ ${res.message}`, 'success')
+  } catch(e) {
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+  }
 }
 
 function closeUserDetail() {
