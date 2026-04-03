@@ -914,9 +914,7 @@
               <option value="construction_design">TKTC - Thi công</option>
               <option value="as_built">Hoàn công</option>
             </select>
-            <select id="taskDisciplineFilter" class="select-field" style="width:120px" onchange="filterTasks()">
-              <option value="">Tất cả bộ môn</option>
-            </select>
+            <div id="taskDisciplineFilterCombobox" style="position:relative;display:inline-block;min-width:160px"></div>
             <label class="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" id="taskOverdueFilter" onchange="filterTasks()"> Chỉ task trễ hạn
             </label>
@@ -4062,7 +4060,8 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Bộ môn</label>
-          <select id="taskDiscipline" class="select-field"></select>
+          <div id="taskDisciplineCombobox" style="position:relative"></div>
+          <input type="hidden" id="taskDiscipline">
         </div>
         <div>
           <label class="label">Giai đoạn</label>
@@ -4945,7 +4944,7 @@
 
 <!-- Add Member Modal -->
 <div id="addMemberModal" class="modal-overlay" style="display:none">
-  <div class="modal p-6">
+  <div class="modal p-6" style="max-width:520px;width:100%;overflow:visible">
     <div class="flex justify-between items-center mb-4">
       <h3 class="text-lg font-bold text-gray-800">Thêm thành viên dự án</h3>
       <button onclick="closeModal('addMemberModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
@@ -5230,7 +5229,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260402a"></script>
+<script src="/static/app.js?v=20260402h"></script>
 <script>
   // Prevent Ctrl+Scroll zoom from breaking layout
   document.addEventListener('wheel', (e) => {

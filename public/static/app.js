@@ -423,6 +423,16 @@ function isAnyProjectLeaderOrAdmin() {
   return ['system_admin','project_admin','project_leader'].includes(eff)
 }
 
+// Chỉ project_admin trở lên mới được DUYỆT timesheet (không bao gồm project_leader)
+function canApproveTimesheet() {
+  if (!currentUser) return false
+  const role = currentUser.role
+  if (role === 'system_admin' || role === 'project_admin') return true
+  // Kiểm tra effective role từ project_members (nếu user là admin của 1 dự án cụ thể)
+  const eff = getEffectiveGlobalRole()
+  return ['system_admin', 'project_admin'].includes(eff)
+}
+
 function getRoleLabel(role) {
   const map = { system_admin: 'System Admin', project_admin: 'Project Admin', project_leader: 'Project Leader', member: 'Member' }
   return map[role] || role
@@ -1415,8 +1425,14 @@ function projGoPage(page) {
 }
 
 function renderProjectsGrid(projects) {
-  // Save full sorted dataset, reset page
-  _projAllData = [...projects].sort((a, b) => (a.code || '').localeCompare(b.code || ''))
+  // Thứ tự ưu tiên trạng thái: active → planning → on_hold → completed → cancelled
+  const STATUS_PRIORITY = { active: 0, planning: 1, on_hold: 2, completed: 3, cancelled: 4 }
+  _projAllData = [...projects].sort((a, b) => {
+    const sa = STATUS_PRIORITY[a.status] ?? 9
+    const sb = STATUS_PRIORITY[b.status] ?? 9
+    if (sa !== sb) return sa - sb
+    return (a.code || '').localeCompare(b.code || '', 'vi')
+  })
   _projCurrentPage = 1
   renderProjectRows()
   renderProjectPagination()
@@ -1974,6 +1990,9 @@ async function openAddMemberModal(projectId) {
     placeholder: '-- Chọn nhân viên --',
     items,
     fullWidth: true,
+    teleport: true,
+    panelMaxWidth: '480px',
+    dropdownMaxHeight: '320px',
     onchange: (val) => { $('memberUserId').value = val || '' }
   })
   $('memberUserId').value = ''
@@ -2380,10 +2399,22 @@ async function loadTasks() {
       onchange: (val) => onTaskProjectFilterChange(val)
     })
 
-    // Fill discipline filter
-    const df = $('taskDisciplineFilter')
-    if (df && allDisciplines.length) {
-      df.innerHTML = '<option value="">Tất cả bộ môn</option>' + allDisciplines.map(d => `<option value="${d.code}">${d.code} - ${d.name}</option>`).join('')
+    // Fill discipline filter combobox
+    const dfContainer = $('taskDisciplineFilterCombobox')
+    if (dfContainer && allDisciplines.length) {
+      const discItems = allDisciplines.map(d => ({ value: d.code, label: `${d.code} - ${d.name}` }))
+      if (_cbState['taskDisciplineFilterCombobox']) {
+        _cbSetItems('taskDisciplineFilterCombobox', discItems, true)
+      } else {
+        createCombobox('taskDisciplineFilterCombobox', {
+          placeholder: 'Tất cả bộ môn',
+          items: discItems,
+          fullWidth: true,
+          teleport: true,
+          dropdownMaxHeight: '280px',
+          onchange: () => filterTasks()
+        })
+      }
     }
 
     // Build category combobox (all categories from loaded tasks)
@@ -2446,6 +2477,14 @@ function _cbLabelFor(items, value, placeholder) {
   if (!value) return placeholder
   const found = items.find(i => String(i.value) === String(value))
   return found ? found.label : placeholder
+}
+
+// Helper: set combobox value by id (auto-resolves label from state.items)
+function _cbSetValue(id, value) {
+  const state = _cbState[id]
+  if (!state) return
+  const label = value ? _cbLabelFor(state.items || [], value, state.placeholder) : state.placeholder
+  _cbSelect(id, value, label)
 }
 
 function _cbHTML(id, placeholder, minWidth, fullWidth, panelMaxWidth, dropdownMaxHeight) {
@@ -3211,7 +3250,7 @@ function filterTasks() {
   const project  = _cbGetValue('taskProjectCombobox')
   const category = _cbGetValue('taskCategoryCombobox')
   const phase    = $('taskPhaseFilter')?.value || ''
-  const discipline = $('taskDisciplineFilter')?.value || ''
+  const discipline = _cbGetValue('taskDisciplineFilterCombobox') || ''
   const onlyOverdue = $('taskOverdueFilter').checked
 
   const filtered = allTasks.filter(t =>
@@ -3322,9 +3361,21 @@ async function openTaskModal(taskId = null, projectId = null) {
     ? getEffectiveRoleForProject(projectId)
     : (taskId ? getEffectiveRoleForProject(null) : getEffectiveGlobalRole())
   const isMember = !['system_admin','project_admin','project_leader'].includes(effRoleForModal)
-  // Fill disciplines
-  $('taskDiscipline').innerHTML = '<option value="">-- Chọn bộ môn --</option>' +
-    allDisciplines.map(d => `<option value="${d.code}">${d.code} - ${d.name}</option>`).join('')
+  // Fill disciplines combobox
+  const discItems = allDisciplines.map(d => ({ value: d.code, label: `${d.code} - ${d.name}` }))
+  const discContainer = $('taskDisciplineCombobox')
+  if (discContainer) {
+    discContainer.innerHTML = ''
+    if (_cbState['taskDisciplineCombobox']) delete _cbState['taskDisciplineCombobox']
+    createCombobox('taskDisciplineCombobox', {
+      placeholder: '-- Chọn bộ môn --',
+      items: discItems,
+      fullWidth: true,
+      teleport: true,
+      dropdownMaxHeight: '280px',
+      onchange: (val) => { $('taskDiscipline').value = val || '' }
+    })
+  }
 
   // Fill assignees: member tạo task mới → chỉ hiện chính mình và auto-select
   if (isMember && !taskId) {
@@ -3355,6 +3406,7 @@ async function openTaskModal(taskId = null, projectId = null) {
       $('taskTitle').value = task.title || ''
       $('taskDesc').value = task.description || ''
       $('taskDiscipline').value = task.discipline_code || ''
+      _cbSetValue('taskDisciplineCombobox', task.discipline_code || '')
       $('taskPhase').value = task.phase || 'basic_design'
       $('taskPriority').value = task.priority || 'medium'
       $('taskStatus').value = task.status || 'todo'
@@ -3409,6 +3461,7 @@ async function openTaskModal(taskId = null, projectId = null) {
     $('taskTitle').value = ''
     $('taskDesc').value = ''
     $('taskDiscipline').value = ''
+    _cbSetValue('taskDisciplineCombobox', '')
     $('taskPhase').value = 'basic_design'
     $('taskPriority').value = 'medium'
     $('taskStatus').value = 'todo'
@@ -4941,10 +4994,10 @@ async function loadTimesheets() {
     if ($('tsCardHoursDetail')) $('tsCardHoursDetail').textContent = `HC: ${totalReg}h | OT: ${totalOT}h`
     if ($('tsFilterCount'))     $('tsFilterCount').textContent     = allTimesheets.length
 
-    // Bulk-approve button
+    // Bulk-approve button — chỉ hiện với system_admin và project_admin
     const bulkBtn = $('tsBulkApproveBtn')
     if (bulkBtn) {
-      if (canSeeAll && pending > 0) {
+      if (canApproveTimesheet() && pending > 0) {
         bulkBtn.classList.remove('hidden')
         bulkBtn.innerHTML = `<i class="fas fa-check-double mr-1"></i>Duyệt tất cả (${pending})`
       } else {
@@ -5022,17 +5075,20 @@ async function loadTimesheets() {
           const lbl = memUser ? `<p class="text-xs text-blue-500 mb-2">👤 Nhân viên: ${memUser.full_name}</p>` : ''
           projDiv.innerHTML = byProject.length
             ? lbl + byProject.map(p => `
-              <div class="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0 hover:bg-gray-50 rounded px-1 cursor-pointer"
+              <div style="padding:7px 4px;border-bottom:1px solid #f3f4f6;cursor:pointer"
+                   class="hover:bg-gray-50 rounded last:border-0"
                    onclick="filterTsByProject('${p.project_id}')">
-                <div>
-                  <span class="font-medium text-gray-700 text-xs">${p.code}</span>
-                  <span class="text-gray-500 ml-1 text-xs truncate"
-                        style="max-width:140px;display:inline-block;vertical-align:bottom">${p.name}</span>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0">
+                  <span class="font-semibold text-gray-800 text-xs whitespace-nowrap flex-shrink-0"
+                        style="background:#f0fdf4;color:#166534;padding:1px 6px;border-radius:4px;font-family:monospace;letter-spacing:0.02em"
+                        title="${p.code}">${p.code}</span>
+                  <div class="text-right text-xs whitespace-nowrap flex-shrink-0">
+                    <span class="font-bold text-accent">${p.total_hours}h</span>
+                    <span class="text-gray-400 ml-1">${p.member_count} người</span>
+                  </div>
                 </div>
-                <div class="text-right text-xs">
-                  <span class="font-bold text-accent">${p.total_hours}h</span>
-                  <span class="text-gray-400 ml-1">${p.member_count} người</span>
-                </div>
+                <div class="text-gray-500 text-xs mt-0.5 truncate" title="${p.name}"
+                     style="padding-left:2px;max-width:100%">${p.name}</div>
               </div>`).join('')
             : '<p class="text-gray-400 text-center py-4 text-xs">Không có dữ liệu</p>'
         }
@@ -5174,7 +5230,7 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
   const isAdmin     = currentUser.role === 'system_admin'
   const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
   const canSeeAll   = isAdmin || isProjAdmin
-  const canApprove  = isAdmin || isProjAdmin
+  const canApprove  = canApproveTimesheet()
 
   // Save full dataset for pagination, reset to page 1 on new data load
   _tsAllData     = timesheets
@@ -5214,7 +5270,7 @@ function renderTsRows() {
   const isAdmin     = currentUser.role === 'system_admin'
   const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
   const canSeeAll   = isAdmin || isProjAdmin
-  const canApprove  = isAdmin || isProjAdmin
+  const canApprove  = canApproveTimesheet()
 
   const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
   const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
@@ -12745,7 +12801,7 @@ async function renderTimesheetAnalyticsTab(force = false) {
       },
       options: { responsive:true, maintainAspectRatio:false,
         plugins:{ legend:{ labels:{ font:{ size:10 } } } },
-        scales:{ x:{ stacked:true, ticks:{ font:{ size:10 } } }, y:{ stacked:true, ticks:{ font:{ size:10 } } } } }
+        scales:{ x:{ stacked:true, ticks:{ font:{ size:10 } } }, y:{ stacked:true, beginAtZero:true, ticks:{ font:{ size:10 } } } } }
     })
 
     // Chart trạng thái

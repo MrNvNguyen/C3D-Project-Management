@@ -2048,6 +2048,15 @@ async function isProjectLeaderOrAdmin(db: D1Database, user: any, projectId?: num
   return ['system_admin', 'project_admin', 'project_leader'].includes(role)
 }
 
+// Chỉ project_admin trở lên mới được DUYỆT timesheet (không bao gồm project_leader)
+async function isProjectAdminOrAbove(db: D1Database, user: any, projectId?: number): Promise<boolean> {
+  if (user.role === 'system_admin') return true
+  if (user.role === 'project_admin') return true
+  // Kiểm tra role cấp dự án (project_members table)
+  const role = await getEffectiveRole(db, user, projectId)
+  return ['system_admin', 'project_admin'].includes(role)
+}
+
 // SQL subquery dùng trong WHERE clause để lọc project cho user có thể xem
 // (bao gồm cả project-level role)
 function projectAccessSubquery(userId: number): { sql: string; params: number[] } {
@@ -2819,6 +2828,8 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     const isOwner = ts.user_id === user.id
     const isAdmin = user.role === 'system_admin'
     const isProjAdmin = await isProjectLeaderOrAdmin(db, user, ts.project_id)
+    // Chỉ system_admin và project_admin mới được DUYỆT/TỪ CHỐI timesheet
+    const canApproveTs = await isProjectAdminOrAbove(db, user, ts.project_id)
 
     if (!isOwner && !isAdmin && !isProjAdmin) {
       return c.json({ error: 'Bạn không có quyền chỉnh sửa timesheet này' }, 403)
@@ -2913,16 +2924,17 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     }
 
     if (status !== undefined) {
-      if (isAdmin || isProjAdmin) {
-        // project_admin/system_admin: được đổi mọi status (duyệt, từ chối...)
+      if (canApproveTs && (status === 'approved' || status === 'rejected')) {
+        // Chỉ project_admin trở lên mới được duyệt / từ chối
         updates.push('status = ?'); values.push(status)
-        if (status === 'approved') {
-          updates.push('approved_by = ?'); values.push(user.id)
-          updates.push('approved_at = CURRENT_TIMESTAMP')
-        }
-        if (status === 'rejected') {
-          updates.push('approved_by = ?'); values.push(user.id)
-          updates.push('approved_at = CURRENT_TIMESTAMP')
+        updates.push('approved_by = ?'); values.push(user.id)
+        updates.push('approved_at = CURRENT_TIMESTAMP')
+      } else if (isAdmin || isProjAdmin) {
+        // project_leader và các admin khác: được đổi status draft/submitted (không phải approve/reject)
+        if (!['approved', 'rejected'].includes(status)) {
+          updates.push('status = ?'); values.push(status)
+        } else {
+          return c.json({ error: 'Bạn không có quyền duyệt hoặc từ chối timesheet' }, 403)
         }
       } else if (isOwner) {
         // member chỉ được submit (draft → submitted) hoặc rút lại (submitted → draft)
@@ -2976,8 +2988,9 @@ app.post('/api/timesheets/bulk-approve', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    if (!['system_admin', 'project_admin', 'project_leader'].includes(user.role) &&
-        !(await isProjectLeaderOrAdmin(db, user))) {
+    // Chỉ system_admin và project_admin mới được bulk-approve
+    if (!['system_admin', 'project_admin'].includes(user.role) &&
+        !(await isProjectAdminOrAbove(db, user))) {
       return c.json({ error: 'Access denied' }, 403)
     }
     const { ids } = await c.req.json()
@@ -2991,12 +3004,16 @@ app.post('/api/timesheets/bulk-approve', authMiddleware, async (c) => {
       try {
         // Lấy thông tin timesheet trước khi approve
         const ts = await db.prepare(
-          'SELECT user_id, work_date, status FROM timesheets WHERE id = ? AND status = \'submitted\''
+          'SELECT user_id, work_date, status, project_id FROM timesheets WHERE id = ? AND status = \'submitted\''
         ).bind(id).first() as any
+        if (!ts) continue
+        // Kiểm tra user có quyền duyệt timesheet thuộc dự án này không
+        const canApprove = await isProjectAdminOrAbove(db, user, ts.project_id)
+        if (!canApprove) continue
         const r = await db.prepare(
           `UPDATE timesheets SET status = 'approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitted'`
         ).bind(user.id, id).run()
-        if ((r.meta?.changes || 0) > 0 && ts) {
+        if ((r.meta?.changes || 0) > 0) {
           approved++
           const uid = ts.user_id
           if (!userApprovedMap.has(uid)) userApprovedMap.set(uid, { count: 0, dates: [] })
@@ -6781,7 +6798,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         SUM(regular_hours) as regular, SUM(overtime_hours) as overtime,
         COUNT(DISTINCT user_id) as active_users
       FROM timesheets
-      WHERE work_date >= date('now', '-11 months')
+      WHERE work_date >= date('now', 'start of month', '-11 months')
       GROUP BY month ORDER BY month ASC
     `).all()
 
@@ -8305,6 +8322,7 @@ app.post('/api/disciplines/reset', authMiddleware, async (c) => {
       ['AD', 'Nội thất', 'architecture'],
       ['AF', 'Mặt dựng', 'architecture'],
       ['ES', 'Kết cấu', 'structure'],
+      ['MEP', 'Cơ điện tổng hợp', 'mep'],
       ['EM', 'Điều hòa thông gió', 'mep'],
       ['EE', 'Điện sinh hoạt', 'mep'],
       ['EP', 'Cấp thoát nước sinh hoạt', 'mep'],
@@ -8584,6 +8602,7 @@ app.post('/api/system/init', async (c) => {
       // Structure
       ['ES', 'Kết cấu', 'structure'],
       // MEP (Building)
+      ['MEP', 'Cơ điện tổng hợp', 'mep'],
       ['EM', 'Điều hòa thông gió', 'mep'],
       ['EE', 'Điện sinh hoạt', 'mep'],
       ['EP', 'Cấp thoát nước sinh hoạt', 'mep'],
