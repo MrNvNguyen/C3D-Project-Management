@@ -4441,9 +4441,9 @@
           <input type="date" id="scCostDate" class="input-field">
         </div>
         <div>
-          <label class="label">Tháng/Năm áp dụng</label>
+          <label class="label">Tháng/Năm lịch áp dụng</label>
           <div class="flex gap-2">
-            <select id="scMonth" class="select-field">
+            <select id="scMonth" class="select-field" onchange="updateScNtcHint()">
               <option value="">-- Cả năm --</option>
               <option value="1">Tháng 1</option><option value="2">Tháng 2</option>
               <option value="3">Tháng 3</option><option value="4">Tháng 4</option>
@@ -4452,10 +4452,11 @@
               <option value="9">Tháng 9</option><option value="10">Tháng 10</option>
               <option value="11">Tháng 11</option><option value="12">Tháng 12</option>
             </select>
-            <select id="scYear" class="select-field" style="width:90px">
+            <select id="scYear" class="select-field" style="width:90px" onchange="updateScNtcHint()">
               <!-- Options populated dynamically -->
             </select>
           </div>
+          <p id="scNtcHint" class="text-xs mt-1 hidden"></p>
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">

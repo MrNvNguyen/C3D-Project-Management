@@ -751,6 +751,12 @@ async function initApp() {
     allDisciplines = await api('/disciplines')
   } catch (e) { allDisciplines = [] }
 
+  // Load fiscal year settings để dùng khi tính NTC cho chi phí chung
+  try {
+    const sysConf = await api('/system/config')
+    window._fiscalStartMonth = sysConf.fiscal_year_start_month || 2
+  } catch (e) { window._fiscalStartMonth = 2 }
+
   // Preload allProjects để populate _projectRoleCache sớm nhất có thể
   // (quan trọng: giúp task/timesheet pages biết effective role của user)
   try {
@@ -11546,6 +11552,24 @@ function renderSharedCostTable() {
   }).join('')
 }
 
+// Hiển thị NTC year hint khi user chọn tháng/năm trong form chi phí chung
+function updateScNtcHint() {
+  const hint = $('scNtcHint')
+  if (!hint) return
+  const monthVal = $('scMonth')?.value
+  const yearVal  = $('scYear')?.value
+  if (!monthVal || !yearVal) { hint.classList.add('hidden'); return }
+  const calMonth = parseInt(monthVal)
+  const calYear  = parseInt(yearVal)
+  // NTC bắt đầu tháng 2 (mặc định) — lấy từ setting nếu có, fallback = 2
+  const fiscalStartMonth = window._fiscalStartMonth || 2
+  const ntcYear = calMonth < fiscalStartMonth ? calYear - 1 : calYear
+  const isWrap  = calMonth < fiscalStartMonth  // tháng "wrap" sang NTC năm trước
+  hint.className = `text-xs mt-1 font-semibold ${isWrap ? 'text-orange-600' : 'text-green-600'}`
+  hint.textContent = `→ Tháng ${calMonth}/${calYear} thuộc NTC ${ntcYear}${isWrap ? ' ⚠️ (tháng đầu năm lịch)' : ''}`
+  hint.classList.remove('hidden')
+}
+
 async function openSharedCostModal(id = null) {
   if (!allProjects.length) allProjects = await api('/projects')
 
@@ -11568,6 +11592,7 @@ async function openSharedCostModal(id = null) {
   $('scYear').value = $('costYearFilter')?.value || new Date().getFullYear().toString()
   $('scCostDate').value = new Date().toISOString().split('T')[0]
   $('scPreviewPanel').classList.add('hidden')
+  updateScNtcHint()
 
   // Reset search + select-all button
   const searchEl = $('scProjectSearch')
@@ -11609,6 +11634,7 @@ async function openSharedCostModal(id = null) {
       if (sc.cost_date) $('scCostDate').value = sc.cost_date
       if (sc.month) $('scMonth').value = sc.month
       if (sc.year) $('scYear').value = sc.year
+      updateScNtcHint()
       if (sc.invoice_number) $('scInvoice').value = sc.invoice_number
       if (sc.vendor) $('scVendor').value = sc.vendor
       if (sc.notes) $('scNotes').value = sc.notes

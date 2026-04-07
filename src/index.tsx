@@ -5058,6 +5058,18 @@ function fiscalMonthToCalendar(logicalMonth: number, fyYear: number, settings: F
   }
 }
 
+// Convert calendar (calMonth, calYear) → NTC year
+// Ví dụ NTC bắt đầu tháng 2: Tháng 1/2026 → NTC2025; Tháng 2/2026 → NTC2026
+function calendarToFiscalYear(calMonth: number, calYear: number, settings: FiscalYearSettings): number {
+  const sm = settings.start_month
+  // Nếu tháng lịch < tháng bắt đầu NTC → thuộc NTC của năm trước
+  if (calMonth < sm) {
+    return calYear - 1
+  } else {
+    return calYear
+  }
+}
+
 // Build SQL month filter cho danh sách tháng logic trong NTC
 // Returns SQL fragment: "(year_col = Y1 AND month_col = M1) OR (year_col = Y2 AND month_col = M2) ..."
 // dùng cho timesheets: strftime('%Y')=calYear AND strftime('%m')=calMonth
@@ -5390,8 +5402,16 @@ app.post('/api/shared-costs', authMiddleware, adminOnly, async (c) => {
     }
 
     const basis = allocation_basis || 'contract_value'
-    const yInt = year ? parseInt(year) : null
+    const calYear = year ? parseInt(year) : null
     const mInt = month ? parseInt(month) : null
+
+    // Convert calendar year → NTC year dựa vào tháng áp dụng
+    // VD: NTC bắt đầu tháng 2 → T1/2026 thuộc NTC2025, T2/2026 thuộc NTC2026
+    let yInt = calYear
+    if (calYear && mInt) {
+      const fySettings = await getFiscalYearSettings(db)
+      yInt = calendarToFiscalYear(mInt, calYear, fySettings)
+    }
 
     // Insert shared cost
     const ins = await db.prepare(`
@@ -5443,7 +5463,20 @@ app.put('/api/shared-costs/:id', authMiddleware, adminOnly, async (c) => {
     if (vendor !== undefined) { fields.push('vendor = ?'); vals.push(vendor) }
     if (notes !== undefined) { fields.push('notes = ?'); vals.push(notes) }
     if (allocation_basis !== undefined) { fields.push('allocation_basis = ?'); vals.push(newBasis) }
-    if (year !== undefined) { fields.push('year = ?'); vals.push(parseInt(year)) }
+
+    // Convert calendar year → NTC year khi có cả month lẫn year
+    let ntcYear: number | undefined = undefined
+    if (year !== undefined || month !== undefined) {
+      const calYear  = year  !== undefined ? parseInt(year)  : existing.year
+      const calMonth = month !== undefined ? parseInt(month) : existing.month
+      if (calYear && calMonth) {
+        const fySettings = await getFiscalYearSettings(db)
+        ntcYear = calendarToFiscalYear(calMonth, calYear, fySettings)
+      } else {
+        ntcYear = calYear ?? undefined
+      }
+    }
+    if (ntcYear !== undefined) { fields.push('year = ?'); vals.push(ntcYear) }
     if (month !== undefined) { fields.push('month = ?'); vals.push(parseInt(month)) }
     fields.push('updated_at = CURRENT_TIMESTAMP')
     vals.push(id)
