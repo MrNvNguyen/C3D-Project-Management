@@ -901,6 +901,28 @@ app.post('/api/users', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+// ── Reset password (system_admin only) ──────────────────────────
+app.post('/api/users/:id/reset-password', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    if (user.role !== 'system_admin') return c.json({ error: 'Access denied' }, 403)
+
+    const id = parseInt(c.req.param('id'))
+    const body = await c.req.json().catch(() => ({})) as any
+    const newPassword = body.password || 'Bim@2024'
+
+    const hashed = await hashPassword(newPassword)
+    await db.prepare(
+      `UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+    ).bind(hashed, id).run()
+
+    return c.json({ success: true, message: `Mật khẩu đã được đặt lại thành: ${newPassword}` })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 app.put('/api/users/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -2026,6 +2048,15 @@ async function isProjectLeaderOrAdmin(db: D1Database, user: any, projectId?: num
   return ['system_admin', 'project_admin', 'project_leader'].includes(role)
 }
 
+// Chỉ project_admin trở lên mới được DUYỆT timesheet (không bao gồm project_leader)
+async function isProjectAdminOrAbove(db: D1Database, user: any, projectId?: number): Promise<boolean> {
+  if (user.role === 'system_admin') return true
+  if (user.role === 'project_admin') return true
+  // Kiểm tra role cấp dự án (project_members table)
+  const role = await getEffectiveRole(db, user, projectId)
+  return ['system_admin', 'project_admin'].includes(role)
+}
+
 // SQL subquery dùng trong WHERE clause để lọc project cho user có thể xem
 // (bao gồm cả project-level role)
 function projectAccessSubquery(userId: number): { sql: string; params: number[] } {
@@ -2479,7 +2510,7 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     if (month)  { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2, '0')) }
     if (year)   { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
 
-    query += ' ORDER BY ts.work_date DESC, ts.id DESC'
+    query += ' ORDER BY ts.work_date DESC, ts.id DESC LIMIT 500'
     const result = await db.prepare(query).bind(...params).all()
 
     // Summary: simple SUM — no extra JOIN
@@ -2517,19 +2548,24 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       : await db.prepare(sumQ).first() as any
 
     // Fetch task_entries for timesheets that have multi-task data
+    // Batch into chunks of 50 to avoid D1's ~100 bound-parameter limit
     const timesheetList = result.results as any[]
     const tsIds = timesheetList.filter(t => !t.task_id && t.project_id).map(t => t.id)
     let taskEntriesMap: Record<number, any[]> = {}
     if (tsIds.length > 0) {
-      const placeholders = tsIds.map(() => '?').join(',')
-      const teResult = await db.prepare(
-        `SELECT tt.*, t.title as task_title FROM timesheet_tasks tt
-         LEFT JOIN tasks t ON tt.task_id = t.id
-         WHERE tt.timesheet_id IN (${placeholders})`
-      ).bind(...tsIds).all()
-      for (const te of (teResult.results as any[])) {
-        if (!taskEntriesMap[te.timesheet_id]) taskEntriesMap[te.timesheet_id] = []
-        taskEntriesMap[te.timesheet_id].push(te)
+      const BATCH = 50
+      for (let bi = 0; bi < tsIds.length; bi += BATCH) {
+        const chunk = tsIds.slice(bi, bi + BATCH)
+        const placeholders = chunk.map(() => '?').join(',')
+        const teResult = await db.prepare(
+          `SELECT tt.*, t.title as task_title FROM timesheet_tasks tt
+           LEFT JOIN tasks t ON tt.task_id = t.id
+           WHERE tt.timesheet_id IN (${placeholders})`
+        ).bind(...chunk).all()
+        for (const te of (teResult.results as any[])) {
+          if (!taskEntriesMap[te.timesheet_id]) taskEntriesMap[te.timesheet_id] = []
+          taskEntriesMap[te.timesheet_id].push(te)
+        }
       }
     }
     // Attach task_entries to each timesheet
@@ -2640,7 +2676,7 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description } = data
     const day_type = data.day_type || 'work'
     // half_day types still count as work (require project), just with reduced hours
-    const isLeaveDay = !['work','half_day_am','half_day_pm'].includes(day_type)
+    const isLeaveDay = !['work','half_day_am','half_day_pm','business_trip'].includes(day_type)
     const isHalfDay  = day_type === 'half_day_am' || day_type === 'half_day_pm'
     // task_entries: array of {task_id, regular_hours, overtime_hours} for multi-task mode
     const taskEntries: Array<{task_id: number|null, regular_hours: number, overtime_hours: number}> = data.task_entries || []
@@ -2703,10 +2739,38 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     // Cho single-task: dùng task_id từ data; multi-task: task_id = null (chi tiết trong timesheet_tasks)
     const mainTaskId = isLeaveDay ? null : (isMultiTask ? null : (task_id || null))
 
+    // === Validate tổng giờ HC trong ngày không vượt 8h ===
+    if (!isLeaveDay && totalReg > 0) {
+      // Lấy tổng giờ HC đã khai báo trong ngày này (các bản ghi KHÁC project/timesheet hiện tại)
+      const usedRow = await db.prepare(
+        `SELECT COALESCE(SUM(regular_hours), 0) as used
+         FROM timesheets
+         WHERE user_id = ? AND work_date = ?
+           AND project_id != ?
+           AND day_type IN ('work','half_day_am','half_day_pm','business_trip')`
+      ).bind(targetUserId, work_date, project_id || 0).first() as any
+      const usedReg = usedRow?.used || 0
+      const remaining = Math.max(0, 8 - usedReg)
+      if (totalReg > remaining + 0.001) {
+        return c.json({
+          error: `Tổng giờ HC vượt giới hạn 8h/ngày. Đã dùng ${usedReg}h, còn lại ${remaining}h. Bạn đang nhập ${totalReg}h.`,
+          hours_exceeded: true,
+          used: usedReg,
+          remaining
+        }, 422)
+      }
+    }
+
     // === CREATE-OR-UPDATE: check for existing record before inserting ===
-    const existing = await db.prepare(
-      `SELECT id, status FROM timesheets WHERE user_id = ? AND work_date = ? LIMIT 1`
-    ).bind(targetUserId, work_date).first() as any
+    // IMPORTANT: must include project_id in the check so that 2 different projects on the same
+    // day create 2 separate rows instead of overwriting each other.
+    const existingQuery = isLeaveDay
+      ? `SELECT id, status FROM timesheets WHERE user_id = ? AND work_date = ? AND (project_id IS NULL OR day_type != 'work') LIMIT 1`
+      : `SELECT id, status FROM timesheets WHERE user_id = ? AND project_id = ? AND work_date = ? LIMIT 1`
+    const existingBindArgs: any[] = isLeaveDay
+      ? [targetUserId, work_date]
+      : [targetUserId, project_id || null, work_date]
+    const existing = await db.prepare(existingQuery).bind(...existingBindArgs).first() as any
 
     let timesheetId: number
     if (existing) {
@@ -2764,6 +2828,8 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     const isOwner = ts.user_id === user.id
     const isAdmin = user.role === 'system_admin'
     const isProjAdmin = await isProjectLeaderOrAdmin(db, user, ts.project_id)
+    // Chỉ system_admin và project_admin mới được DUYỆT/TỪ CHỐI timesheet
+    const canApproveTs = await isProjectAdminOrAbove(db, user, ts.project_id)
 
     if (!isOwner && !isAdmin && !isProjAdmin) {
       return c.json({ error: 'Bạn không có quyền chỉnh sửa timesheet này' }, 403)
@@ -2778,7 +2844,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
 
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description, status } = data
     const day_type = data.day_type
-    const isLeaveDay = day_type && !['work','half_day_am','half_day_pm'].includes(day_type)
+    const isLeaveDay = day_type && !['work','half_day_am','half_day_pm','business_trip'].includes(day_type)
     const taskEntries: Array<{task_id: number|null, regular_hours: number, overtime_hours: number}> = data.task_entries || []
     const isMultiTask = taskEntries.length > 0
     const updates: string[] = []
@@ -2858,16 +2924,17 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     }
 
     if (status !== undefined) {
-      if (isAdmin || isProjAdmin) {
-        // project_admin/system_admin: được đổi mọi status (duyệt, từ chối...)
+      if (canApproveTs && (status === 'approved' || status === 'rejected')) {
+        // Chỉ project_admin trở lên mới được duyệt / từ chối
         updates.push('status = ?'); values.push(status)
-        if (status === 'approved') {
-          updates.push('approved_by = ?'); values.push(user.id)
-          updates.push('approved_at = CURRENT_TIMESTAMP')
-        }
-        if (status === 'rejected') {
-          updates.push('approved_by = ?'); values.push(user.id)
-          updates.push('approved_at = CURRENT_TIMESTAMP')
+        updates.push('approved_by = ?'); values.push(user.id)
+        updates.push('approved_at = CURRENT_TIMESTAMP')
+      } else if (isAdmin || isProjAdmin) {
+        // project_leader và các admin khác: được đổi status draft/submitted (không phải approve/reject)
+        if (!['approved', 'rejected'].includes(status)) {
+          updates.push('status = ?'); values.push(status)
+        } else {
+          return c.json({ error: 'Bạn không có quyền duyệt hoặc từ chối timesheet' }, 403)
         }
       } else if (isOwner) {
         // member chỉ được submit (draft → submitted) hoặc rút lại (submitted → draft)
@@ -2921,8 +2988,9 @@ app.post('/api/timesheets/bulk-approve', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    if (!['system_admin', 'project_admin', 'project_leader'].includes(user.role) &&
-        !(await isProjectLeaderOrAdmin(db, user))) {
+    // Chỉ system_admin và project_admin mới được bulk-approve
+    if (!['system_admin', 'project_admin'].includes(user.role) &&
+        !(await isProjectAdminOrAbove(db, user))) {
       return c.json({ error: 'Access denied' }, 403)
     }
     const { ids } = await c.req.json()
@@ -2936,12 +3004,16 @@ app.post('/api/timesheets/bulk-approve', authMiddleware, async (c) => {
       try {
         // Lấy thông tin timesheet trước khi approve
         const ts = await db.prepare(
-          'SELECT user_id, work_date, status FROM timesheets WHERE id = ? AND status = \'submitted\''
+          'SELECT user_id, work_date, status, project_id FROM timesheets WHERE id = ? AND status = \'submitted\''
         ).bind(id).first() as any
+        if (!ts) continue
+        // Kiểm tra user có quyền duyệt timesheet thuộc dự án này không
+        const canApprove = await isProjectAdminOrAbove(db, user, ts.project_id)
+        if (!canApprove) continue
         const r = await db.prepare(
           `UPDATE timesheets SET status = 'approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitted'`
         ).bind(user.id, id).run()
-        if ((r.meta?.changes || 0) > 0 && ts) {
+        if ((r.meta?.changes || 0) > 0) {
           approved++
           const uid = ts.user_id
           if (!userApprovedMap.has(uid)) userApprovedMap.set(uid, { count: 0, dates: [] })
@@ -6726,7 +6798,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         SUM(regular_hours) as regular, SUM(overtime_hours) as overtime,
         COUNT(DISTINCT user_id) as active_users
       FROM timesheets
-      WHERE work_date >= date('now', '-6 months')
+      WHERE work_date >= date('now', 'start of month', '-11 months')
       GROUP BY month ORDER BY month ASC
     `).all()
 
@@ -8250,6 +8322,7 @@ app.post('/api/disciplines/reset', authMiddleware, async (c) => {
       ['AD', 'Nội thất', 'architecture'],
       ['AF', 'Mặt dựng', 'architecture'],
       ['ES', 'Kết cấu', 'structure'],
+      ['MEP', 'Cơ điện tổng hợp', 'mep'],
       ['EM', 'Điều hòa thông gió', 'mep'],
       ['EE', 'Điện sinh hoạt', 'mep'],
       ['EP', 'Cấp thoát nước sinh hoạt', 'mep'],
@@ -8436,12 +8509,19 @@ app.post('/api/system/init', async (c) => {
       `).run()
     } catch (_) { /* ignore */ }
 
-    // Insert admin user
+    // Insert admin user — use UPSERT so password is always correct hash
     const adminHash = await hashPassword('Admin@123')
     await db.prepare(
-      `INSERT OR IGNORE INTO users (username, password_hash, full_name, email, role, department)
-       VALUES ('admin', ?, 'System Administrator', 'admin@onecad.vn', 'system_admin', 'Quản lý hệ thống')`
+      `INSERT INTO users (username, password_hash, full_name, email, role, department)
+       VALUES ('admin', ?, 'System Administrator', 'admin@onecad.vn', 'system_admin', 'Quản lý hệ thống')
+       ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash WHERE length(password_hash) != 64`
     ).bind(adminHash).run()
+
+    // Fix any remaining placeholder/bcrypt hashes (length != 64 = not SHA-256)
+    const memberHash = await hashPassword('Bim@2024')
+    await db.prepare(
+      `UPDATE users SET password_hash = ? WHERE length(password_hash) != 64 AND username != 'admin'`
+    ).bind(memberHash).run()
 
     // ---- CHECK SEED FLAG: Skip demo data if already initialized ----
     const seedFlag = await db.prepare(`SELECT value FROM system_settings WHERE key = 'seed_data_initialized'`).first() as any
@@ -8522,6 +8602,7 @@ app.post('/api/system/init', async (c) => {
       // Structure
       ['ES', 'Kết cấu', 'structure'],
       // MEP (Building)
+      ['MEP', 'Cơ điện tổng hợp', 'mep'],
       ['EM', 'Điều hòa thông gió', 'mep'],
       ['EE', 'Điện sinh hoạt', 'mep'],
       ['EP', 'Cấp thoát nước sinh hoạt', 'mep'],
@@ -8564,7 +8645,7 @@ app.post('/api/system/init', async (c) => {
     }
 
     // Insert demo users
-    const memberHash = await hashPassword('Pass@123')
+    const demoMemberHash = await hashPassword('Bim@2024')
     const demoUsers = [
       ['nguyen.van.a', 'Nguyễn Văn A', 'nva@onecad.vn', 'member', 'Kiến trúc', 15000000],
       ['tran.thi.b', 'Trần Thị B', 'ttb@onecad.vn', 'member', 'Kết cấu', 16000000],
@@ -8576,7 +8657,7 @@ app.post('/api/system/init', async (c) => {
       await db.prepare(
         `INSERT OR IGNORE INTO users (username, password_hash, full_name, email, role, department, salary_monthly)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).bind(username, memberHash, full_name, email, role, department, salary).run()
+      ).bind(username, demoMemberHash, full_name, email, role, department, salary).run()
     }
 
     // Insert sample projects
