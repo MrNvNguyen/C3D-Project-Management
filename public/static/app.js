@@ -556,6 +556,11 @@ function navigate(page) {
     if (currentPage === 'timesheet' && page !== 'timesheet') resetTsPageState()
   }
 
+  // Reset legal tab user-selection flag khi rời trang legal
+  if (page !== 'legal') {
+    _legalTabSetByUser = false
+  }
+
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'))
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'))
 
@@ -5203,18 +5208,19 @@ function exportTimesheetExcel() {
   const statusLabels = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
 
   // Build CSV rows
-  const headers = ['Ngày', canSeeAll ? 'Nhân viên' : '', 'Dự án', 'Task', 'Giờ HC', 'Tăng ca', 'Tổng giờ', 'Mô tả', 'Trạng thái'].filter(Boolean)
+  const headers = ['Ngày', canSeeAll ? 'Nhân viên' : '', 'Dự án', 'Task', 'Hạng mục', 'Giờ HC', 'Tăng ca', 'Tổng giờ', 'Mô tả', 'Trạng thái'].filter(Boolean)
   const rows = allTimesheets.map(t => {
-    const base = [t.work_date, t.project_code || '', t.task_title || '', t.regular_hours, t.overtime_hours, (t.regular_hours + t.overtime_hours), (t.description || '').replace(/"/g, '""'), statusLabels[t.status] || t.status]
-    return canSeeAll ? [t.work_date, t.user_name || '', t.project_code || '', t.task_title || '', t.regular_hours, t.overtime_hours, (t.regular_hours + t.overtime_hours), (t.description || '').replace(/"/g, '""'), statusLabels[t.status] || t.status] : base
+    const catLabel = t.category_name ? (t.category_code ? t.category_code + ' – ' + t.category_name : t.category_name) : ''
+    const base = [t.work_date, t.project_code || '', t.task_title || '', catLabel, t.regular_hours, t.overtime_hours, (t.regular_hours + t.overtime_hours), (t.description || '').replace(/"/g, '""'), statusLabels[t.status] || t.status]
+    return canSeeAll ? [t.work_date, t.user_name || '', t.project_code || '', t.task_title || '', catLabel, t.regular_hours, t.overtime_hours, (t.regular_hours + t.overtime_hours), (t.description || '').replace(/"/g, '""'), statusLabels[t.status] || t.status] : base
   })
 
   // Totals row
   let totalReg = 0, totalOT = 0
   allTimesheets.forEach(t => { totalReg += t.regular_hours || 0; totalOT += t.overtime_hours || 0 })
   const totalRow = canSeeAll
-    ? ['TỔNG CỘNG', '', '', '', totalReg, totalOT, totalReg + totalOT, '', '']
-    : ['TỔNG CỘNG', '', '', totalReg, totalOT, totalReg + totalOT, '', '']
+    ? ['TỔNG CỘNG', '', '', '', '', totalReg, totalOT, totalReg + totalOT, '', '']
+    : ['TỔNG CỘNG', '', '', '', totalReg, totalOT, totalReg + totalOT, '', '']
 
   const csvLines = [headers, ...rows, totalRow].map(r => r.map(v => `"${v}"`).join(','))
   const csvContent = '\uFEFF' + csvLines.join('\n') // BOM for Excel UTF-8
@@ -5346,6 +5352,25 @@ function renderTsRows() {
         <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium ${dt.cls}" title="${dt.label}">${dt.icon} ${dt.label}</span>
       </td>
       <td class="py-2 pr-3 text-sm text-gray-600">${isFullLeaveRow ? '<span class="text-gray-300">—</span>' : (t.project_code || '-')}</td>
+      <td class="py-2 pr-3 text-xs text-gray-600">${(() => {
+        if (isFullLeaveRow) return '<span class="text-gray-300">—</span>'
+        // Multi-task: gom danh sách hạng mục duy nhất từ task_entries
+        if (hasMultiTask && t.task_entries.length > 0) {
+          const seen = new Set()
+          const badges = []
+          for (const e of t.task_entries) {
+            if (!e.category_id || seen.has(e.category_id)) continue
+            seen.add(e.category_id)
+            const lbl = e.category_code ? `${e.category_code}` : (e.category_name || '')
+            const title = e.category_code ? `${e.category_code} – ${e.category_name}` : (e.category_name || '')
+            badges.push(`<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap" title="${title}">${lbl}</span>`)
+          }
+          return badges.length ? `<div class="flex flex-wrap gap-0.5">${badges.join('')}</div>` : '<span class="text-gray-300">—</span>'
+        }
+        // Single-task: dùng category_name của timesheet
+        if (!t.category_name) return '<span class="text-gray-300">—</span>'
+        return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 max-w-36 truncate" title="${t.category_name}">${t.category_code ? t.category_code + ' – ' : ''}${t.category_name}</span>`
+      })()}</td>
       <td class="py-2 pr-3 text-xs text-gray-500">${taskCellContent}</td>
       <td class="py-2 pr-3 text-center font-medium text-primary">${isFullLeaveRow ? '<span class="text-gray-400">0h</span>' : t.regular_hours + 'h'}</td>
       <td class="py-2 pr-3 text-center font-medium text-orange-500">${isFullLeaveRow ? '<span class="text-gray-300">—</span>' : (t.overtime_hours > 0 ? t.overtime_hours + 'h' : '-')}</td>
@@ -5393,8 +5418,12 @@ function _initTsProjectCombobox(selectedProjId = '', locked = false) {
     onchange: async (val) => {
       // Cập nhật hidden input ngay lập tức
       $('tsProjectHidden').value = val || ''
-      // Reset task hidden input khi đổi project
+      // Reset task + category hidden input khi đổi project
       $('tsTaskHidden').value = ''
+      if ($('tsCategoryHidden')) $('tsCategoryHidden').value = ''
+      // Ẩn badge hạng mục của đơn task
+      const _badge = document.getElementById('tsTaskCategoryBadge')
+      if (_badge) _badge.style.display = 'none'
 
       // Dùng token để tránh race condition khi user đổi project liên tiếp
       const token = ++_tsProjChangeToken
@@ -5402,7 +5431,10 @@ function _initTsProjectCombobox(selectedProjId = '', locked = false) {
       // Reset task combobox về trống ngay
       _initTsTaskCombobox([], null, _tsModalLocked)
 
-      // Load tasks cho project mới
+      // Load hạng mục dự án
+      await _loadTsCategories(val || null, null, _tsModalLocked)
+
+      // Load tasks cho project mới (sẽ được lọc lại khi chọn category)
       if (val) await _loadAndInitTsTaskCombobox(val, null, _tsModalLocked, token)
     }
   })
@@ -5417,40 +5449,201 @@ function _initTsProjectCombobox(selectedProjId = '', locked = false) {
   $('tsProjectHidden').value = selectedProjId ? String(selectedProjId) : ''
 }
 
+// ── Load hạng mục HSPL theo dự án cho modal Timesheet ───────────────────────
+// ── Load hạng mục dự án theo project cho modal Timesheet ────────────────────
+let _tsCachedCategories = []
+
+async function _loadTsCategories(projectId, selectedCatId = null, locked = false) {
+  const row = $('tsCategoryRow')
+  const hiddenInput = $('tsCategoryHidden')
+  if (!row) return
+
+  // Reset hidden value khi đổi project
+  if (hiddenInput) hiddenInput.value = ''
+  _tsCachedCategories = []
+
+  if (!projectId) {
+    row.style.display = 'none'
+    _initTsCategoryCombobox([], null, locked)
+    return
+  }
+
+  // Hiện row với trạng thái đang tải
+  row.style.display = ''
+  _initTsCategoryCombobox([], selectedCatId, locked, true) // loading state
+
+  try {
+    const cats = await api(`/projects/${projectId}/categories`)
+    _tsCachedCategories = Array.isArray(cats) ? cats : []
+
+    if (_tsCachedCategories.length === 0) {
+      row.style.display = 'none'
+      _initTsCategoryCombobox([], null, locked)
+    } else {
+      row.style.display = ''
+      _initTsCategoryCombobox(_tsCachedCategories, selectedCatId, locked)
+    }
+  } catch (_) {
+    row.style.display = 'none'
+    _initTsCategoryCombobox([], null, locked)
+  }
+}
+
+function _initTsCategoryCombobox(cats = [], selectedId = null, locked = false, loading = false) {
+  const hiddenInput = $('tsCategoryHidden')
+
+  if (_cbState['tsCategoryCombobox']) delete _cbState['tsCategoryCombobox']
+
+  if (loading) {
+    createCombobox('tsCategoryCombobox', {
+      placeholder: '⏳ Đang tải hạng mục...',
+      items: [],
+      fullWidth: true
+    })
+    return
+  }
+
+  const items = cats.map(c => ({
+    value: String(c.id),
+    label: c.code ? `${c.code} – ${c.name}` : c.name
+  }))
+
+  createCombobox('tsCategoryCombobox', {
+    placeholder: '— Tất cả hạng mục —',
+    items,
+    value: selectedId ? String(selectedId) : '',
+    fullWidth: true,
+    teleport: true,
+    panelMaxWidth: '420px',
+    dropdownMaxHeight: '280px',
+    onchange: (val) => {
+      if (hiddenInput) hiddenInput.value = val || ''
+      // Lọc lại task combobox theo hạng mục được chọn
+      const catId = val ? parseInt(val) : null
+      const filteredTasks = catId
+        ? _tsCachedTasks.filter(t => t.category_id === catId)
+        : _tsCachedTasks
+      _initTsTaskCombobox(filteredTasks, null, locked)
+      $('tsTaskHidden').value = ''
+      // Reset badge hạng mục đơn task
+      const _badge = document.getElementById('tsTaskCategoryBadge')
+      if (_badge) _badge.style.display = 'none'
+      // Sync lock state ngay sau khi chọn/bỏ chọn hạng mục
+      _tsSyncTaskLockState()
+      // Re-render multi rows để cập nhật lock state
+      _tsRenderMultiRows()
+    }
+  })
+
+  if (hiddenInput && selectedId) hiddenInput.value = String(selectedId)
+
+  // Disable nếu locked
+  const wrapEl = document.getElementById('tsCategoryCombobox')
+  const wrap = wrapEl ? wrapEl.querySelector('[id$="_wrap"]') : null
+  if (wrap) {
+    wrap.style.pointerEvents = locked ? 'none' : ''
+    wrap.style.opacity = locked ? '0.6' : ''
+  }
+}
+
+// ── Helper: build task items với prefix hạng mục để tránh nhầm tên ──────────
+function _buildTsTaskItems(tasks, selId = '') {
+  const icons = { todo: '⬜', in_progress: '🔵', review: '🟡', completed: '✅', cancelled: '❌' }
+  return tasks
+    .filter(t => !['completed', 'cancelled'].includes(t.status) || String(t.id) === selId)
+    .map(t => {
+      const icon = icons[t.status] || '⬜'
+      const disc = t.discipline_code ? ` [${t.discipline_code}]` : ''
+      // Tìm hạng mục từ _tsCachedCategories
+      const cat = t.category_id ? _tsCachedCategories.find(c => c.id === t.category_id) : null
+      const catPrefix = cat
+        ? `[${cat.code || cat.name.slice(0, 8)}] `
+        : ''
+      return { value: String(t.id), label: `${icon}${disc} ${catPrefix}${t.title}` }
+    })
+}
+
+// ── Kiểm tra và đồng bộ trạng thái lock của task combobox theo hạng mục ──
+// Khi chưa chọn hạng mục → task phải bị khóa
+function _tsSyncTaskLockState() {
+  const hasCats   = _tsCachedCategories.length > 0
+  const catChosen = !!(parseInt($('tsCategoryHidden')?.value) || null)
+  // Nếu dự án có hạng mục và chưa chọn hạng mục → lock
+  const shouldLockTask = hasCats && !catChosen
+  // Đơn task
+  const wrap = $('tsTaskCombobox_wrap')
+  if (wrap) {
+    wrap.style.pointerEvents = shouldLockTask ? 'none' : ''
+    wrap.style.opacity       = shouldLockTask ? '0.45' : ''
+    wrap.title = shouldLockTask ? 'Vui lòng chọn hạng mục trước' : ''
+  }
+  // Gợi ý cho user
+  const hint = document.getElementById('tsTaskLockHint')
+  if (hint) hint.style.display = shouldLockTask ? '' : 'none'
+  return shouldLockTask
+}
+
 // ── Khởi tạo combobox Task ─────────────────────────────────────────────────
 function _initTsTaskCombobox(tasks = [], selectedTaskId = null, locked = false) {
   // Chuẩn hoá selectedTaskId về string để so sánh chính xác
   const selId = selectedTaskId != null ? String(selectedTaskId) : ''
 
-  // Giữ lại task đang được chọn dù status là completed/cancelled
-  const taskItems = tasks
-    .filter(t => !['completed', 'cancelled'].includes(t.status) || String(t.id) === selId)
-    .map(t => {
-      const statusIcons = { todo: '⬜', in_progress: '🔵', review: '🟡', completed: '✅', cancelled: '❌' }
-      const icon = statusIcons[t.status] || '⬜'
-      const disc = t.discipline_code ? ` [${t.discipline_code}]` : ''
-      return { value: String(t.id), label: `${icon}${disc} ${t.title}` }
-    })
+  // Build items: có prefix [Hạng mục] để phân biệt task trùng tên
+  const taskItems = _buildTsTaskItems(tasks, selId)
 
   createCombobox('tsTaskCombobox', {
-    placeholder: tasks.length ? '🔍 Tìm & chọn task...' : '— Không có task —',
+    placeholder: tasks.length ? '🔍 Tìm & chọn task...' : '— Chọn hạng mục trước —',
     items: taskItems,
     value: selId,
     fullWidth: true,
     onchange: (val) => {
       $('tsTaskHidden').value = val || ''
+      // Hiển thị badge hạng mục của task vừa chọn
+      _tsShowSingleTaskCategoryBadge(val)
     }
   })
 
-  // Disable trigger nếu locked
+  // Disable trigger nếu locked (by caller) hoặc chưa chọn hạng mục
+  const hardLock = locked
   const wrap = $('tsTaskCombobox_wrap')
   if (wrap) {
-    wrap.style.pointerEvents = locked ? 'none' : ''
-    wrap.style.opacity       = locked ? '0.6'  : ''
+    wrap.style.pointerEvents = hardLock ? 'none' : ''
+    wrap.style.opacity       = hardLock ? '0.45' : ''
   }
 
   // Sync hidden input ngay khi khởi tạo (không chờ onchange)
   $('tsTaskHidden').value = selId
+  // Hiện badge cho task đang được chọn sẵn khi mở modal sửa
+  if (selId) _tsShowSingleTaskCategoryBadge(selId)
+  // Sau khi render xong, đồng bộ lock state theo hạng mục
+  if (!hardLock) _tsSyncTaskLockState()
+}
+
+// ── Hiện badge hạng mục cho đơn task được chọn ──────────────────────────────
+function _tsShowSingleTaskCategoryBadge(taskId) {
+  const badgeEl  = document.getElementById('tsTaskCategoryBadge')
+  const badgeText = document.getElementById('tsTaskCategoryBadgeText')
+  if (!badgeEl || !badgeText) return
+
+  if (!taskId) { badgeEl.style.display = 'none'; return }
+
+  const task = _tsCachedTasks.find(t => String(t.id) === String(taskId))
+  if (!task || !task.category_id) { badgeEl.style.display = 'none'; return }
+
+  const cat = _tsCachedCategories.find(c => c.id === task.category_id)
+  if (!cat) {
+    // Thử tìm trong _tsCachedCategories hoặc hiện category_name từ task
+    if (task.category_name) {
+      badgeText.textContent = (task.category_code ? task.category_code + ' – ' : '') + task.category_name
+      badgeEl.style.display = ''
+    } else {
+      badgeEl.style.display = 'none'
+    }
+    return
+  }
+
+  badgeText.textContent = (cat.code ? cat.code + ' – ' : '') + cat.name
+  badgeEl.style.display = ''
 }
 
 // ── Load tasks từ API rồi khởi tạo combobox task ─────────────────────────────
@@ -5465,7 +5658,10 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
     const tasks = await api(`/tasks?project_id=${projectId}`)
     if (token !== null && token !== _tsProjChangeToken) return
     _tsCachedTasks = Array.isArray(tasks) ? tasks : []
-    _initTsTaskCombobox(tasks, selectedTaskId, locked)
+    // Lọc theo hạng mục nếu đang có category được chọn
+    const selCatId = parseInt($('tsCategoryHidden')?.value) || null
+    const tasksToShow = selCatId ? _tsCachedTasks.filter(t => t.category_id === selCatId) : _tsCachedTasks
+    _initTsTaskCombobox(tasksToShow, selectedTaskId, locked)
     // Re-render multi rows với task mới
     _tsRenderMultiRows()
   } catch (e) {
@@ -5628,6 +5824,8 @@ async function openTimesheetModal(tsId = null) {
       tsModeChanged('multi')
       _tsInitMultiRowsFromEntries(ts.task_entries)
     }
+    // Load hạng mục dự án theo dự án đang sửa
+    if (ts.project_id) _loadTsCategories(ts.project_id, ts.category_id || null, locked)
 
   } else {
     // ─── Thêm mới ────────────────────────────────────────────
@@ -5658,6 +5856,10 @@ async function openTimesheetModal(tsId = null) {
 
     _initTsProjectCombobox('', false)
     _initTsTaskCombobox([], null, false)
+    // Ẩn hạng mục (reset)
+    _tsCachedCategories = []
+    const _tsCatRow = $('tsCategoryRow'); if (_tsCatRow) _tsCatRow.style.display = 'none'
+    if ($('tsCategoryHidden')) $('tsCategoryHidden').value = ''
 
     openModal('timesheetModal')
 
@@ -5684,6 +5886,9 @@ function tsDayTypeChanged() {
   const isHalf  = dayType === 'half_day_am' || dayType === 'half_day_pm'
 
   if (workFields)  workFields.style.display  = isLeave ? 'none' : ''
+  // Ẩn hạng mục khi chọn ngày nghỉ hoàn toàn
+  const catRow = document.getElementById('tsCategoryRow')
+  if (catRow && isLeave) catRow.style.display = 'none'
   if (leaveNotice) {
     leaveNotice.style.display = (isLeave || isHalf) ? '' : 'none'
     if (leaveText) {
@@ -5736,12 +5941,12 @@ function tsModeChanged(mode) {
 }
 
 // Mảng các dòng task trong chế độ multi
-let _tsMultiRows = []   // [{id, task_id, reg, ot}]
+let _tsMultiRows = []   // [{idx, category_id, task_id, reg, ot}]
 let _tsMultiRowIdx = 0
 
-function tsAddMultiTaskRow(taskId = '', reg = '', ot = '') {
+function tsAddMultiTaskRow(taskId = '', reg = '', ot = '', categoryId = '') {
   const idx = _tsMultiRowIdx++
-  _tsMultiRows.push({ idx, task_id: taskId, reg, ot })
+  _tsMultiRows.push({ idx, task_id: taskId, category_id: categoryId, reg, ot })
   _tsRenderMultiRows()
 }
 
@@ -5754,8 +5959,28 @@ function _tsRenderMultiRows() {
   const container = document.getElementById('tsMultiTaskRows')
   if (!container) return
 
-  // Clean up old combobox states to avoid stale entries
-  Object.keys(_cbState).forEach(k => { if (k.startsWith('tsMultiTask_cb_')) delete _cbState[k] })
+  // ── SYNC STATE TRƯỚC KHI RE-RENDER ──────────────────────────────────────
+  // Đọc giá trị hiện tại từ combobox state và input fields vào _tsMultiRows
+  // (tránh mất dữ liệu khi re-render do thêm/xóa dòng)
+  _tsMultiRows.forEach(r => {
+    const catVal  = _cbState[`tsMultiCat_cb_${r.idx}`]?.value
+    const taskVal = _cbState[`tsMultiTask_cb_${r.idx}`]?.value
+    if (catVal  !== undefined) r.category_id = catVal
+    if (taskVal !== undefined) r.task_id     = taskVal
+    // Sync hours từ input DOM (nếu đã render)
+    const regEl = document.getElementById(`tsMultiReg_${r.idx}`)
+    const otEl  = document.getElementById(`tsMultiOT_${r.idx}`)
+    if (regEl) r.reg = regEl.value
+    if (otEl)  r.ot  = otEl.value
+  })
+
+  // Xóa combobox state cũ SAU KHI đã sync
+  Object.keys(_cbState).forEach(k => {
+    if (k.startsWith('tsMultiTask_cb_') || k.startsWith('tsMultiCat_cb_')) delete _cbState[k]
+  })
+  // Ẩn lock hint banner (không còn dùng)
+  const hintBanner = document.getElementById('tsMultiTaskLockHint')
+  if (hintBanner) hintBanner.style.display = 'none'
 
   if (_tsMultiRows.length === 0) {
     container.innerHTML = `<div class="text-xs text-gray-400 text-center py-2">Nhấn "+ Thêm task" để bắt đầu</div>`
@@ -5763,10 +5988,17 @@ function _tsRenderMultiRows() {
     return
   }
 
-  // Render rows dùng grid 4 cột giống header: [task] [HC] [OT] [xóa]
+  // Helper: build category items cho combobox hàng
+  const catItems = _tsCachedCategories.map(c => ({
+    value: String(c.id),
+    label: c.code ? `${c.code} – ${c.name}` : c.name
+  }))
+
+  // Render rows: grid 5 cột [Hạng mục] [Task] [HC] [OT] [Xóa]
   container.innerHTML = _tsMultiRows.map((row, i) => `
     <div id="tsMultiRow_${row.idx}"
-      style="display:grid;grid-template-columns:1fr 88px 88px 28px;gap:6px;align-items:center;background:${i%2===0?'#f9fafb':'#ffffff'};border:1px solid #e5e7eb;border-radius:8px;padding:6px 6px 6px 8px">
+      style="display:grid;grid-template-columns:150px 1fr 76px 76px 28px;gap:6px;align-items:center;background:${i%2===0?'#f9fafb':'#ffffff'};border:1px solid #e5e7eb;border-radius:8px;padding:6px 6px 6px 8px">
+      <div id="tsMultiCat_cb_${row.idx}"></div>
       <div id="tsMultiTask_cb_${row.idx}"></div>
       <input type="number" id="tsMultiReg_${row.idx}"
         style="width:100%;border:1.5px solid #bfdbfe;border-radius:7px;padding:6px 4px;font-size:14px;font-weight:600;text-align:center;color:#1d4ed8;background:#eff6ff;outline:none;box-sizing:border-box"
@@ -5789,33 +6021,104 @@ function _tsRenderMultiRows() {
         title="Xóa dòng này">
         <i class="fas fa-times text-sm"></i>
       </button>
-    </div>`
-  ).join('')
+    </div>`).join('')
 
-  // Init a searchable combobox for each row — panel rộng, list dài hơn
-  const icons = { todo:'⬜', in_progress:'🔵', review:'🟡', completed:'✅', cancelled:'❌' }
+  // Init combobox cho từng row
   _tsMultiRows.forEach(row => {
-    const cbId = `tsMultiTask_cb_${row.idx}`
-    const items = _tsCachedTasks
-      .filter(t => !['completed','cancelled'].includes(t.status) || String(t.id) === String(row.task_id))
-      .map(t => {
-        const disc = t.discipline_code ? ` [${t.discipline_code}]` : ''
-        return { value: String(t.id), label: `${icons[t.status]||'⬜'}${disc} ${t.title}` }
-      })
-    createCombobox(cbId, {
-      placeholder: '— Chọn task —',
-      items,
+    const catCbId  = `tsMultiCat_cb_${row.idx}`
+    const taskCbId = `tsMultiTask_cb_${row.idx}`
+
+    // ── 1. Category combobox ──
+    // Lấy danh sách task lọc theo category của row này (hoặc toàn bộ nếu chưa chọn)
+    const rowCatId = row.category_id ? parseInt(row.category_id) : null
+
+    const buildFilteredTaskItems = (catId) => {
+      const filtered = catId
+        ? _tsCachedTasks.filter(t => t.category_id === catId)
+        : _tsCachedTasks
+      return _buildTsTaskItems(filtered, row.task_id ? String(row.task_id) : '')
+    }
+
+    // ── 1. Category combobox ──
+    // Tạo với value='' và KHÔNG dùng _cbSelect để restore (tránh trigger onchange)
+    createCombobox(catCbId, {
+      placeholder: _tsCachedCategories.length === 0 ? '—' : '— Chọn hạng mục —',
+      items: catItems,
       fullWidth: true,
-      value: row.task_id ? String(row.task_id) : '',
-      teleport:          true,    // panel nổi lên trên mọi overflow container
-      panelMaxWidth:     '560px',
-      dropdownMaxHeight: '360px',
-      onchange: (val) => { _tsMultiRowChange(row.idx, 'task_id', val) }
+      value: '',   // luôn khởi tạo rỗng, restore thủ công bên dưới
+      teleport: true,
+      panelMaxWidth: '280px',
+      dropdownMaxHeight: '260px',
+      onchange: (val) => {
+        // User chủ động đổi hạng mục → reset task của row này
+        _tsMultiRowChange(row.idx, 'category_id', val || '')
+        _tsMultiRowChange(row.idx, 'task_id', '')
+        // Rebuild task combobox theo hạng mục mới
+        const newCatId  = val ? parseInt(val) : null
+        const newItems  = newCatId
+          ? _buildTsTaskItems(_tsCachedTasks.filter(t => t.category_id === newCatId), '')
+          : _buildTsTaskItems(_tsCachedTasks, '')
+        if (_cbState[taskCbId]) delete _cbState[taskCbId]
+        createCombobox(taskCbId, {
+          placeholder: '— Chọn task —',
+          items: newItems,
+          fullWidth: true,
+          value: '',
+          teleport: true,
+          panelMaxWidth: '480px',
+          dropdownMaxHeight: '320px',
+          onchange: (tVal) => {
+            _tsMultiRowChange(row.idx, 'task_id', tVal)
+          }
+        })
+      }
     })
-    // If row has a selected task, apply the label
+    // Restore category value trực tiếp vào state (KHÔNG dùng _cbSelect để tránh fire onchange)
+    if (row.category_id) {
+      const cItem = catItems.find(ci => ci.value === String(row.category_id))
+      if (cItem && _cbState[catCbId]) {
+        _cbState[catCbId].value = cItem.value
+        _cbState[catCbId].label = cItem.label
+        _cbUpdateTrigger(catCbId)
+      }
+    }
+
+    // ── 2. Task combobox (filtered by row's current category) ──
+    const taskItems = buildFilteredTaskItems(rowCatId)
+    createCombobox(taskCbId, {
+      placeholder: '— Chọn task —',
+      items: taskItems,
+      fullWidth: true,
+      value: '',   // luôn khởi tạo rỗng, restore thủ công bên dưới
+      teleport: true,
+      panelMaxWidth: '480px',
+      dropdownMaxHeight: '320px',
+      onchange: (val) => {
+        _tsMultiRowChange(row.idx, 'task_id', val)
+        // Nếu task có category và row chưa chọn category → auto-fill category
+        if (val && !row.category_id) {
+          const selTask = _tsCachedTasks.find(t => String(t.id) === String(val))
+          if (selTask?.category_id) {
+            _tsMultiRowChange(row.idx, 'category_id', String(selTask.category_id))
+            // Set category label trực tiếp, không fire onchange
+            const cItem = catItems.find(ci => ci.value === String(selTask.category_id))
+            if (cItem && _cbState[catCbId]) {
+              _cbState[catCbId].value = cItem.value
+              _cbState[catCbId].label = cItem.label
+              _cbUpdateTrigger(catCbId)
+            }
+          }
+        }
+      }
+    })
+    // Restore task value trực tiếp vào state (KHÔNG dùng _cbSelect để tránh fire onchange)
     if (row.task_id) {
-      const found = items.find(i => i.value === String(row.task_id))
-      if (found) _cbSelect(cbId, found.value, found.label)
+      const tItem = taskItems.find(ti => ti.value === String(row.task_id))
+      if (tItem && _cbState[taskCbId]) {
+        _cbState[taskCbId].value = tItem.value
+        _cbState[taskCbId].label = tItem.label
+        _cbUpdateTrigger(taskCbId)
+      }
     }
   })
 
@@ -5846,7 +6149,10 @@ function _tsInitMultiRowsFromEntries(entries = []) {
   } else {
     entries.forEach(e => {
       const idx = _tsMultiRowIdx++
-      _tsMultiRows.push({ idx, task_id: String(e.task_id || ''), reg: e.regular_hours || '', ot: e.overtime_hours || '' })
+      // Lấy category_id từ task trong cache (nếu có), hoặc từ entry trực tiếp
+      const cachedTask = _tsCachedTasks.find(t => String(t.id) === String(e.task_id || ''))
+      const catId = cachedTask?.category_id ? String(cachedTask.category_id) : ''
+      _tsMultiRows.push({ idx, task_id: String(e.task_id || ''), category_id: catId, reg: e.regular_hours || '', ot: e.overtime_hours || '' })
     })
     _tsRenderMultiRows()
   }
@@ -6244,7 +6550,8 @@ $('tsForm').addEventListener('submit', async (e) => {
     day_type: dayType,
     project_id: isLeaveDay ? null : (parseInt(projId) || null),
     work_date: $('tsDate').value,
-    description: $('tsDescription').value
+    description: $('tsDescription').value,
+    category_id: isLeaveDay ? null : (parseInt($('tsCategoryHidden')?.value) || null)
   }
 
   if (isLeaveDay) {
@@ -6253,10 +6560,12 @@ $('tsForm').addEventListener('submit', async (e) => {
     data.overtime_hours = 0
   } else if (!isLeaveDay && isMultiMode) {
     // Multi-task: gửi task_entries, không gửi task_id/hours ở cấp top-level
-    // Sync task_id từ combobox state (phòng trường hợp onchange chưa fire)
+    // Sync task_id và category_id từ combobox state (phòng trường hợp onchange chưa fire)
     _tsMultiRows.forEach(r => {
-      const cbVal = _cbState[`tsMultiTask_cb_${r.idx}`]?.value
-      if (cbVal !== undefined) r.task_id = cbVal
+      const taskVal = _cbState[`tsMultiTask_cb_${r.idx}`]?.value
+      if (taskVal !== undefined) r.task_id = taskVal
+      const catVal = _cbState[`tsMultiCat_cb_${r.idx}`]?.value
+      if (catVal !== undefined) r.category_id = catVal
       // Sync hours from input fields directly
       const regEl = document.getElementById(`tsMultiReg_${r.idx}`)
       const otEl  = document.getElementById(`tsMultiOT_${r.idx}`)
@@ -7495,12 +7804,16 @@ async function loadAssets() {
 function renderAssetStats() {
   const stats = $('assetStats')
   if (!stats) return
+  // Flatten cây để tính stats
+  const flat = []
+  ;(allAssets || []).forEach(a => { flat.push(a); (a.children||[]).forEach(c => flat.push(c)) })
+
   const byStatus = {}
-  allAssets.forEach(a => byStatus[a.status] = (byStatus[a.status] || 0) + 1)
-  const totalPurchase = allAssets.reduce((s, a) => s + (a.purchase_price || 0), 0)
-  const totalNetValue = allAssets.reduce((s, a) => s + (a.net_book_value || a.current_value || 0), 0)
-  const deprActive = allAssets.filter(a => a.depreciation_status === 'active').length
-  const totalMonthlyDepr = allAssets.filter(a => a.depreciation_status === 'active').reduce((s, a) => s + (a.monthly_depreciation || 0), 0)
+  flat.forEach(a => byStatus[a.status] = (byStatus[a.status] || 0) + 1)
+  const totalPurchase = flat.reduce((s, a) => s + (a.purchase_price || 0), 0)
+  const totalNetValue = flat.reduce((s, a) => s + (a.net_book_value || a.current_value || 0), 0)
+  const deprActive = flat.filter(a => a.depreciation_status === 'active').length
+  const totalMonthlyDepr = flat.filter(a => a.depreciation_status === 'active').reduce((s, a) => s + (a.monthly_depreciation || 0), 0)
 
   stats.innerHTML = [
     { label: 'Tổng tài sản', value: allAssets.length, icon: 'laptop', color: '#0066CC', bg: 'bg-blue-100' },
@@ -7529,14 +7842,41 @@ function renderAssetsTable(assets) {
   const deprColors = { active: 'background:#ede9fe;color:#5b21b6', none: 'background:#f3f4f6;color:#6b7280', completed: 'background:#d1fae5;color:#065f46', paused: 'background:#fef3c7;color:#92400e' }
   const deprLabels = { active: 'Đang KH', none: 'Không KH', completed: 'Hết KH', paused: 'Tạm dừng' }
 
-  tbody.innerHTML = assets.map(a => {
+  // Render 1 hàng tài sản (dùng chung cho cha và con)
+  function renderRow(a, isChild = false) {
     const deprSt = a.depreciation_status || 'none'
     const netVal = a.net_book_value || a.current_value || 0
     const pctDepr = a.purchase_price > 0 ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100)) : 0
-    return `<tr class="table-row">
-      <td class="py-2 pr-3 font-mono text-sm font-bold text-primary">${a.asset_code}</td>
+    const hasChildren = a.children && a.children.length > 0
+    const childCount = hasChildren ? a.children.length : 0
+
+    // Style cho hàng con: thụt lề, nền nhạt, đường kẻ trái
+    const rowStyle = isChild
+      ? 'background:#f8faff; border-left:3px solid #93c5fd;'
+      : ''
+    const indent = isChild
+      ? `<span style="display:inline-block;width:20px;color:#93c5fd;flex-shrink:0"><i class="fas fa-level-up-alt fa-rotate-90 text-xs"></i></span>`
+      : ''
+
+    // Badge số tài sản con (chỉ hàng cha)
+    const childBadge = hasChildren
+      ? `<span class="ml-1 text-xs px-1.5 py-0.5 rounded-full font-semibold" style="background:#dbeafe;color:#1d4ed8" title="${childCount} linh kiện/thành phần">${childCount} thành phần</span>`
+      : ''
+
+    // Nút expand/collapse (chỉ hàng cha có children)
+    const toggleBtn = hasChildren
+      ? `<button onclick="toggleAssetChildren(${a.id})" class="text-blue-400 hover:text-blue-600 px-1 text-xs" id="toggle-${a.id}" title="Xem/ẩn tài sản con"><i class="fas fa-chevron-down" id="toggle-icon-${a.id}"></i></button>`
+      : ''
+
+    return `<tr class="table-row" style="${rowStyle}" id="asset-row-${a.id}">
+      <td class="py-2 pr-3 font-mono text-sm font-bold text-primary">
+        <div class="flex items-center gap-1">
+          ${indent}${toggleBtn}
+          <span>${a.asset_code}</span>
+        </div>
+      </td>
       <td class="py-2 pr-3">
-        <div class="font-medium text-gray-800 text-sm">${a.name}</div>
+        <div class="font-medium text-gray-800 text-sm">${a.name}${childBadge}</div>
         <div class="text-xs text-gray-400">${a.brand || ''} ${a.model ? '/ ' + a.model : ''}</div>
       </td>
       <td class="py-2 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${getAssetCategoryName(a.category)}</span></td>
@@ -7551,12 +7891,57 @@ function renderAssetsTable(assets) {
       <td class="py-2">
         <div class="flex gap-1 flex-wrap">
           <button onclick="openAssetModal(${a.id})" class="btn-secondary text-xs px-2 py-1" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
+          ${!isChild ? `<button onclick="openAssetModalAsChild(${a.id})" class="text-xs px-2 py-1 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50" title="Thêm tài sản con"><i class="fas fa-plus-circle"></i></button>` : ''}
           ${deprSt !== 'none' ? `<button onclick="openDeprDetailFromAsset(${a.id})" class="text-xs px-2 py-1 rounded-lg border border-purple-200 text-purple-600 hover:bg-purple-50" title="Lịch KH"><i class="fas fa-chart-line"></i></button>` : ''}
           <button onclick="deleteAsset(${a.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>
         </div>
       </td>
     </tr>`
-  }).join('') || '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
+  }
+
+  // Render cả cây: cha rồi các con (ban đầu ẩn con)
+  let html = ''
+  if (!assets || assets.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
+    return
+  }
+  assets.forEach(a => {
+    html += renderRow(a, false)
+    if (a.children && a.children.length > 0) {
+      a.children.forEach(child => {
+        html += `<tr id="asset-children-group-${a.id}-row-${child.id}" class="asset-child-of-${a.id}" style="display:none">${renderRow(child, true).replace('<tr ', '<td style="display:contents">')}` 
+        // Fix: render con như 1 row bình thường nhưng wrap trong tr ẩn
+      })
+    }
+  })
+
+  // Build lại đúng cách (không dùng nested tr)
+  html = ''
+  assets.forEach(a => {
+    html += renderRow(a, false)
+    if (a.children && a.children.length > 0) {
+      a.children.forEach(child => {
+        const childRow = renderRow(child, true)
+        // Đổi tag <tr> thành <tr class="asset-child-of-X" style="display:none">
+        html += childRow.replace(
+          /^<tr class="table-row"/,
+          `<tr class="table-row asset-child-of-${a.id}" style="display:none"`
+        )
+      })
+    }
+  })
+  tbody.innerHTML = html
+}
+
+// Toggle hiện/ẩn tài sản con
+function toggleAssetChildren(parentId) {
+  const rows = document.querySelectorAll(`.asset-child-of-${parentId}`)
+  const iconEl = $(`toggle-icon-${parentId}`)
+  const isHidden = rows.length > 0 && rows[0].style.display === 'none'
+  rows.forEach(r => r.style.display = isHidden ? '' : 'none')
+  if (iconEl) {
+    iconEl.className = isHidden ? 'fas fa-chevron-up' : 'fas fa-chevron-down'
+  }
 }
 
 function filterAssets() {
@@ -7564,24 +7949,48 @@ function filterAssets() {
   const category = $('assetCategoryFilter')?.value || ''
   const status = $('assetStatusFilter')?.value || ''
   const depr = $('assetDeprFilter')?.value || ''
-  const filtered = allAssets.filter(a =>
+
+  // Flatten tree để lọc
+  const flatAll = []
+  ;(allAssets || []).forEach(a => {
+    flatAll.push(a)
+    ;(a.children || []).forEach(c => flatAll.push(c))
+  })
+
+  // Nếu không có filter → render tree gốc
+  const hasFilter = search || category || status || depr
+  if (!hasFilter) {
+    renderAssetsTable(allAssets)
+    return
+  }
+
+  // Có filter → render flat (không hiển thị tree)
+  const filtered = flatAll.filter(a =>
     (!search || a.name.toLowerCase().includes(search) || a.asset_code.toLowerCase().includes(search) || (a.brand||'').toLowerCase().includes(search)) &&
     (!category || a.category === category) &&
     (!status || a.status === status) &&
     (!depr || (a.depreciation_status || 'none') === depr)
   )
-  renderAssetsTable(filtered)
+  // Render flat kết quả (không children)
+  const flatAssets = filtered.map(a => ({ ...a, children: [] }))
+  renderAssetsTable(flatAssets)
 }
 
 async function openAssetModal(assetId = null) {
   if (!allUsers.length) allUsers = await api('/users')
   $('assetModalTitle').textContent = assetId ? 'Chỉnh sửa tài sản' : 'Thêm tài sản mới'
   $('assetId').value = assetId || ''
+  $('assetParentId').value = ''
   $('assetAssignedTo').innerHTML = '<option value="">-- Không giao --</option>' +
     allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
 
+  // Ẩn banner tài sản cha mặc định
+  if ($('assetParentRow')) $('assetParentRow').classList.add('hidden')
+
   if (assetId) {
-    const asset = allAssets.find(a => a.id === assetId)
+    // Tìm trong tree (cha hoặc con)
+    let asset = allAssets.find(a => a.id === assetId)
+    if (!asset) allAssets.forEach(a => { if (!asset) asset = (a.children||[]).find(c => c.id === assetId) })
     if (asset) {
       $('assetCode').value = asset.asset_code || ''
       $('assetName').value = asset.name || ''
@@ -7598,6 +8007,14 @@ async function openAssetModal(assetId = null) {
       $('assetSpecs').value = asset.specifications || ''
       $('assetDepreciationYears').value = asset.depreciation_years || 0
       $('assetDepreciationStart').value = asset.depreciation_start_date || asset.purchase_date || ''
+
+      // Hiển thị banner tài sản cha nếu là tài sản con
+      if (asset.parent_asset_id) {
+        $('assetParentId').value = asset.parent_asset_id
+        const parentName = asset.parent_asset_name || asset.parent_asset_code || `#${asset.parent_asset_id}`
+        $('assetParentLabel').textContent = parentName
+        $('assetParentRow').classList.remove('hidden')
+      }
     }
   } else {
     ['assetCode','assetName','assetBrand','assetModel','assetSerial','assetPurchasePrice','assetCurrentValue','assetDepartment','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
@@ -7610,6 +8027,43 @@ async function openAssetModal(assetId = null) {
   }
   updateDeprPreview()
   openModal('assetModal')
+}
+
+// Mở modal thêm tài sản con cho một tài sản cha
+async function openAssetModalAsChild(parentId) {
+  if (!allUsers.length) allUsers = await api('/users')
+  const parentAsset = allAssets.find(a => a.id === parentId)
+  if (!parentAsset) return
+
+  $('assetModalTitle').innerHTML = `<i class="fas fa-sitemap text-blue-500 mr-2"></i>Thêm tài sản con`
+  $('assetId').value = ''
+  $('assetParentId').value = parentId
+
+  // Hiển thị banner tài sản cha
+  $('assetParentLabel').textContent = `[${parentAsset.asset_code}] ${parentAsset.name}`
+  $('assetParentRow').classList.remove('hidden')
+
+  $('assetAssignedTo').innerHTML = '<option value="">-- Không giao --</option>' +
+    allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+
+  // Clear các field, inherit phòng ban từ cha
+  ;['assetCode','assetName','assetBrand','assetModel','assetSerial','assetPurchasePrice','assetCurrentValue','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
+  $('assetCategory').value = parentAsset.category || 'computer'
+  $('assetStatus').value = 'active'
+  $('assetDepartment').value = parentAsset.department || ''
+  $('assetAssignedTo').value = parentAsset.assigned_to || ''
+  $('assetPurchaseDate').value = today()
+  $('assetDepreciationYears').value = '0'
+  $('assetDepreciationStart').value = today()
+
+  updateDeprPreview()
+  openModal('assetModal')
+}
+
+// Bỏ liên kết tài sản cha
+function clearAssetParent() {
+  $('assetParentId').value = ''
+  $('assetParentRow').classList.add('hidden')
 }
 
 function updateDeprPreview() {
@@ -7636,6 +8090,7 @@ document.addEventListener('input', (e) => {
 $('assetForm').addEventListener('submit', async (e) => {
   e.preventDefault()
   const id = $('assetId').value
+  const parentId = $('assetParentId').value ? parseInt($('assetParentId').value) : null
   const data = {
     asset_code: $('assetCode').value, name: $('assetName').value,
     category: $('assetCategory').value, status: $('assetStatus').value,
@@ -7647,7 +8102,8 @@ $('assetForm').addEventListener('submit', async (e) => {
     assigned_to: parseInt($('assetAssignedTo').value) || null,
     specifications: $('assetSpecs').value,
     depreciation_years: parseInt($('assetDepreciationYears').value) || 0,
-    depreciation_start_date: $('assetDepreciationStart').value || null
+    depreciation_start_date: $('assetDepreciationStart').value || null,
+    parent_asset_id: parentId
   }
   try {
     if (id) {
@@ -13756,6 +14212,7 @@ function exportAnalyticsPDF() {
 let _legalCurrentProjectId = null
 let _legalOverviewData = null
 let _legalCurrentTab = 'stages'
+let _legalTabSetByUser = false
 
 const LEGAL_STATUS_LABELS = {
   pending: 'Chưa thực hiện',
@@ -13800,7 +14257,12 @@ const STAGE_COLORS = {
   B: { bg: '#fdf4ff', border: '#a855f7', text: '#7e22ce', icon: 'fa-handshake' },
   C: { bg: '#fff7ed', border: '#f97316', text: '#c2410c', icon: 'fa-file-signature' },
   D: { bg: '#f0fdf4', border: '#22c55e', text: '#15803d', icon: 'fa-check-double' },
-  E: { bg: '#ecfdf5', border: '#10b981', text: '#065f46', icon: 'fa-money-check-alt' }
+  E: { bg: '#ecfdf5', border: '#10b981', text: '#065f46', icon: 'fa-money-check-alt' },
+  F: { bg: '#fefce8', border: '#eab308', text: '#854d0e', icon: 'fa-folder-open' },
+  G: { bg: '#f0f9ff', border: '#0ea5e9', text: '#0369a1', icon: 'fa-layer-group' },
+  H: { bg: '#fff1f2', border: '#f43f5e', text: '#9f1239', icon: 'fa-archive' },
+  I: { bg: '#f5f3ff', border: '#8b5cf6', text: '#5b21b6', icon: 'fa-box' },
+  J: { bg: '#fef9c3', border: '#ca8a04', text: '#92400e', icon: 'fa-file-alt' },
 }
 
 const PAYMENT_STATUS_LABELS = {
@@ -13873,14 +14335,63 @@ async function loadLegalProject(projectId) {
     const data = await api(`/legal/${projectId}/overview`)
     _legalOverviewData = data
 
-    // Show controls
-    $('legalKPIRow').style.display = ''
-    $('legalTabs').style.display = ''
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel'].forEach(id => { if($(id)) $(id).style.display='' })
+    // ── Kiểm tra quyền của user trong dự án này ──
+    // Member chỉ được xem + tạo văn bản gửi đi
+    // Project Leader trở lên: toàn quyền
+    const effRole = getEffectiveRoleForProject(projectId)
+    const isMemberOnly = !['system_admin', 'project_admin', 'project_leader'].includes(effRole)
 
-    // Render KPI
+    // Show KPI row
+    $('legalKPIRow').style.display = ''
+
+    // Điều chỉnh tabs theo quyền
+    if (isMemberOnly) {
+      // Member: chỉ hiện tab Văn bản gửi đi
+      $('legalTabs').style.display = ''
+      ;['stages', 'docs', 'payments'].forEach(t => {
+        const btn = $('ltab-' + t)
+        if (btn) btn.style.display = 'none'
+      })
+      // Đảm bảo tab letters luôn hiển thị
+      const btnLetters = $('ltab-letters')
+      if (btnLetters) btnLetters.style.display = ''
+      // Force tab = letters
+      if (_legalCurrentTab !== 'letters') {
+        _legalCurrentTab = 'letters'
+      }
+      // Nút header: chỉ hiện "Gửi văn bản", ẩn phần còn lại
+      if ($('btnAddLetter')) $('btnAddLetter').style.display = ''
+      ;['btnAddDoc', 'btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = 'none' })
+      // Ẩn KPI cards không liên quan với member (ẩn Tổng hạng mục & Đã hoàn thành, chỉ giữ Văn bản gửi đi & Tài liệu)
+      const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
+      if (kpiCards) {
+        kpiCards.forEach((card, idx) => {
+          // idx 0 = Tổng hạng mục, 1 = Đã hoàn thành → ẩn với member
+          // idx 2 = Văn bản gửi đi, 3 = Tài liệu đính kèm → giữ lại
+          card.style.display = (idx === 0 || idx === 1) ? 'none' : ''
+        })
+      }
+    } else {
+      // Project Leader trở lên: toàn quyền
+      $('legalTabs').style.display = ''
+      ;['stages', 'letters', 'docs', 'payments'].forEach(t => {
+        const btn = $('ltab-' + t)
+        if (btn) btn.style.display = ''
+      })
+      ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = '' })
+      // Khôi phục tất cả KPI cards
+      const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
+      if (kpiCards) kpiCards.forEach(card => card.style.display = '')
+      // Nếu tab hiện tại bị reset về letters do lần trước là member, phục hồi stages
+      if (_legalCurrentTab === 'letters' && !_legalTabSetByUser) {
+        _legalCurrentTab = 'stages'
+      }
+    }
+
+    // Render KPI — tính tổng qua packages → stages → items
     let totalItems = 0, doneItems = 0
-    ;(data.stages || []).forEach(stage => {
+    const allStages = (data.packages || []).flatMap(pkg => pkg.stages || [])
+    allStages.forEach(stage => {
       stage.items.forEach(item => {
         totalItems++
         if (item.status === 'completed') doneItems++
@@ -13895,8 +14406,8 @@ async function loadLegalProject(projectId) {
     $('legalKpiLetters').textContent = (data.letters || []).length
     $('legalKpiDocs').textContent = (data.documents || []).length
 
-    // Render current tab
-    renderLegalTab(_legalCurrentTab)
+    // Sync tab UI rồi render
+    switchLegalTab(_legalCurrentTab)
 
   } catch(e) {
     toast('Lỗi tải dữ liệu pháp lý: ' + e.message, 'error')
@@ -13904,7 +14415,9 @@ async function loadLegalProject(projectId) {
 }
 
 function switchLegalTab(tab) {
+  // Nếu gọi từ onclick của người dùng → đánh dấu
   _legalCurrentTab = tab
+  _legalTabSetByUser = true
   ;['stages','letters','docs','payments'].forEach(t => {
     const btn = $('ltab-' + t)
     const panel = $('legalTab' + t.charAt(0).toUpperCase() + t.slice(1))
@@ -13916,10 +14429,399 @@ function switchLegalTab(tab) {
 
 function renderLegalTab(tab) {
   if (!_legalOverviewData) return
-  if (tab === 'stages') renderLegalStages(_legalOverviewData.stages || [])
+  if (tab === 'stages') renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
   else if (tab === 'letters') renderLegalLetters(_legalOverviewData.letters || [])
   else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
   else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
+}
+
+// ── Package collapse state ────────────────────────────────────────────────────
+const _pkgCollapseState = {}
+
+// ── Render Packages (3-level: Package → Stage A-D → Items) ───────────────────
+function renderLegalPackages(packages, flatStages) {
+  const container = $('legalStagesContainer')
+  if (!container) return
+
+  // If no packages yet, fall back to flat stages view
+  if (!packages || packages.length === 0) {
+    if (flatStages && flatStages.length > 0) {
+      renderLegalStages(flatStages)
+      return
+    }
+    container.innerHTML = `
+      <div class="card text-center py-10 text-gray-400">
+        <i class="fas fa-folder-open text-4xl mb-3 block text-gray-300"></i>
+        <div class="font-semibold mb-1">Chưa có gói thầu nào</div>
+        <div class="text-sm mb-4">Tạo gói thầu để bắt đầu theo dõi hồ sơ dự án</div>
+        <button onclick="openAddPackageModal()" class="btn-accent text-sm mx-auto" style="width:auto;padding:6px 20px">
+          <i class="fas fa-plus mr-1"></i> Tạo gói thầu mới
+        </button>
+      </div>`
+    return
+  }
+
+  // Colors for packages
+  const PKG_COLORS = [
+    { bg:'#eff6ff', border:'#3b82f6', text:'#1d4ed8', icon:'fa-building' },
+    { bg:'#fdf4ff', border:'#a855f7', text:'#7e22ce', icon:'fa-drafting-compass' },
+    { bg:'#fff7ed', border:'#f97316', text:'#c2410c', icon:'fa-hard-hat' },
+    { bg:'#f0fdf4', border:'#22c55e', text:'#15803d', icon:'fa-check-double' },
+    { bg:'#fefce8', border:'#eab308', text:'#a16207', icon:'fa-star' },
+  ]
+
+  let html = `
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+    <div style="font-size:13px;color:#64748b;font-weight:500">
+      <i class="fas fa-layer-group mr-1 text-indigo-500"></i>
+      ${packages.length} gói thầu · ${packages.reduce((a,p)=>a+(p.stages||[]).length,0)} giai đoạn
+    </div>
+    <div style="display:flex;gap:6px">
+      <button onclick="collapseAllPackages()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:4px 12px;cursor:pointer">
+        <i class="fas fa-compress-alt" style="font-size:10px"></i> Thu gọn
+      </button>
+      <button onclick="expandAllPackages()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 12px;cursor:pointer">
+        <i class="fas fa-expand-alt" style="font-size:10px"></i> Mở rộng
+      </button>
+      <button onclick="openAddPackageModal()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px solid #6ee7b7;border-radius:6px;padding:4px 12px;cursor:pointer">
+        <i class="fas fa-plus" style="font-size:10px"></i> Thêm gói thầu
+      </button>
+    </div>
+  </div>`
+
+  packages.forEach((pkg, pkgIdx) => {
+    const pc = PKG_COLORS[pkgIdx % PKG_COLORS.length]
+    const stages = pkg.stages || []
+    const isOpen = _pkgCollapseState[pkg.id] !== false
+    const pkgBodyId = `pkgBody_${pkg.id}`
+    const pkgChevId = `pkgChev_${pkg.id}`
+
+    // Compute package totals
+    let pkgTotal = 0, pkgDone = 0
+    stages.forEach(s => {
+      ;(s.items || []).forEach(it => {
+        pkgTotal++; if (it.status === 'completed') pkgDone++
+        ;(it.children||[]).forEach(ch => {
+          pkgTotal++; if (ch.status === 'completed') pkgDone++
+        })
+      })
+    })
+    const pkgPct = pkgTotal > 0 ? Math.round(pkgDone/pkgTotal*100) : 0
+    const pkgBarCol = pkgPct === 100 ? '#10b981' : pkgPct >= 50 ? '#6366f1' : pc.border
+
+    html += `
+    <!-- ═══════ PACKAGE CARD ═══════ -->
+    <div class="mb-5" style="border-radius:14px;border:2px solid ${pc.border}55;background:#fff;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+
+      <!-- Package Header -->
+      <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;background:${pc.bg};cursor:pointer;user-select:none;border-bottom:2px solid ${pc.border}33"
+           onclick="togglePackageCollapse(${pkg.id})">
+
+        <div style="width:44px;height:44px;border-radius:12px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;background:${pc.border};box-shadow:0 2px 6px ${pc.border}55">
+          <i class="fas ${pc.icon}"></i>
+        </div>
+
+        <div style="flex:1;min-width:0">
+          <div style="font-size:15px;font-weight:800;color:${pc.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pkg.name}</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap">
+            <div style="width:140px;height:6px;background:#e5e7eb;border-radius:10px;overflow:hidden">
+              <div style="width:${pkgPct}%;height:100%;background:${pkgBarCol};border-radius:10px;transition:width .4s"></div>
+            </div>
+            <span style="font-size:12px;font-weight:700;color:${pkgBarCol}">${pkgPct}%</span>
+            <span style="font-size:11px;color:#9ca3af">${pkgDone}/${pkgTotal} hạng mục</span>
+            <span style="font-size:11px;color:#64748b;background:#f1f5f9;padding:1px 8px;border-radius:8px;border:1px solid #e2e8f0">
+              <i class="fas fa-layer-group mr-1" style="font-size:9px"></i>${stages.length} giai đoạn A–D
+            </span>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0" onclick="event.stopPropagation()">
+          <button onclick="openRenamePackageModal(${pkg.id}, '${pkg.name.replace(/'/g,'\\&apos;')}')"
+            style="width:30px;height:30px;border-radius:7px;border:1px solid ${pc.border}66;background:#fff;color:${pc.text};cursor:pointer;display:flex;align-items:center;justify-content:center" title="Đổi tên gói thầu">
+            <i class="fas fa-pen" style="font-size:10px"></i>
+          </button>
+          <button onclick="confirmDeletePackage(${pkg.id}, '${pkg.name.replace(/'/g,'\\&apos;')}', ${pkgTotal})"
+            style="width:30px;height:30px;border-radius:7px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Xóa gói thầu">
+            <i class="fas fa-trash" style="font-size:10px"></i>
+          </button>
+          <button id="${pkgChevId}" onclick="event.stopPropagation();togglePackageCollapse(${pkg.id})"
+            style="width:32px;height:32px;border-radius:8px;border:1px solid ${pc.border}44;background:#fff;color:${pc.text};cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s">
+            <i id="${pkgChevId}_icon" class="fas fa-chevron-up" style="font-size:11px;transition:transform .25s;transform:rotate(${isOpen?'0':'180'}deg)"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Package Body (stages) -->
+      <div id="${pkgBodyId}" style="display:${isOpen?'block':'none'};padding:12px 16px 16px">
+        ${stages.length === 0 ? `<div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px">Gói thầu chưa có giai đoạn nào</div>` : ''}
+        ${stages.map(stage => renderPackageStageCard(stage, pc)).join('')}
+
+        <!-- Add stage within package -->
+        <div style="display:flex;justify-content:center;margin-top:10px">
+          <button onclick="openAddStageInPackageModal(${pkg.id})"
+            style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#6366f1;background:#eef2ff;border:1.5px dashed #a5b4fc;border-radius:8px;padding:6px 18px;cursor:pointer;width:100%;justify-content:center">
+            <i class="fas fa-plus-circle" style="font-size:11px"></i> Thêm giai đoạn vào gói này
+          </button>
+        </div>
+      </div>
+    </div>`
+  })
+
+  // Add package button at bottom
+  html += `
+  <div style="display:flex;justify-content:center;margin-top:4px">
+    <button onclick="openAddPackageModal()"
+      style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:8px;padding:8px 24px;cursor:pointer;width:100%;justify-content:center">
+      <i class="fas fa-plus-circle" style="font-size:12px"></i> Thêm gói thầu mới (BCNCKT / TKBVTC / Thi công & Hoàn công…)
+    </button>
+  </div>`
+
+  container.innerHTML = html
+}
+
+// ── Render a single stage card INSIDE a package ───────────────────────────────
+function renderPackageStageCard(stage, pkgColor) {
+  const sc = STAGE_COLORS[stage.code] || { bg:'#f9fafb', border:'#6b7280', text:'#374151', icon:'fa-folder' }
+  const totalInStage = stage.items.reduce((a, it) => a + 1 + (it.children?.length||0), 0)
+  const doneInStage  = stage.items.reduce((a, it) => {
+    let d = it.status === 'completed' ? 1 : 0
+    d += (it.children||[]).filter(c => c.status === 'completed').length
+    return a + d
+  }, 0)
+  const pct    = totalInStage > 0 ? Math.round(doneInStage/totalInStage*100) : 0
+  const barCol = pct === 100 ? '#10b981' : pct >= 50 ? '#3b82f6' : sc.border
+  const isOpen = _stageCollapseState[stage.id] !== false
+  const bodyId = `stageBody_${stage.id}`
+  const chevId = `stageChev_${stage.id}`
+
+  let html = `
+  <div class="mb-3" style="border-radius:10px;border:1px solid ${sc.border}44;background:#fafafa;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+
+    <!-- Stage Header -->
+    <div onclick="toggleStageCollapse(${stage.id})"
+      style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:${isOpen?sc.bg:'#f9fafb'};cursor:pointer;user-select:none;border-left:4px solid ${sc.border};transition:background .2s">
+
+      <div style="width:34px;height:34px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;background:${sc.border}">
+        ${stage.code}
+      </div>
+
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${stage.name}</div>
+        <div style="display:flex;align-items:center;gap:7px;margin-top:3px">
+          <div style="width:100px;height:4px;background:#e5e7eb;border-radius:10px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:${barCol};border-radius:10px"></div>
+          </div>
+          <span style="font-size:10px;font-weight:700;color:${barCol}">${pct}%</span>
+          <span style="font-size:10px;color:#9ca3af">${doneInStage}/${totalInStage}</span>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:5px;flex-shrink:0" onclick="event.stopPropagation()">
+        <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
+          style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:5px;padding:3px 9px;cursor:pointer" title="Thêm hạng mục">
+          <i class="fas fa-plus" style="font-size:9px"></i> Thêm
+        </button>
+        <button onclick="openRenameStageModal(${stage.id}, '${stage.name.replace(/'/g,'\\&apos;')}')"
+          style="width:28px;height:28px;border-radius:6px;border:1px solid #e5e7eb;background:#fff;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Đổi tên">
+          <i class="fas fa-pen" style="font-size:9px"></i>
+        </button>
+        <button onclick="confirmDeleteStage(${stage.id}, '${stage.name.replace(/'/g,'\\&apos;')}', ${totalInStage})"
+          style="width:28px;height:28px;border-radius:6px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Xóa giai đoạn">
+          <i class="fas fa-trash" style="font-size:9px"></i>
+        </button>
+        <button id="${chevId}" onclick="event.stopPropagation();toggleStageCollapse(${stage.id})"
+          style="width:28px;height:28px;border-radius:6px;border:1px solid #e5e7eb;background:${isOpen?'#eef2ff':'#f9fafb'};color:${isOpen?'#6366f1':'#9ca3af'};cursor:pointer;display:flex;align-items:center;justify-content:center">
+          <i id="${chevId}_icon" class="fas fa-chevron-up" style="font-size:10px;transform:rotate(${isOpen?'0':'180'}deg);transition:transform .25s"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Stage Items Table -->
+    <div id="${bodyId}" style="display:${isOpen?'block':'none'}">
+      ${totalInStage === 0 ? `<div style="text-align:center;padding:12px;color:#9ca3af;font-size:12px"><i class="fas fa-inbox mr-1"></i>Chưa có hạng mục</div>` : `
+      <table class="w-full" style="font-size:13px">
+        <thead>
+          <tr style="background:${sc.bg}">
+            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
+            <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
+            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
+          </tr>
+        </thead>
+        <tbody>`}
+  `
+
+  if (totalInStage > 0) {
+    stage.items.forEach(item => {
+      const rowBg = item.status === 'completed' ? '#f0fdf4' : (item.status === 'in_progress' ? '#eff6ff' : '#fff')
+      html += renderLegalItemRow(item, sc, rowBg, false, stage.id)
+      ;(item.children || []).forEach(child => {
+        html += renderLegalItemRow(child, sc, rowBg, true, stage.id)
+      })
+    })
+    html += `</tbody></table>`
+  }
+
+  html += `
+      <div style="padding:7px 14px;border-top:1px solid #f3f4f6;display:flex;justify-content:flex-end">
+        <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
+          style="font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:3px">
+          <i class="fas fa-plus-circle" style="font-size:10px"></i> Thêm hạng mục
+        </button>
+      </div>
+    </div>
+  </div>`
+
+  return html
+}
+
+// ── Toggle Package collapse ───────────────────────────────────────────────────
+function togglePackageCollapse(pkgId) {
+  const body = document.getElementById(`pkgBody_${pkgId}`)
+  const chevIcon = document.getElementById(`pkgChev_${pkgId}_icon`)
+  if (!body) return
+  const isOpen = body.style.display !== 'none'
+  body.style.display = isOpen ? 'none' : 'block'
+  _pkgCollapseState[pkgId] = !isOpen
+  if (chevIcon) chevIcon.style.transform = isOpen ? 'rotate(180deg)' : 'rotate(0deg)'
+}
+
+function collapseAllPackages() {
+  document.querySelectorAll('[id^="pkgBody_"]').forEach(body => {
+    const id = body.id.replace('pkgBody_', '')
+    if (body.style.display !== 'none') togglePackageCollapse(id)
+  })
+}
+function expandAllPackages() {
+  document.querySelectorAll('[id^="pkgBody_"]').forEach(body => {
+    const id = body.id.replace('pkgBody_', '')
+    if (body.style.display === 'none') togglePackageCollapse(id)
+  })
+}
+
+// ── Package Management ────────────────────────────────────────────────────────
+
+// Package type options
+const PACKAGE_TYPE_OPTIONS = [
+  { value: 'bcnckt',       label: 'Gói BCNCKT (Báo cáo nghiên cứu khả thi)' },
+  { value: 'tkbvtc',       label: 'Gói TKBVTC (Thiết kế bản vẽ thi công)' },
+  { value: 'construction', label: 'Gói Thi công & Hoàn công' },
+  { value: 'custom',       label: 'Gói tùy chỉnh (nhập tên riêng)' },
+]
+
+function openAddPackageModal() {
+  const typeOpts = PACKAGE_TYPE_OPTIONS.map(o =>
+    `<option value="${o.value}">${o.label}</option>`
+  ).join('')
+
+  const modalHtml = `
+  <div id="addPkgModal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px">
+    <div style="background:#fff;border-radius:16px;width:100%;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden">
+      <div style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:20px 24px;display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div style="font-size:16px;font-weight:700;color:#fff"><i class="fas fa-folder-plus mr-2"></i>Thêm gói thầu</div>
+          <div style="font-size:12px;color:#e0e7ff;margin-top:2px">Mỗi gói thầu sẽ có 4 giai đoạn A–B–C–D tự động</div>
+        </div>
+        <button onclick="document.getElementById('addPkgModal').remove()" style="color:#e0e7ff;background:none;border:none;cursor:pointer;font-size:18px">&times;</button>
+      </div>
+      <div style="padding:24px">
+        <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Loại gói thầu</label>
+        <select id="addPkgType" onchange="onAddPkgTypeChange()" style="width:100%;padding:8px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:14px">
+          ${typeOpts}
+        </select>
+
+        <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Tên gói thầu</label>
+        <input id="addPkgName" type="text" placeholder="VD: Gói BCNCKT dự án..." value="${PACKAGE_TYPE_OPTIONS[0].label}"
+          style="width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:6px">
+        <div style="font-size:11px;color:#6b7280;margin-bottom:18px">
+          <i class="fas fa-info-circle mr-1 text-blue-400"></i>
+          Hệ thống sẽ tự động tạo 4 giai đoạn: A. Chuẩn bị & Dự thầu · B. Ký hợp đồng · C. Thực hiện & Sản phẩm BIM · D. Nghiệm thu & Thanh toán
+        </div>
+
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button onclick="document.getElementById('addPkgModal').remove()"
+            style="padding:9px 20px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#374151;font-size:13px;cursor:pointer">
+            Hủy
+          </button>
+          <button onclick="submitAddPackage()"
+            style="padding:9px 20px;border:none;border-radius:8px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:13px;font-weight:600;cursor:pointer">
+            <i class="fas fa-plus mr-1"></i> Tạo gói thầu
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>`
+  document.body.insertAdjacentHTML('beforeend', modalHtml)
+}
+
+function onAddPkgTypeChange() {
+  const sel = document.getElementById('addPkgType')
+  const inp = document.getElementById('addPkgName')
+  const opt = PACKAGE_TYPE_OPTIONS.find(o => o.value === sel.value)
+  if (opt && sel.value !== 'custom') {
+    inp.value = opt.label
+  } else {
+    inp.value = ''
+    inp.focus()
+  }
+}
+
+async function submitAddPackage() {
+  const type = document.getElementById('addPkgType')?.value || 'custom'
+  const name = document.getElementById('addPkgName')?.value?.trim()
+  if (!name) { toast('Vui lòng nhập tên gói thầu', 'warning'); return }
+  try {
+    const res = await api(`/legal/${_legalCurrentProjectId}/packages`, {
+      method: 'POST', data: { name, package_type: type }
+    })
+    document.getElementById('addPkgModal')?.remove()
+    toast(`Đã tạo gói thầu "${name}" với 4 giai đoạn A–D`, 'success', 4000)
+    loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+function openRenamePackageModal(pkgId, currentName) {
+  const newName = prompt('Đổi tên gói thầu:', currentName)
+  if (!newName || !newName.trim() || newName.trim() === currentName) return
+  api(`/legal/packages/${pkgId}`, { method: 'PUT', data: { name: newName.trim() } })
+    .then(() => {
+      toast('Đã đổi tên gói thầu', 'success')
+      loadLegalProject(_legalCurrentProjectId)
+    })
+    .catch(err => toast('Lỗi: ' + err.message, 'error'))
+}
+
+async function confirmDeletePackage(pkgId, pkgName, itemCount) {
+  const hasItems = itemCount > 0
+  const msg = hasItems
+    ? `Xóa gói thầu "${pkgName}"?\n\n⚠️ Gói này còn ${itemCount} hạng mục — tất cả sẽ bị xóa vĩnh viễn cùng với 4 giai đoạn A–D.\n\nHành động này KHÔNG THỂ hoàn tác.`
+    : `Xóa gói thầu "${pkgName}"?\nTất cả 4 giai đoạn A–D trong gói sẽ bị xóa.\nHành động này không thể hoàn tác.`
+  if (!confirm(msg)) return
+  try {
+    await api(`/legal/packages/${pkgId}`, { method: 'DELETE' })
+    toast(`Đã xóa gói thầu "${pkgName}"`, 'success')
+    loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+function openAddStageInPackageModal(pkgId) {
+  const newName = prompt('Tên giai đoạn mới trong gói thầu này:\n(Tên sẽ được tùy chỉnh, code A–D–E–… tự động)')
+  if (!newName || !newName.trim()) return
+  api(`/legal/${_legalCurrentProjectId}/stages`, {
+    method: 'POST',
+    data: { name: newName.trim(), package_id: pkgId }
+  })
+    .then(res => {
+      toast(`Đã thêm giai đoạn [${res.code}]: ${res.name}`, 'success', 4000)
+      loadLegalProject(_legalCurrentProjectId)
+    })
+    .catch(err => toast('Lỗi: ' + err.message, 'error'))
 }
 
 // ── Render Stages Table ──────────────────────────────────────────────────────
@@ -13983,10 +14885,18 @@ function renderLegalStages(stages) {
         </div>
 
         <!-- Right controls -->
-        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0" onclick="event.stopPropagation()">
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0" onclick="event.stopPropagation()">
           <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
             style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 10px;cursor:pointer" title="Thêm hạng mục">
             <i class="fas fa-plus" style="font-size:9px"></i> Thêm
+          </button>
+          <button onclick="openRenameStageModal(${stage.id}, '${stage.name.replace(/'/g,'\\&apos;')}')"
+            style="width:30px;height:30px;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;" title="Đổi tên giai đoạn">
+            <i class="fas fa-pen" style="font-size:10px"></i>
+          </button>
+          <button onclick="confirmDeleteStage(${stage.id}, '${stage.name.replace(/'/g,'\\&apos;')}', ${totalInStage})"
+            style="width:30px;height:30px;border-radius:6px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center;" title="Xóa giai đoạn">
+            <i class="fas fa-trash" style="font-size:10px"></i>
           </button>
           <!-- Chevron collapse -->
           <button id="${chevId}" onclick="event.stopPropagation();toggleStageCollapse(${stage.id})"
@@ -14031,6 +14941,15 @@ function renderLegalStages(stages) {
       </div><!-- /body -->
     </div><!-- /stage card -->`
   })
+
+  // Nút Để thêm giai đoạn mới
+  html += `
+  <div style="display:flex;justify-content:center;margin-top:8px">
+    <button onclick="openAddStageModal()"
+      style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:8px;padding:7px 20px;cursor:pointer;width:100%;justify-content:center">
+      <i class="fas fa-plus-circle" style="font-size:12px"></i> Thêm giai đoạn hồ sơ mới
+    </button>
+  </div>`
 
   // Nút expand/collapse tất cả
   html = `
@@ -14087,6 +15006,46 @@ function expandAllStages() {
     const stageId = body.id.replace('stageBody_', '')
     if (body.style.display === 'none') toggleStageCollapse(stageId)
   })
+}
+
+// ── Stage Management (Rename / Add / Delete) ─────────────────────────────────
+
+function openRenameStageModal(stageId, currentName) {
+  const newName = prompt('Đổi tên giai đoạn hồ sơ:', currentName)
+  if (!newName || !newName.trim() || newName.trim() === currentName) return
+  api(`/legal/stages/${stageId}`, { method: 'PUT', data: { name: newName.trim() } })
+    .then(() => {
+      toast('Đã đổi tên giai đoạn', 'success')
+      loadLegalProject(_legalCurrentProjectId)
+    })
+    .catch(err => toast('Lỗi: ' + err.message, 'error'))
+}
+
+async function confirmDeleteStage(stageId, stageName, itemCount) {
+  const hasItems = itemCount > 0
+  const msg = hasItems
+    ? `Xóa giai đoạn "${stageName}"?\n\n⚠️ Giai đoạn này còn ${itemCount} hạng mục — tất cả sẽ bị xóa vĩnh viễn.\n\nHành động này KHÔNG THỂ hoàn tác.`
+    : `Xóa giai đoạn "${stageName}"?\nHành động này không thể hoàn tác.`
+  if (!confirm(msg)) return
+  try {
+    const res = await api(`/legal/stages/${stageId}`, { method: 'DELETE' })
+    const deletedMsg = res?.deleted_items > 0 ? ` (đã xóa ${res.deleted_items} hạng mục)` : ''
+    toast(`Đã xóa giai đoạn${deletedMsg}`, 'success')
+    loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+function openAddStageModal() {
+  const newName = prompt('Tên giai đoạn hồ sơ mới:\n(VD: Hồ sơ GĐTK + Thi công, Hồ sơ Thi công & Hoàn công...)')
+  if (!newName || !newName.trim()) return
+  api(`/legal/${_legalCurrentProjectId}/stages`, { method: 'POST', data: { name: newName.trim() } })
+    .then(res => {
+      toast(`Đã thêm giai đoạn [${res.code}]: ${res.name}`, 'success', 4000)
+      loadLegalProject(_legalCurrentProjectId)
+    })
+    .catch(err => toast('Lỗi: ' + err.message, 'error'))
 }
 
 function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
@@ -14188,7 +15147,13 @@ function renderLegalLetters(letters) {
         <span class="badge" style="background:${ltColor}22;color:${ltColor}">${ltLabel}</span>
       </td>
       <td class="py-2 px-3 font-medium text-gray-800 max-w-xs">${l.subject}</td>
-      <td class="py-2 px-3 text-xs text-gray-500">${l.item_title||'-'}</td>
+      <td class="py-2 px-3 text-xs text-gray-500">${l.item_title
+        ? `<div style="line-height:1.5">
+            ${l.package_name ? `<span style="font-size:10px;color:#6366f1;font-weight:600;background:#eef2ff;padding:1px 6px;border-radius:4px;display:inline-block;margin-bottom:2px">📦 ${l.package_name}</span>` : ''}
+            ${l.stage_code ? `<span style="font-size:10px;color:#64748b;background:#f1f5f9;padding:1px 5px;border-radius:4px;margin-left:2px">[${l.stage_code}]</span><br>` : ''}
+            <span>${l.item_title}</span>
+           </div>`
+        : '<span class="text-gray-300">—</span>'}</td>
       <td class="py-2 px-3 text-xs text-gray-500">${l.recipient||'-'}</td>
       <td class="py-2 px-3 text-xs text-gray-500">${l.sent_date ? fmtDate(l.sent_date) : '-'}</td>
       <td class="py-2 px-3">${statusBadge}</td>
@@ -14253,7 +15218,13 @@ function renderLegalDocs(docs) {
         <span class="badge" style="background:${color}22;color:${color}">${typeLabel}</span>
       </td>
       <td class="py-2 px-3 font-medium text-gray-800">${d.title}</td>
-      <td class="py-2 px-3 text-xs text-gray-500">${d.item_title||'-'}</td>
+      <td class="py-2 px-3 text-xs text-gray-500">${d.item_title
+        ? `<div style="line-height:1.5">
+            ${d.package_name ? `<span style="font-size:10px;color:#6366f1;font-weight:600;background:#eef2ff;padding:1px 6px;border-radius:4px;display:inline-block;margin-bottom:2px">📦 ${d.package_name}</span>` : ''}
+            ${d.stage_code ? `<span style="font-size:10px;color:#64748b;background:#f1f5f9;padding:1px 5px;border-radius:4px;margin-left:2px">[${d.stage_code}]</span><br>` : ''}
+            <span>${d.item_title}</span>
+           </div>`
+        : '<span class="text-gray-300">—</span>'}</td>
       <td class="py-2 px-3 text-xs text-gray-500">${d.signed_date ? fmtDate(d.signed_date) : '-'}</td>
       <td class="py-2 px-3">${fileLink}</td>
       <td class="py-2 px-3 text-xs text-gray-400 max-w-xs truncate">${d.notes||'-'}</td>
@@ -14383,21 +15354,51 @@ async function deleteLegalItem(id) {
 function _populateLegalItemSelect(selectId) {
   const sel = $(selectId)
   sel.innerHTML = '<option value="">-- Chọn hạng mục --</option>'
-  if (!_legalOverviewData?.stages) return
-  _legalOverviewData.stages.forEach(stage => {
-    stage.items.forEach(item => {
-      const opt = document.createElement('option')
-      opt.value = item.id
-      opt.textContent = `[${stage.code}] ${item.stt} - ${item.title}`
-      sel.appendChild(opt)
-      ;(item.children||[]).forEach(ch => {
-        const copt = document.createElement('option')
-        copt.value = ch.id
-        copt.textContent = `  → ${ch.stt} - ${ch.title}`
-        sel.appendChild(copt)
+  if (!_legalOverviewData) return
+
+  const packages = _legalOverviewData.packages || []
+  if (packages.length > 0) {
+    // Cấu trúc mới: packages → stages → items — dùng optgroup để phân nhóm theo gói thầu
+    packages.forEach(pkg => {
+      const stages = pkg.stages || []
+      if (stages.length === 0) return
+
+      const grp = document.createElement('optgroup')
+      grp.label = `📦 ${pkg.name}`
+      sel.appendChild(grp)
+
+      stages.forEach(stage => {
+        stage.items.forEach(item => {
+          const opt = document.createElement('option')
+          opt.value = item.id
+          opt.textContent = `[${stage.code}] ${item.stt} - ${item.title}`
+          grp.appendChild(opt)
+          ;(item.children||[]).forEach(ch => {
+            const copt = document.createElement('option')
+            copt.value = ch.id
+            copt.textContent = `  └ ${ch.stt} - ${ch.title}`
+            grp.appendChild(copt)
+          })
+        })
       })
     })
-  })
+  } else if (_legalOverviewData.stages) {
+    // fallback: stages phẳng (dữ liệu cũ)
+    _legalOverviewData.stages.forEach(stage => {
+      stage.items.forEach(item => {
+        const opt = document.createElement('option')
+        opt.value = item.id
+        opt.textContent = `[${stage.code}] ${item.stt} - ${item.title}`
+        sel.appendChild(opt)
+        ;(item.children||[]).forEach(ch => {
+          const copt = document.createElement('option')
+          copt.value = ch.id
+          copt.textContent = `  └ ${ch.stt} - ${ch.title}`
+          sel.appendChild(copt)
+        })
+      })
+    })
+  }
 }
 
 async function openLegalLetterModal() {
@@ -14412,6 +15413,24 @@ async function openLegalLetterModal() {
   $('legalLetterNotes').value = ''
   _populateLegalItemSelect('legalLetterItemId')
   $('legalLetterModalTitle').innerHTML = '<i class="fas fa-paper-plane text-blue-500 mr-2"></i>Tạo văn bản gửi đi'
+
+  // Ẩn note cảnh báo đổi loại (chỉ hiện khi edit)
+  const noteEl = $('legalLetterTypeChangeNote')
+  if (noteEl) noteEl.classList.add('hidden')
+
+  // Đổi nút submit về mặc định "Tạo văn bản"
+  const submitBtn = document.querySelector('#legalLetterForm button[type="submit"]')
+  if (submitBtn) submitBtn.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Tạo văn bản'
+
+  // Reload project từ server để lấy project_code_letter mới nhất (Fix vấn đề 2)
+  try {
+    const fresh = await api(`/projects/${_legalCurrentProjectId}`)
+    if (fresh && fresh.project) {
+      const idx = allProjects.findIndex(p => p.id === _legalCurrentProjectId)
+      if (idx >= 0) allProjects[idx] = { ...allProjects[idx], ...fresh.project }
+    }
+  } catch(e) {}
+
   // Cập nhật preview khi đổi loại văn bản
   $('legalLetterType').onchange = () => previewLetterNumber()
   await previewLetterNumber()
@@ -14430,17 +15449,49 @@ async function openEditLegalLetter(letter) {
   $('legalLetterNotes').value = letter.notes || ''
   _populateLegalItemSelect('legalLetterItemId')
   $('legalLetterItemId').value = letter.legal_item_id || ''
+
+  // Khi edit: hiển thị số hiệu hiện tại, cho phép preview số mới khi đổi loại
   $('legalLetterNumberPreview').textContent = letter.letter_number
+
+  // Loại văn bản cho phép đổi → preview số hiệu mới theo loại mới
+  const origType = letter.letter_type || 'cv'
+  $('legalLetterType').onchange = async () => {
+    const noteEl = $('legalLetterTypeChangeNote')
+    const curType = $('legalLetterType').value
+    if (curType !== origType) {
+      // Preview số hiệu mới với loại mới
+      try {
+        const res = await api(`/legal/${letter.project_id}/letters/preview-number?type=${curType}`)
+        $('legalLetterNumberPreview').textContent = res.number + ' (sẽ cập nhật khi lưu)'
+      } catch(e) {}
+      if (noteEl) noteEl.classList.remove('hidden')
+    } else {
+      // Restore số hiệu gốc
+      $('legalLetterNumberPreview').textContent = letter.letter_number
+      if (noteEl) noteEl.classList.add('hidden')
+    }
+  }
+
+  // Ẩn note cảnh báo ban đầu
+  const noteEl = $('legalLetterTypeChangeNote')
+  if (noteEl) noteEl.classList.add('hidden')
+
   $('legalLetterModalTitle').innerHTML = '<i class="fas fa-edit text-blue-500 mr-2"></i>Chỉnh sửa văn bản'
+
+  // Đổi nút submit thành "Lưu thay đổi"
+  const submitBtn = document.querySelector('#legalLetterForm button[type="submit"]')
+  if (submitBtn) submitBtn.innerHTML = '<i class="fas fa-save mr-1"></i>Lưu thay đổi'
+
   openModal('legalLetterModal')
 }
 
 async function previewLetterNumber() {
   if (!_legalCurrentProjectId) return
   const letterId = $('legalLetterId').value
-  if (letterId) return // editing – keep existing number
+  if (letterId) return // editing – keep existing number, do not regenerate
   const letterType = $('legalLetterType').value || 'cv'
   try {
+    // Luôn gọi API để lấy số mới nhất (tránh cache project_code_letter cũ)
     const res = await api(`/legal/${_legalCurrentProjectId}/letters/preview-number?type=${letterType}`)
     $('legalLetterNumberPreview').textContent = res.number
   } catch(e) {}
@@ -14461,8 +15512,9 @@ async function saveLegalLetter(e) {
   }
   try {
     if (id) {
-      await api(`/legal/letters/${id}`, { method: 'PUT', data: body })
-      toast('Đã cập nhật văn bản')
+      const res = await api(`/legal/letters/${id}`, { method: 'PUT', data: body })
+      const newNum = res?.letter_number
+      toast(newNum ? `Đã cập nhật văn bản → ${newNum}` : 'Đã cập nhật văn bản', 'success', 4000)
     } else {
       const res = await api(`/legal/${projectId}/letters`, { method: 'POST', data: body })
       toast(`Đã tạo văn bản số: ${res.letter_number}`, 'success', 4000)
@@ -14604,10 +15656,18 @@ async function saveLegalLetterConfig(e) {
   try {
     // Cập nhật project_code_letter qua API dự án
     await api(`/projects/${projectId}`, { method: 'PUT', data: { project_code_letter: codeLetter } })
-    // Cập nhật local cache
+    // Cập nhật local cache allProjects
     const proj = allProjects.find(p => p.id == projectId)
     if (proj) proj.project_code_letter = codeLetter
-    toast(`Đã cập nhật số hiệu dự án: ${codeLetter}`, 'success')
+    // Reload project detail từ server để đồng bộ hoàn toàn
+    try {
+      const fresh = await api(`/projects/${projectId}`)
+      if (fresh && fresh.project) {
+        const idx = allProjects.findIndex(p => p.id === projectId)
+        if (idx >= 0) allProjects[idx] = { ...allProjects[idx], ...fresh.project }
+      }
+    } catch(e2) {}
+    toast(`Đã cập nhật số hiệu dự án: ${codeLetter} — Văn bản mới sẽ dùng mã này`, 'success', 4000)
     closeModal('legalLetterConfigModal')
   } catch(err) {
     toast('Lỗi: ' + err.message, 'error')
@@ -14705,7 +15765,13 @@ function renderPaymentStatus(payments) {
         </td>
         <td class="py-2 px-3">
           <div class="text-gray-800">${p.description}</div>
-          ${p.item_title ? `<div class="text-xs text-gray-400 mt-0.5"><i class="fas fa-link mr-1"></i>${p.item_stt ? '['+p.item_stt+'] ' : ''}${p.item_title}</div>` : ''}
+          ${p.item_title 
+            ? `<div class="text-xs text-gray-500 mt-0.5">
+                ${p.package_name ? `<span style="font-size:10px;color:#6366f1;font-weight:600;background:#eef2ff;padding:1px 5px;border-radius:4px">📦 ${p.package_name}</span> ` : ''}
+                ${p.stage_code ? `<span style="font-size:10px;color:#64748b;background:#f1f5f9;padding:1px 4px;border-radius:4px">[${p.stage_code}]</span> ` : ''}
+                <i class="fas fa-link" style="font-size:9px;color:#94a3b8"></i> ${p.item_stt ? '['+p.item_stt+'] ' : ''}${p.item_title}
+               </div>` 
+            : ''}
           ${p.notes ? `<div class="text-xs text-gray-400 mt-0.5 italic">${p.notes}</div>` : ''}
         </td>
         <td class="py-2 px-3 text-right font-mono text-gray-700">${fmtMoney(p.amount || 0)}</td>
@@ -14786,23 +15852,58 @@ function _populatePaymentItemSelect(selectedId) {
   const sel = $('paymentLegalItemId')
   if (!sel) return
   sel.innerHTML = '<option value="">-- Chọn hạng mục --</option>'
-  if (!_legalOverviewData?.stages) return
-  _legalOverviewData.stages.forEach(stage => {
-    stage.items.forEach(item => {
-      const opt = document.createElement('option')
-      opt.value = item.id
-      opt.textContent = `[${stage.code}] ${item.stt} - ${item.title}`
-      if (item.id === selectedId) opt.selected = true
-      sel.appendChild(opt)
-      ;(item.children || []).forEach(child => {
-        const copt = document.createElement('option')
-        copt.value = child.id
-        copt.textContent = `  └ ${item.stt}.${child.stt} - ${child.title}`
-        if (child.id === selectedId) copt.selected = true
-        sel.appendChild(copt)
+  if (!_legalOverviewData) return
+
+  const packages = _legalOverviewData.packages || []
+  if (packages.length > 0) {
+    // Cấu trúc mới: packages → stages → items
+    // Hiển thị tên gói thầu rút gọn để phân biệt
+    packages.forEach(pkg => {
+      const pkgShort = pkg.name.length > 22 ? pkg.name.substring(0, 22) + '…' : pkg.name
+      const stages = pkg.stages || []
+      if (stages.length === 0) return
+
+      // Tạo optgroup cho mỗi gói thầu
+      const grp = document.createElement('optgroup')
+      grp.label = `📦 ${pkg.name}`
+      sel.appendChild(grp)
+
+      stages.forEach(stage => {
+        stage.items.forEach(item => {
+          const opt = document.createElement('option')
+          opt.value = item.id
+          opt.textContent = `[${stage.code}] ${item.stt} - ${item.title}`
+          if (item.id === selectedId) opt.selected = true
+          grp.appendChild(opt)
+          ;(item.children || []).forEach(child => {
+            const copt = document.createElement('option')
+            copt.value = child.id
+            copt.textContent = `  └ ${item.stt}.${child.stt} - ${child.title}`
+            if (child.id === selectedId) copt.selected = true
+            grp.appendChild(copt)
+          })
+        })
       })
     })
-  })
+  } else if (_legalOverviewData.stages) {
+    // Fallback: flat stages (dữ liệu cũ)
+    _legalOverviewData.stages.forEach(stage => {
+      stage.items.forEach(item => {
+        const opt = document.createElement('option')
+        opt.value = item.id
+        opt.textContent = `[${stage.code}] ${item.stt} - ${item.title}`
+        if (item.id === selectedId) opt.selected = true
+        sel.appendChild(opt)
+        ;(item.children || []).forEach(child => {
+          const copt = document.createElement('option')
+          copt.value = child.id
+          copt.textContent = `  └ ${item.stt}.${child.stt} - ${child.title}`
+          if (child.id === selectedId) copt.selected = true
+          sel.appendChild(copt)
+        })
+      })
+    })
+  }
 }
 
 async function savePayment(e) {
@@ -15265,7 +16366,7 @@ async function deleteLegalItemSubtask(subtaskId, taskId) {
 
 let _importExcelFile = null
 
-function openImportExcelModal() {
+async function openImportExcelModal() {
   if (!_legalCurrentProjectId) {
     toast('Vui lòng chọn dự án trước', 'warning'); return
   }
@@ -15277,6 +16378,26 @@ function openImportExcelModal() {
   $('importProgressPct').textContent = '0%'
   $('importReplaceExisting').checked = true
   updateImportReplaceWarning()
+
+  // Load danh sách gói thầu vào dropdown
+  const sel = $('importPackageSelect')
+  if (sel) {
+    sel.innerHTML = '<option value="">-- Đang tải... --</option>'
+    try {
+      const data = await api(`/legal/${_legalCurrentProjectId}/packages`)
+      const pkgs = data.packages || []
+      if (pkgs.length === 0) {
+        sel.innerHTML = '<option value="">-- Chưa có gói thầu (import vào project chung) --</option>'
+      } else {
+        sel.innerHTML = pkgs.map(p =>
+          `<option value="${p.id}">${p.name}</option>`
+        ).join('')
+      }
+    } catch(e) {
+      sel.innerHTML = '<option value="">-- Lỗi tải gói thầu --</option>'
+    }
+  }
+
   $('modalImportExcel').classList.remove('hidden')
 }
 
@@ -15342,6 +16463,13 @@ function clearImportFile() {
 async function executeImportExcel() {
   if (!_importExcelFile || !_legalCurrentProjectId) return
 
+  // Lấy package_id được chọn
+  const packageId = $('importPackageSelect')?.value || ''
+  if (!packageId) {
+    toast('Vui lòng chọn gói thầu để import vào', 'warning')
+    return
+  }
+
   const replaceExisting = $('importReplaceExisting').checked
   const btn = $('btnExecuteImport')
   const resultBox = $('importResultBox')
@@ -15364,6 +16492,7 @@ async function executeImportExcel() {
     const formData = new FormData()
     formData.append('file', _importExcelFile)
     formData.append('replace', replaceExisting ? '1' : '0')
+    if (packageId) formData.append('package_id', packageId)
 
     const token = localStorage.getItem('bim_token')
     const res = await fetch(`/api/legal/import-excel/${_legalCurrentProjectId}`, {

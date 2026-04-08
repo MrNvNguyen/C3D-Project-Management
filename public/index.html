@@ -397,13 +397,16 @@
         <i class="fas fa-chart-gantt"></i><span>Tiến độ Gantt</span>
       </div>
 
-      <div id="adminNav" style="display:none">
+      <!-- Pháp lý: hiển thị cho tất cả role (member chỉ xem Văn bản gửi đi) -->
+      <div id="legalNav">
         <div class="sidebar-section-divider"></div>
         <div class="sidebar-section mt-3">Pháp lý & Hợp đồng</div>
         <div class="nav-item" onclick="navigate('legal')" data-tooltip="Hồ Sơ Pháp Lý">
           <i class="fas fa-file-contract"></i><span>Hồ Sơ Pháp Lý</span>
         </div>
+      </div>
 
+      <div id="adminNav" style="display:none">
         <div class="sidebar-section-divider"></div>
         <div class="sidebar-section mt-3">Quản lý tài chính</div>
         <div class="nav-item" onclick="navigate('costs')" data-tooltip="Chi phí & Doanh thu">
@@ -1112,6 +1115,7 @@
                   <th class="py-2.5 px-3 font-medium ts-col-user">Nhân viên</th>
                   <th class="py-2.5 px-3 font-medium">Loại</th>
                   <th class="py-2.5 px-3 font-medium">Dự án</th>
+                  <th class="py-2.5 px-3 font-medium">Hạng mục</th>
                   <th class="py-2.5 px-3 font-medium">Task</th>
                   <th class="py-2.5 px-3 font-medium text-center">Giờ HC</th>
                   <th class="py-2.5 px-3 font-medium text-center">Tăng ca</th>
@@ -3572,6 +3576,11 @@
           <div class="text-xs text-gray-400 mt-0.5">Định dạng: <span class="font-mono">STT-MÃ LOẠI/OneCAD-BIM(Số hiệu dự án)</span></div>
         </div>
       </div>
+      <!-- Note cảnh báo khi đổi loại văn bản lúc edit -->
+      <div id="legalLetterTypeChangeNote" class="hidden flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+        <i class="fas fa-info-circle text-amber-500"></i>
+        Khi đổi loại văn bản, số hiệu sẽ được cấp lại theo loại mới khi lưu.
+      </div>
       <div class="grid grid-cols-2 gap-3">
         <div>
           <label class="label">Loại văn bản *</label>
@@ -4192,6 +4201,12 @@
           <label class="label">Dự án *</label>
           <div id="tsProjectCombobox" style="width:100%"></div>
         </div>
+        <!-- Hạng mục dự án — load theo dự án được chọn -->
+        <div id="tsCategoryRow" class="mb-3" style="display:none">
+          <label class="label"><i class="fas fa-folder-open text-blue-500 mr-1"></i>Hạng mục <span class="text-gray-400 font-normal text-xs">(tùy chọn)</span></label>
+          <div id="tsCategoryCombobox" style="width:100%"></div>
+          <input type="hidden" id="tsCategoryHidden">
+        </div>
         <!-- Gợi ý dự án đã khai báo trong ngày -->
         <div id="tsDateHint" style="display:none" class="px-3 py-2 rounded-lg text-xs mb-3" style="background:#fffbeb;border:1px solid #fde68a">
           <div class="flex flex-wrap gap-1 items-center">
@@ -4225,6 +4240,16 @@
           <div class="mb-3">
             <label class="label">Task (tùy chọn) <span id="tsTaskLoadingSpinner" style="display:none" class="text-xs text-gray-400 ml-1"><i class="fas fa-spinner fa-spin"></i> Đang tải...</span></label>
             <div id="tsTaskCombobox" style="width:100%"></div>
+            <!-- Gợi ý khi chưa chọn hạng mục -->
+            <div id="tsTaskLockHint" style="display:none" class="mt-1.5 flex items-center gap-1.5 text-xs text-amber-600">
+              <i class="fas fa-lock text-amber-400"></i>
+              <span>Vui lòng chọn <strong>Hạng mục</strong> trước để lọc đúng task</span>
+            </div>
+            <!-- Badge hạng mục của task đang chọn -->
+            <div id="tsTaskCategoryBadge" style="display:none" class="mt-1.5 flex items-center gap-1">
+              <i class="fas fa-folder-open text-blue-400 text-xs"></i>
+              <span id="tsTaskCategoryBadgeText" class="text-xs font-medium px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200"></span>
+            </div>
           </div>
           <div class="grid grid-cols-2 gap-4">
             <div>
@@ -4249,8 +4274,10 @@
               <i class="fas fa-plus"></i> Thêm task
             </button>
           </div>
-          <!-- Header -->
-          <div style="display:grid;grid-template-columns:1fr 88px 88px 28px;gap:6px;padding:0 2px;margin-bottom:4px">
+          <!-- (hint removed – each row has its own category selector) -->
+          <!-- Header: Hạng mục | Task | HC | OT | Xóa -->
+          <div style="display:grid;grid-template-columns:150px 1fr 76px 76px 28px;gap:6px;padding:0 2px;margin-bottom:4px">
+            <span class="text-xs font-semibold text-blue-500">Hạng mục</span>
             <span class="text-xs font-semibold text-gray-500">Task</span>
             <span class="text-xs font-semibold text-blue-500 text-center">Giờ HC</span>
             <span class="text-xs font-semibold text-orange-400 text-center">Tăng ca</span>
@@ -4259,8 +4286,9 @@
           <!-- Task rows container -->
           <div id="tsMultiTaskRows" class="space-y-1.5 mb-2" style="max-height:300px;overflow-y:auto;padding-right:2px"></div>
           <!-- Tổng giờ — căn đúng theo grid header -->
-          <div style="display:grid;grid-template-columns:1fr 88px 88px 28px;gap:6px;padding:5px 2px 0;border-top:1px solid #e5e7eb;margin-top:4px">
+          <div style="display:grid;grid-template-columns:150px 1fr 76px 76px 28px;gap:6px;padding:5px 2px 0;border-top:1px solid #e5e7eb;margin-top:4px">
             <span class="text-xs text-gray-400 italic">Tổng cộng</span>
+            <span></span>
             <strong id="tsMultiTotalReg" class="text-sm font-bold text-blue-600 text-center block">0h</strong>
             <strong id="tsMultiTotalOT" class="text-sm font-bold text-orange-500 text-center block">0h</strong>
             <span></span>
@@ -4529,6 +4557,17 @@
     </div>
     <form id="assetForm" class="space-y-4">
       <input type="hidden" id="assetId">
+      <input type="hidden" id="assetParentId">
+
+      <!-- Tài sản cha (nếu là tài sản con) -->
+      <div id="assetParentRow" class="hidden">
+        <div class="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <i class="fas fa-sitemap text-blue-500"></i>
+          <span class="text-sm text-blue-700">Tài sản con của: <strong id="assetParentLabel" class="text-blue-800"></strong></span>
+          <button type="button" onclick="clearAssetParent()" class="ml-auto text-xs text-blue-400 hover:text-red-500" title="Bỏ liên kết"><i class="fas fa-times"></i></button>
+        </div>
+      </div>
+
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Mã tài sản *</label>
@@ -5693,6 +5732,19 @@ document.addEventListener('keydown', function(e) {
 
       <hr class="border-gray-200 mb-5">
 
+      <!-- Package selector -->
+      <div class="mb-4">
+        <label class="block text-sm font-semibold text-gray-700 mb-2">
+          <i class="fas fa-layer-group mr-1 text-indigo-500"></i>Import vào gói thầu:
+        </label>
+        <select id="importPackageSelect" style="width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;background:#fff;color:#374151">
+          <option value="">-- Đang tải danh sách gói thầu... --</option>
+        </select>
+        <p class="text-xs text-gray-400 mt-1">
+          <i class="fas fa-info-circle mr-1"></i>Chọn gói thầu để import hạng mục vào đó. Hệ thống sẽ tạo các giai đoạn A–D trong gói được chọn.
+        </p>
+      </div>
+
       <!-- File upload area -->
       <div class="mb-4">
         <label class="block text-sm font-medium text-gray-700 mb-2">
@@ -5740,8 +5792,8 @@ document.addEventListener('keydown', function(e) {
       <!-- Warning replace -->
       <div id="importReplaceWarning" class="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-4 flex items-start gap-2">
         <i class="fas fa-exclamation-triangle text-orange-500 mt-0.5"></i>
-        <p class="text-xs text-orange-700">
-          <strong>Lưu ý:</strong> Tùy chọn "Xóa dữ liệu cũ" sẽ xóa tất cả giai đoạn và hạng mục hiện có của dự án này trước khi import.
+        <p class="text-xs text-orange-700" id="importReplaceWarningText">
+          <strong>Lưu ý:</strong> Tùy chọn "Xóa dữ liệu cũ" sẽ xóa tất cả giai đoạn và hạng mục hiện có của <strong>gói thầu được chọn</strong> trước khi import.
         </p>
       </div>
 
