@@ -4990,7 +4990,12 @@ async function loadTimesheets() {
     // ------ Summary KPI cards ------
     const pending  = allTimesheets.filter(t => t.status === 'submitted').length
     const approved = allTimesheets.filter(t => t.status === 'approved').length
-    const leaveDays = allTimesheets.filter(t => t.day_type && t.day_type !== 'work').length
+    // Đếm ngày nghỉ: full leave = 1 ngày, half_day = 0.5 ngày
+    const leaveDays = allTimesheets.reduce((sum, t) => {
+      if (!t.day_type || t.day_type === 'work' || t.day_type === 'business_trip') return sum
+      if (t.day_type === 'half_day_am' || t.day_type === 'half_day_pm') return sum + 0.5
+      return sum + 1  // annual_leave, sick_leave, holiday, etc.
+    }, 0)
     const totalReg = apiSummary ? (apiSummary.total_regular_hours || 0)
                                 : allTimesheets.reduce((s, t) => s + (t.regular_hours  || 0), 0)
     const totalOT  = apiSummary ? (apiSummary.total_overtime_hours || 0)
@@ -5262,7 +5267,15 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
   $('tsTotalHours').textContent    = (totalReg + totalOT) + 'h'
   // Update leave count in filter summary
   const filterLeaveEl = document.getElementById('tsFilterLeave')
-  if (filterLeaveEl) filterLeaveEl.textContent = timesheets.filter(t => t.day_type && t.day_type !== 'work').length
+  // Đếm ngày nghỉ: full leave = 1 ngày, half_day = 0.5 ngày
+  if (filterLeaveEl) {
+    const leaveCount = timesheets.reduce((sum, t) => {
+      if (!t.day_type || t.day_type === 'work' || t.day_type === 'business_trip') return sum
+      if (t.day_type === 'half_day_am' || t.day_type === 'half_day_pm') return sum + 0.5
+      return sum + 1
+    }, 0)
+    filterLeaveEl.textContent = leaveCount
+  }
 
   // Ẩn/hiện cột "Nhân viên"
   document.querySelectorAll('.ts-col-user').forEach(el => {

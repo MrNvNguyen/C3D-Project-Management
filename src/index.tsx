@@ -2270,7 +2270,11 @@ app.get('/api/timesheets/summary', authMiddleware, async (c) => {
         SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours,
         COUNT(DISTINCT ts.user_id)            AS member_count,
         COUNT(DISTINCT ts.project_id)         AS project_count,
-        COUNT(DISTINCT ts.work_date)          AS working_days
+        SUM(CASE 
+          WHEN ts.day_type IN ('work', 'business_trip') THEN 1 
+          WHEN ts.day_type IN ('half_day_am', 'half_day_pm') THEN 0.5 
+          ELSE 0 
+        END) AS working_days
       FROM timesheets ts
       WHERE 1=1
     `
@@ -2427,7 +2431,11 @@ app.get('/api/timesheet-dashboard/:month/:year', authMiddleware, adminOnly, asyn
         SUM(regular_hours)              AS total_regular_hours,
         SUM(IFNULL(overtime_hours, 0))  AS total_overtime_hours,
         SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours,
-        COUNT(DISTINCT work_date)       AS working_days,
+        SUM(CASE 
+          WHEN day_type IN ('work', 'business_trip') THEN 1 
+          WHEN day_type IN ('half_day_am', 'half_day_pm') THEN 0.5 
+          ELSE 0 
+        END) AS working_days,
         COUNT(DISTINCT user_id)         AS active_members,
         COUNT(*)                        AS total_entries
       FROM timesheets
@@ -2440,7 +2448,11 @@ app.get('/api/timesheet-dashboard/:month/:year', authMiddleware, adminOnly, asyn
         SUM(ts.regular_hours)             AS regular_hours,
         SUM(IFNULL(ts.overtime_hours, 0)) AS overtime_hours,
         SUM(ts.regular_hours + IFNULL(ts.overtime_hours, 0)) AS total_hours,
-        COUNT(DISTINCT ts.work_date)      AS working_days
+        SUM(CASE 
+          WHEN ts.day_type IN ('work', 'business_trip') THEN 1 
+          WHEN ts.day_type IN ('half_day_am', 'half_day_pm') THEN 0.5 
+          ELSE 0 
+        END) AS working_days
       FROM timesheets ts
       JOIN users u ON u.id = ts.user_id
       WHERE strftime('%Y', ts.work_date) = ? AND strftime('%m', ts.work_date) = ?
@@ -9403,7 +9415,11 @@ app.get('/api/analytics/team-productivity', authMiddleware, adminOnly, async (c)
         u.id as user_id, u.full_name,
         strftime('%m', ts.work_date) as month,
         SUM(ts.regular_hours + ts.overtime_hours) as hours,
-        COUNT(DISTINCT ts.work_date) as days
+        SUM(CASE 
+          WHEN ts.day_type IN ('work', 'business_trip') THEN 1 
+          WHEN ts.day_type IN ('half_day_am', 'half_day_pm') THEN 0.5 
+          ELSE 0 
+        END) as days
       FROM users u
       JOIN timesheets ts ON ts.user_id = u.id
       WHERE strftime('%Y', ts.work_date) = ? AND u.is_active = 1
@@ -10039,7 +10055,11 @@ app.get('/api/analytics/timesheet', authMiddleware, adminOnly, async (c) => {
       SELECT u.full_name, u.department,
         SUM(ts.regular_hours + ts.overtime_hours) as total_hours,
         SUM(ts.overtime_hours) as overtime_hours,
-        COUNT(DISTINCT ts.work_date) as days_worked,
+        SUM(CASE 
+          WHEN ts.day_type IN ('work', 'business_trip') THEN 1 
+          WHEN ts.day_type IN ('half_day_am', 'half_day_pm') THEN 0.5 
+          ELSE 0 
+        END) as days_worked,
         COUNT(DISTINCT ts.project_id) as projects
       FROM timesheets ts JOIN users u ON u.id = ts.user_id
       WHERE strftime('%Y', ts.work_date) = ? AND u.is_active = 1
@@ -10057,7 +10077,8 @@ app.get('/api/analytics/timesheet', authMiddleware, adminOnly, async (c) => {
           ts.task_id                                   AS task_id,
           ts.regular_hours + ts.overtime_hours         AS hours,
           ts.work_date,
-          ts.user_id
+          ts.user_id,
+          ts.day_type
         FROM timesheets ts
         WHERE strftime('%Y', ts.work_date) = ?
           AND ts.task_id IS NOT NULL
@@ -10069,7 +10090,8 @@ app.get('/api/analytics/timesheet', authMiddleware, adminOnly, async (c) => {
           tt.task_id                                   AS task_id,
           tt.regular_hours + tt.overtime_hours         AS hours,
           ts.work_date,
-          ts.user_id
+          ts.user_id,
+          ts.day_type
         FROM timesheet_tasks tt
         JOIN timesheets ts ON ts.id = tt.timesheet_id
         WHERE strftime('%Y', ts.work_date) = ?
@@ -10087,7 +10109,11 @@ app.get('/api/analytics/timesheet', authMiddleware, adminOnly, async (c) => {
         p.name                                         AS project_name,
         COALESCE(u.full_name, '—')                     AS assignee,
         SUM(th.hours)                                  AS ts_actual_hours,
-        COUNT(DISTINCT th.work_date)                   AS days_logged,
+        SUM(CASE 
+          WHEN th.day_type IN ('work', 'business_trip') THEN 1 
+          WHEN th.day_type IN ('half_day_am', 'half_day_pm') THEN 0.5 
+          ELSE 0 
+        END)                                           AS days_logged,
         COUNT(DISTINCT th.user_id)                     AS members_logged,
         ROUND(
           CASE WHEN t.estimated_hours > 0

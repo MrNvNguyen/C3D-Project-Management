@@ -27,7 +27,7 @@ INSERT OR IGNORE INTO timesheets_v2
    regular_hours, overtime_hours, description, status,
    approved_by, approved_at, created_at, updated_at)
 SELECT id, user_id, project_id, task_id, work_date,
-  COALESCE(day_type, 'work'), regular_hours, overtime_hours,
+  'work', regular_hours, overtime_hours,
   description, status, approved_by, approved_at, created_at, updated_at
 FROM timesheets;
 

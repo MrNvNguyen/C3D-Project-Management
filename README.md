@@ -69,8 +69,8 @@
 
 ## 🌐 URLs
 
-- **Application**: https://3000-ir124rx5ui9vjacw4gqoc-cbeee0f9.sandbox.novita.ai/
-- **API Base**: https://3000-ir124rx5ui9vjacw4gqoc-cbeee0f9.sandbox.novita.ai/api/
+- **Application**: https://3000-i6ab5bzz68gjjlncohvbf-0e616f0a.sandbox.novita.ai/
+- **API Base**: https://3000-i6ab5bzz68gjjlncohvbf-0e616f0a.sandbox.novita.ai/api/
 
 ### API Endpoints chính
 ```
@@ -244,6 +244,11 @@ npm run deploy
 - [x] Authentication JWT với 4 cấp quyền
 - [x] CRUD đầy đủ: Projects, Tasks, Categories, Members
 - [x] Timesheet với phê duyệt
+- [x] **Working Days Calculation**: Tính chính xác số ngày làm việc
+  - Ngày làm việc thông thường (work): 1 ngày
+  - Đi công tác (business_trip): 1 ngày
+  - Nghỉ nửa ngày (half_day_am/half_day_pm): 0.5 ngày
+  - Các loại nghỉ khác (annual_leave, sick_leave, etc.): 0 ngày
 - [x] Dashboard với 6 loại charts
 - [x] Gantt chart timeline
 - [x] Quản lý chi phí & doanh thu
