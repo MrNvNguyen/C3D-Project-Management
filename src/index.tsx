@@ -3614,23 +3614,52 @@ app.put('/api/costs/:id', authMiddleware, async (c) => {
     const user = c.get('user') as any
     const id = parseInt(c.req.param('id'))
 
-    // Kiểm tra quyền
-    if (user.role !== 'system_admin') {
-      const cost = await db.prepare('SELECT project_id FROM project_costs WHERE id = ?').bind(id).first() as any
-      if (!cost) return c.json({ error: 'Not found' }, 404)
-      const canManage = await isProjectAdmin(db, user.id, cost.project_id)
-      if (!canManage) return c.json({ error: 'Chỉ System Admin hoặc Quản lý dự án mới được sửa chi phí' }, 403)
-    }
+    // Lấy thông tin chi phí hiện tại
+    const cost = await db.prepare('SELECT project_id FROM project_costs WHERE id = ?').bind(id).first() as any
+    if (!cost) return c.json({ error: 'Not found' }, 404)
 
     const data = await c.req.json()
-    const fields = ['cost_type', 'description', 'amount', 'currency', 'cost_date', 'invoice_number', 'vendor', 'notes']
+    console.log('PUT /api/costs/:id - Received data:', JSON.stringify(data))
+
+    // Kiểm tra quyền khi thay đổi dự án
+    if (data.project_id && data.project_id !== cost.project_id) {
+      // Nếu đổi dự án, cần kiểm tra quyền ở cả 2 dự án (cũ và mới)
+      if (user.role !== 'system_admin') {
+        const canManageOld = await isProjectAdmin(db, user.id, cost.project_id)
+        const canManageNew = await isProjectAdmin(db, user.id, data.project_id)
+        if (!canManageOld || !canManageNew) {
+          return c.json({ error: 'Chỉ System Admin hoặc Project Admin của cả 2 dự án mới được chuyển chi phí' }, 403)
+        }
+      }
+    } else {
+      // Không đổi dự án, chỉ kiểm tra quyền dự án hiện tại
+      if (user.role !== 'system_admin') {
+        const canManage = await isProjectAdmin(db, user.id, cost.project_id)
+        if (!canManage) return c.json({ error: 'Chỉ System Admin hoặc Quản lý dự án mới được sửa chi phí' }, 403)
+      }
+    }
+    
+    const fields = ['project_id', 'cost_type', 'description', 'amount', 'currency', 'cost_date', 'invoice_number', 'vendor', 'notes']
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
+    
+    if (updates.length === 0) {
+      return c.json({ error: 'No fields to update' }, 400)
+    }
+    
     updates.push('updated_at = CURRENT_TIMESTAMP')
     values.push(id)
-    await db.prepare(`UPDATE project_costs SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
-    return c.json({ success: true })
+    
+    const query = `UPDATE project_costs SET ${updates.join(', ')} WHERE id = ?`
+    console.log('SQL Query:', query)
+    console.log('Values:', values)
+    
+    const result = await db.prepare(query).bind(...values).run()
+    console.log('Update result:', JSON.stringify(result))
+    
+    return c.json({ success: true, updated: result.meta.changes })
   } catch (e: any) {
+    console.error('Error updating cost:', e.message)
     return c.json({ error: e.message }, 500)
   }
 })
@@ -9620,21 +9649,45 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     if (totalSharedCost > 0) costByType.push({ cost_type: 'shared', total: totalSharedCost, count: 0 })
 
     // ── 8. Top projects by revenue (trong NTC)
-    const topProjectsByRevenue = await db.prepare(`
-      SELECT p.code, p.name,
+    // Tính labor cost REALTIME để đồng bộ với financial-by-project
+    const realtimeLaborByProject = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR, fyStart, fyEnd)
+    
+    // Query revenue, direct cost, và shared cost
+    const topProjectsRaw = await db.prepare(`
+      SELECT p.id, p.code, p.name,
         COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0) as revenue,
-        COALESCE(SUM(pc.amount), 0) as cost,
-        COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0)
-          - COALESCE(SUM(pc.amount), 0) as profit
+        COALESCE(SUM(pc.amount), 0) as direct_cost,
+        COALESCE(SUM(sca.allocated_amount), 0) as shared_cost
       FROM projects p
       LEFT JOIN project_revenues pr ON pr.project_id = p.id
         AND pr.revenue_date >= ? AND pr.revenue_date <= ?
       LEFT JOIN project_costs pc ON pc.project_id = p.id
-        AND pc.cost_date >= ? AND pc.cost_date <= ?
+        AND pc.cost_date >= ? AND pc.cost_date <= ? AND pc.cost_type != 'salary'
+      LEFT JOIN shared_cost_allocations sca ON sca.project_id = p.id
+        AND sca.shared_cost_id IN (
+          SELECT id FROM shared_costs WHERE cost_date >= ? AND cost_date <= ?
+        )
       WHERE p.status != 'cancelled'
-      GROUP BY p.id HAVING revenue > 0 OR cost > 0
-      ORDER BY revenue DESC LIMIT 10
-    `).bind(fyStart, fyEnd, fyStart, fyEnd).all()
+      GROUP BY p.id
+    `).bind(fyStart, fyEnd, fyStart, fyEnd, fyStart, fyEnd).all()
+    
+    // Merge với realtime labor cost và tính tổng
+    const topProjectsWithLabor = (topProjectsRaw.results as any[]).map((p: any) => {
+      const laborData = realtimeLaborByProject.get(p.id) || { labor_cost: 0, labor_hours: 0 }
+      const labor_cost = laborData.labor_cost
+      const cost = p.direct_cost + labor_cost + p.shared_cost
+      const profit = p.revenue - cost
+      return {
+        ...p,
+        labor_cost,
+        cost,
+        profit
+      }
+    }).filter((p: any) => p.revenue > 0 || p.cost > 0)
+      .sort((a: any, b: any) => b.revenue - a.revenue)
+      .slice(0, 10)
+    
+    const topProjectsByRevenue = { results: topProjectsWithLabor }
 
     // ── 9. Revenue by payment status (trong NTC)
     const revenueByStatus = await db.prepare(`

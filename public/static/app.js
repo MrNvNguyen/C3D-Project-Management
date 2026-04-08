@@ -7787,9 +7787,10 @@ $('costForm').addEventListener('submit', async (e) => {
   try {
     if (id) await api(`/costs/${id}`, { method: 'put', data })
     else await api('/costs', { method: 'post', data })
-    closeModal('costModal')
     toast('Lưu thành công')
-    loadCostDashboard()
+    // Reload data TRƯỚC khi đóng modal để đảm bảo allCosts được cập nhật
+    await loadCostDashboard()
+    closeModal('costModal')
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
 
@@ -7798,7 +7799,7 @@ async function deleteCostItem(type, id) {
   try {
     await api(`/costs/${id}`, { method: 'delete' })
     toast('Đã xóa')
-    loadCostDashboard()
+    await loadCostDashboard()
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 
@@ -13656,11 +13657,11 @@ async function renderProjectFinancialTab(force = false) {
     const fyStart  = data.fiscal_year_start || ''
     const fyEnd    = data.fiscal_year_end   || ''
 
-    // Sort: có doanh thu trước, sau đó có chi phí, cuối cùng là dự án trống
+    // Sort: theo GTHĐ từ cao → thấp, sau đó theo doanh thu đã thu
     const sorted = [...projects].sort((a, b) => {
-      const scoreA = (a.revenue_total > 0 ? 2 : 0) + (a.total_cost > 0 ? 1 : 0)
-      const scoreB = (b.revenue_total > 0 ? 2 : 0) + (b.total_cost > 0 ? 1 : 0)
-      if (scoreB !== scoreA) return scoreB - scoreA
+      // Ưu tiên có GTHĐ trước
+      if (b.contract_value !== a.contract_value) return b.contract_value - a.contract_value
+      // Nếu GTHĐ bằng nhau, sort theo doanh thu đã thu
       return b.revenue_collected - a.revenue_collected
     })
 
@@ -13689,17 +13690,17 @@ async function renderProjectFinancialTab(force = false) {
         <div class="kpi-card" style="border-left-color:#10b981">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Doanh thu đã thu</div>
           <div class="text-xl font-bold text-emerald-600">${fmtM(totals.revenue_collected)}</div>
-          <div class="text-xs text-gray-400 mt-1">${fmtM(totals.revenue_pending)} chờ thu</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.revenue_collected, totals.contract_value) + '% GTHĐ · ' : ''}${fmtM(totals.revenue_pending)} chờ thu</div>
         </div>
         <div class="kpi-card" style="border-left-color:#ef4444">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng chi phí</div>
           <div class="text-xl font-bold text-red-500">${fmtM(totals.total_cost)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.pct_cost}% / doanh thu</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ · ' : ''}${totals.pct_cost}% doanh thu</div>
         </div>
         <div class="kpi-card" style="border-left-color:#3b82f6">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Lợi nhuận ròng</div>
           <div class="text-xl font-bold ${profitColor(totals.profit)}">${fmtM(totals.profit)}</div>
-          <div class="text-xs text-gray-400 mt-1">Sau toàn bộ chi phí</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ · ' : ''}Sau toàn bộ chi phí</div>
         </div>
         <div class="kpi-card" style="border-left-color:#8b5cf6">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Biên lợi nhuận</div>
@@ -13724,20 +13725,20 @@ async function renderProjectFinancialTab(force = false) {
           <div class="text-center p-4 bg-blue-50 rounded-xl">
             <div class="text-2xl font-bold text-blue-600">${fmtM(totals.direct_cost)}</div>
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí trực tiếp</div>
-            <div class="text-xs text-blue-500 mt-0.5">${totals.pct_direct}% doanh thu</div>
-            ${bar(totals.pct_direct,'bg-blue-500')}
+            <div class="text-xs text-blue-500 mt-0.5">${totals.contract_value > 0 ? pct(totals.direct_cost, totals.contract_value) : 0}% GTHĐ</div>
+            ${bar(totals.contract_value > 0 ? (totals.direct_cost / totals.contract_value * 100) : 0,'bg-blue-500')}
           </div>
           <div class="text-center p-4 bg-orange-50 rounded-xl">
             <div class="text-2xl font-bold text-orange-600">${fmtM(totals.labor_cost)}</div>
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí lương</div>
-            <div class="text-xs text-orange-500 mt-0.5">${totals.pct_labor}% doanh thu</div>
-            ${bar(totals.pct_labor,'bg-orange-500')}
+            <div class="text-xs text-orange-500 mt-0.5">${totals.contract_value > 0 ? pct(totals.labor_cost, totals.contract_value) : 0}% GTHĐ</div>
+            ${bar(totals.contract_value > 0 ? (totals.labor_cost / totals.contract_value * 100) : 0,'bg-orange-500')}
           </div>
           <div class="text-center p-4 bg-yellow-50 rounded-xl">
             <div class="text-2xl font-bold text-yellow-600">${fmtM(totals.shared_cost)}</div>
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí chung</div>
-            <div class="text-xs text-yellow-600 mt-0.5">${totals.pct_shared}% doanh thu</div>
-            ${bar(totals.pct_shared,'bg-yellow-400')}
+            <div class="text-xs text-yellow-600 mt-0.5">${totals.contract_value > 0 ? pct(totals.shared_cost, totals.contract_value) : 0}% GTHĐ</div>
+            ${bar(totals.contract_value > 0 ? (totals.shared_cost / totals.contract_value * 100) : 0,'bg-yellow-400')}
           </div>
         </div>
       </div>
@@ -13748,9 +13749,13 @@ async function renderProjectFinancialTab(force = false) {
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <div class="card">
           <h3 class="font-semibold text-gray-700 mb-3 text-sm">
-            <i class="fas fa-chart-bar mr-2 text-green-500"></i>GTHĐ · Doanh thu · Chi phí · Lợi nhuận
+            <i class="fas fa-chart-bar mr-2 text-green-500"></i>GTHĐ · Doanh thu · Chi phí · Lợi nhuận (sắp xếp theo GTHĐ)
           </h3>
-          <div style="height:280px"><canvas id="chartProjFinOverview"></canvas></div>
+          <div class="overflow-x-auto">
+            <div style="height:280px;min-width:${Math.max(600, activeProjs.length * 50)}px">
+              <canvas id="chartProjFinOverview"></canvas>
+            </div>
+          </div>
         </div>
         <div class="card">
           <h3 class="font-semibold text-gray-700 mb-3 text-sm">
@@ -14136,8 +14141,8 @@ function _drawProjectFinCharts(data) {
   const projects = (data.projects || []).filter(p => p.revenue_total > 0 || p.total_cost > 0)
   if (!projects.length) return
 
-  // Limit to top 12 projects by revenue for readability
-  const top = [...projects].sort((a,b) => b.revenue_collected - a.revenue_collected).slice(0, 12)
+  // Sort theo GTHĐ từ cao → thấp, giới hạn top 15 dự án để biểu đồ dễ đọc
+  const top = [...projects].sort((a,b) => b.contract_value - a.contract_value).slice(0, 15)
   const labels = top.map(p => p.code || p.name.substring(0,10))
 
   // Chart 1: Overview grouped bar
