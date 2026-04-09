@@ -6139,6 +6139,15 @@ app.put('/api/assets/:id', authMiddleware, adminOnly, async (c) => {
     updates.push('updated_at = CURRENT_TIMESTAMP')
     values.push(id)
     await db.prepare(`UPDATE assets SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+
+    // Nếu thay đổi depreciation_years, depreciation_start_date hoặc purchase_price → Tính lại lịch khấu hao
+    const asset = await db.prepare(`SELECT * FROM assets WHERE id = ?`).bind(id).first() as any
+    if (asset && asset.depreciation_years && asset.depreciation_start_date && asset.purchase_price > 0) {
+      if (data.depreciation_years !== undefined || data.depreciation_start_date !== undefined || data.purchase_price !== undefined) {
+        await generateDepreciationSchedule(db, id, asset.purchase_price, asset.depreciation_years, asset.depreciation_start_date)
+      }
+    }
+
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -9654,27 +9663,60 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     // Tính labor cost REALTIME để đồng bộ với financial-by-project
     const realtimeLaborByProject = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR, fyStart, fyEnd)
     
-    // Query revenue, direct cost, và shared cost
-    const topProjectsRaw = await db.prepare(`
+    // FIX: Tách queries để tránh duplicate rows khi LEFT JOIN nhiều bảng
+    // Query revenue
+    const topRevRaw = await db.prepare(`
       SELECT p.id, p.code, p.name,
-        COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0) as revenue,
-        COALESCE(SUM(pc.amount), 0) as direct_cost,
-        COALESCE(SUM(sca.allocated_amount), 0) as shared_cost
+        COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0) as revenue
       FROM projects p
       LEFT JOIN project_revenues pr ON pr.project_id = p.id
         AND pr.revenue_date >= ? AND pr.revenue_date <= ?
+      WHERE p.status != 'cancelled'
+      GROUP BY p.id
+    `).bind(fyStart, fyEnd).all()
+    
+    // Query direct cost
+    const topCostRaw = await db.prepare(`
+      SELECT p.id, COALESCE(SUM(pc.amount), 0) as direct_cost
+      FROM projects p
       LEFT JOIN project_costs pc ON pc.project_id = p.id
         AND pc.cost_date >= ? AND pc.cost_date <= ? AND pc.cost_type != 'salary'
+      WHERE p.status != 'cancelled'
+      GROUP BY p.id
+    `).bind(fyStart, fyEnd).all()
+    
+    // Query shared cost
+    const topSharedRaw = await db.prepare(`
+      SELECT p.id, COALESCE(SUM(sca.allocated_amount), 0) as shared_cost
+      FROM projects p
       LEFT JOIN shared_cost_allocations sca ON sca.project_id = p.id
         AND sca.shared_cost_id IN (
           SELECT id FROM shared_costs WHERE cost_date >= ? AND cost_date <= ?
         )
       WHERE p.status != 'cancelled'
       GROUP BY p.id
-    `).bind(fyStart, fyEnd, fyStart, fyEnd, fyStart, fyEnd).all()
+    `).bind(fyStart, fyEnd).all()
+    
+    // Build maps
+    const topRevMap: Record<number, number> = {}
+    ;(topRevRaw.results as any[]).forEach((r: any) => { topRevMap[r.id] = r.revenue || 0 })
+    const topCostMap: Record<number, number> = {}
+    ;(topCostRaw.results as any[]).forEach((r: any) => { topCostMap[r.id] = r.direct_cost || 0 })
+    const topSharedMap: Record<number, number> = {}
+    ;(topSharedRaw.results as any[]).forEach((r: any) => { topSharedMap[r.id] = r.shared_cost || 0 })
+    
+    // Merge all data
+    const topProjectsRaw = (topRevRaw.results as any[]).map((p: any) => ({
+      id: p.id,
+      code: p.code,
+      name: p.name,
+      revenue: topRevMap[p.id] || 0,
+      direct_cost: topCostMap[p.id] || 0,
+      shared_cost: topSharedMap[p.id] || 0
+    }))
     
     // Merge với realtime labor cost và tính tổng
-    const topProjectsWithLabor = (topProjectsRaw.results as any[]).map((p: any) => {
+    const topProjectsWithLabor = topProjectsRaw.map((p: any) => {
       const laborData = realtimeLaborByProject.get(p.id) || { labor_cost: 0, labor_hours: 0 }
       const labor_cost = laborData.labor_cost
       const cost = p.direct_cost + labor_cost + p.shared_cost

@@ -8122,12 +8122,7 @@ $('assetForm').addEventListener('submit', async (e) => {
   try {
     if (id) {
       await api(`/assets/${id}`, { method: 'put', data })
-      // Nếu thay đổi depreciation_years và có purchase_price thì setup lại lịch KH
-      const oldAsset = allAssets.find(a => a.id == id)
-      const newYrs = data.depreciation_years
-      if (newYrs > 0 && data.purchase_price > 0 && (oldAsset?.depreciation_years !== newYrs || !oldAsset?.depreciation_years)) {
-        await api(`/assets/${id}/depreciation/setup`, { method: 'post', data: { depreciation_years: newYrs, depreciation_start_date: data.depreciation_start_date } })
-      }
+      // Backend tự động tính lại lịch KH khi có thay đổi depreciation_years, depreciation_start_date hoặc purchase_price
     } else {
       await api('/assets', { method: 'post', data })
     }
