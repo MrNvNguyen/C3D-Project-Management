@@ -5330,7 +5330,7 @@ function renderTsRows() {
 
     const canEdit      = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
     const canDelete    = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
-    const canSubmit    = isOwner && isDraft
+    const canSubmit    = isOwner && (isDraft || isRejected)
     const canApproveBt = canApprove && isSubmitted
     const canRejectBt  = canApprove && isSubmitted
 
@@ -14357,42 +14357,48 @@ async function loadLegalProject(projectId) {
     // Member chỉ được xem + tạo văn bản gửi đi
     // Project Leader trở lên: toàn quyền
     const effRole = getEffectiveRoleForProject(projectId)
-    const isMemberOnly = !['system_admin', 'project_admin', 'project_leader'].includes(effRole)
+    // Kiểm tra quyền: chỉ system_admin mới có full quyền
+    const isSystemAdmin = effRole === 'system_admin'
 
     // Show KPI row
     $('legalKPIRow').style.display = ''
 
     // Điều chỉnh tabs theo quyền
-    if (isMemberOnly) {
-      // Member: chỉ hiện tab Văn bản gửi đi
+    if (!isSystemAdmin) {
+      // Member / Project Leader / Project Admin: chỉ hiện Văn bản gửi đi, Biên bản họp, Tài liệu đính kèm
       $('legalTabs').style.display = ''
-      ;['stages', 'docs', 'payments'].forEach(t => {
+      ;['stages', 'payments'].forEach(t => {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = 'none'
       })
-      // Đảm bảo tab letters luôn hiển thị
+      // Đảm bảo tab letters, minutes, docs luôn hiển thị
       const btnLetters = $('ltab-letters')
+      const btnMinutes = $('ltab-minutes')
+      const btnDocs = $('ltab-docs')
       if (btnLetters) btnLetters.style.display = ''
-      // Force tab = letters
-      if (_legalCurrentTab !== 'letters') {
+      if (btnMinutes) btnMinutes.style.display = ''
+      if (btnDocs) btnDocs.style.display = ''
+      // Force tab vào một trong 3 tab được phép
+      if (!['letters', 'minutes', 'docs'].includes(_legalCurrentTab)) {
         _legalCurrentTab = 'letters'
       }
-      // Nút header: chỉ hiện "Gửi văn bản", ẩn phần còn lại
+      // Nút header: hiện Gửi văn bản và Thêm tài liệu, ẩn các nút admin
       if ($('btnAddLetter')) $('btnAddLetter').style.display = ''
-      ;['btnAddDoc', 'btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = 'none' })
-      // Ẩn KPI cards không liên quan với member (ẩn Tổng hạng mục & Đã hoàn thành, chỉ giữ Văn bản gửi đi & Tài liệu)
+      if ($('btnAddDoc')) $('btnAddDoc').style.display = ''
+      ;['btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = 'none' })
+      // Ẩn KPI cards liên quan đến stages và payments
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
       if (kpiCards) {
         kpiCards.forEach((card, idx) => {
-          // idx 0 = Tổng hạng mục, 1 = Đã hoàn thành → ẩn với member
+          // idx 0 = Tổng hạng mục, 1 = Đã hoàn thành → ẩn (liên quan stages)
           // idx 2 = Văn bản gửi đi, 3 = Tài liệu đính kèm → giữ lại
           card.style.display = (idx === 0 || idx === 1) ? 'none' : ''
         })
       }
     } else {
-      // Project Leader trở lên: toàn quyền
+      // System Admin: toàn quyền tất cả tabs
       $('legalTabs').style.display = ''
-      ;['stages', 'letters', 'docs', 'payments'].forEach(t => {
+      ;['stages', 'letters', 'minutes', 'docs', 'payments'].forEach(t => {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = ''
       })
@@ -14400,8 +14406,8 @@ async function loadLegalProject(projectId) {
       // Khôi phục tất cả KPI cards
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
       if (kpiCards) kpiCards.forEach(card => card.style.display = '')
-      // Nếu tab hiện tại bị reset về letters do lần trước là member, phục hồi stages
-      if (_legalCurrentTab === 'letters' && !_legalTabSetByUser) {
+      // Nếu tab hiện tại bị reset về letters do lần trước không phải admin, phục hồi stages
+      if (['letters', 'minutes', 'docs'].includes(_legalCurrentTab) && !_legalTabSetByUser) {
         _legalCurrentTab = 'stages'
       }
     }
@@ -14436,7 +14442,7 @@ function switchLegalTab(tab) {
   // Nếu gọi từ onclick của người dùng → đánh dấu
   _legalCurrentTab = tab
   _legalTabSetByUser = true
-  ;['stages','letters','docs','payments'].forEach(t => {
+  ;['stages','letters','minutes','docs','payments'].forEach(t => {
     const btn = $('ltab-' + t)
     const panel = $('legalTab' + t.charAt(0).toUpperCase() + t.slice(1))
     if (btn) btn.classList.toggle('active', t === tab)
@@ -14449,6 +14455,7 @@ function renderLegalTab(tab) {
   if (!_legalOverviewData) return
   if (tab === 'stages') renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
   else if (tab === 'letters') renderLegalLetters(_legalOverviewData.letters || [])
+  else if (tab === 'minutes') renderMeetingMinutes(_legalOverviewData.minutes || [])
   else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
   else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
 }
@@ -16645,3 +16652,196 @@ function downloadExcelTemplate() {
   toast('Đã tải xuống template HSPL_Template.xlsx', 'success')
 }
 // ── End Import Excel Module ──────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ═══ MEETING MINUTES (BIÊN BẢN HỌP) MODULE ════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Render Meeting Minutes List ──────────────────────────────────────────────
+function renderMeetingMinutes(minutes) {
+  const container = $('meetingMinutesTable')
+  if (!container) return
+
+  if (!minutes || minutes.length === 0) {
+    container.innerHTML = `
+      <div class="text-center py-12 text-gray-400">
+        <i class="fas fa-clipboard-list text-5xl mb-3 block opacity-20"></i>
+        <div class="font-semibold mb-1">Chưa có biên bản họp nào</div>
+        <div class="text-sm">Nhấn "Tạo biên bản" để bắt đầu ghi chép cuộc họp</div>
+      </div>`
+    return
+  }
+
+  const rows = minutes.map(m => {
+    const statusBadge = {
+      draft: '<span class="px-2 py-1 text-xs rounded bg-gray-100 text-gray-600">📝 Nháp</span>',
+      finalized: '<span class="px-2 py-1 text-xs rounded bg-blue-100 text-blue-600">✅ Hoàn tất</span>',
+      approved: '<span class="px-2 py-1 text-xs rounded bg-green-100 text-green-600">✔️ Đã duyệt</span>'
+    }[m.status] || '<span class="px-2 py-1 text-xs rounded bg-gray-100 text-gray-600">—</span>'
+
+    return `
+      <tr class="border-b hover:bg-gray-50">
+        <td class="p-3 text-sm text-center">
+          ${m.meeting_number ? '<span class="font-mono text-blue-600 font-semibold">' + m.meeting_number + '</span>' : '<span class="text-gray-400">—</span>'}
+        </td>
+        <td class="p-3 text-sm text-center text-gray-600">${m.meeting_date || '—'}</td>
+        <td class="p-3 text-sm text-gray-600">${m.meeting_time || '—'}</td>
+        <td class="p-3 text-sm font-medium text-gray-800">
+          ${m.subject || '<span class="text-gray-400">Chưa có chủ đề</span>'}
+        </td>
+        <td class="p-3 text-sm text-gray-600">${m.location || '—'}</td>
+        <td class="p-3 text-sm text-gray-600">${m.chair_person || '—'}</td>
+        <td class="p-3 text-center">${statusBadge}</td>
+        <td class="p-3 text-center">
+          <button onclick="openEditMeetingMinute(${m.id})" class="text-blue-500 hover:text-blue-700 mr-2" title="Chỉnh sửa">
+            <i class="fas fa-edit"></i>
+          </button>
+          <button onclick="deleteMeetingMinute(${m.id})" class="text-red-500 hover:text-red-700" title="Xóa">
+            <i class="fas fa-trash-alt"></i>
+          </button>
+        </td>
+      </tr>`
+  }).join('')
+
+  container.innerHTML = `
+    <div class="overflow-x-auto">
+      <table class="w-full">
+        <thead class="bg-gray-50 border-b-2">
+          <tr>
+            <th class="p-3 text-xs font-semibold text-gray-600 text-left">Số BB</th>
+            <th class="p-3 text-xs font-semibold text-gray-600 text-left">Ngày họp</th>
+            <th class="p-3 text-xs font-semibold text-gray-600 text-left">Giờ</th>
+            <th class="p-3 text-xs font-semibold text-gray-600 text-left">Chủ đề</th>
+            <th class="p-3 text-xs font-semibold text-gray-600 text-left">Địa điểm</th>
+            <th class="p-3 text-xs font-semibold text-gray-600 text-left">Chủ trì</th>
+            <th class="p-3 text-xs font-semibold text-gray-600 text-center">Trạng thái</th>
+            <th class="p-3 text-xs font-semibold text-gray-600 text-center">Thao tác</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`
+}
+
+// ── Open Add Meeting Minute Modal ────────────────────────────────────────────
+async function openMeetingMinuteModal() {
+  if (!_legalCurrentProjectId) {
+    toast('Vui lòng chọn dự án', 'warning')
+    return
+  }
+
+  // Reset form
+  $('meetingMinuteForm').reset()
+  $('meetingMinuteId').value = ''
+  $('meetingMinuteProjectId').value = _legalCurrentProjectId
+  $('meetingMinuteModalTitle').innerHTML = '<i class="fas fa-clipboard-list text-purple-500 mr-2"></i>Tạo biên bản họp mới'
+  
+  // Set default date to today
+  $('meetingMinuteDate').value = new Date().toISOString().split('T')[0]
+  $('meetingMinuteStatus').value = 'draft'
+
+  // Load legal items dropdown using shared function
+  _populateLegalItemSelect('meetingMinuteLegalItem')
+
+  openModal('meetingMinuteModal')
+}
+
+// ── Open Edit Meeting Minute Modal ───────────────────────────────────────────
+async function openEditMeetingMinute(id) {
+  try {
+    const minute = await api(`/meeting-minutes/detail/${id}`)
+    if (!minute) {
+      toast('Không tìm thấy biên bản họp', 'error')
+      return
+    }
+
+    // Fill form
+    $('meetingMinuteId').value = minute.id
+    $('meetingMinuteProjectId').value = minute.project_id
+    $('meetingMinuteNumber').value = minute.meeting_number || ''
+    $('meetingMinuteDate').value = minute.meeting_date || ''
+    $('meetingMinuteTime').value = minute.meeting_time || ''
+    $('meetingMinuteLocation').value = minute.location || ''
+    $('meetingMinuteSubject').value = minute.subject || ''
+    $('meetingMinuteChair').value = minute.chair_person || ''
+    $('meetingMinuteSecretary').value = minute.secretary || ''
+    $('meetingMinuteAttendees').value = minute.attendees || ''
+    $('meetingMinuteAbsent').value = minute.absent_members || ''
+    $('meetingMinuteAgenda').value = minute.agenda || ''
+    $('meetingMinuteDiscussion').value = minute.discussion || ''
+    $('meetingMinuteDecisions').value = minute.decisions || ''
+    $('meetingMinuteActions').value = minute.action_items || ''
+    $('meetingMinuteStatus').value = minute.status || 'draft'
+    $('meetingMinuteNotes').value = minute.notes || ''
+
+    // Load legal items dropdown using shared function
+    _populateLegalItemSelect('meetingMinuteLegalItem')
+    if (minute.legal_item_id) {
+      $('meetingMinuteLegalItem').value = minute.legal_item_id
+    }
+
+    $('meetingMinuteModalTitle').innerHTML = '<i class="fas fa-edit text-purple-500 mr-2"></i>Chỉnh sửa biên bản họp'
+    openModal('meetingMinuteModal')
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+// ── Save Meeting Minute ──────────────────────────────────────────────────────
+async function saveMeetingMinute(e) {
+  e.preventDefault()
+  const id = $('meetingMinuteId').value
+  const projectId = parseInt($('meetingMinuteProjectId').value)
+
+  const data = {
+    meeting_number: $('meetingMinuteNumber').value.trim() || null,
+    meeting_date: $('meetingMinuteDate').value,
+    meeting_time: $('meetingMinuteTime').value.trim() || null,
+    location: $('meetingMinuteLocation').value.trim() || null,
+    subject: $('meetingMinuteSubject').value.trim(),
+    chair_person: $('meetingMinuteChair').value.trim() || null,
+    secretary: $('meetingMinuteSecretary').value.trim() || null,
+    attendees: $('meetingMinuteAttendees').value.trim() || null,
+    absent_members: $('meetingMinuteAbsent').value.trim() || null,
+    agenda: $('meetingMinuteAgenda').value.trim() || null,
+    discussion: $('meetingMinuteDiscussion').value.trim() || null,
+    decisions: $('meetingMinuteDecisions').value.trim() || null,
+    action_items: $('meetingMinuteActions').value.trim() || null,
+    status: $('meetingMinuteStatus').value,
+    notes: $('meetingMinuteNotes').value.trim() || null
+  }
+
+  const legalItemId = $('meetingMinuteLegalItem').value
+  if (legalItemId) data.legal_item_id = parseInt(legalItemId)
+
+  try {
+    if (id) {
+      await api(`/meeting-minutes/${id}`, { method: 'PUT', data })
+      toast('Cập nhật biên bản họp thành công', 'success')
+    } else {
+      await api(`/meeting-minutes/${projectId}`, { method: 'POST', data })
+      toast('Tạo biên bản họp thành công', 'success')
+    }
+    
+    // Reload data
+    await loadLegalOverview(_legalCurrentProjectId)
+    closeModal('meetingMinuteModal')
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+// ── Delete Meeting Minute ────────────────────────────────────────────────────
+async function deleteMeetingMinute(id) {
+  if (!confirm('Bạn có chắc muốn xóa biên bản họp này?')) return
+
+  try {
+    await api(`/meeting-minutes/${id}`, { method: 'DELETE' })
+    toast('Đã xóa biên bản họp', 'success')
+    await loadLegalOverview(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi: ' + err.message, 'error')
+  }
+}
+
+// ═══ END MEETING MINUTES MODULE ═══════════════════════════════════════════════

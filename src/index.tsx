@@ -2985,7 +2985,9 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
         }
       } else if (isOwner) {
         // member chỉ được submit (draft → submitted) hoặc rút lại (submitted → draft)
+        // Hoặc gửi lại sau khi bị từ chối (rejected → submitted)
         if ((ts.status === 'draft' && status === 'submitted') ||
+            (ts.status === 'rejected' && status === 'submitted') ||
             (ts.status === 'submitted' && status === 'draft')) {
           updates.push('status = ?'); values.push(status)
         }
@@ -10904,13 +10906,24 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
        WHERE pr.project_id = ? ORDER BY pr.created_at DESC`
     ).bind(projectId).all()
 
+    // Meeting Minutes
+    const minutes = await db.prepare(
+      `SELECT mm.*, u.full_name as created_by_name,
+              li.title as legal_item_title
+       FROM meeting_minutes mm
+       LEFT JOIN users u ON u.id = mm.created_by
+       LEFT JOIN legal_items li ON li.id = mm.legal_item_id
+       WHERE mm.project_id = ? ORDER BY mm.meeting_date DESC, mm.created_at DESC`
+    ).bind(projectId).all()
+
     return c.json({
       packages: packagesWithStages,
       stages: allStagesFlat,  // backward-compat
       letters: letters.results,
       documents: docs.results,
       config,
-      payments: payments.results
+      payments: payments.results,
+      minutes: minutes.results
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -12130,6 +12143,274 @@ function parseSheetXml(xml: string, sharedStrings: string[]): Array<Array<any>> 
 
   return rows
 }
+
+// ===================================================
+// MEETING MINUTES — Quản lý Biên bản họp
+// ===================================================
+
+// GET /api/meeting-minutes/:projectId — Lấy danh sách biên bản họp của dự án
+app.get('/api/meeting-minutes/:projectId', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('projectId'))
+    const user = c.get('user') as any
+
+    // Kiểm tra quyền truy cập dự án (member có thể xem như văn bản gửi đi)
+    const member = await db.prepare(
+      'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?'
+    ).bind(projectId, user.id).first() as any
+
+    if (!member && user.role !== 'system_admin') {
+      return c.json({ error: 'Bạn không có quyền truy cập dự án này' }, 403)
+    }
+
+    const results = await db.prepare(`
+      SELECT 
+        mm.*,
+        u.full_name as created_by_name,
+        li.title as legal_item_title
+      FROM meeting_minutes mm
+      LEFT JOIN users u ON mm.created_by = u.id
+      LEFT JOIN legal_items li ON mm.legal_item_id = li.id
+      WHERE mm.project_id = ?
+      ORDER BY mm.meeting_date DESC, mm.created_at DESC
+    `).bind(projectId).all()
+
+    return c.json(results.results || [])
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/meeting-minutes/detail/:id — Lấy chi tiết một biên bản họp
+app.get('/api/meeting-minutes/detail/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const user = c.get('user') as any
+
+    const minute = await db.prepare(`
+      SELECT 
+        mm.*,
+        u.full_name as created_by_name,
+        li.title as legal_item_title,
+        p.name as project_name,
+        p.code as project_code
+      FROM meeting_minutes mm
+      LEFT JOIN users u ON mm.created_by = u.id
+      LEFT JOIN legal_items li ON mm.legal_item_id = li.id
+      LEFT JOIN projects p ON mm.project_id = p.id
+      WHERE mm.id = ?
+    `).bind(id).first() as any
+
+    if (!minute) {
+      return c.json({ error: 'Không tìm thấy biên bản họp' }, 404)
+    }
+
+    // Kiểm tra quyền truy cập
+    const member = await db.prepare(
+      'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?'
+    ).bind(minute.project_id, user.id).first() as any
+
+    if (!member && user.role !== 'system_admin') {
+      return c.json({ error: 'Bạn không có quyền truy cập' }, 403)
+    }
+
+    return c.json(minute)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/meeting-minutes/:projectId — Tạo biên bản họp mới
+app.post('/api/meeting-minutes/:projectId', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('projectId'))
+    const user = c.get('user') as any
+
+    // Kiểm tra quyền: member có thể tạo như văn bản gửi đi
+    const member = await db.prepare(
+      'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?'
+    ).bind(projectId, user.id).first() as any
+
+    if (!member && user.role !== 'system_admin') {
+      return c.json({ error: 'Bạn không có quyền tạo biên bản họp' }, 403)
+    }
+
+    const data = await c.req.json()
+    const {
+      legal_item_id,
+      meeting_number,
+      meeting_date,
+      meeting_time,
+      location,
+      subject,
+      chair_person,
+      secretary,
+      attendees,
+      absent_members,
+      agenda,
+      discussion,
+      decisions,
+      action_items,
+      attachments,
+      status,
+      notes
+    } = data
+
+    // Validate required fields
+    if (!meeting_date || !subject) {
+      return c.json({ error: 'Thiếu thông tin bắt buộc: ngày họp và chủ đề' }, 400)
+    }
+
+    const result = await db.prepare(`
+      INSERT INTO meeting_minutes (
+        project_id, legal_item_id, meeting_number, meeting_date, meeting_time,
+        location, subject, chair_person, secretary, attendees, absent_members,
+        agenda, discussion, decisions, action_items, attachments, status, notes,
+        created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      projectId,
+      legal_item_id || null,
+      meeting_number || null,
+      meeting_date,
+      meeting_time || null,
+      location || null,
+      subject,
+      chair_person || null,
+      secretary || null,
+      attendees || null,
+      absent_members || null,
+      agenda || null,
+      discussion || null,
+      decisions || null,
+      action_items || null,
+      attachments || null,
+      status || 'draft',
+      notes || null,
+      user.id
+    ).run()
+
+    return c.json({ 
+      success: true, 
+      id: result.meta.last_row_id,
+      message: 'Tạo biên bản họp thành công' 
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PUT /api/meeting-minutes/:id — Cập nhật biên bản họp
+app.put('/api/meeting-minutes/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const user = c.get('user') as any
+
+    // Kiểm tra biên bản tồn tại
+    const minute = await db.prepare(
+      'SELECT project_id, created_by FROM meeting_minutes WHERE id = ?'
+    ).bind(id).first() as any
+
+    if (!minute) {
+      return c.json({ error: 'Không tìm thấy biên bản họp' }, 404)
+    }
+
+    // Kiểm tra quyền: system admin, project admin/leader, hoặc người tạo
+    const member = await db.prepare(
+      'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?'
+    ).bind(minute.project_id, user.id).first() as any
+
+    const canEdit = user.role === 'system_admin' ||
+      ['project_admin', 'project_leader'].includes(member?.role) ||
+      minute.created_by === user.id
+
+    if (!canEdit) {
+      return c.json({ error: 'Bạn không có quyền chỉnh sửa biên bản này' }, 403)
+    }
+
+    const data = await c.req.json()
+    
+    // Build dynamic update
+    const fields = [
+      'legal_item_id', 'meeting_number', 'meeting_date', 'meeting_time',
+      'location', 'subject', 'chair_person', 'secretary', 'attendees',
+      'absent_members', 'agenda', 'discussion', 'decisions', 'action_items',
+      'attachments', 'status', 'notes'
+    ]
+
+    const updates: string[] = []
+    const values: any[] = []
+
+    fields.forEach(field => {
+      if (data[field] !== undefined) {
+        updates.push(`${field} = ?`)
+        values.push(data[field])
+      }
+    })
+
+    if (updates.length === 0) {
+      return c.json({ error: 'Không có trường nào để cập nhật' }, 400)
+    }
+
+    updates.push('updated_at = CURRENT_TIMESTAMP')
+    values.push(id)
+
+    const query = `UPDATE meeting_minutes SET ${updates.join(', ')} WHERE id = ?`
+    const result = await db.prepare(query).bind(...values).run()
+
+    return c.json({ 
+      success: true, 
+      updated: result.meta.changes,
+      message: 'Cập nhật biên bản họp thành công' 
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// DELETE /api/meeting-minutes/:id — Xóa biên bản họp
+app.delete('/api/meeting-minutes/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const user = c.get('user') as any
+
+    // Kiểm tra biên bản tồn tại
+    const minute = await db.prepare(
+      'SELECT project_id, created_by FROM meeting_minutes WHERE id = ?'
+    ).bind(id).first() as any
+
+    if (!minute) {
+      return c.json({ error: 'Không tìm thấy biên bản họp' }, 404)
+    }
+
+    // Kiểm tra quyền: system admin, project admin, hoặc người tạo
+    const member = await db.prepare(
+      'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?'
+    ).bind(minute.project_id, user.id).first() as any
+
+    const canDelete = user.role === 'system_admin' ||
+      member?.role === 'project_admin' ||
+      minute.created_by === user.id
+
+    if (!canDelete) {
+      return c.json({ error: 'Chỉ System Admin, Quản lý dự án hoặc người tạo mới được xóa' }, 403)
+    }
+
+    await db.prepare('DELETE FROM meeting_minutes WHERE id = ?').bind(id).run()
+
+    return c.json({ 
+      success: true,
+      message: 'Đã xóa biên bản họp' 
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
 
 // ===================================================
 // STATIC FILES & SPA

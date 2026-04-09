@@ -3431,6 +3431,7 @@
         <div id="legalTabs" class="flex gap-2 mb-4" style="display:none">
           <button class="tab-btn active" id="ltab-stages" onclick="switchLegalTab('stages')"><i class="fas fa-list-ol mr-1"></i>Theo dõi hồ sơ</button>
           <button class="tab-btn" id="ltab-letters" onclick="switchLegalTab('letters')"><i class="fas fa-paper-plane mr-1"></i>Văn bản gửi đi</button>
+          <button class="tab-btn" id="ltab-minutes" onclick="switchLegalTab('minutes')"><i class="fas fa-clipboard-list mr-1"></i>Biên bản họp</button>
           <button class="tab-btn" id="ltab-docs" onclick="switchLegalTab('docs')"><i class="fas fa-paperclip mr-1"></i>Tài liệu đính kèm</button>
           <button class="tab-btn" id="ltab-payments" onclick="switchLegalTab('payments')"><i class="fas fa-money-check-alt mr-1"></i>Tình trạng thanh toán</button>
         </div>
@@ -3453,6 +3454,19 @@
               <button onclick="openLegalLetterModal()" class="btn-accent text-sm"><i class="fas fa-plus mr-1"></i>Tạo văn bản</button>
             </div>
             <div id="legalLettersTable">
+              <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Meeting Minutes (Biên bản họp) -->
+        <div id="legalTabMinutes" style="display:none">
+          <div class="card">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-clipboard-list text-purple-500 mr-2"></i>Danh sách biên bản họp</h3>
+              <button onclick="openMeetingMinuteModal()" class="btn-accent text-sm"><i class="fas fa-plus mr-1"></i>Tạo biên bản</button>
+            </div>
+            <div id="meetingMinutesTable">
               <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
             </div>
           </div>
@@ -3706,6 +3720,143 @@
       <div class="flex gap-3 justify-end pt-2">
         <button type="button" onclick="closeModal('legalDocModal')" class="btn-secondary">Hủy</button>
         <button type="submit" class="btn-primary"><i class="fas fa-save mr-1"></i>Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Meeting Minute (Biên bản họp) -->
+<div id="meetingMinuteModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:700px; max-height:90vh; overflow-y:auto">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="meetingMinuteModalTitle">
+        <i class="fas fa-clipboard-list text-purple-500 mr-2"></i>Biên bản họp
+      </h3>
+      <button onclick="closeModal('meetingMinuteModal')" class="text-gray-400 hover:text-gray-600">
+        <i class="fas fa-times text-xl"></i>
+      </button>
+    </div>
+    <form id="meetingMinuteForm" class="space-y-4" onsubmit="saveMeetingMinute(event)">
+      <input type="hidden" id="meetingMinuteId">
+      <input type="hidden" id="meetingMinuteProjectId">
+      
+      <!-- Thông tin cơ bản -->
+      <div class="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-4">
+        <h4 class="text-sm font-semibold text-blue-700 mb-2">
+          <i class="fas fa-info-circle mr-1"></i>Thông tin cơ bản
+        </h4>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Số biên bản</label>
+            <input type="text" id="meetingMinuteNumber" class="input-field text-sm" placeholder="VD: BB-01/2026 (tùy chọn)">
+          </div>
+          <div>
+            <label class="label">Ngày họp <span class="text-red-500">*</span></label>
+            <input type="date" id="meetingMinuteDate" class="input-field text-sm" required>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3 mt-3">
+          <div>
+            <label class="label">Giờ họp</label>
+            <input type="text" id="meetingMinuteTime" class="input-field text-sm" placeholder="VD: 09:00 - 11:30">
+          </div>
+          <div>
+            <label class="label">Địa điểm</label>
+            <input type="text" id="meetingMinuteLocation" class="input-field text-sm" placeholder="VD: Phòng họp A">
+          </div>
+        </div>
+      </div>
+
+      <!-- Chủ đề -->
+      <div>
+        <label class="label">Chủ đề / Tiêu đề cuộc họp <span class="text-red-500">*</span></label>
+        <input type="text" id="meetingMinuteSubject" class="input-field" placeholder="VD: Họp triển khai dự án BIM Q1/2026" required>
+      </div>
+
+      <!-- Người tham gia -->
+      <div class="bg-green-50 border border-green-100 rounded-lg p-3">
+        <h4 class="text-sm font-semibold text-green-700 mb-2">
+          <i class="fas fa-users mr-1"></i>Người tham gia
+        </h4>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Chủ trì</label>
+            <input type="text" id="meetingMinuteChair" class="input-field text-sm" placeholder="Họ tên người chủ trì">
+          </div>
+          <div>
+            <label class="label">Thư ký</label>
+            <input type="text" id="meetingMinuteSecretary" class="input-field text-sm" placeholder="Họ tên thư ký">
+          </div>
+        </div>
+        <div class="mt-3">
+          <label class="label">Danh sách người tham dự</label>
+          <textarea id="meetingMinuteAttendees" class="input-field text-sm" rows="2" placeholder="VD: Nguyễn Văn A, Trần Thị B, Lê Văn C (phân cách bằng dấu phẩy)"></textarea>
+        </div>
+        <div class="mt-3">
+          <label class="label">Người vắng mặt</label>
+          <input type="text" id="meetingMinuteAbsent" class="input-field text-sm" placeholder="Danh sách người vắng (nếu có)">
+        </div>
+      </div>
+
+      <!-- Nội dung họp -->
+      <div class="bg-amber-50 border border-amber-100 rounded-lg p-3">
+        <h4 class="text-sm font-semibold text-amber-700 mb-2">
+          <i class="fas fa-file-alt mr-1"></i>Nội dung họp
+        </h4>
+        <div>
+          <label class="label">Chương trình / Nội dung</label>
+          <textarea id="meetingMinuteAgenda" class="input-field text-sm" rows="3" placeholder="VD:&#10;1. Báo cáo tiến độ dự án&#10;2. Vấn đề kỹ thuật cần giải quyết&#10;3. Kế hoạch tháng tiếp theo"></textarea>
+        </div>
+        <div class="mt-3">
+          <label class="label">Nội dung thảo luận</label>
+          <textarea id="meetingMinuteDiscussion" class="input-field text-sm" rows="3" placeholder="Ghi lại các nội dung thảo luận quan trọng trong cuộc họp"></textarea>
+        </div>
+        <div class="mt-3">
+          <label class="label">Quyết định / Kết luận</label>
+          <textarea id="meetingMinuteDecisions" class="input-field text-sm" rows="3" placeholder="VD:&#10;- Phê duyệt thiết kế giai đoạn 1&#10;- Tăng nhân lực cho modeling team&#10;- Tiến độ mô hình: hoàn thành trước ngày..."></textarea>
+        </div>
+      </div>
+
+      <!-- Công việc cần làm -->
+      <div>
+        <label class="label">Công việc cần làm (Action Items)</label>
+        <textarea id="meetingMinuteActions" class="input-field text-sm" rows="2" placeholder="Danh sách công việc sau cuộc họp (có thể dùng JSON format)"></textarea>
+        <div class="text-xs text-gray-400 mt-1">
+          <i class="fas fa-lightbulb text-amber-400"></i> Gợi ý: Có thể lưu dạng JSON để dễ hiển thị sau, VD: [{"task":"Hoàn thành bản vẽ","assignee":"Nguyễn Văn A","deadline":"2026-04-15"}]
+        </div>
+      </div>
+
+      <!-- Trạng thái & Ghi chú -->
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label">Hạng mục liên quan</label>
+          <select id="meetingMinuteLegalItem" class="select-field text-sm">
+            <option value="">-- Chọn hạng mục --</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="meetingMinuteStatus" class="select-field text-sm">
+            <option value="draft">📝 Nháp</option>
+            <option value="finalized">✅ Hoàn tất</option>
+            <option value="approved">✔️ Đã phê duyệt</option>
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label class="label">Ghi chú</label>
+        <textarea id="meetingMinuteNotes" class="input-field text-sm" rows="2" placeholder="Các ghi chú bổ sung"></textarea>
+      </div>
+
+      <!-- Buttons -->
+      <div class="flex gap-3 justify-end pt-2 border-t">
+        <button type="button" onclick="closeModal('meetingMinuteModal')" class="btn-secondary">
+          <i class="fas fa-times mr-1"></i>Hủy
+        </button>
+        <button type="submit" class="btn-accent">
+          <i class="fas fa-save mr-1"></i>Lưu biên bản
+        </button>
       </div>
     </form>
   </div>
