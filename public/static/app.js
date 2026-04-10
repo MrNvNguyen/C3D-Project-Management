@@ -7858,6 +7858,8 @@ function renderAssetsTable(assets) {
 
   // Render 1 hàng tài sản (dùng chung cho cha và con)
   function renderRow(a, isChild = false) {
+    const assignedUser = a.assigned_to ? (allUsers.find(u => u.id === a.assigned_to) || null) : null
+    const assignedName = assignedUser ? assignedUser.full_name : null
     const deprSt = a.depreciation_status || 'none'
     const netVal = a.net_book_value || a.current_value || 0
     const pctDepr = a.purchase_price > 0 ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100)) : 0
@@ -7893,8 +7895,14 @@ function renderAssetsTable(assets) {
         <div class="font-medium text-gray-800 text-sm">${a.name}${childBadge}</div>
         <div class="text-xs text-gray-400">${a.brand || ''} ${a.model ? '/ ' + a.model : ''}</div>
       </td>
+      <td class="py-2 pr-3 text-xs text-gray-500 max-w-[160px]">
+        ${a.specifications ? `<span title="${a.specifications.replace(/"/g,'&quot;')}" class="block truncate cursor-help">${a.specifications}</span>` : '<span class="text-gray-300">-</span>'}
+      </td>
       <td class="py-2 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${getAssetCategoryName(a.category)}</span></td>
       <td class="py-2 pr-3 text-sm text-gray-600">${a.department || '-'}</td>
+      <td class="py-2 pr-3 text-sm text-gray-700">
+        ${assignedName ? `<div class="flex items-center gap-1.5"><span class="w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs flex items-center justify-center font-bold flex-shrink-0">${assignedName.split(' ').pop()?.charAt(0) || '?'}</span><span class="truncate max-w-[100px]" title="${assignedName}">${assignedName}</span></div>` : '<span class="text-gray-300">-</span>'}
+      </td>
       <td class="py-2 pr-3 text-sm text-right font-medium text-gray-800">${fmt(a.purchase_price)}</td>
       <td class="py-2 pr-3 text-sm text-right font-semibold" style="color:#8B5CF6">${deprSt === 'active' ? fmt(a.monthly_depreciation) : '<span class="text-gray-300">-</span>'}</td>
       <td class="py-2 pr-3 text-sm text-right font-bold text-primary">${fmt(netVal)}
@@ -7916,7 +7924,7 @@ function renderAssetsTable(assets) {
   // Render cả cây: cha rồi các con (ban đầu ẩn con)
   let html = ''
   if (!assets || assets.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="12" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
     return
   }
   assets.forEach(a => {

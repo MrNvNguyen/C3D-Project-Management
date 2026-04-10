@@ -6130,7 +6130,7 @@ app.put('/api/assets/:id', authMiddleware, adminOnly, async (c) => {
     const db = c.env.DB
     const id = parseInt(c.req.param('id'))
     const data = await c.req.json()
-    const fields = ['name', 'category', 'brand', 'model', 'serial_number', 'specifications',
+    const fields = ['asset_code', 'name', 'category', 'brand', 'model', 'serial_number', 'specifications',
       'purchase_date', 'purchase_price', 'current_value', 'warranty_expiry',
       'status', 'location', 'department', 'assigned_to', 'notes',
       'depreciation_years', 'depreciation_start_date', 'depreciation_status', 'parent_asset_id']
@@ -6442,26 +6442,32 @@ app.post('/api/depreciation/allocate-to-shared-cost', authMiddleware, adminOnly,
     const fiscalYear = mo < fySettings.start_month ? yr - 1 : yr
     const fiscalYearLabel = `NTC${fiscalYear}`
 
-    // Kiểm tra đã phân bổ chưa
-    const alreadyAllocated = await db.prepare(`
-      SELECT COUNT(*) AS cnt FROM asset_depreciation_schedule
-      WHERE year = ? AND month = ? AND is_allocated = 1
-    `).bind(yr, mo).first() as any
-    if (alreadyAllocated?.cnt > 0) {
-      return c.json({ error: `Tháng ${monthName} đã được phân bổ vào chi phí chung rồi` }, 400)
-    }
-
-    // Lấy tất cả tài sản đang KH trong tháng này
+    // Lấy tất cả tài sản đang KH trong tháng này và CHƯA được phân bổ
     const scheduleRows = await db.prepare(`
       SELECT ads.*, a.asset_code, a.name AS asset_name
       FROM asset_depreciation_schedule ads
       JOIN assets a ON a.id = ads.asset_id
       WHERE ads.year = ? AND ads.month = ?
+        AND ads.is_allocated = 0
         AND a.depreciation_status = 'active' AND a.status != 'retired'
     `).bind(yr, mo).all()
 
     const rows = scheduleRows.results as any[]
-    if (rows.length === 0) return c.json({ error: `Không có tài sản nào đang khấu hao trong tháng ${monthName}` }, 400)
+    if (rows.length === 0) {
+      // Kiểm tra xem có tài sản nào đã phân bổ chưa
+      const allocatedCount = await db.prepare(`
+        SELECT COUNT(*) AS cnt FROM asset_depreciation_schedule ads
+        JOIN assets a ON a.id = ads.asset_id
+        WHERE ads.year = ? AND ads.month = ? AND ads.is_allocated = 1
+          AND a.depreciation_status = 'active' AND a.status != 'retired'
+      `).bind(yr, mo).first() as any
+      
+      if (allocatedCount?.cnt > 0) {
+        return c.json({ error: `Tất cả tài sản trong tháng ${monthName} đã được phân bổ vào chi phí chung rồi` }, 400)
+      } else {
+        return c.json({ error: `Không có tài sản nào đang khấu hao trong tháng ${monthName}` }, 400)
+      }
+    }
 
     const totalDepreciation = rows.reduce((s: number, r: any) => s + (r.depreciation_amount || 0), 0)
 
