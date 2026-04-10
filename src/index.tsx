@@ -456,6 +456,14 @@ async function sendEmail(env: Bindings, opts: {
   relatedType?: string
   relatedId?: number
 }): Promise<void> {
+  // ── Bỏ qua email liên quan đến thanh toán và timesheet ──────────────────
+  const SKIP_PAYMENT_EVENTS = new Set(['payment_request_new', 'payment_status_changed', 'timesheet_reviewed', 'timesheet_bulk_approved'])
+  if (SKIP_PAYMENT_EVENTS.has(opts.eventType)) {
+    console.log(`[sendEmail] SKIPPED event — eventType=${opts.eventType} to=${opts.to}`)
+    return
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // Try env var first, then fall back to DB config
   let apiKey = env.RESEND_API_KEY
   console.log(`[sendEmail] eventType=${opts.eventType} to=${opts.to} apiKey_env=${apiKey ? 'SET' : 'EMPTY'}`)

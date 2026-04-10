@@ -1224,6 +1224,10 @@
               </select>
               <span id="fyPeriodLabel" class="text-xs text-gray-500 bg-green-50 border border-green-200 rounded px-2 py-1 whitespace-nowrap"></span>
             </div>
+            <!-- Filter loại chi phí (chỉ hiện ở tab Chi phí riêng) -->
+            <select id="costTypeFilterSel" class="select-field" style="width:170px" onchange="onCostTypeFilterChange()">
+              <option value="">-- Tất cả loại CP --</option>
+            </select>
           </div>
 
           <!-- Tab: Chi phí / Doanh thu (existing table) -->
@@ -1233,6 +1237,11 @@
                 <thead id="costTableHead"></thead>
                 <tbody id="costTableBody" class="divide-y"></tbody>
               </table>
+            </div>
+            <!-- Pagination -->
+            <div id="costPagination" class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100 hidden">
+              <span id="costPaginationInfo" class="text-xs text-gray-500"></span>
+              <div class="flex gap-1" id="costPaginationBtns"></div>
             </div>
           </div>
 
@@ -3907,11 +3916,11 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Số tiền đề nghị (VND)</label>
-          <input type="number" id="paymentAmount" class="input-field" placeholder="0" min="0" step="1000">
+          <input type="text" id="paymentAmount" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
         </div>
         <div>
           <label class="label">Số tiền đã thanh toán (VND)</label>
-          <input type="number" id="paymentPaidAmount" class="input-field" placeholder="0" min="0" step="1000">
+          <input type="text" id="paymentPaidAmount" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
@@ -4166,7 +4175,7 @@
       <div class="grid grid-cols-2 gap-4">
         <div id="contractValueRow">
           <label class="label">Giá trị hợp đồng (VNĐ)</label>
-          <input type="number" id="projectContractValue" class="input-field" placeholder="0">
+          <input type="text" id="projectContractValue" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
         </div>
         <div>
           <label class="label">Trạng thái</label>
@@ -4557,7 +4566,7 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Số tiền (VNĐ) *</label>
-          <input type="number" id="costAmount" class="input-field" placeholder="0" required>
+          <input type="text" id="costAmount" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)" required>
         </div>
         <div>
           <label class="label">Ngày</label>
@@ -4613,7 +4622,7 @@
         </div>
         <div>
           <label class="label">Số tiền (VNĐ) *</label>
-          <input type="number" id="scAmount" class="input-field" placeholder="0" required min="1" oninput="updateSharedCostPreview()">
+          <input type="text" id="scAmount" class="input-field" placeholder="0" inputmode="numeric" required oninput="moneyInputFmt(this);updateSharedCostPreview()">
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
@@ -4778,11 +4787,11 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Giá mua (VNĐ)</label>
-          <input type="number" id="assetPurchasePrice" class="input-field" placeholder="0">
+          <input type="text" id="assetPurchasePrice" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
         </div>
         <div>
           <label class="label">Giá trị hiện tại (VNĐ)</label>
-          <input type="number" id="assetCurrentValue" class="input-field" placeholder="0">
+          <input type="text" id="assetCurrentValue" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
@@ -4976,7 +4985,7 @@
       </div>
       <div>
         <label class="label">Lương tháng (VNĐ)</label>
-        <input type="number" id="userSalary" class="input-field" placeholder="Lương hàng tháng">
+        <input type="text" id="userSalary" class="input-field" placeholder="Lương hàng tháng" inputmode="numeric" oninput="moneyInputFmt(this)">
       </div>
       <div class="flex justify-end gap-3 pt-2">
         <button type="button" onclick="closeModal('userModal')" class="btn-secondary">Hủy</button>

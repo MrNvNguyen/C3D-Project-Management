@@ -14,6 +14,9 @@ let allTimesheets = []
 let allAssets = []
 let allCosts = []
 let allRevenues = []
+let _costPage = 1
+let _costTypeFilter = ''
+const COST_PAGE_SIZE = 20
 let allDisciplines = []
 let currentCostTab = 'costs'
 let charts = {}
@@ -67,6 +70,31 @@ let _lastAnalysisKey = ''              // cache key: projId+periodType+month+yea
 const $ = id => document.getElementById(id)
 const fmt = (n) => new Intl.NumberFormat('vi-VN').format(n || 0)
 const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0)
+
+// ── Money Input Helpers ──────────────────────────────────────────────────────
+// Format khi user gõ: 5240400000 → 5.240.400.000
+function moneyInputFmt(el) {
+  const raw = el.value.replace(/[^\d]/g, '')
+  el.value = raw ? new Intl.NumberFormat('vi-VN').format(raw) : ''
+  el.dataset.rawVal = raw
+}
+// Lấy giá trị số thực từ money input (đã format hoặc chưa)
+function parseMoneyVal(idOrEl) {
+  const el = typeof idOrEl === 'string' ? $(idOrEl) : idOrEl
+  if (!el) return 0
+  const raw = el.dataset.rawVal || el.value.replace(/[^\d]/g, '')
+  return raw ? parseInt(raw, 10) : 0
+}
+// Set giá trị vào money input (tự format + lưu dataset)
+function setMoneyInput(idOrEl, val) {
+  const el = typeof idOrEl === 'string' ? $(idOrEl) : idOrEl
+  if (!el) return
+  const n = parseInt(val, 10) || 0
+  el.dataset.rawVal = n > 0 ? String(n) : ''
+  el.value = n > 0 ? new Intl.NumberFormat('vi-VN').format(n) : ''
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Chuẩn hóa timestamp từ DB (SQLite CURRENT_TIMESTAMP = UTC, không có 'Z')
 // Thêm 'Z' để dayjs hiểu là UTC → tự chuyển sang giờ local (VN +07:00)
 const toLocalDayjs = (d) => {
@@ -1939,7 +1967,7 @@ function openProjectModal(project = null) {
   $('projectType').value = project?.project_type || 'building'
   $('projectStartDate').value = project?.start_date || ''
   $('projectEndDate').value = project?.end_date || ''
-  $('projectContractValue').value = project?.contract_value || ''
+  setMoneyInput('projectContractValue', project?.contract_value || 0)
   // Show/hide contract value field based on role
   const contractRow = document.getElementById('contractValueRow')
   if (contractRow) contractRow.style.display = isAdmin ? '' : 'none'
@@ -1962,7 +1990,7 @@ $('projectForm').addEventListener('submit', async (e) => {
     description: $('projectDesc').value, client: $('projectClient').value,
     project_type: $('projectType').value, status: $('projectStatus').value,
     start_date: $('projectStartDate').value, end_date: $('projectEndDate').value,
-    contract_value: currentUser?.role === 'system_admin' ? (parseFloat($('projectContractValue').value) || 0) : undefined,
+    contract_value: currentUser?.role === 'system_admin' ? (parseMoneyVal('projectContractValue') || 0) : undefined,
     location: $('projectLocation').value,
     admin_id: parseInt($('projectAdmin').value) || null,
     leader_id: parseInt($('projectLeader').value) || null
@@ -7159,6 +7187,9 @@ async function loadCosts() {
 
     allCosts = await api(costUrl)
     allRevenues = await api(revUrl)
+    _costPage = 1          // Reset về trang 1 khi load dữ liệu mới
+    _costTypeFilter = ''   // Reset filter
+    const sel = $('costTypeFilterSel'); if (sel) sel.value = ''
     renderCostTable()
   } catch (e) { console.error(e) }
 }
@@ -7182,6 +7213,9 @@ async function switchCostTab(tab) {
   // Cost filter row: only show for costs/revenues
   const costFilter = $('costFilter')
   if (costFilter) costFilter.classList.toggle('hidden', tab === 'analysis' || tab === 'duplicates' || tab === 'shared')
+  // Filter loại chi phí chỉ hiện ở tab chi phí riêng
+  const costTypeSel = $('costTypeFilterSel')
+  if (costTypeSel) costTypeSel.style.display = (tab === 'costs') ? '' : 'none'
 
   // "Thêm chi phí chung" button — only visible on shared tab
   const btnAdd = $('btnAddSharedCost')
@@ -7650,6 +7684,32 @@ async function runFullDuplicateCleanup() {
   }
 }
 
+// ── Populate dropdown filter loại chi phí ──────────────────────────────────
+function populateCostTypeFilter() {
+  const sel = $('costTypeFilterSel')
+  if (!sel) return
+  // Thu thập các loại chi phí thực sự có trong allCosts
+  const usedTypes = [...new Set((allCosts || []).map(c => c.cost_type).filter(Boolean))]
+  // Giữ lựa chọn hiện tại
+  const prev = sel.value
+  sel.innerHTML = '<option value="">-- Tất cả loại CP --</option>'
+  usedTypes.sort().forEach(code => {
+    const name = (allCostTypes.find(ct => ct.code === code)?.name) || getCostTypeName(code) || code
+    const opt = document.createElement('option')
+    opt.value = code
+    opt.textContent = name
+    sel.appendChild(opt)
+  })
+  if (prev && usedTypes.includes(prev)) sel.value = prev
+  else { sel.value = ''; _costTypeFilter = '' }
+}
+
+function onCostTypeFilterChange() {
+  _costTypeFilter = $('costTypeFilterSel')?.value || ''
+  _costPage = 1
+  renderCostTable()
+}
+
 function renderCostTable() {
   const head = $('costTableHead')
   const tbody = $('costTableBody')
@@ -7696,10 +7756,32 @@ function renderCostTable() {
       <th class="pb-3 pr-3 text-right">Số tiền</th>
       <th class="pb-3">Thao tác</th>
     </tr>`
-  tbody.innerHTML = allCosts.map(c => `
+
+  // Populate filter dropdown & ẩn/hiện select filter
+  populateCostTypeFilter()
+  const filterSel = $('costTypeFilterSel')
+  if (filterSel) filterSel.closest('select') === filterSel && (filterSel.style.display = '')
+
+  // Lọc theo loại chi phí
+  const filtered = _costTypeFilter
+    ? allCosts.filter(c => c.cost_type === _costTypeFilter)
+    : allCosts
+
+  // Phân trang
+  const total = filtered.length
+  const totalPages = Math.max(1, Math.ceil(total / COST_PAGE_SIZE))
+  if (_costPage > totalPages) _costPage = totalPages
+  const start = (_costPage - 1) * COST_PAGE_SIZE
+  const pageData = filtered.slice(start, start + COST_PAGE_SIZE)
+
+  // Tổng tiền trang hiện tại & toàn bộ
+  const pageTotal = pageData.reduce((s, c) => s + (c.amount || 0), 0)
+  const allTotal  = filtered.reduce((s, c) => s + (c.amount || 0), 0)
+
+  tbody.innerHTML = pageData.map(c => `
       <tr class="table-row">
         <td class="py-2 pr-3 text-sm font-medium">${c.project_code || '-'}</td>
-        <td class="py-2 pr-3"><span class="badge" style="background:#fef3c7;color:#92400e">${getCostTypeName(c.cost_type)}</span></td>
+        <td class="py-2 pr-3"><span class="badge" style="background:#fef3c7;color:#92400e">${getCostTypeNameDynamic(c.cost_type)}</span></td>
         <td class="py-2 pr-3 text-sm text-gray-700">${c.description}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${c.vendor || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${fmtDate(c.cost_date)}</td>
@@ -7711,7 +7793,61 @@ function renderCostTable() {
           </div>
         </td>
       </tr>
-    `).join('') || '<tr><td colspan="7" class="text-center py-6 text-gray-400">Không có dữ liệu chi phí</td></tr>'
+    `).join('')
+    + (pageData.length === 0 ? '<tr><td colspan="7" class="text-center py-6 text-gray-400">Không có dữ liệu chi phí</td></tr>' : '')
+    + (total > 0 ? `<tr class="bg-gray-50 font-semibold text-sm border-t-2 border-gray-200">
+        <td class="py-2 pr-3 text-gray-500" colspan="5">
+          Trang ${_costPage}/${totalPages} &nbsp;·&nbsp; ${total} khoản
+          ${_costTypeFilter ? `&nbsp;·&nbsp; <span style="color:#92400e">${getCostTypeNameDynamic(_costTypeFilter)}</span>` : ''}
+        </td>
+        <td class="py-2 pr-3 text-right text-red-600">${fmt(allTotal)}</td>
+        <td></td>
+      </tr>` : '')
+
+  // Render pagination bar
+  const pgDiv  = $('costPagination')
+  const pgInfo = $('costPaginationInfo')
+  const pgBtns = $('costPaginationBtns')
+  if (pgDiv) {
+    if (totalPages <= 1 && total <= COST_PAGE_SIZE) {
+      pgDiv.classList.add('hidden')
+    } else {
+      pgDiv.classList.remove('hidden')
+      if (pgInfo) pgInfo.textContent = `Hiển thị ${start + 1}–${Math.min(start + COST_PAGE_SIZE, total)} / ${total} khoản · Tổng: ${fmtMoney(allTotal)}`
+      if (pgBtns) {
+        let btns = ''
+        // Prev
+        btns += `<button onclick="setCostPage(${_costPage - 1})" class="px-2 py-1 text-xs rounded border ${_costPage <= 1 ? 'opacity-40 cursor-not-allowed border-gray-200 text-gray-400' : 'border-blue-300 text-blue-600 hover:bg-blue-50'}" ${_costPage <= 1 ? 'disabled' : ''}>‹ Trước</button>`
+        // Page numbers (max 7 visible)
+        const delta = 2
+        let pages = []
+        for (let p = 1; p <= totalPages; p++) {
+          if (p === 1 || p === totalPages || (p >= _costPage - delta && p <= _costPage + delta)) pages.push(p)
+          else if (pages[pages.length - 1] !== '...') pages.push('...')
+        }
+        pages.forEach(p => {
+          if (p === '...') {
+            btns += `<span class="px-1 text-xs text-gray-400">…</span>`
+          } else {
+            btns += `<button onclick="setCostPage(${p})" class="px-2.5 py-1 text-xs rounded border ${p === _costPage ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}">${p}</button>`
+          }
+        })
+        // Next
+        btns += `<button onclick="setCostPage(${_costPage + 1})" class="px-2 py-1 text-xs rounded border ${_costPage >= totalPages ? 'opacity-40 cursor-not-allowed border-gray-200 text-gray-400' : 'border-blue-300 text-blue-600 hover:bg-blue-50'}" ${_costPage >= totalPages ? 'disabled' : ''}>Sau ›</button>`
+        pgBtns.innerHTML = btns
+      }
+    }
+  }
+}
+
+function setCostPage(p) {
+  const totalPages = Math.max(1, Math.ceil(
+    (_costTypeFilter ? allCosts.filter(c => c.cost_type === _costTypeFilter) : allCosts).length / COST_PAGE_SIZE
+  ))
+  _costPage = Math.max(1, Math.min(p, totalPages))
+  renderCostTable()
+  // Scroll lên đầu bảng
+  const tbl = $('costTable'); if (tbl) tbl.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
 }
 
 async function openCostModal(id = null) {
@@ -7737,7 +7873,7 @@ async function openCostModal(id = null) {
     if (item) {
       initProjVal = String(item.project_id || '')
       $('costDescription').value = item.description || ''
-      $('costAmount').value = item.amount || ''
+      setMoneyInput('costAmount', item.amount || 0)
       $('costDate').value = item.cost_date || ''
       $('costInvoice').value = item.invoice_number || ''
       $('costVendor').value = item.vendor || ''
@@ -7746,7 +7882,7 @@ async function openCostModal(id = null) {
     }
   } else {
     $('costDescription').value = ''
-    $('costAmount').value = ''
+    setMoneyInput('costAmount', 0)
     $('costDate').value = today()
     $('costInvoice').value = ''
     $('costVendor').value = ''
@@ -7777,7 +7913,7 @@ $('costForm').addEventListener('submit', async (e) => {
   const data = {
     project_id: parseInt($('costProject').value),
     description: $('costDescription').value,
-    amount: parseFloat($('costAmount').value),
+    amount: parseMoneyVal('costAmount'),
     cost_date: $('costDate').value,
     invoice_number: $('costInvoice').value,
     notes: $('costNotes').value,
@@ -8022,8 +8158,8 @@ async function openAssetModal(assetId = null) {
       $('assetModel').value = asset.model || ''
       $('assetSerial').value = asset.serial_number || ''
       $('assetPurchaseDate').value = asset.purchase_date || ''
-      $('assetPurchasePrice').value = asset.purchase_price || ''
-      $('assetCurrentValue').value = asset.current_value || ''
+      setMoneyInput('assetPurchasePrice', asset.purchase_price || 0)
+      setMoneyInput('assetCurrentValue', asset.current_value || 0)
       $('assetDepartment').value = asset.department || ''
       $('assetAssignedTo').value = asset.assigned_to || ''
       $('assetSpecs').value = asset.specifications || ''
@@ -8039,7 +8175,9 @@ async function openAssetModal(assetId = null) {
       }
     }
   } else {
-    ['assetCode','assetName','assetBrand','assetModel','assetSerial','assetPurchasePrice','assetCurrentValue','assetDepartment','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
+    ;['assetCode','assetName','assetBrand','assetModel','assetSerial','assetDepartment','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
+    setMoneyInput('assetPurchasePrice', 0)
+    setMoneyInput('assetCurrentValue', 0)
     $('assetCategory').value = 'computer'
     $('assetStatus').value = 'active'
     $('assetPurchaseDate').value = today()
@@ -8069,7 +8207,9 @@ async function openAssetModalAsChild(parentId) {
     allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
 
   // Clear các field, inherit phòng ban từ cha
-  ;['assetCode','assetName','assetBrand','assetModel','assetSerial','assetPurchasePrice','assetCurrentValue','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
+  ;['assetCode','assetName','assetBrand','assetModel','assetSerial','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
+  setMoneyInput('assetPurchasePrice', 0)
+  setMoneyInput('assetCurrentValue', 0)
   $('assetCategory').value = parentAsset.category || 'computer'
   $('assetStatus').value = 'active'
   $('assetDepartment').value = parentAsset.department || ''
@@ -8090,7 +8230,7 @@ function clearAssetParent() {
 
 function updateDeprPreview() {
   const yrs = parseInt($('assetDepreciationYears')?.value || '0')
-  const price = parseFloat($('assetPurchasePrice')?.value || '0')
+  const price = parseMoneyVal('assetPurchasePrice')
   const box = $('deprPreviewBox')
   const txt = $('deprPreviewText')
   if (!box || !txt) return
@@ -8118,8 +8258,8 @@ $('assetForm').addEventListener('submit', async (e) => {
     category: $('assetCategory').value, status: $('assetStatus').value,
     brand: $('assetBrand').value, model: $('assetModel').value,
     serial_number: $('assetSerial').value, purchase_date: $('assetPurchaseDate').value,
-    purchase_price: parseFloat($('assetPurchasePrice').value) || 0,
-    current_value: parseFloat($('assetCurrentValue').value) || 0,
+    purchase_price: parseMoneyVal('assetPurchasePrice'),
+    current_value: parseMoneyVal('assetCurrentValue'),
     department: $('assetDepartment').value,
     assigned_to: parseInt($('assetAssignedTo').value) || null,
     specifications: $('assetSpecs').value,
@@ -9322,7 +9462,7 @@ async function openUserModal(userId = null) {
       // Populate department dropdown từ cache rồi set giá trị
       _populateDeptDropdowns()
       $('userDepartment').value = user.department || ''
-      $('userSalary').value = user.salary_monthly || ''
+      setMoneyInput('userSalary', user.salary_monthly || 0)
       $('userPassword').value = ''
     }
   } else {
@@ -9333,7 +9473,7 @@ async function openUserModal(userId = null) {
     $('userPhone').value = ''
     $('userRole').value = 'member'
     $('userDepartment').value = ''
-    $('userSalary').value = ''
+    setMoneyInput('userSalary', 0)
   }
   openModal('userModal')
 }
@@ -9354,7 +9494,7 @@ $('userForm').addEventListener('submit', async (e) => {
     phone: $('userPhone').value,
     role: $('userRole').value,
     department: ($('userDepartment')?.value) || '',
-    salary_monthly: parseFloat($('userSalary').value) || 0
+    salary_monthly: parseMoneyVal('userSalary')
   }
   if (password) data.password = password
 
@@ -12103,7 +12243,7 @@ async function openSharedCostModal(id = null) {
       $('scDescription').value = sc.description
       // Populate dropdown trước, rồi set giá trị đã lưu
       _populateAllCostTypeDropdowns(sc.cost_type || 'other')
-      $('scAmount').value = sc.amount
+      setMoneyInput('scAmount', sc.amount || 0)
       if (sc.cost_date) $('scCostDate').value = sc.cost_date
       if (sc.month) $('scMonth').value = sc.month
       if (sc.year) $('scYear').value = sc.year
@@ -12191,7 +12331,7 @@ function toggleSelectAllProjects() {
 }
 
 function updateSharedCostPreview() {
-  const amount = parseFloat($('scAmount')?.value) || 0
+  const amount = parseMoneyVal('scAmount') || 0
   const basis = $('scAllocationBasis')?.value || 'contract_value'
   const checkedBoxes = [...document.querySelectorAll('.scProjectCheck:checked')]
 
@@ -12261,7 +12401,7 @@ function updateSharedCostPreview() {
 async function saveSharedCost() {
   const id = $('sharedCostId')?.value
   const description = $('scDescription').value.trim()
-  const amount = parseFloat($('scAmount').value)
+  const amount = parseMoneyVal('scAmount')
   const basis = $('scAllocationBasis').value
 
   if (!description || !amount || amount <= 0) {
@@ -15843,8 +15983,8 @@ async function openPaymentModal() {
   $('paymentDescription').value = ''
   $('paymentRequestDate').value = new Date().toISOString().slice(0,10)
   $('paymentStatus').value = 'pending'
-  $('paymentAmount').value = ''
-  $('paymentPaidAmount').value = ''
+  setMoneyInput('paymentAmount', 0)
+  setMoneyInput('paymentPaidAmount', 0)
   $('paymentPaidDate').value = ''
   $('paymentInvoiceNumber').value = ''
   $('paymentInvoiceDate').value = ''
@@ -15866,8 +16006,8 @@ async function editPayment(id) {
   $('paymentDescription').value = payment.description || ''
   $('paymentRequestDate').value = payment.request_date || ''
   $('paymentStatus').value = payment.status || 'pending'
-  $('paymentAmount').value = payment.amount || ''
-  $('paymentPaidAmount').value = payment.paid_amount || ''
+  setMoneyInput('paymentAmount', payment.amount || 0)
+  setMoneyInput('paymentPaidAmount', payment.paid_amount || 0)
   $('paymentPaidDate').value = payment.paid_date || ''
   $('paymentInvoiceNumber').value = payment.invoice_number || ''
   $('paymentInvoiceDate').value = payment.invoice_date || ''
@@ -15944,8 +16084,8 @@ async function savePayment(e) {
     request_number:  $('paymentRequestNumber').value.trim(),
     request_date:    $('paymentRequestDate').value || null,
     status:          $('paymentStatus').value,
-    amount:          parseFloat($('paymentAmount').value) || 0,
-    paid_amount:     parseFloat($('paymentPaidAmount').value) || 0,
+    amount:          parseMoneyVal('paymentAmount'),
+    paid_amount:     parseMoneyVal('paymentPaidAmount'),
     paid_date:       $('paymentPaidDate').value || null,
     invoice_number:  $('paymentInvoiceNumber').value.trim(),
     invoice_date:    $('paymentInvoiceDate').value || null,
