@@ -697,16 +697,10 @@ app.post('/api/auth/login', async (c) => {
       return c.json({ error: 'Invalid credentials' }, 401)
     }
 
-    // For demo: accept 'Admin@123' for admin, 'Pass@123' for others
+    // Verify password using hash only
     let isValid = false
-    if (user.role === 'system_admin' && password === 'Admin@123') {
-      isValid = true
-    } else if (password === 'Pass@123') {
-      isValid = true
-    } else {
-      const hashedInput = await hashPassword(password)
-      isValid = hashedInput === user.password_hash
-    }
+    const hashedInput = await hashPassword(password)
+    isValid = hashedInput === user.password_hash
 
     if (!isValid) {
       return c.json({ error: 'Invalid credentials' }, 401)
@@ -746,12 +740,8 @@ app.post('/api/auth/change-password', authMiddleware, async (c) => {
     const dbUser = await db.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first() as any
 
     let isValid = false
-    if (dbUser.role === 'system_admin' && old_password === 'Admin@123') isValid = true
-    else if (old_password === 'Pass@123') isValid = true
-    else {
-      const hashedOld = await hashPassword(old_password)
-      isValid = hashedOld === dbUser.password_hash
-    }
+    const hashedOld = await hashPassword(old_password)
+    isValid = hashedOld === dbUser.password_hash
 
     if (!isValid) return c.json({ error: 'Old password incorrect' }, 400)
 
@@ -7909,6 +7899,298 @@ app.delete('/api/cost-types/:id', authMiddleware, adminOnly, async (c) => {
 // PROJECT FINANCE SUMMARY (per-project)
 // Không phụ thuộc năm tài chính — hỗ trợ các chế độ:
 //   ?mode=all_time           → Toàn dự án (từ start_date đến hiện tại hoặc end_date)
+// ===================================================
+// COST BREAKDOWN ANALYTICS
+// GET /api/analytics/cost-breakdown
+//   ?year=2025&project_id=5&cost_type=material
+// ===================================================
+app.get('/api/analytics/cost-breakdown', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { year, project_id, cost_type } = c.req.query()
+    const fySettings = await getFiscalYearSettings(db)
+    const currentYear = new Date().getFullYear()
+    const yInt = year ? parseInt(year) : currentYear
+    const { startDate, endDate } = getFiscalYearDateRange(yInt, fySettings)
+
+    // Derive year+month list from fiscal year range (for labor/depreciation queries)
+    const fyStartDt = new Date(startDate)
+    const fyEndDt   = new Date(endDate)
+    const fyMonths: { year: number; month: number }[] = []
+    const cur = new Date(fyStartDt.getFullYear(), fyStartDt.getMonth(), 1)
+    while (cur <= fyEndDt) {
+      fyMonths.push({ year: cur.getFullYear(), month: cur.getMonth() + 1 })
+      cur.setMonth(cur.getMonth() + 1)
+    }
+
+    // Build WHERE clause for project_costs
+    let where = `pc.cost_date >= '${startDate}' AND pc.cost_date <= '${endDate}'`
+    const params: any[] = []
+    if (project_id) { where += ` AND pc.project_id = ?`; params.push(parseInt(project_id)) }
+    if (cost_type)  { where += ` AND pc.cost_type = ?`; params.push(cost_type) }
+
+    // 1. Tổng hợp theo loại chi phí
+    const byType = await db.prepare(`
+      SELECT pc.cost_type,
+        COALESCE(ct.name, pc.cost_type) as type_name,
+        COALESCE(ct.color, '#6B7280')   as color,
+        COUNT(*)                         as entry_count,
+        SUM(pc.amount)                   as total_amount
+      FROM project_costs pc
+      LEFT JOIN cost_types ct ON ct.code = pc.cost_type
+      JOIN projects p ON pc.project_id = p.id
+      WHERE ${where}
+      GROUP BY pc.cost_type
+      ORDER BY total_amount DESC
+    `).bind(...params).all()
+
+    // 2. Tổng chi phí trong kỳ
+    const totalRow = await db.prepare(`
+      SELECT SUM(pc.amount) as grand_total
+      FROM project_costs pc
+      JOIN projects p ON pc.project_id = p.id
+      WHERE ${where}
+    `).bind(...params).first() as any
+    const grandTotal = totalRow?.grand_total || 0
+
+    // 3. Tổng hợp theo dự án × loại chi phí (pivot)
+    const byProjectType = await db.prepare(`
+      SELECT p.id as project_id, p.code as project_code, p.name as project_name,
+        p.contract_value,
+        pc.cost_type,
+        COALESCE(ct.name, pc.cost_type) as type_name,
+        COALESCE(ct.color, '#6B7280')   as color,
+        SUM(pc.amount)                   as amount
+      FROM project_costs pc
+      JOIN projects p ON pc.project_id = p.id
+      LEFT JOIN cost_types ct ON ct.code = pc.cost_type
+      WHERE ${where}
+      GROUP BY p.id, pc.cost_type
+      ORDER BY p.code, amount DESC
+    `).bind(...params).all()
+
+    // 4. Timeline chi phí từng loại theo tháng
+    const timeline = await db.prepare(`
+      SELECT strftime('%Y-%m', pc.cost_date) as month,
+        pc.cost_type,
+        COALESCE(ct.name, pc.cost_type) as type_name,
+        COALESCE(ct.color, '#6B7280')   as color,
+        SUM(pc.amount)                   as amount
+      FROM project_costs pc
+      JOIN projects p ON pc.project_id = p.id
+      LEFT JOIN cost_types ct ON ct.code = pc.cost_type
+      WHERE ${where}
+      GROUP BY month, pc.cost_type
+      ORDER BY month ASC, amount DESC
+    `).bind(...params).all()
+
+    // 5. Top dự án theo tổng chi phí
+    const topProjects = await db.prepare(`
+      SELECT p.id, p.code, p.name, p.contract_value,
+        SUM(pc.amount) as total_cost,
+        COUNT(DISTINCT pc.cost_type) as type_count
+      FROM project_costs pc
+      JOIN projects p ON pc.project_id = p.id
+      WHERE ${where}
+      GROUP BY p.id
+      ORDER BY total_cost DESC
+      LIMIT 15
+    `).bind(...params).all()
+
+    // 6. Danh sách chi tiết từng chi phí
+    const details = await db.prepare(`
+      SELECT pc.id, pc.cost_date, pc.cost_type,
+        COALESCE(ct.name, pc.cost_type) as type_name,
+        COALESCE(ct.color, '#6B7280')   as color,
+        pc.amount, pc.description, pc.vendor, pc.invoice_number,
+        p.code as project_code, p.name as project_name, p.contract_value
+      FROM project_costs pc
+      JOIN projects p ON pc.project_id = p.id
+      LEFT JOIN cost_types ct ON ct.code = pc.cost_type
+      WHERE ${where}
+      ORDER BY pc.cost_date DESC, pc.amount DESC
+      LIMIT 500
+    `).bind(...params).all()
+
+    // 7. Chi phí lương theo dự án — tính REALTIME từ timesheets × monthly_labor_costs
+    //    Công thức: labor_cost_proj = (proj_eff_hours / comp_eff_hours) × monthly_budget
+    //    Gom theo từng tháng trong kỳ NTC rồi SUM theo project
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)
+    const laborProjWhere = project_id ? `AND ts.project_id = ${parseInt(project_id)}` : ''
+    const laborByProject = await db.prepare(`
+      SELECT
+        ts.project_id,
+        p.code  as project_code,
+        p.name  as project_name,
+        p.contract_value,
+        SUM(
+          CASE WHEN comp.comp_eff > 0
+            THEN mlc.total_labor_cost * (ts.proj_eff / comp.comp_eff)
+            ELSE 0
+          END
+        ) as labor_total
+      FROM (
+        SELECT project_id,
+          CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
+          CAST(strftime('%Y', work_date) AS INTEGER) as ts_year,
+          SUM(regular_hours + IFNULL(overtime_hours,0)*?) as proj_eff
+        FROM timesheets
+        WHERE work_date >= '${startDate}' AND work_date <= '${endDate}'
+        ${laborProjWhere}
+        GROUP BY project_id, ts_month, ts_year
+      ) ts
+      JOIN projects p ON p.id = ts.project_id
+      LEFT JOIN monthly_labor_costs mlc
+        ON mlc.month = ts.ts_month AND mlc.year = ts.ts_year
+      LEFT JOIN (
+        SELECT CAST(strftime('%m', work_date) AS INTEGER) as ts_month,
+               CAST(strftime('%Y', work_date) AS INTEGER) as ts_year,
+               SUM(regular_hours + IFNULL(overtime_hours,0)*?) as comp_eff
+        FROM timesheets
+        WHERE work_date >= '${startDate}' AND work_date <= '${endDate}'
+        GROUP BY ts_month, ts_year
+      ) comp ON comp.ts_month = ts.ts_month AND comp.ts_year = ts.ts_year
+      WHERE mlc.total_labor_cost IS NOT NULL
+      GROUP BY ts.project_id
+      ORDER BY labor_total DESC
+    `).bind(OVERTIME_FACTOR, OVERTIME_FACTOR).all()
+
+    // 8. Chi phí khấu hao theo dự án trong kỳ (từ shared_cost_allocations WHERE cost_type='depreciation')
+    let deprWhere = `sc.cost_type = 'depreciation' AND sc.status != 'deleted' AND sc.cost_date >= '${startDate}' AND sc.cost_date <= '${endDate}'`
+    const deprParams: any[] = []
+    if (project_id) { deprWhere += ` AND sca.project_id = ?`; deprParams.push(parseInt(project_id)) }
+    const deprByProject = await db.prepare(`
+      SELECT sca.project_id,
+        p.code as project_code, p.name as project_name,
+        p.contract_value,
+        SUM(sca.allocated_amount) as depr_total
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      JOIN projects p ON p.id = sca.project_id
+      WHERE ${deprWhere}
+      GROUP BY sca.project_id
+      ORDER BY depr_total DESC
+    `).bind(...deprParams).all()
+
+    // 8b. Chi phí chung (non-depreciation) theo loại — tổng hợp vào by_type
+    let sharedWhere = `sc.status != 'deleted' AND sc.cost_type != 'depreciation' AND sc.cost_date >= '${startDate}' AND sc.cost_date <= '${endDate}'`
+    const sharedParams: any[] = []
+    if (project_id) { sharedWhere += ` AND sca.project_id = ?`; sharedParams.push(parseInt(project_id)) }
+
+    // Tổng chi phí chung theo loại (để bổ sung vào by_type)
+    const sharedByType = await db.prepare(`
+      SELECT sc.cost_type,
+        COALESCE(ct.name, sc.cost_type) as type_name,
+        COALESCE(ct.color, '#EAB308')   as color,
+        COUNT(DISTINCT sc.id)           as entry_count,
+        SUM(sca.allocated_amount)       as total_amount
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      LEFT JOIN cost_types ct ON ct.code = sc.cost_type
+      WHERE ${sharedWhere}
+      GROUP BY sc.cost_type
+      ORDER BY total_amount DESC
+    `).bind(...sharedParams).all()
+
+    // Chi phí chung theo dự án × loại (để bổ sung vào by_project_type)
+    const sharedByProjectType = await db.prepare(`
+      SELECT sca.project_id,
+        p.code as project_code, p.name as project_name,
+        p.contract_value,
+        sc.cost_type,
+        COALESCE(ct.name, sc.cost_type) as type_name,
+        COALESCE(ct.color, '#EAB308')   as color,
+        SUM(sca.allocated_amount)       as amount,
+        1 as is_shared
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      JOIN projects p ON p.id = sca.project_id
+      LEFT JOIN cost_types ct ON ct.code = sc.cost_type
+      WHERE ${sharedWhere}
+      GROUP BY sca.project_id, sc.cost_type
+      ORDER BY p.code, amount DESC
+    `).bind(...sharedParams).all()
+
+    // Gộp by_type: cộng shared vào direct (cùng cost_type gộp lại, khác loại thêm mới)
+    const byTypeMap: Record<string, any> = {}
+    ;(byType.results as any[]).forEach((r: any) => {
+      byTypeMap[r.cost_type] = { ...r, has_shared: false }
+    })
+    ;(sharedByType.results as any[]).forEach((r: any) => {
+      if (byTypeMap[r.cost_type]) {
+        byTypeMap[r.cost_type].total_amount += r.total_amount
+        byTypeMap[r.cost_type].entry_count  += r.entry_count
+        byTypeMap[r.cost_type].has_shared = true
+      } else {
+        byTypeMap[r.cost_type] = { ...r, has_shared: true }
+      }
+    })
+    const mergedByType = Object.values(byTypeMap).sort((a: any, b: any) => b.total_amount - a.total_amount)
+
+    // Tổng chi phí chung (non-depr) để cộng vào grand_total
+    const totalSharedNonDepr = (sharedByType.results as any[]).reduce((s: number, r: any) => s + (r.total_amount || 0), 0)
+
+    // Gộp by_project_type: cộng shared vào direct (cùng project+type gộp lại, khác thêm mới)
+    const pivotMap: Record<string, any> = {}
+    ;(byProjectType.results as any[]).forEach((r: any) => {
+      const key = `${r.project_id}_${r.cost_type}`
+      pivotMap[key] = { ...r }
+    })
+    ;(sharedByProjectType.results as any[]).forEach((r: any) => {
+      const key = `${r.project_id}_${r.cost_type}`
+      if (pivotMap[key]) {
+        pivotMap[key].amount += r.amount
+      } else {
+        pivotMap[key] = { ...r }
+      }
+    })
+    const mergedByProjectType = Object.values(pivotMap).sort((a: any, b: any) => a.project_code?.localeCompare(b.project_code) || b.amount - a.amount)
+
+    // Build labor & depreciation maps for easy lookup
+    const laborMap: Record<number, number> = {}
+    ;(laborByProject.results as any[]).forEach((r: any) => { laborMap[r.project_id] = r.labor_total || 0 })
+    const deprMap: Record<number, number> = {}
+    ;(deprByProject.results as any[]).forEach((r: any) => { deprMap[r.project_id] = r.depr_total || 0 })
+
+    const totalLabor = Object.values(laborMap).reduce((s, v) => s + v, 0)
+    const totalDepr  = Object.values(deprMap).reduce((s, v) => s + v, 0)
+
+    // 9. Tổng giá trị hợp đồng — dùng TOÀN BỘ dự án không bị huỷ (nhất quán với tab Tài chính dự án)
+    //    Không lọc theo kỳ để tránh sai khác giữa NTC 2025, 2026, v.v.
+    //    Nếu filter theo project_id cụ thể thì chỉ lấy GTHĐ của dự án đó
+    let totalContractValue = 0
+    if (project_id) {
+      const cvRow = await db.prepare(
+        `SELECT contract_value FROM projects WHERE id = ?`
+      ).bind(parseInt(project_id)).first() as any
+      totalContractValue = cvRow?.contract_value || 0
+    } else {
+      const cvRow = await db.prepare(
+        `SELECT SUM(contract_value) as total FROM projects WHERE status != 'cancelled'`
+      ).first() as any
+      totalContractValue = cvRow?.total || 0
+    }
+
+    return c.json({
+      period: { year: yInt, startDate, endDate, label: `NTC ${yInt} (${startDate} → ${endDate})` },
+      grand_total: grandTotal + totalSharedNonDepr,
+      total_labor: totalLabor,
+      total_depr: totalDepr,
+      total_shared_non_depr: totalSharedNonDepr,
+      total_contract_value: totalContractValue,
+      by_type: mergedByType,
+      by_project_type: mergedByProjectType,
+      labor_by_project: laborByProject.results,
+      depr_by_project: deprByProject.results,
+      timeline: timeline.results,
+      top_projects: topProjects.results,
+      details: details.results
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 //   ?mode=ytd                → Từ đầu năm dương lịch đến nay (Year-to-date)
 //   ?mode=year&year=2026     → Cả năm dương lịch 2026
 //   ?mode=month&year=2026&month=3 → Tháng 3/2026
@@ -8665,7 +8947,7 @@ app.post('/api/system/init', async (c) => {
     } catch (_) { /* ignore */ }
 
     // Insert admin user — use UPSERT so password is always correct hash
-    const adminHash = await hashPassword('Admin@123')
+    const adminHash = await hashPassword('Admin@123456')
     await db.prepare(
       `INSERT INTO users (username, password_hash, full_name, email, role, department)
        VALUES ('admin', ?, 'System Administrator', 'admin@onecad.vn', 'system_admin', 'Quản lý hệ thống')

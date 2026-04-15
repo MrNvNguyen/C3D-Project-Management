@@ -12,6 +12,8 @@ let allTasks = []
 let allUsers = []
 let allTimesheets = []
 let allAssets = []
+let _assetPage = 1
+const ASSET_PAGE_SIZE = 20
 let allCosts = []
 let allRevenues = []
 let _costPage = 1
@@ -7946,6 +7948,7 @@ async function loadAssets() {
   try {
     if (!allUsers.length) allUsers = await api('/users')
     allAssets = await api('/assets')
+    _assetPage = 1
     renderAssetStats()
     renderAssetsTable(allAssets)
   } catch (e) { toast('Lỗi tải tài sản: ' + e.message, 'error') }
@@ -8035,7 +8038,7 @@ function renderAssetsTable(assets) {
         ${a.specifications ? `<span title="${a.specifications.replace(/"/g,'&quot;')}" class="block truncate cursor-help">${a.specifications}</span>` : '<span class="text-gray-300">-</span>'}
       </td>
       <td class="py-2 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${getAssetCategoryName(a.category)}</span></td>
-      <td class="py-2 pr-3 text-sm text-gray-600">${a.department || '-'}</td>
+      <td class="py-2 pr-3 text-sm text-gray-600">${a.purchase_date ? fmtDate(a.purchase_date) : '-'}</td>
       <td class="py-2 pr-3 text-sm text-gray-700">
         ${assignedName ? `<div class="flex items-center gap-1.5"><span class="w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs flex items-center justify-center font-bold flex-shrink-0">${assignedName.split(' ').pop()?.charAt(0) || '?'}</span><span class="truncate max-w-[100px]" title="${assignedName}">${assignedName}</span></div>` : '<span class="text-gray-300">-</span>'}
       </td>
@@ -8058,29 +8061,26 @@ function renderAssetsTable(assets) {
   }
 
   // Render cả cây: cha rồi các con (ban đầu ẩn con)
-  let html = ''
+  // Flatten để phân trang: mỗi "row đơn vị" là 1 cha (kèm con của nó)
   if (!assets || assets.length === 0) {
     tbody.innerHTML = '<tr><td colspan="12" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
+    const pgDiv = $('assetPagination'); if (pgDiv) pgDiv.classList.add('hidden')
     return
   }
-  assets.forEach(a => {
-    html += renderRow(a, false)
-    if (a.children && a.children.length > 0) {
-      a.children.forEach(child => {
-        html += `<tr id="asset-children-group-${a.id}-row-${child.id}" class="asset-child-of-${a.id}" style="display:none">${renderRow(child, true).replace('<tr ', '<td style="display:contents">')}` 
-        // Fix: render con như 1 row bình thường nhưng wrap trong tr ẩn
-      })
-    }
-  })
 
-  // Build lại đúng cách (không dùng nested tr)
-  html = ''
-  assets.forEach(a => {
+  // Phân trang theo tài sản CHA (mỗi cha + các con của nó = 1 đơn vị)
+  const totalParents = assets.length
+  const totalPages = Math.max(1, Math.ceil(totalParents / ASSET_PAGE_SIZE))
+  if (_assetPage > totalPages) _assetPage = totalPages
+  const start = (_assetPage - 1) * ASSET_PAGE_SIZE
+  const pageAssets = assets.slice(start, start + ASSET_PAGE_SIZE)
+
+  let html = ''
+  pageAssets.forEach(a => {
     html += renderRow(a, false)
     if (a.children && a.children.length > 0) {
       a.children.forEach(child => {
         const childRow = renderRow(child, true)
-        // Đổi tag <tr> thành <tr class="asset-child-of-X" style="display:none">
         html += childRow.replace(
           /^<tr class="table-row"/,
           `<tr class="table-row asset-child-of-${a.id}" style="display:none"`
@@ -8089,6 +8089,45 @@ function renderAssetsTable(assets) {
     }
   })
   tbody.innerHTML = html
+
+  // Render pagination bar
+  const pgDiv  = $('assetPagination')
+  const pgInfo = $('assetPaginationInfo')
+  const pgBtns = $('assetPaginationBtns')
+  if (pgDiv) {
+    if (totalPages <= 1) {
+      pgDiv.classList.add('hidden')
+    } else {
+      pgDiv.classList.remove('hidden')
+      if (pgInfo) pgInfo.textContent = `Hiển thị ${start + 1}–${Math.min(start + ASSET_PAGE_SIZE, totalParents)} / ${totalParents} tài sản`
+      if (pgBtns) {
+        let btns = ''
+        btns += `<button onclick="setAssetPage(${_assetPage - 1})" class="px-2 py-1 text-xs rounded border ${_assetPage <= 1 ? 'opacity-40 cursor-not-allowed border-gray-200 text-gray-400' : 'border-blue-300 text-blue-600 hover:bg-blue-50'}" ${_assetPage <= 1 ? 'disabled' : ''}>‹ Trước</button>`
+        const delta = 2
+        let pages = []
+        for (let p = 1; p <= totalPages; p++) {
+          if (p === 1 || p === totalPages || (p >= _assetPage - delta && p <= _assetPage + delta)) pages.push(p)
+          else if (pages[pages.length - 1] !== '...') pages.push('...')
+        }
+        pages.forEach(p => {
+          if (p === '...') {
+            btns += `<span class="px-1 text-xs text-gray-400">…</span>`
+          } else {
+            btns += `<button onclick="setAssetPage(${p})" class="px-2.5 py-1 text-xs rounded border ${p === _assetPage ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}">${p}</button>`
+          }
+        })
+        btns += `<button onclick="setAssetPage(${_assetPage + 1})" class="px-2 py-1 text-xs rounded border ${_assetPage >= totalPages ? 'opacity-40 cursor-not-allowed border-gray-200 text-gray-400' : 'border-blue-300 text-blue-600 hover:bg-blue-50'}" ${_assetPage >= totalPages ? 'disabled' : ''}>Sau ›</button>`
+        pgBtns.innerHTML = btns
+      }
+    }
+  }
+}
+
+function setAssetPage(p) {
+  const totalPages = Math.max(1, Math.ceil((allAssets || []).length / ASSET_PAGE_SIZE))
+  _assetPage = Math.max(1, Math.min(p, totalPages))
+  renderAssetsTable(allAssets)
+  const tbl = $('assetsTable'); if (tbl) tbl.closest('.overflow-x-auto')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
 }
 
 // Toggle hiện/ẩn tài sản con
@@ -8118,6 +8157,7 @@ function filterAssets() {
   // Nếu không có filter → render tree gốc
   const hasFilter = search || category || status || depr
   if (!hasFilter) {
+    _assetPage = 1
     renderAssetsTable(allAssets)
     return
   }
@@ -8131,6 +8171,7 @@ function filterAssets() {
   )
   // Render flat kết quả (không children)
   const flatAssets = filtered.map(a => ({ ...a, children: [] }))
+  _assetPage = 1
   renderAssetsTable(flatAssets)
 }
 
@@ -8144,6 +8185,9 @@ async function openAssetModal(assetId = null) {
 
   // Ẩn banner tài sản cha mặc định
   if ($('assetParentRow')) $('assetParentRow').classList.add('hidden')
+  if ($('assignParentRow')) $('assignParentRow').classList.add('hidden')
+  if ($('changeParentUI')) $('changeParentUI').classList.add('hidden')
+  if ($('assignParentUI')) $('assignParentUI').classList.add('hidden')
 
   if (assetId) {
     // Tìm trong tree (cha hoặc con)
@@ -8172,6 +8216,10 @@ async function openAssetModal(assetId = null) {
         const parentName = asset.parent_asset_name || asset.parent_asset_code || `#${asset.parent_asset_id}`
         $('assetParentLabel').textContent = parentName
         $('assetParentRow').classList.remove('hidden')
+        if ($('assignParentRow')) $('assignParentRow').classList.add('hidden')
+      } else {
+        // Tài sản độc lập → hiển thị section "Gắn vào tài sản cha"
+        if ($('assignParentRow')) $('assignParentRow').classList.remove('hidden')
       }
     }
   } else {
@@ -8184,6 +8232,7 @@ async function openAssetModal(assetId = null) {
     $('assetAssignedTo').value = ''
     $('assetDepreciationYears').value = '0'
     $('assetDepreciationStart').value = today()
+    if ($('assignParentRow')) $('assignParentRow').classList.add('hidden')
   }
   updateDeprPreview()
   openModal('assetModal')
@@ -8202,6 +8251,8 @@ async function openAssetModalAsChild(parentId) {
   // Hiển thị banner tài sản cha
   $('assetParentLabel').textContent = `[${parentAsset.asset_code}] ${parentAsset.name}`
   $('assetParentRow').classList.remove('hidden')
+  if ($('assignParentRow')) $('assignParentRow').classList.add('hidden')
+  if ($('changeParentUI')) $('changeParentUI').classList.add('hidden')
 
   $('assetAssignedTo').innerHTML = '<option value="">-- Không giao --</option>' +
     allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
@@ -8222,10 +8273,92 @@ async function openAssetModalAsChild(parentId) {
   openModal('assetModal')
 }
 
-// Bỏ liên kết tài sản cha
+// Bỏ liên kết tài sản cha (chuyển thành tài sản độc lập)
 function clearAssetParent() {
   $('assetParentId').value = ''
   $('assetParentRow').classList.add('hidden')
+  // Hiển thị section tài sản độc lập nếu đang chỉnh sửa
+  if ($('assetId').value) {
+    $('assignParentRow').classList.remove('hidden')
+    populateParentSelectList('assignParentSelect', null)
+  }
+  cancelChangeParent()
+}
+
+// Populate danh sách dropdown tài sản cha có thể chọn
+// excludeId: id của tài sản hiện tại (không đưa vào list)
+// currentParentId: id của tài sản cha hiện tại (để bỏ qua hoặc highlight)
+function populateParentSelectList(selectId, excludeId) {
+  const sel = $(selectId)
+  if (!sel) return
+  // Chỉ lấy các tài sản cha (không có parent_asset_id) và không phải tài sản hiện tại
+  const parentAssets = allAssets.filter(a => !a.parent_asset_id && a.id !== excludeId)
+  sel.innerHTML = '<option value="">-- Chọn tài sản cha --</option>' +
+    parentAssets.map(a => `<option value="${a.id}">[${a.asset_code}] ${a.name}</option>`).join('')
+}
+
+// ── Toggle UI đổi tài sản cha (khi đang là tài sản con) ──
+function toggleChangeParentUI() {
+  const ui = $('changeParentUI')
+  if (!ui) return
+  const isHidden = ui.classList.contains('hidden')
+  if (isHidden) {
+    const currentId = $('assetId').value ? parseInt($('assetId').value) : null
+    populateParentSelectList('changeParentSelect', currentId)
+    ui.classList.remove('hidden')
+  } else {
+    ui.classList.add('hidden')
+  }
+}
+
+function cancelChangeParent() {
+  if ($('changeParentUI')) $('changeParentUI').classList.add('hidden')
+}
+
+function applyChangeParent() {
+  const sel = $('changeParentSelect')
+  if (!sel || !sel.value) { showToast('Vui lòng chọn tài sản cha', 'warning'); return }
+  const parentId = parseInt(sel.value)
+  const parentAsset = allAssets.find(a => a.id === parentId)
+  if (!parentAsset) return
+  $('assetParentId').value = parentId
+  $('assetParentLabel').textContent = `[${parentAsset.asset_code}] ${parentAsset.name}`
+  $('assetParentRow').classList.remove('hidden')
+  $('assignParentRow').classList.add('hidden')
+  cancelChangeParent()
+  showToast('Đã chọn tài sản cha mới. Nhấn Lưu để áp dụng.', 'info')
+}
+
+// ── Toggle UI gắn tài sản độc lập vào tài sản cha ──
+function toggleAssignParentUI() {
+  const ui = $('assignParentUI')
+  if (!ui) return
+  const isHidden = ui.classList.contains('hidden')
+  if (isHidden) {
+    const currentId = $('assetId').value ? parseInt($('assetId').value) : null
+    populateParentSelectList('assignParentSelect', currentId)
+    ui.classList.remove('hidden')
+  } else {
+    ui.classList.add('hidden')
+  }
+}
+
+function cancelAssignParent() {
+  if ($('assignParentUI')) $('assignParentUI').classList.add('hidden')
+}
+
+function applyAssignParent() {
+  const sel = $('assignParentSelect')
+  if (!sel || !sel.value) { showToast('Vui lòng chọn tài sản cha', 'warning'); return }
+  const parentId = parseInt(sel.value)
+  const parentAsset = allAssets.find(a => a.id === parentId)
+  if (!parentAsset) return
+  $('assetParentId').value = parentId
+  $('assetParentLabel').textContent = `[${parentAsset.asset_code}] ${parentAsset.name}`
+  $('assetParentRow').classList.remove('hidden')
+  $('assignParentRow').classList.add('hidden')
+  cancelAssignParent()
+  showToast('Đã gắn vào tài sản cha. Nhấn Lưu để áp dụng.', 'info')
 }
 
 function updateDeprPreview() {
@@ -12534,6 +12667,7 @@ function switchAnalyticsTab(tab, force = false) {
   else if (tab === 'timesheet') renderTimesheetAnalyticsTab(force)
   else if (tab === 'financial' && currentUser?.role === 'system_admin') renderFinancialTab(force)
   else if (tab === 'project-finance' && currentUser?.role === 'system_admin') renderProjectFinancialTab(force)
+  else if (tab === 'cost-breakdown' && currentUser?.role === 'system_admin') initCostBreakdownTab(force)
 }
 
 // ---- Helpers ----
@@ -16967,7 +17101,7 @@ async function saveMeetingMinute(e) {
     }
     
     // Reload data
-    await loadLegalOverview(_legalCurrentProjectId)
+    await loadLegalProject(_legalCurrentProjectId)
     closeModal('meetingMinuteModal')
   } catch(err) {
     toast('Lỗi: ' + err.message, 'error')
@@ -16981,10 +17115,766 @@ async function deleteMeetingMinute(id) {
   try {
     await api(`/meeting-minutes/${id}`, { method: 'DELETE' })
     toast('Đã xóa biên bản họp', 'success')
-    await loadLegalOverview(_legalCurrentProjectId)
+    await loadLegalProject(_legalCurrentProjectId)
   } catch(err) {
     toast('Lỗi: ' + err.message, 'error')
   }
 }
 
 // ═══ END MEETING MINUTES MODULE ═══════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODULE: CHI PHÍ THEO LOẠI (COST BREAKDOWN ANALYTICS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _cbInitialized = false
+let _cbCharts = {}
+
+function destroyCbChart(key) {
+  if (_cbCharts[key]) { try { _cbCharts[key].destroy() } catch(e){} delete _cbCharts[key] }
+}
+
+async function initCostBreakdownTab(force = false) {
+  if (_cbInitialized && !force) { loadCostBreakdown(); return }
+  _cbInitialized = true
+
+  // Populate year selector
+  const yearSel = $('cbYear')
+  if (yearSel && !yearSel.options.length) {
+    const cur = new Date().getFullYear()
+    for (let y = cur + 1; y >= cur - 4; y--) {
+      const opt = document.createElement('option')
+      opt.value = y; opt.textContent = `NTC ${y}`
+      if (y === cur) opt.selected = true
+      yearSel.appendChild(opt)
+    }
+  }
+
+  // Populate cost type filter
+  const ctSel = $('cbCostType')
+  if (ctSel && ctSel.options.length <= 1) {
+    try {
+      const types = await api('/cost-types')
+      types.forEach(t => {
+        const opt = document.createElement('option')
+        opt.value = t.code; opt.textContent = t.name
+        ctSel.appendChild(opt)
+      })
+    } catch(e) {}
+  }
+
+  // Init project combobox
+  if (!document.querySelector('#cbProjectCombobox .combobox-input')) {
+    createCombobox('cbProjectCombobox', {
+      placeholder: '-- Tất cả dự án --',
+      allowEmpty: true,
+      onchange: () => loadCostBreakdown()
+    })
+    try {
+      const projs = await api('/projects')
+      setComboboxOptions('cbProjectCombobox', projs.map(p => ({ value: String(p.id), label: `[${p.code}] ${p.name}` })))
+    } catch(e) {}
+  }
+
+  loadCostBreakdown()
+}
+
+async function loadCostBreakdown() {
+  const el = $('costBreakdownContent')
+  if (!el) return
+  el.innerHTML = '<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải dữ liệu chi phí...</p></div>'
+
+  try {
+    const year     = $('cbYear')?.value || String(new Date().getFullYear())
+    const projId   = _cbGetValue('cbProjectCombobox')
+    const costType = $('cbCostType')?.value || ''
+
+    let q = `/analytics/cost-breakdown?year=${year}`
+    if (projId)   q += `&project_id=${projId}`
+    if (costType) q += `&cost_type=${costType}`
+
+    const data = await api(q)
+    renderCostBreakdown(el, data)
+  } catch(e) {
+    el.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fas fa-exclamation-circle text-3xl mb-3"></i><p>Lỗi tải dữ liệu: ${e.message}</p></div>`
+  }
+}
+
+function renderCostBreakdown(el, data) {
+  const { period, grand_total, by_type, by_project_type, timeline, top_projects, details,
+          total_labor = 0, total_depr = 0, total_contract_value = 0,
+          total_shared_non_depr = 0,
+          labor_by_project = [], depr_by_project = [] } = data
+
+  // ── Build maps for labor & depreciation ───────────────────────
+  const laborMap = {}
+  labor_by_project.forEach(r => { laborMap[r.project_id] = r.labor_total || 0 })
+  const deprMap = {}
+  depr_by_project.forEach(r => { deprMap[r.project_id] = r.depr_total || 0 })
+
+  // ── Build project pivot table ──────────────────────────────────
+  const projMap = {}
+  const typeSet = new Set()
+  const typeColorMap = {}
+  const typeNameMap  = {}
+
+  by_project_type.forEach(r => {
+    typeSet.add(r.cost_type)
+    typeColorMap[r.cost_type] = r.color
+    typeNameMap[r.cost_type]  = r.type_name
+    if (!projMap[r.project_id]) {
+      projMap[r.project_id] = {
+        id: r.project_id, code: r.project_code,
+        name: r.project_name, contract_value: r.contract_value,
+        types: {}, total: 0
+      }
+    }
+    projMap[r.project_id].types[r.cost_type] = r.amount
+    projMap[r.project_id].total += r.amount
+  })
+
+  // Merge in projects that only have labor/depr (no direct cost entries)
+  labor_by_project.forEach(r => {
+    if (!projMap[r.project_id]) {
+      projMap[r.project_id] = { id: r.project_id, code: r.project_code, name: r.project_name, contract_value: r.contract_value || 0, types: {}, total: 0 }
+    } else if (!projMap[r.project_id].contract_value && r.contract_value) {
+      projMap[r.project_id].contract_value = r.contract_value
+    }
+  })
+  depr_by_project.forEach(r => {
+    if (!projMap[r.project_id]) {
+      projMap[r.project_id] = { id: r.project_id, code: r.project_code, name: r.project_name, contract_value: r.contract_value || 0, types: {}, total: 0 }
+    } else if (!projMap[r.project_id].contract_value && r.contract_value) {
+      projMap[r.project_id].contract_value = r.contract_value
+    }
+  })
+
+  const typeList = [...typeSet]
+  const projects = Object.values(projMap).sort((a, b) => {
+    const at = a.total + (laborMap[a.id]||0) + (deprMap[a.id]||0)
+    const bt = b.total + (laborMap[b.id]||0) + (deprMap[b.id]||0)
+    return bt - at
+  })
+
+  // Grand total including labor + depr
+  const grandTotalAll = grand_total + total_labor + total_depr
+
+  // ── KPI Cards ──────────────────────────────────────────────────
+  const totalPctGthd = total_contract_value > 0 ? (grandTotalAll / total_contract_value * 100) : null
+  // grand_total đã bao gồm chi phí chung (non-depr); tách riêng để hiển thị
+  const grandDirectOnly = grand_total - total_shared_non_depr
+  const kpiHtml = `
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      <div class="card text-center col-span-2 md:col-span-1 lg:col-span-2">
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-coins mr-1 text-blue-500"></i>Chi phí trực tiếp</div>
+        <div class="text-xl font-black text-blue-700">${fmtM(grandDirectOnly)}</div>
+        ${total_shared_non_depr > 0 ? `<div class="text-xs text-yellow-600 mt-0.5"><i class="fas fa-share-alt mr-1"></i>+${fmtM(total_shared_non_depr)} CP chung</div>` : `<div class="text-xs text-gray-400 mt-1">${period.label}</div>`}
+      </div>
+      <div class="card text-center">
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-users mr-1 text-green-500"></i>Chi phí lương</div>
+        <div class="text-xl font-black ${total_labor > 0 ? 'text-green-700' : 'text-gray-400'}">${fmtM(total_labor)}</div>
+        <div class="text-xs text-gray-400 mt-1">${total_labor > 0 ? 'Realtime từ TK lương' : '⚠ Chưa có dữ liệu kỳ này'}</div>
+      </div>
+      <div class="card text-center">
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-chart-area mr-1 text-orange-500"></i>Chi phí khấu hao</div>
+        <div class="text-xl font-black text-orange-700">${fmtM(total_depr)}</div>
+        <div class="text-xs text-gray-400 mt-1">Từ phân bổ tài sản</div>
+      </div>
+      <div class="card text-center">
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-layer-group mr-1 text-red-500"></i>Tổng cộng (tất cả)</div>
+        <div class="text-xl font-black text-red-700">${fmtM(grandTotalAll)}</div>
+        ${totalPctGthd !== null ? `<div class="text-xs mt-1 font-bold ${totalPctGthd > 100 ? 'text-red-600' : totalPctGthd > 80 ? 'text-orange-500' : 'text-indigo-600'}">${totalPctGthd.toFixed(1)}% GTHĐ</div>` : `<div class="text-xs text-gray-400 mt-1">CP trực tiếp + lương + KH</div>`}
+      </div>
+      ${total_contract_value > 0 ? `
+      <div class="card text-center">
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-file-contract mr-1 text-indigo-500"></i>Tổng GTHĐ</div>
+        <div class="text-xl font-black text-indigo-700">${fmtM(total_contract_value)}</div>
+        <div class="text-xs text-gray-400 mt-1">Tất cả DA đang hoạt động · ${details.length} phiếu</div>
+      </div>` : `
+      <div class="card text-center">
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-tags mr-1 text-purple-500"></i>Dự án có chi phí</div>
+        <div class="text-xl font-black text-purple-700">${projects.length}</div>
+        <div class="text-xs text-gray-400 mt-1">${details.length} phiếu chi</div>
+      </div>`}
+    </div>`
+
+  // ── Chart rows ─────────────────────────────────────────────────
+  const chartHtml = `
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-6">
+      <!-- Donut: % theo loại (gồm lương + KH) -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-3 text-sm"><i class="fas fa-chart-pie mr-2 text-blue-500"></i>Cơ cấu chi phí theo loại (bao gồm lương & khấu hao)</h3>
+        <div class="flex items-center gap-4">
+          <canvas id="cbDonutChart" style="max-width:220px;max-height:220px"></canvas>
+          <div id="cbDonutLegend" class="text-xs space-y-1 flex-1 min-w-0"></div>
+        </div>
+      </div>
+      <!-- Bar: top dự án -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-3 text-sm"><i class="fas fa-chart-bar mr-2 text-green-500"></i>Top dự án theo tổng chi phí</h3>
+        <canvas id="cbBarChart" style="max-height:220px"></canvas>
+      </div>
+    </div>
+    <!-- Stacked bar: timeline theo tháng -->
+    <div class="card mb-6">
+      <h3 class="font-semibold text-gray-700 mb-3 text-sm"><i class="fas fa-chart-line mr-2 text-purple-500"></i>Chi phí theo tháng — từng loại</h3>
+      <canvas id="cbLineChart" style="max-height:250px"></canvas>
+    </div>`
+
+  // ── Summary table by type ──────────────────────────────────────
+  // Append labor & depr as virtual rows
+  const allTypeRows = [
+    ...by_type,
+    ...(total_labor > 0 ? [{ cost_type: '__labor__', type_name: 'Chi phí lương', color: '#10b981', entry_count: labor_by_project.length, total_amount: total_labor }] : []),
+    ...(total_depr  > 0 ? [{ cost_type: '__depr__',  type_name: 'Chi phí khấu hao', color: '#f97316', entry_count: depr_by_project.length, total_amount: total_depr }] : [])
+  ]
+  const typeTableHtml = `
+    <div class="card mb-6">
+      <h3 class="font-semibold text-gray-700 mb-3 text-sm"><i class="fas fa-table mr-2 text-gray-500"></i>Tổng hợp theo loại chi phí <span class="text-xs font-normal text-gray-400">(bao gồm lương & khấu hao)</span></h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-gray-400 border-b text-xs">
+            <th class="pb-2 pr-4">Loại chi phí</th>
+            <th class="pb-2 pr-4 text-right">Số phiếu/DA</th>
+            <th class="pb-2 pr-4 text-right">Tổng tiền</th>
+            <th class="pb-2 pr-4 text-right">% tổng CP</th>
+            ${total_contract_value > 0 ? `<th class="pb-2 pr-4 text-right text-indigo-600">% GTHĐ</th>` : ''}
+            <th class="pb-2">Tỷ trọng</th>
+          </tr></thead>
+          <tbody class="divide-y">
+            ${allTypeRows.map(t => {
+              const pctVal = grandTotalAll > 0 ? (t.total_amount / grandTotalAll * 100) : 0
+              const pctGthd = total_contract_value > 0 ? (t.total_amount / total_contract_value * 100) : null
+              const isSpecial = t.cost_type === '__labor__' || t.cost_type === '__depr__'
+              const hasShared = t.has_shared && !isSpecial
+              return `<tr class="hover:bg-gray-50 ${isSpecial ? 'bg-gray-50' : ''}">
+                <td class="py-2 pr-4">
+                  <span class="inline-block w-3 h-3 rounded-sm mr-2" style="background:${t.color}"></span>
+                  <span class="font-medium">${t.type_name}</span>
+                  ${isSpecial ? '<span class="ml-1 text-xs text-gray-400 italic">(tự động)</span>' : ''}
+                  ${hasShared ? '<span class="ml-1 text-xs text-yellow-600" title="Đã gộp chi phí chung"><i class="fas fa-share-alt"></i></span>' : ''}
+                </td>
+                <td class="py-2 pr-4 text-right text-gray-600">${t.entry_count}</td>
+                <td class="py-2 pr-4 text-right font-semibold">${fmtM(t.total_amount)}</td>
+                <td class="py-2 pr-4 text-right text-blue-700 font-bold">${pctVal.toFixed(1)}%</td>
+                ${total_contract_value > 0 ? `<td class="py-2 pr-4 text-right font-bold ${pctGthd !== null && pctGthd > 30 ? 'text-red-600' : pctGthd !== null && pctGthd > 20 ? 'text-orange-600' : 'text-indigo-600'}">${pctGthd !== null ? pctGthd.toFixed(1)+'%' : '—'}</td>` : ''}
+                <td class="py-2" style="min-width:120px">
+                  <div class="bg-gray-100 rounded-full h-2 overflow-hidden">
+                    <div class="h-2 rounded-full" style="width:${Math.min(100,pctVal)}%;background:${t.color}"></div>
+                  </div>
+                </td>
+              </tr>`
+            }).join('')}
+            <tr class="font-bold border-t-2 bg-blue-50">
+              <td class="py-2 pr-4">Tổng cộng</td>
+              <td class="py-2 pr-4 text-right"></td>
+              <td class="py-2 pr-4 text-right text-blue-700">${fmtM(grandTotalAll)}</td>
+              <td class="py-2 pr-4 text-right">100%</td>
+              ${total_contract_value > 0 ? `<td class="py-2 pr-4 text-right font-bold ${grandTotalAll/total_contract_value*100 > 100 ? 'text-red-600' : grandTotalAll/total_contract_value*100 > 80 ? 'text-orange-600' : 'text-indigo-600'}">${(grandTotalAll/total_contract_value*100).toFixed(1)}%</td>` : ''}
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      ${total_contract_value > 0 ? `<div class="mt-2 text-xs text-gray-400"><i class="fas fa-info-circle mr-1"></i>Tổng GTHĐ các dự án có chi phí: <strong>${fmtM(total_contract_value)}</strong> — % GTHĐ = từng loại chi phí / tổng GTHĐ${total_shared_non_depr > 0 ? ` &nbsp;·&nbsp; <i class="fas fa-share-alt text-yellow-500"></i> Đã gộp <strong>${fmtM(total_shared_non_depr)}</strong> chi phí chung vào các loại tương ứng` : ''}</div>` : (total_shared_non_depr > 0 ? `<div class="mt-2 text-xs text-yellow-600"><i class="fas fa-share-alt mr-1"></i>Đã gộp <strong>${fmtM(total_shared_non_depr)}</strong> chi phí chung vào các loại tương ứng</div>` : '')}
+    </div>`
+
+  // ── Pivot table: project × cost_type + lương + KH ──────────────
+  // Store pivot data for pagination
+  window._cbPivotProjects   = projects
+  window._cbPivotTypeList   = typeList
+  window._cbPivotTypeColorMap = typeColorMap
+  window._cbPivotTypeNameMap  = typeNameMap
+  window._cbPivotLaborMap   = laborMap
+  window._cbPivotDeprMap    = deprMap
+  window._cbPivotTotalLabor    = total_labor
+  window._cbPivotTotalDepr     = total_depr
+  window._cbPivotByPT          = by_project_type
+  window._cbPivotGrandAll      = grandTotalAll
+  window._cbPivotContractValue = total_contract_value
+  window._cbPivotPage          = 1
+  window._cbPivotPageSize      = 15
+
+  const pivotHtml = `
+    <div class="card mb-6" id="cbPivotCard">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <h3 class="font-semibold text-gray-700 text-sm"><i class="fas fa-th mr-2 text-indigo-500"></i>Chi tiết chi phí từng dự án × loại chi phí <span class="text-xs font-normal text-gray-400">(bao gồm lương & khấu hao)</span></h3>
+        <div class="flex items-center gap-2 text-xs text-gray-500">
+          <span>Số dòng/trang:</span>
+          <select id="cbPivotPageSize" onchange="cbSetPivotPageSize(this.value)" class="border rounded px-1 py-0.5 text-xs">
+            <option value="10">10</option>
+            <option value="15" selected>15</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+          </select>
+        </div>
+      </div>
+      <div class="text-xs text-gray-400 mb-2"><i class="fas fa-info-circle mr-1"></i>Số tiền (màu) · <span class="text-indigo-500 font-medium">% GTHĐ</span> hiển thị bên dưới từng loại chi phí</div>
+      <div class="overflow-x-auto" id="cbPivotTableWrap">
+        <table class="w-full text-xs" id="cbPivotTable">
+          <thead id="cbPivotThead"></thead>
+          <tbody id="cbPivotTbody"></tbody>
+        </table>
+      </div>
+      <div id="cbPivotPager" class="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t text-xs text-gray-500"></div>
+    </div>`
+
+  // ── Detail table ───────────────────────────────────────────────
+  // Store details on window for pagination reuse
+  window._cbDetails = details
+  window._cbDetailsAll = details   // bản gốc, không thay đổi
+  window._cbDetailPage = 1
+  window._cbDetailPageSize = 20
+  window._cbDetailFilterProject = ''
+  window._cbDetailFilterType = ''
+
+  // Build unique project list for combobox
+  const detailProjects = []
+  const _seenProj = new Set()
+  details.forEach(d => {
+    if (!_seenProj.has(d.project_code)) {
+      _seenProj.add(d.project_code)
+      detailProjects.push({ code: d.project_code, name: d.project_name || d.project_code })
+    }
+  })
+  detailProjects.sort((a, b) => a.code.localeCompare(b.code))
+
+  // Build unique type list for dropdown
+  const detailTypes = []
+  const _seenType = new Set()
+  details.forEach(d => {
+    if (!_seenType.has(d.cost_type)) {
+      _seenType.add(d.cost_type)
+      detailTypes.push({ code: d.cost_type, name: d.type_name, color: d.color })
+    }
+  })
+  detailTypes.sort((a, b) => a.name.localeCompare(b.name))
+
+  const detailHtml = `
+    <div class="card" id="cbDetailCard">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <h3 class="font-semibold text-gray-700 text-sm"><i class="fas fa-list mr-2 text-gray-500"></i>Danh sách chi phí trực tiếp <span class="text-xs font-normal text-gray-400" id="cbDetailCount">(${details.length} phiếu)</span></h3>
+        <div class="flex items-center gap-2 text-xs text-gray-500">
+          <span>Số dòng/trang:</span>
+          <select id="cbPageSize" onchange="cbSetPageSize(this.value)" class="border rounded px-1 py-0.5 text-xs">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+      </div>
+      <!-- Filter row -->
+      <div class="flex flex-wrap gap-2 mb-3 p-2 bg-gray-50 rounded-lg border border-gray-100">
+        <!-- Project search combobox -->
+        <div class="relative flex-1 min-w-48">
+          <div class="flex items-center border rounded bg-white px-2 py-1 gap-1 text-xs cursor-pointer" id="cbDetailProjBox" onclick="cbToggleDetailProjDropdown()">
+            <i class="fas fa-building text-gray-400"></i>
+            <span id="cbDetailProjLabel" class="flex-1 truncate text-gray-600">-- Tất cả dự án --</span>
+            <i class="fas fa-chevron-down text-gray-400 text-xs"></i>
+          </div>
+          <div id="cbDetailProjDropdown" class="hidden absolute z-50 top-full left-0 right-0 mt-1 bg-white border rounded shadow-lg max-h-64 overflow-y-auto">
+            <div class="p-1.5 border-b sticky top-0 bg-white">
+              <input type="text" id="cbDetailProjSearch" placeholder="Tìm dự án..." oninput="cbFilterDetailProjList()" class="w-full border rounded px-2 py-1 text-xs outline-none">
+            </div>
+            <div id="cbDetailProjList">
+              <div class="px-3 py-1.5 text-xs hover:bg-blue-50 cursor-pointer text-gray-500" onclick="cbSelectDetailProj('','-- Tất cả dự án --')">-- Tất cả dự án --</div>
+              ${detailProjects.map(p => `<div class="px-3 py-1.5 text-xs hover:bg-blue-50 cursor-pointer" onclick="cbSelectDetailProj('${p.code}','[${p.code}] ${(p.name||'').replace(/'/g,'&#39;').replace(/"/g,'&quot;')}')">[${p.code}] ${p.name||p.code}</div>`).join('')}
+            </div>
+          </div>
+        </div>
+        <!-- Cost type dropdown -->
+        <div class="flex items-center gap-1 text-xs">
+          <i class="fas fa-tags text-gray-400"></i>
+          <select id="cbDetailTypeFilter" onchange="cbSetDetailTypeFilter(this.value)" class="border rounded bg-white px-2 py-1 text-xs">
+            <option value="">-- Tất cả loại --</option>
+            ${detailTypes.map(t => `<option value="${t.code}">${t.name}</option>`).join('')}
+          </select>
+        </div>
+        <!-- Clear filters -->
+        <button onclick="cbClearDetailFilters()" class="text-xs text-gray-400 hover:text-red-500 px-2 py-1 rounded border bg-white"><i class="fas fa-times mr-1"></i>Xóa lọc</button>
+      </div>
+      <div class="overflow-x-auto" id="cbDetailTableWrap">
+        <table class="w-full text-xs">
+          <thead><tr class="text-left text-gray-400 border-b">
+            <th class="pb-2 pr-3 whitespace-nowrap">#</th>
+            <th class="pb-2 pr-3 whitespace-nowrap">Ngày</th>
+            <th class="pb-2 pr-3 whitespace-nowrap">Dự án</th>
+            <th class="pb-2 pr-3 whitespace-nowrap">Loại</th>
+            <th class="pb-2 pr-3">Diễn giải</th>
+            <th class="pb-2 pr-3 whitespace-nowrap">Nhà cung cấp</th>
+            <th class="pb-2 pr-3 whitespace-nowrap">Số HĐ</th>
+            <th class="pb-2 text-right whitespace-nowrap">Số tiền</th>
+          </tr></thead>
+          <tbody id="cbDetailTbody"></tbody>
+        </table>
+      </div>
+      <div id="cbDetailPager" class="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t text-xs text-gray-500"></div>
+    </div>`
+
+  el.innerHTML = kpiHtml + chartHtml + typeTableHtml + pivotHtml + detailHtml
+  cbRenderPivotPage(1)
+  cbRenderDetailPage(1)
+
+  // ── Draw Charts ────────────────────────────────────────────────
+  requestAnimationFrame(() => {
+    // 1. Donut chart (gồm cả lương + KH)
+    destroyCbChart('donut')
+    const donutData = [
+      ...by_type,
+      ...(total_labor > 0 ? [{ type_name: 'Chi phí lương', color: '#10b981', total_amount: total_labor }] : []),
+      ...(total_depr  > 0 ? [{ type_name: 'Chi phí khấu hao', color: '#f97316', total_amount: total_depr }] : [])
+    ]
+    const ctxD = document.getElementById('cbDonutChart')?.getContext('2d')
+    if (ctxD && donutData.length) {
+      _cbCharts.donut = new Chart(ctxD, {
+        type: 'doughnut',
+        data: {
+          labels: donutData.map(t => t.type_name),
+          datasets: [{ data: donutData.map(t => t.total_amount), backgroundColor: donutData.map(t => t.color), borderWidth: 2 }]
+        },
+        options: { responsive: true, plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` ${fmtM(ctx.raw)} (${grandTotalAll>0?(ctx.raw/grandTotalAll*100).toFixed(1):0}%)` } } } }
+      })
+      const legend = $('cbDonutLegend')
+      if (legend) legend.innerHTML = donutData.map(t => {
+        const p = grandTotalAll > 0 ? (t.total_amount/grandTotalAll*100).toFixed(1) : '0.0'
+        const pGthd = total_contract_value > 0 ? (t.total_amount/total_contract_value*100).toFixed(1) : null
+        return `<div class="flex items-center gap-1.5 truncate">
+          <span class="w-3 h-3 rounded-sm flex-shrink-0" style="background:${t.color}"></span>
+          <span class="truncate">${t.type_name}</span>
+          <span class="ml-auto font-semibold flex-shrink-0 text-blue-700">${p}%</span>
+          ${pGthd !== null ? `<span class="flex-shrink-0 text-indigo-500 text-xs">(${pGthd}%HĐ)</span>` : ''}
+        </div>`
+      }).join('')
+    }
+
+    // 2. Bar chart – top projects (total incl. labor+depr)
+    destroyCbChart('bar')
+    const ctxB = document.getElementById('cbBarChart')?.getContext('2d')
+    if (ctxB && projects.length) {
+      const top10 = projects.slice(0, 10)
+      _cbCharts.bar = new Chart(ctxB, {
+        type: 'bar',
+        data: {
+          labels: top10.map(p => p.code),
+          datasets: [
+            { label: 'CP trực tiếp', data: top10.map(p => p.total), backgroundColor: 'rgba(59,130,246,0.75)', borderRadius: 3, stack: 'stack' },
+            { label: 'CP lương',     data: top10.map(p => laborMap[p.id]||0), backgroundColor: 'rgba(16,185,129,0.75)', borderRadius: 3, stack: 'stack' },
+            { label: 'CP khấu hao', data: top10.map(p => deprMap[p.id]||0), backgroundColor: 'rgba(249,115,22,0.75)', borderRadius: 3, stack: 'stack' },
+            { label: 'GTHĐ', data: top10.map(p => p.contract_value||0), backgroundColor: 'rgba(99,102,241,0.25)', borderRadius: 3, type: 'bar' }
+          ]
+        },
+        options: {
+          responsive: true, indexAxis: 'y',
+          plugins: { legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 10 } }, tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtM(ctx.raw)}` } } },
+          scales: { x: { ticks: { callback: v => fmtM(v), font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } }
+        }
+      })
+    }
+
+    // 3. Stacked bar – monthly timeline
+    destroyCbChart('line')
+    const ctxL = document.getElementById('cbLineChart')?.getContext('2d')
+    if (ctxL && timeline.length) {
+      const months = [...new Set(timeline.map(r => r.month))].sort()
+      const types  = [...new Set(timeline.map(r => r.cost_type))]
+      const typeColors2 = {}
+      timeline.forEach(r => typeColors2[r.cost_type] = { color: r.color, name: r.type_name })
+
+      _cbCharts.line = new Chart(ctxL, {
+        type: 'bar',
+        data: {
+          labels: months,
+          datasets: types.map(t => ({
+            label: typeColors2[t]?.name || t,
+            data: months.map(m => { const row = timeline.find(r => r.month === m && r.cost_type === t); return row?.amount || 0 }),
+            backgroundColor: typeColors2[t]?.color || '#6B7280',
+            borderRadius: 3, stack: 'stack'
+          }))
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 12 } }, tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtM(ctx.raw)}` } } },
+          scales: { x: { stacked: true, ticks: { font: { size: 10 } } }, y: { stacked: true, ticks: { callback: v => fmtM(v), font: { size: 10 } } } }
+        }
+      })
+    }
+  })
+}
+
+// ── Detail table filter helpers ──────────────────────────────
+function cbToggleDetailProjDropdown() {
+  const dd = document.getElementById('cbDetailProjDropdown')
+  if (!dd) return
+  dd.classList.toggle('hidden')
+  if (!dd.classList.contains('hidden')) {
+    const inp = document.getElementById('cbDetailProjSearch')
+    if (inp) { inp.value = ''; cbFilterDetailProjList(); inp.focus() }
+  }
+}
+function cbFilterDetailProjList() {
+  const q = (document.getElementById('cbDetailProjSearch')?.value || '').toLowerCase()
+  const items = document.querySelectorAll('#cbDetailProjList > div')
+  items.forEach(el => {
+    el.style.display = !q || el.textContent.toLowerCase().includes(q) ? '' : 'none'
+  })
+}
+function cbSelectDetailProj(code, label) {
+  window._cbDetailFilterProject = code
+  const lbl = document.getElementById('cbDetailProjLabel')
+  if (lbl) { lbl.textContent = label; lbl.className = code ? 'flex-1 truncate text-blue-600 font-medium' : 'flex-1 truncate text-gray-600' }
+  const dd = document.getElementById('cbDetailProjDropdown')
+  if (dd) dd.classList.add('hidden')
+  cbApplyDetailFilter()
+}
+function cbSetDetailTypeFilter(val) {
+  window._cbDetailFilterType = val
+  cbApplyDetailFilter()
+}
+function cbClearDetailFilters() {
+  window._cbDetailFilterProject = ''
+  window._cbDetailFilterType = ''
+  const lbl = document.getElementById('cbDetailProjLabel')
+  if (lbl) { lbl.textContent = '-- Tất cả dự án --'; lbl.className = 'flex-1 truncate text-gray-600' }
+  const typeSelect = document.getElementById('cbDetailTypeFilter')
+  if (typeSelect) typeSelect.value = ''
+  cbApplyDetailFilter()
+}
+function cbApplyDetailFilter() {
+  const all = window._cbDetailsAll || []
+  const projFilter = window._cbDetailFilterProject || ''
+  const typeFilter = window._cbDetailFilterType || ''
+  let filtered = all
+  if (projFilter) filtered = filtered.filter(d => d.project_code === projFilter)
+  if (typeFilter) filtered = filtered.filter(d => d.cost_type === typeFilter)
+  window._cbDetails = filtered
+  cbRenderDetailPage(1)
+}
+// Close dropdown when clicking outside
+document.addEventListener('click', function(e) {
+  const box = document.getElementById('cbDetailProjBox')
+  const dd  = document.getElementById('cbDetailProjDropdown')
+  if (dd && box && !box.contains(e.target) && !dd.contains(e.target)) dd.classList.add('hidden')
+}, true)
+
+// ── Detail table pagination helpers ───────────────────────────
+function cbRenderDetailPage(page) {
+  const details  = window._cbDetails || []
+  const pageSize = window._cbDetailPageSize || 20
+  const total    = details.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  page = Math.max(1, Math.min(page, totalPages))
+  window._cbDetailPage = page
+
+  const start = (page - 1) * pageSize
+  const end   = Math.min(start + pageSize, total)
+  const slice = details.slice(start, end)
+
+  const tbody = document.getElementById('cbDetailTbody')
+  if (!tbody) return
+  tbody.innerHTML = slice.map((d, i) => `<tr class="hover:bg-gray-50">
+    <td class="py-1.5 pr-3 text-gray-400">${start + i + 1}</td>
+    <td class="py-1.5 pr-3 whitespace-nowrap">${fmtDate(d.cost_date)}</td>
+    <td class="py-1.5 pr-3 whitespace-nowrap"><span class="text-gray-400">[${d.project_code}]</span> <span class="text-gray-600">${d.project_name ? (d.project_name.length > 20 ? d.project_name.substring(0,20)+'…' : d.project_name) : ''}</span></td>
+    <td class="py-1.5 pr-3 whitespace-nowrap">
+      <span class="inline-block px-1.5 py-0.5 rounded text-white text-xs" style="background:${d.color}">${d.type_name}</span>
+    </td>
+    <td class="py-1.5 pr-3 max-w-xs truncate" title="${(d.description||'').replace(/"/g,'&quot;')}">${d.description||'—'}</td>
+    <td class="py-1.5 pr-3 text-gray-500 whitespace-nowrap">${d.vendor||'—'}</td>
+    <td class="py-1.5 pr-3 text-gray-500 whitespace-nowrap">${d.invoice_number||'—'}</td>
+    <td class="py-1.5 text-right font-semibold whitespace-nowrap">${fmt(d.amount)}</td>
+  </tr>`).join('')
+
+  // Update count label
+  const countEl = document.getElementById('cbDetailCount')
+  const allCount = (window._cbDetailsAll || []).length
+  const isFiltered = total < allCount
+  if (countEl) countEl.textContent = isFiltered ? `(${total} / ${allCount} phiếu — trang ${page}/${totalPages})` : `(${total} phiếu — trang ${page}/${totalPages})`
+
+  // Render pager
+  const pager = document.getElementById('cbDetailPager')
+  if (!pager) return
+  const pageWindow = 2
+  let btns = ''
+  // Prev
+  btns += `<button onclick="cbRenderDetailPage(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded border text-xs ${page<=1?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i> Trước</button>`
+  // Page buttons
+  const pagesHtml = []
+  if (page > pageWindow + 1) pagesHtml.push(`<button onclick="cbRenderDetailPage(1)" class="px-2 py-1 rounded border text-xs hover:bg-gray-100">1</button>`)
+  if (page > pageWindow + 2) pagesHtml.push(`<span class="px-1 text-gray-400">…</span>`)
+  for (let p = Math.max(1, page - pageWindow); p <= Math.min(totalPages, page + pageWindow); p++) {
+    pagesHtml.push(`<button onclick="cbRenderDetailPage(${p})" class="px-2 py-1 rounded border text-xs ${p===page?'bg-blue-500 text-white border-blue-500':'hover:bg-gray-100'}">${p}</button>`)
+  }
+  if (page < totalPages - pageWindow - 1) pagesHtml.push(`<span class="px-1 text-gray-400">…</span>`)
+  if (page < totalPages - pageWindow) pagesHtml.push(`<button onclick="cbRenderDetailPage(${totalPages})" class="px-2 py-1 rounded border text-xs hover:bg-gray-100">${totalPages}</button>`)
+  btns += pagesHtml.join('')
+  // Next
+  btns += `<button onclick="cbRenderDetailPage(${page+1})" ${page>=totalPages?'disabled':''} class="px-2 py-1 rounded border text-xs ${page>=totalPages?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}">Tiếp <i class="fas fa-chevron-right"></i></button>`
+
+  const rangeInfo = `<span class="text-gray-400">Hiển thị ${start+1}–${end} / ${total} phiếu</span>`
+  pager.innerHTML = rangeInfo + `<div class="flex items-center gap-1">${btns}</div>`
+}
+
+function cbSetPageSize(val) {
+  window._cbDetailPageSize = parseInt(val) || 20
+  cbRenderDetailPage(1)
+}
+// ── END detail table pagination ────────────────────────────────
+
+// ── Pivot table pagination helpers ────────────────────────────
+function cbRenderPivotPage(page) {
+  const projects   = window._cbPivotProjects   || []
+  const typeList   = window._cbPivotTypeList   || []
+  const typeColorMap = window._cbPivotTypeColorMap || {}
+  const typeNameMap  = window._cbPivotTypeNameMap  || {}
+  const laborMap   = window._cbPivotLaborMap   || {}
+  const deprMap    = window._cbPivotDeprMap    || {}
+  const total_labor        = window._cbPivotTotalLabor    || 0
+  const total_depr         = window._cbPivotTotalDepr     || 0
+  const by_project_type    = window._cbPivotByPT          || []
+  const grandTotalAll      = window._cbPivotGrandAll      || 0
+  const total_contract_value = window._cbPivotContractValue || 0
+  const pageSize   = window._cbPivotPageSize   || 15
+  const total      = projects.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  page = Math.max(1, Math.min(page, totalPages))
+  window._cbPivotPage = page
+
+  const start = (page - 1) * pageSize
+  const end   = Math.min(start + pageSize, total)
+  const slice = projects.slice(start, end)
+
+  // Render thead
+  const thead = document.getElementById('cbPivotThead')
+  if (thead) {
+    thead.innerHTML = `<tr class="text-left text-gray-400 border-b">
+      <th class="pb-2 pr-3 whitespace-nowrap">#</th>
+      <th class="pb-2 pr-3 whitespace-nowrap">Dự án</th>
+      <th class="pb-2 pr-3 text-right whitespace-nowrap">GTHĐ</th>
+      ${typeList.map(t => `<th class="pb-2 pr-3 text-right whitespace-nowrap" style="color:${typeColorMap[t]}">${typeNameMap[t]||t}</th>`).join('')}
+      ${total_labor > 0 ? `<th class="pb-2 pr-3 text-right whitespace-nowrap text-green-600">CP Lương</th>` : ''}
+      ${total_depr  > 0 ? `<th class="pb-2 pr-3 text-right whitespace-nowrap text-orange-600">CP Khấu hao</th>` : ''}
+      <th class="pb-2 pr-3 text-right whitespace-nowrap font-bold text-blue-700">Tổng CP</th>
+      <th class="pb-2 text-right whitespace-nowrap">% GTHĐ</th>
+    </tr>`
+  }
+
+  // Render tbody (page slice)
+  const tbody = document.getElementById('cbPivotTbody')
+  if (!tbody) return
+  tbody.innerHTML = slice.map((p, i) => {
+    const labor    = laborMap[p.id] || 0
+    const depr     = deprMap[p.id]  || 0
+    const rowTotal = p.total + labor + depr
+    const pctGthd  = p.contract_value > 0 ? (rowTotal / p.contract_value * 100) : null
+    const pctColor = pctGthd === null ? 'text-gray-400' : pctGthd > 100 ? 'text-red-600 font-bold' : pctGthd > 80 ? 'text-orange-600' : 'text-green-600'
+    const cv = p.contract_value || 0
+    return `<tr class="hover:bg-gray-50">
+      <td class="py-2 pr-3 text-gray-400 whitespace-nowrap">${start + i + 1}</td>
+      <td class="py-2 pr-3 font-medium whitespace-nowrap">
+        <span class="text-gray-400 text-xs">[${p.code}]</span> ${p.name.length>28?p.name.substring(0,28)+'…':p.name}
+      </td>
+      <td class="py-2 pr-3 text-right text-gray-500">${cv > 0 ? fmtM(cv) : '—'}</td>
+      ${typeList.map(t => {
+        const amt = p.types[t] || 0
+        const pct = cv > 0 && amt > 0 ? (amt/cv*100).toFixed(1)+'%' : ''
+        return `<td class="py-2 pr-3 text-right">${amt > 0 ? `<div>${fmtM(amt)}</div>${pct ? `<div class="text-indigo-500 font-semibold">${pct}</div>` : ''}` : '<span class="text-gray-300">—</span>'}</td>`
+      }).join('')}
+      ${total_labor > 0 ? (() => {
+        const pct = cv > 0 && labor > 0 ? (labor/cv*100).toFixed(1)+'%' : ''
+        return `<td class="py-2 pr-3 text-right font-medium text-green-700">${labor > 0 ? `<div>${fmtM(labor)}</div>${pct ? `<div class="text-indigo-500 font-semibold">${pct}</div>` : ''}` : '<span class="text-gray-300">—</span>'}</td>`
+      })() : ''}
+      ${total_depr > 0 ? (() => {
+        const pct = cv > 0 && depr > 0 ? (depr/cv*100).toFixed(1)+'%' : ''
+        return `<td class="py-2 pr-3 text-right font-medium text-orange-700">${depr > 0 ? `<div>${fmtM(depr)}</div>${pct ? `<div class="text-indigo-500 font-semibold">${pct}</div>` : ''}` : '<span class="text-gray-300">—</span>'}</td>`
+      })() : ''}
+      <td class="py-2 pr-3 text-right font-bold text-blue-700">${fmtM(rowTotal)}</td>
+      <td class="py-2 text-right ${pctColor}">${pctGthd !== null ? pctGthd.toFixed(1)+'%' : '—'}</td>
+    </tr>`
+  }).join('')
+
+  // Footer total row (always shown)
+  tbody.innerHTML += `<tr class="font-bold border-t-2 bg-blue-50 text-sm">
+    <td class="py-2 pr-3 text-gray-400 text-xs">Tổng</td>
+    <td class="py-2 pr-3">Tất cả ${total} dự án</td>
+    <td class="py-2 pr-3 text-right">${fmtM(projects.reduce((s,p)=>s+(p.contract_value||0),0))}</td>
+    ${typeList.map(t => {
+      const sum = by_project_type.filter(r=>r.cost_type===t).reduce((s,r)=>s+r.amount,0)
+      return `<td class="py-2 pr-3 text-right" style="color:${typeColorMap[t]}">${fmtM(sum)}</td>`
+    }).join('')}
+    ${total_labor > 0 ? `<td class="py-2 pr-3 text-right text-green-700">${fmtM(total_labor)}</td>` : ''}
+    ${total_depr  > 0 ? `<td class="py-2 pr-3 text-right text-orange-700">${fmtM(total_depr)}</td>` : ''}
+    <td class="py-2 pr-3 text-right text-blue-700">${fmtM(grandTotalAll)}</td>
+    <td class="py-2 text-right font-bold ${total_contract_value > 0 ? (grandTotalAll/total_contract_value*100 > 100 ? 'text-red-600' : grandTotalAll/total_contract_value*100 > 80 ? 'text-orange-600' : 'text-indigo-600') : 'text-gray-400'}">${total_contract_value > 0 ? (grandTotalAll/total_contract_value*100).toFixed(1)+'%' : '—'}</td>
+  </tr>`
+
+  // Pager
+  const pager = document.getElementById('cbPivotPager')
+  if (!pager) return
+  if (totalPages <= 1) { pager.innerHTML = `<span class="text-gray-400">${total} dự án</span>`; return }
+  const pw = 2
+  let btns = `<button onclick="cbRenderPivotPage(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded border text-xs ${page<=1?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i> Trước</button>`
+  const pagesHtml = []
+  if (page > pw+1) pagesHtml.push(`<button onclick="cbRenderPivotPage(1)" class="px-2 py-1 rounded border text-xs hover:bg-gray-100">1</button>`)
+  if (page > pw+2) pagesHtml.push(`<span class="px-1 text-gray-400">…</span>`)
+  for (let p2 = Math.max(1,page-pw); p2 <= Math.min(totalPages,page+pw); p2++) {
+    pagesHtml.push(`<button onclick="cbRenderPivotPage(${p2})" class="px-2 py-1 rounded border text-xs ${p2===page?'bg-blue-500 text-white border-blue-500':'hover:bg-gray-100'}">${p2}</button>`)
+  }
+  if (page < totalPages-pw-1) pagesHtml.push(`<span class="px-1 text-gray-400">…</span>`)
+  if (page < totalPages-pw) pagesHtml.push(`<button onclick="cbRenderPivotPage(${totalPages})" class="px-2 py-1 rounded border text-xs hover:bg-gray-100">${totalPages}</button>`)
+  btns += pagesHtml.join('')
+  btns += `<button onclick="cbRenderPivotPage(${page+1})" ${page>=totalPages?'disabled':''} class="px-2 py-1 rounded border text-xs ${page>=totalPages?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}">Tiếp <i class="fas fa-chevron-right"></i></button>`
+  pager.innerHTML = `<span class="text-gray-400">Hiển thị ${start+1}–${end} / ${total} dự án (trang ${page}/${totalPages})</span><div class="flex items-center gap-1">${btns}</div>`
+}
+
+function cbSetPivotPageSize(val) {
+  window._cbPivotPageSize = parseInt(val) || 15
+  cbRenderPivotPage(1)
+}
+// ── END pivot table pagination ─────────────────────────────────
+
+async function exportCostBreakdownExcel() {
+  if (typeof XLSX === 'undefined') { toast('Thư viện XLSX chưa được tải', 'error'); return }
+  const year   = $('cbYear')?.value || String(new Date().getFullYear())
+  const projId = _cbGetValue('cbProjectCombobox')
+  const costType = $('cbCostType')?.value || ''
+  let q = `/analytics/cost-breakdown?year=${year}`
+  if (projId)   q += `&project_id=${projId}`
+  if (costType) q += `&cost_type=${costType}`
+
+  toast('Đang xuất Excel...', 'info')
+  try {
+    const data = await api(q)
+    const wb = XLSX.utils.book_new()
+    const totalCv = data.total_contract_value || 0
+    const grandAll = (data.grand_total||0) + (data.total_labor||0) + (data.total_depr||0)
+
+    // Sheet 1: Tổng hợp theo loại
+    const s1 = [['Loại chi phí','Số phiếu','Tổng tiền','% Tổng CP', totalCv > 0 ? '% GTHĐ' : null].filter(Boolean)]
+    const allRows = [
+      ...data.by_type,
+      ...(data.total_labor > 0 ? [{ type_name: 'Chi phí lương (TK)', entry_count: (data.labor_by_project||[]).length, total_amount: data.total_labor }] : []),
+      ...(data.total_depr  > 0 ? [{ type_name: 'Chi phí khấu hao', entry_count: (data.depr_by_project||[]).length, total_amount: data.total_depr }] : [])
+    ]
+    allRows.forEach(t => {
+      const row = [t.type_name, t.entry_count, t.total_amount, grandAll > 0 ? +(t.total_amount/grandAll*100).toFixed(2) : 0]
+      if (totalCv > 0) row.push(+(t.total_amount/totalCv*100).toFixed(2))
+      s1.push(row)
+    })
+    const totRow = ['Tổng cộng', allRows.reduce((s,t)=>s+t.entry_count,0), grandAll, 100]
+    if (totalCv > 0) totRow.push(+(grandAll/totalCv*100).toFixed(2))
+    s1.push(totRow)
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(s1), 'Tổng hợp theo loại')
+
+    // Sheet 2: Chi tiết
+    const s2 = [['Ngày','Dự án','Mã DA','Loại CP','Diễn giải','Nhà cung cấp','Số HĐ','Số tiền']]
+    data.details.forEach(d => s2.push([d.cost_date, d.project_name, d.project_code, d.type_name, d.description||'', d.vendor||'', d.invoice_number||'', d.amount]))
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(s2), 'Chi tiết chi phí')
+
+    XLSX.writeFile(wb, `chi-phi-theo-loai-NTC${year}.xlsx`)
+    toast('Xuất Excel thành công!', 'success')
+  } catch(e) {
+    toast('Lỗi xuất Excel: ' + e.message, 'error')
+  }
+}
+// ═══ END COST BREAKDOWN MODULE ═══════════════════════════════════════════════
