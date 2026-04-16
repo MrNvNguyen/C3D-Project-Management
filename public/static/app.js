@@ -494,14 +494,17 @@ function getAssetCategoryName(c) {
 
 function getCostTypeName(t) {
   const m = {
-    salary: 'Lương nhân sự',
-    equipment: 'Thiết bị',
-    material: 'Vật liệu',
-    travel: 'Đi lại',
-    office: 'Văn phòng',
-    transport: 'Vận chuyển',
-    depreciation: 'Khấu hao tài sản',
-    other: 'Khác'
+    salary:       'Chi phí lương',
+    equipment:    'Chi phí thiết bị',
+    material:     'Chi phí vật liệu',
+    travel:       'Chi phí đi lại',
+    office:       'Chi phí văn phòng',
+    transport:    'Chi phí vận chuyển',
+    depreciation: 'Chi phí khấu hao',
+    other:        'Chi phí khác',
+    manmonth:     'Chi phí tháng',
+    department:   'Chi phí phòng',
+    shared:       'Chi phí chung (phân bổ)'
   }
   return m[t] || t
 }
@@ -6040,7 +6043,7 @@ function _tsRenderMultiRows() {
   // Render rows: grid 5 cột [Hạng mục] [Task] [HC] [OT] [Xóa]
   container.innerHTML = _tsMultiRows.map((row, i) => `
     <div id="tsMultiRow_${row.idx}"
-      style="display:grid;grid-template-columns:150px 1fr 76px 76px 28px;gap:6px;align-items:center;background:${i%2===0?'#f9fafb':'#ffffff'};border:1px solid #e5e7eb;border-radius:8px;padding:6px 6px 6px 8px">
+      style="display:grid;grid-template-columns:minmax(160px,1.2fr) minmax(0,2.5fr) 72px 72px 28px;gap:6px;align-items:center;background:${i%2===0?'#f9fafb':'#ffffff'};border:1px solid #e5e7eb;border-radius:8px;padding:6px 6px 6px 8px">
       <div id="tsMultiCat_cb_${row.idx}"></div>
       <div id="tsMultiTask_cb_${row.idx}"></div>
       <input type="number" id="tsMultiReg_${row.idx}"
@@ -7076,6 +7079,8 @@ async function loadCostDashboard() {
     renderCostMonthlyChart(summary.monthly_summary, sharedSummary?.by_project || [])
 
     loadCosts()
+    // Nếu đang ở tab Chi phí chung → reload luôn khi năm thay đổi
+    if (currentCostTab === 'shared') loadSharedCosts()
   } catch (e) { toast('Lỗi tải dữ liệu tài chính: ' + e.message, 'error') }
   finally {
     _costDashboardLoading = false
@@ -7212,9 +7217,7 @@ async function switchCostTab(tab) {
   const activePanel = panels[tab]
   if (activePanel) { const el = $(activePanel); if (el) el.classList.remove('hidden') }
 
-  // Cost filter row: only show for costs/revenues
-  const costFilter = $('costFilter')
-  if (costFilter) costFilter.classList.toggle('hidden', tab === 'analysis' || tab === 'duplicates' || tab === 'shared')
+  // costFilter is now always visible (moved above tabs as global bar)
   // Filter loại chi phí chỉ hiện ở tab chi phí riêng
   const costTypeSel = $('costTypeFilterSel')
   if (costTypeSel) costTypeSel.style.display = (tab === 'costs') ? '' : 'none'
@@ -7446,12 +7449,12 @@ async function loadCostAnalysis() {
       // Breakdown table
       const tbody = $('anaBreakdownTbody')
       if (tbody) {
-        const costTypeIcons = { 'Lương nhân sự':'👥', 'Vật liệu':'🔩', 'Thiết bị':'🔧', 'Vận chuyển':'🚛', 'Chi phí chung (phân bổ)':'🤝' }
+        const costTypeIcons = { salary:'👥', material:'🔩', equipment:'🔧', transport:'🚛', travel:'🚗', office:'🏢', depreciation:'📉', manmonth:'📅', department:'🏬', shared:'🤝', other:'📋' }
         tbody.innerHTML = breakdown.map(b => `
           <tr class="border-b border-gray-50 hover:bg-gray-50 ${b.cost_type === 'shared' ? 'bg-yellow-50' : ''}">
             <td class="py-2 pr-3">
               <span class="flex items-center gap-1.5">
-                <span>${costTypeIcons[b.type] || '📋'}</span>
+                <span>${costTypeIcons[b.cost_type] || '📋'}</span>
                 <span class="font-medium text-gray-700">${b.type}</span>
                 ${b.is_auto ? '<span class="text-xs bg-blue-100 text-blue-600 px-1 rounded ml-1">tự động</span>' : ''}
                 ${b.cost_type === 'shared' ? `<span class="text-xs bg-yellow-100 text-yellow-700 px-1 rounded ml-1">chung (${b.shared_count || '?'} khoản)</span>` : ''}
@@ -7568,7 +7571,7 @@ async function checkCostDuplicates() {
     $('dupTotalCount').textContent = total
     $('btnCleanupCostDups').classList.remove('hidden')
 
-    const costTypeNames = { salary:'Lương nhân sự', material:'Vật liệu', equipment:'Thiết bị', transport:'Vận chuyển', other:'Chi phí khác' }
+    const costTypeNames = { salary:'Chi phí lương', material:'Chi phí vật liệu', equipment:'Chi phí thiết bị', transport:'Chi phí vận chuyển', other:'Chi phí khác', manmonth:'Chi phí tháng', department:'Chi phí phòng', depreciation:'Chi phí khấu hao', travel:'Chi phí đi lại', office:'Chi phí văn phòng' }
     const tbody = $('dupTableBody')
     if (!tbody) return
 
@@ -7576,7 +7579,7 @@ async function checkCostDuplicates() {
       <tr class="border-b border-gray-100 hover:bg-red-50">
         <td class="py-2 pr-3"><span class="badge" style="background:#fef3c7;color:#92400e">Chi phí</span></td>
         <td class="py-2 pr-3 font-medium text-sm">${d.project_code || d.project_id}</td>
-        <td class="py-2 pr-3 text-sm">${costTypeNames[d.cost_type] || d.cost_type}</td>
+        <td class="py-2 pr-3 text-sm">${d.type_name || costTypeNames[d.cost_type] || getCostTypeNameDynamic(d.cost_type)}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${fmtDate(d.cost_date)}</td>
         <td class="py-2 pr-3 text-center"><span class="bg-red-100 text-red-700 text-xs font-bold px-2 py-0.5 rounded-full">${d.duplicate_count}</span></td>
         <td class="py-2 pr-3 text-right text-sm font-medium text-red-600">${fmt(d.total_amount)}</td>
@@ -7759,10 +7762,10 @@ function renderCostTable() {
       <th class="pb-3">Thao tác</th>
     </tr>`
 
-  // Populate filter dropdown & ẩn/hiện select filter
+  // Populate filter dropdown & ẩn/hiện select filter (chỉ hiện khi ở tab Chi phí riêng)
   populateCostTypeFilter()
   const filterSel = $('costTypeFilterSel')
-  if (filterSel) filterSel.closest('select') === filterSel && (filterSel.style.display = '')
+  if (filterSel) filterSel.style.display = (currentCostTab === 'costs') ? '' : 'none'
 
   // Lọc theo loại chi phí
   const filtered = _costTypeFilter
@@ -7783,7 +7786,7 @@ function renderCostTable() {
   tbody.innerHTML = pageData.map(c => `
       <tr class="table-row">
         <td class="py-2 pr-3 text-sm font-medium">${c.project_code || '-'}</td>
-        <td class="py-2 pr-3"><span class="badge" style="background:#fef3c7;color:#92400e">${getCostTypeNameDynamic(c.cost_type)}</span></td>
+        <td class="py-2 pr-3"><span class="badge" style="background:${c.type_color ? c.type_color+'22' : '#fef3c7'};color:${c.type_color || '#92400e'}">${c.type_name || getCostTypeNameDynamic(c.cost_type)}</span></td>
         <td class="py-2 pr-3 text-sm text-gray-700">${c.description}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${c.vendor || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${fmtDate(c.cost_date)}</td>
@@ -9901,8 +9904,19 @@ async function loadProfile() {
   if (emailCard) {
     if (user?.role === 'system_admin') {
       emailCard.classList.remove('hidden')
+      // Load weekly report config & preview
+      loadWeeklyReportConfig()
     } else {
       emailCard.classList.add('hidden')
+    }
+  }
+  // Show weekly report card only for system_admin
+  const weeklyCard = $('weeklyReportCard')
+  if (weeklyCard) {
+    if (user?.role === 'system_admin') {
+      weeklyCard.classList.remove('hidden')
+    } else {
+      weeklyCard.classList.add('hidden')
     }
   }
 
@@ -10372,10 +10386,124 @@ async function sendOverdueReminders() {
   }
 }
 
+// ─── WEEKLY TASK REPORT ───────────────────────────────────────────────────────
+const DAY_NAMES = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7']
+
+async function loadWeeklyReportConfig() {
+  try {
+    const data = await api('/admin/weekly-task-report/preview')
+    const cfg  = data.config || {}
+    // Update toggles
+    const toggle = $('weeklyReportEnabled')
+    if (toggle) toggle.checked = cfg.enabled !== '0'
+    const daySelect = $('weeklyReportDay')
+    if (daySelect) daySelect.value = cfg.day ?? '5'
+    const hourSelect = $('weeklyReportHour')
+    if (hourSelect) hourSelect.value = cfg.hour ?? '8'
+    // Render preview stats
+    renderWeeklyReportPreview(data)
+  } catch(e) {
+    toast('Lỗi tải cấu hình báo cáo tuần: ' + e.message, 'error')
+  }
+}
+
+function renderWeeklyReportPreview(data) {
+  const el = $('weeklyReportPreview')
+  if (!el) return
+  const stats   = data.memberStats || []
+  const summary = data.summary    || {}
+  if (stats.length === 0) {
+    el.innerHTML = '<p class="text-xs text-gray-400 py-4 text-center">Chưa có dữ liệu task</p>'
+    return
+  }
+  const rows = stats.map(m => {
+    const rate = m.total > 0 ? Math.round(m.done / m.total * 100) : 0
+    const overdueTag = m.overdue > 0
+      ? `<span class="text-red-600 font-bold text-xs ml-1">(⚠ ${m.overdue} QH)</span>` : ''
+    return `<tr class="border-b border-gray-100 hover:bg-gray-50">
+      <td class="py-1.5 px-2 text-sm font-medium text-gray-800">${m.name}${overdueTag}</td>
+      <td class="py-1.5 px-2 text-center text-sm text-green-600 font-bold">${m.done}</td>
+      <td class="py-1.5 px-2 text-center text-sm text-blue-600">${m.inprogress}</td>
+      <td class="py-1.5 px-2 text-center text-sm text-gray-500">${m.todo}</td>
+      <td class="py-1.5 px-2 text-center text-sm ${m.overdue>0?'text-red-600 font-bold':'text-gray-400'}">${m.overdue}</td>
+      <td class="py-1.5 px-2 text-center text-sm text-gray-700">${m.total}</td>
+      <td class="py-1.5 px-2 text-sm">
+        <div class="flex items-center gap-1">
+          <div class="flex-1 bg-gray-200 rounded h-1.5">
+            <div class="rounded h-1.5" style="width:${rate}%;background:${rate>=80?'#16a34a':rate>=50?'#f59e0b':'#ef4444'}"></div>
+          </div>
+          <span class="text-xs text-gray-500 w-8 text-right">${rate}%</span>
+        </div>
+      </td>
+    </tr>`
+  }).join('')
+
+  el.innerHTML = `
+    <div class="grid grid-cols-4 gap-2 mb-3">
+      <div class="bg-green-50 rounded-lg p-2 text-center"><div class="text-lg font-bold text-green-600">${summary.totalDone||0}</div><div class="text-xs text-green-700">✅ Hoàn thành</div></div>
+      <div class="bg-blue-50 rounded-lg p-2 text-center"><div class="text-lg font-bold text-blue-600">${summary.totalInprog||0}</div><div class="text-xs text-blue-700">🔄 Đang làm</div></div>
+      <div class="bg-gray-50 rounded-lg p-2 text-center"><div class="text-lg font-bold text-gray-600">${summary.totalTodo||0}</div><div class="text-xs text-gray-600">📋 Chưa làm</div></div>
+      <div class="bg-red-50 rounded-lg p-2 text-center"><div class="text-lg font-bold text-red-600">${summary.totalOverdue||0}</div><div class="text-xs text-red-700">⚠️ Quá hạn</div></div>
+    </div>
+    <div class="overflow-x-auto rounded border border-gray-100">
+      <table class="w-full text-xs">
+        <thead><tr class="bg-gray-50 text-gray-600">
+          <th class="py-1.5 px-2 text-left font-medium">Nhân sự (${stats.length})</th>
+          <th class="py-1.5 px-2 text-center font-medium text-green-600">✅ HT</th>
+          <th class="py-1.5 px-2 text-center font-medium text-blue-600">🔄 ĐL</th>
+          <th class="py-1.5 px-2 text-center font-medium text-gray-500">📋 CL</th>
+          <th class="py-1.5 px-2 text-center font-medium text-red-500">⚠ QH</th>
+          <th class="py-1.5 px-2 text-center font-medium">Tổng</th>
+          <th class="py-1.5 px-2 text-left font-medium">% HT</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`
+}
+
+async function saveWeeklyReportConfig() {
+  const enabled = $('weeklyReportEnabled')?.checked ? '1' : '0'
+  const day     = $('weeklyReportDay')?.value  || '5'
+  const hour    = $('weeklyReportHour')?.value || '8'
+  try {
+    await api('/system-config', { method: 'PUT', data: {
+      weekly_report_enabled: enabled,
+      weekly_report_day:     day,
+      weekly_report_hour:    hour,
+    }})
+    toast('✅ Đã lưu cấu hình báo cáo tuần', 'success')
+  } catch(e) {
+    toast('Lỗi lưu cấu hình: ' + e.message, 'error')
+  }
+}
+
+async function sendWeeklyReportNow() {
+  const btn = $('btnSendWeeklyReport')
+  const resultEl = $('weeklyReportResult')
+  if (!confirm('Gửi ngay báo cáo task tuần đến tất cả System Admin?')) return
+  if (btn) btn.disabled = true
+  if (resultEl) resultEl.textContent = 'Đang gửi...'
+  try {
+    const res = await api('/admin/weekly-task-report/send?force=1', { method: 'POST' })
+    const msg = res.sent > 0
+      ? `✅ Đã gửi báo cáo tuần đến ${res.sent} admin (${res.week})`
+      : `ℹ️ ${res.message || 'Đã xử lý'}`
+    if (resultEl) resultEl.textContent = msg
+    toast(msg, res.sent > 0 ? 'success' : 'info', 5000)
+    setTimeout(() => refreshEmailLogs(), 2000)
+  } catch(e) {
+    if (resultEl) resultEl.textContent = '❌ Lỗi: ' + e.message
+    toast('Lỗi gửi báo cáo: ' + e.message, 'error')
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
 const EMAIL_EVENT_LABELS = {
   task_assigned:        '📌 Giao task',
   task_status_updated:  '🔄 Cập nhật task',
   task_overdue:         '⚠️ Quá hạn',
+  weekly_task_report:   '📊 Báo cáo tuần',
   project_added:        '🏗️ Thêm dự án',
   project_updated:      '📝 Cập nhật dự án',
   timesheet_reviewed:   '✅ Duyệt timesheet',
@@ -11121,7 +11249,7 @@ async function loadFinanceProject() {
                 const ctIcon = c.cost_type === 'salary' ? '👤' : c.cost_type === 'shared' ? '🤝' : c.cost_type === 'material' ? '🧱' : c.cost_type === 'equipment' ? '⚙️' : c.cost_type === 'transport' ? '🚛' : '📦'
                 const rowBg = c.cost_type === 'shared' ? 'bg-yellow-50' : ''
                 return `<tr class="table-row border-b hover:bg-gray-50 ${rowBg}">
-                  <td class="py-2 px-3">${ctIcon} ${c.label || getCostTypeName(c.cost_type)}
+                  <td class="py-2 px-3">${ctIcon} ${c.label || getCostTypeNameDynamic(c.cost_type)}
                     ${c.cost_type === 'shared' ? `<span class="ml-1 text-xs bg-yellow-100 text-yellow-700 px-1.5 rounded-full">${c.shared_count || '?'} khoản</span>` : ''}
                   </td>
                   <td class="py-2 px-3 text-right font-medium ${c.cost_type === 'shared' ? 'text-yellow-700' : 'text-red-600'}">${fmt(c.total)} VNĐ</td>
@@ -11227,7 +11355,7 @@ async function loadFinanceProject() {
         charts['finCostPie'] = safeChart(ctx1, {
           type: 'doughnut',
           data: {
-            labels: costs_by_type.map(c => c.label || getCostTypeName(c.cost_type)),
+            labels: costs_by_type.map(c => c.label || getCostTypeNameDynamic(c.cost_type)),
             datasets: [{ data: costs_by_type.map(c => c.total), backgroundColor: colors, borderWidth: 2 }]
           },
           options: {
@@ -12202,6 +12330,11 @@ let _sharedCostSummary = null
 async function loadSharedCosts() {
   const year = $('costYearFilter')?.value || new Date().getFullYear().toString()
   try {
+    // Đảm bảo allCostTypes đã load (cần cho dropdown loại chi phí)
+    if (!allCostTypes.length) {
+      try { allCostTypes = await api('/cost-types') } catch(e) {}
+    }
+
     const [list, summary] = await Promise.all([
       api(`/shared-costs?year=${year}`),
       api(`/shared-costs/summary?year=${year}`)
@@ -12238,6 +12371,18 @@ async function loadSharedCosts() {
       }
     }
 
+    // Populate type filter dropdown from loaded data
+    const typeFilterSel = $('sharedTypeFilter')
+    if (typeFilterSel) {
+      const currentVal = typeFilterSel.value
+      const uniqueTypes = [...new Set(_sharedCosts.map(sc => sc.cost_type).filter(Boolean))]
+      typeFilterSel.innerHTML = '<option value="">-- Tất cả loại CP --</option>'
+        + uniqueTypes.map(code => {
+            const name = getCostTypeNameDynamic(code)
+            return `<option value="${code}"${code === currentVal ? ' selected' : ''}>${name}</option>`
+          }).join('')
+    }
+
     // Bảng danh sách
     renderSharedCostTable()
   } catch (e) {
@@ -12248,19 +12393,37 @@ async function loadSharedCosts() {
 function renderSharedCostTable() {
   const tbody = $('sharedCostTableBody')
   if (!tbody) return
-  if (_sharedCosts.length === 0) {
+
+  // Apply filters
+  const typeFilter = $('sharedTypeFilter')?.value || ''
+  const descSearch = ($('sharedDescSearch')?.value || '').toLowerCase().trim()
+  const filtered = _sharedCosts.filter(sc => {
+    if (typeFilter && sc.cost_type !== typeFilter) return false
+    if (descSearch && !(sc.description || '').toLowerCase().includes(descSearch)) return false
+    return true
+  })
+
+  // Update filter info
+  const infoEl = $('sharedFilterInfo')
+  if (infoEl) {
+    const hasFilter = typeFilter || descSearch
+    infoEl.textContent = hasFilter ? `Hiển thị ${filtered.length} / ${_sharedCosts.length} khoản` : `${_sharedCosts.length} khoản`
+  }
+
+  if (filtered.length === 0) {
     tbody.innerHTML = `<tr><td colspan="8" class="text-center py-8 text-gray-400">
       <i class="fas fa-folder-open text-2xl mb-2 block"></i>
-      Chưa có chi phí chung. <button onclick="openSharedCostModal()" class="text-blue-600 hover:underline">Thêm ngay</button>
+      ${_sharedCosts.length === 0 ? `Chưa có chi phí chung. <button onclick="openSharedCostModal()" class="text-blue-600 hover:underline">Thêm ngay</button>` : 'Không có kết quả phù hợp với bộ lọc.'}
     </td></tr>`
     return
   }
 
   const basisLabel = { contract_value: '% GTHĐ', equal: 'Chia đều', manual: 'Thủ công' }
   const costTypeLabel = {
-    office: 'Văn phòng', equipment: 'Thiết bị', material: 'Vật liệu',
-    travel: 'Đi lại', transport: 'Vận chuyển', salary: 'Lương nhân sự',
-    depreciation: 'Khấu hao tài sản', other: 'Khác'
+    office: 'Chi phí văn phòng', equipment: 'Chi phí thiết bị', material: 'Chi phí vật liệu',
+    travel: 'Chi phí đi lại', transport: 'Chi phí vận chuyển', salary: 'Chi phí lương',
+    depreciation: 'Chi phí khấu hao', other: 'Chi phí khác', manmonth: 'Chi phí tháng',
+    department: 'Chi phí phòng', shared: 'Chi phí chung (phân bổ)'
   }
   const costTypeStyle = {
     depreciation: 'background:#ede9fe;color:#5b21b6',  // tím cho khấu hao
@@ -12268,15 +12431,28 @@ function renderSharedCostTable() {
     equipment:    'background:#fef3c7;color:#92400e',  // vàng cho thiết bị
     material:     'background:#dcfce7;color:#166534',  // xanh lá cho vật liệu
     travel:       'background:#fce7f3;color:#9d174d',  // hồng cho đi lại
+    transport:    'background:#ffedd5;color:#9a3412',  // cam cho vận chuyển
+    office:       'background:#e0f2fe;color:#075985',  // xanh nhạt cho văn phòng
+    manmonth:     'background:#fef9c3;color:#854d0e',  // vàng nhạt cho tháng
+    department:   'background:#f0fdf4;color:#166534',  // xanh nhạt cho phòng
+    other:        'background:#f3f4f6;color:#374151',  // xám cho khác
   }
 
-  tbody.innerHTML = _sharedCosts.map(sc => {
+  // Helper lấy màu từ allCostTypes (DB) cho loại tuỳ chỉnh
+  const _getSharedTypeStyle = (code) => {
+    if (costTypeStyle[code]) return costTypeStyle[code]
+    const ct = allCostTypes.find(c => c.code === code)
+    if (ct && ct.color) return `background:${ct.color}22;color:${ct.color}`
+    return 'background:#fef3c7;color:#92400e'
+  }
+
+  tbody.innerHTML = filtered.map(sc => {
     const allocInfo = (sc.allocations || []).map(a =>
       `<span class="inline-block bg-indigo-100 text-indigo-700 rounded px-1 py-0.5 mr-1 mb-1 text-xs" title="${a.project_name}: ${fmtMoney(a.allocated_amount)} (${a.allocation_pct.toFixed(1)}%)">${a.project_code}: ${fmtMoney(a.allocated_amount)}</span>`
     ).join('')
     const period = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `NTC${sc.year}` : '-')
-    const typeStyle = costTypeStyle[sc.cost_type] || 'background:#fef3c7;color:#92400e'
-    const typeLabel = costTypeLabel[sc.cost_type] || sc.cost_type
+    const typeStyle = _getSharedTypeStyle(sc.cost_type)
+    const typeLabel = costTypeLabel[sc.cost_type] || getCostTypeNameDynamic(sc.cost_type)
     const isDepr = sc.cost_type === 'depreciation'
     return `<tr class="hover:bg-gray-50${isDepr ? ' bg-purple-50' : ''}">
       <td class="px-3 py-2">
@@ -12314,6 +12490,35 @@ function updateScNtcHint() {
   hint.className = `text-xs mt-1 font-semibold ${isWrap ? 'text-orange-600' : 'text-green-600'}`
   hint.textContent = `→ Tháng ${calMonth}/${calYear} thuộc NTC ${ntcYear}${isWrap ? ' ⚠️ (tháng đầu năm lịch)' : ''}`
   hint.classList.remove('hidden')
+}
+
+function clearSharedFilters() {
+  const tf = $('sharedTypeFilter'); if (tf) tf.value = ''
+  const ds = $('sharedDescSearch'); if (ds) ds.value = ''
+  renderSharedCostTable()
+}
+
+// Thu nhỏ / mở rộng hộp Phân bổ theo dự án
+let _allocationPanelCollapsed = false
+function toggleAllocationPanel() {
+  _allocationPanelCollapsed = !_allocationPanelCollapsed
+  const panel = $('sharedAllocationByProject')
+  const icon  = $('iconToggleAllocation')
+  const lbl   = $('lblToggleAllocation')
+  if (!panel) return
+  if (_allocationPanelCollapsed) {
+    panel.style.maxHeight = '0'
+    panel.style.overflow  = 'hidden'
+    panel.style.transition = 'max-height 0.3s ease'
+    if (icon) { icon.classList.remove('fa-chevron-up'); icon.classList.add('fa-chevron-down') }
+    if (lbl)  lbl.textContent = 'Mở rộng'
+  } else {
+    panel.style.maxHeight = '1000px'
+    panel.style.overflow  = 'visible'
+    panel.style.transition = 'max-height 0.4s ease'
+    if (icon) { icon.classList.remove('fa-chevron-down'); icon.classList.add('fa-chevron-up') }
+    if (lbl)  lbl.textContent = 'Thu nhỏ'
+  }
 }
 
 async function openSharedCostModal(id = null) {
@@ -13745,7 +13950,7 @@ async function renderFinancialTab(force = false) {
     const fyStart = kpi.fiscal_year_start || ''
     const fyEnd = kpi.fiscal_year_end || ''
 
-    const costTypeLabel = { salary:'Lương', equipment:'Thiết bị', material:'Vật liệu', travel:'Đi lại', office:'Văn phòng', shared:'Chi phí chung', transport:'Vận chuyển', other:'Khác' }
+    const costTypeLabel = { salary:'Chi phí lương', equipment:'Chi phí thiết bị', material:'Chi phí vật liệu', travel:'Chi phí đi lại', office:'Chi phí văn phòng', shared:'Chi phí chung', transport:'Chi phí vận chuyển', other:'Chi phí khác', manmonth:'Chi phí tháng', department:'Chi phí phòng', depreciation:'Chi phí khấu hao' }
     const revStatusLabel = { pending:'Chờ thanh toán', partial:'Thanh toán một phần', paid:'Đã thanh toán' }
     const revStatusColor = { pending:'#f59e0b', partial:'#3b82f6', paid:'#00A651' }
 
@@ -13871,7 +14076,7 @@ async function renderFinancialTab(force = false) {
     if (ctxCT) _analyticsCharts['finCostType'] = safeChart(ctxCT, {
       type: 'doughnut',
       data: {
-        labels: costTypes.map(x=>costTypeLabel[x.cost_type]||x.cost_type),
+        labels: costTypes.map(x=>costTypeLabel[x.cost_type]||getCostTypeNameDynamic(x.cost_type)),
         datasets: [{ data: costTypes.map(x=>x.total), backgroundColor: ['#00A651','#3b82f6','#f59e0b','#8b5cf6','#ef4444','#6b7280'] }]
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } } }
@@ -17853,7 +18058,7 @@ async function exportCostBreakdownExcel() {
     const s1 = [['Loại chi phí','Số phiếu','Tổng tiền','% Tổng CP', totalCv > 0 ? '% GTHĐ' : null].filter(Boolean)]
     const allRows = [
       ...data.by_type,
-      ...(data.total_labor > 0 ? [{ type_name: 'Chi phí lương (TK)', entry_count: (data.labor_by_project||[]).length, total_amount: data.total_labor }] : []),
+      ...(data.total_labor > 0 ? [{ type_name: 'Chi phí lương', entry_count: (data.labor_by_project||[]).length, total_amount: data.total_labor }] : []),
       ...(data.total_depr  > 0 ? [{ type_name: 'Chi phí khấu hao', entry_count: (data.depr_by_project||[]).length, total_amount: data.total_depr }] : [])
     ]
     allRows.forEach(t => {

@@ -442,6 +442,99 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
 
     default:
       return { subject: '[OneCad BIM] Thông báo mới', html: emailBase('Thông báo', '<p>Bạn có thông báo mới từ OneCad BIM.</p>') }
+
+    case 'weekly_task_report': {
+      // data: { weekLabel, totalMembers, memberStats: [{name, done, inprogress, todo, overdue, total}], generatedAt }
+      const memberStats: Array<{name:string; done:number; inprogress:number; todo:number; overdue:number; total:number}> = data.memberStats || []
+      const totalDone      = memberStats.reduce((s,m) => s + m.done, 0)
+      const totalInprog    = memberStats.reduce((s,m) => s + m.inprogress, 0)
+      const totalTodo      = memberStats.reduce((s,m) => s + m.todo, 0)
+      const totalOverdue   = memberStats.reduce((s,m) => s + m.overdue, 0)
+      const totalAll       = memberStats.reduce((s,m) => s + m.total, 0)
+
+      const memberRows = memberStats.map(m => {
+        const doneRate = m.total > 0 ? Math.round(m.done / m.total * 100) : 0
+        const overdueTag = m.overdue > 0
+          ? `<span style="background:#fee2e2;color:#dc2626;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:4px;">⚠ ${m.overdue} quá hạn</span>`
+          : ''
+        return `
+          <tr style="border-bottom:1px solid #f3f4f6;">
+            <td style="padding:9px 10px;font-size:13px;color:#1f2937;font-weight:600;">${m.name}${overdueTag}</td>
+            <td style="padding:9px 8px;text-align:center;font-size:13px;color:#16a34a;font-weight:700;">${m.done}</td>
+            <td style="padding:9px 8px;text-align:center;font-size:13px;color:#2563eb;">${m.inprogress}</td>
+            <td style="padding:9px 8px;text-align:center;font-size:13px;color:#6b7280;">${m.todo}</td>
+            <td style="padding:9px 8px;text-align:center;font-size:13px;color:#dc2626;font-weight:${m.overdue>0?'700':'400'};">${m.overdue}</td>
+            <td style="padding:9px 8px;text-align:center;font-size:13px;color:#374151;">${m.total}</td>
+            <td style="padding:9px 10px;">
+              <div style="background:#e5e7eb;border-radius:4px;height:8px;width:100%;min-width:60px;">
+                <div style="background:${doneRate>=80?'#16a34a':doneRate>=50?'#f59e0b':'#ef4444'};border-radius:4px;height:8px;width:${doneRate}%;"></div>
+              </div>
+              <span style="font-size:10px;color:#6b7280;">${doneRate}%</span>
+            </td>
+          </tr>`
+      }).join('')
+
+      const body = `
+        <p style="margin:0 0 6px 0;color:#374151;font-size:15px;line-height:1.6;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 16px 0;color:#6b7280;font-size:14px;">Đây là báo cáo tổng hợp trạng thái task toàn bộ nhân sự <strong>${data.weekLabel || ''}</strong>.</p>
+
+        <!-- Tổng quan -->
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+          <tr>
+            <td width="25%" style="padding:4px;">
+              <div style="background:#dcfce7;border-radius:10px;padding:12px 8px;text-align:center;">
+                <div style="font-size:22px;font-weight:800;color:#16a34a;">${totalDone}</div>
+                <div style="font-size:11px;color:#15803d;font-weight:600;">✅ Hoàn thành</div>
+              </div>
+            </td>
+            <td width="25%" style="padding:4px;">
+              <div style="background:#dbeafe;border-radius:10px;padding:12px 8px;text-align:center;">
+                <div style="font-size:22px;font-weight:800;color:#2563eb;">${totalInprog}</div>
+                <div style="font-size:11px;color:#1d4ed8;font-weight:600;">🔄 Đang làm</div>
+              </div>
+            </td>
+            <td width="25%" style="padding:4px;">
+              <div style="background:#f3f4f6;border-radius:10px;padding:12px 8px;text-align:center;">
+                <div style="font-size:22px;font-weight:800;color:#6b7280;">${totalTodo}</div>
+                <div style="font-size:11px;color:#4b5563;font-weight:600;">📋 Chưa làm</div>
+              </div>
+            </td>
+            <td width="25%" style="padding:4px;">
+              <div style="background:#fee2e2;border-radius:10px;padding:12px 8px;text-align:center;">
+                <div style="font-size:22px;font-weight:800;color:#dc2626;">${totalOverdue}</div>
+                <div style="font-size:11px;color:#b91c1c;font-weight:600;">⚠️ Quá hạn</div>
+              </div>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Bảng chi tiết từng người -->
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;margin-bottom:16px;">
+          <div style="background:#f8fafc;padding:10px 14px;border-bottom:1px solid #e5e7eb;">
+            <strong style="color:#1e3a5f;font-size:13px;">📊 Chi tiết theo nhân sự (${memberStats.length} thành viên · ${totalAll} task)</strong>
+          </div>
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <thead>
+              <tr style="background:#f1f5f9;">
+                <th style="padding:8px 10px;text-align:left;font-size:12px;color:#374151;font-weight:600;">Nhân sự</th>
+                <th style="padding:8px 8px;text-align:center;font-size:12px;color:#16a34a;font-weight:600;">✅ HT</th>
+                <th style="padding:8px 8px;text-align:center;font-size:12px;color:#2563eb;font-weight:600;">🔄 ĐL</th>
+                <th style="padding:8px 8px;text-align:center;font-size:12px;color:#6b7280;font-weight:600;">📋 CL</th>
+                <th style="padding:8px 8px;text-align:center;font-size:12px;color:#dc2626;font-weight:600;">⚠ QH</th>
+                <th style="padding:8px 8px;text-align:center;font-size:12px;color:#374151;font-weight:600;">Tổng</th>
+                <th style="padding:8px 10px;text-align:left;font-size:12px;color:#374151;font-weight:600;">% HT</th>
+              </tr>
+            </thead>
+            <tbody>${memberRows}</tbody>
+          </table>
+        </div>
+        <p style="margin:0;color:#9ca3af;font-size:11px;">Báo cáo tự động tạo lúc ${data.generatedAt || ''}. Đăng nhập hệ thống để xem chi tiết từng task.</p>`
+
+      return {
+        subject: `[OneCad BIM] 📊 Báo cáo Task Tuần — ${data.weekLabel || ''}`,
+        html: emailBase(`📊 Báo cáo Task Hàng Tuần`, body)
+      }
+    }
   }
 }
 
@@ -3546,10 +3639,13 @@ app.get('/api/costs', authMiddleware, async (c) => {
 
     let query = `
       SELECT pc.*, p.name as project_name, p.code as project_code,
-        u.full_name as created_by_name
+        u.full_name as created_by_name,
+        COALESCE(ct.name, pc.cost_type) as type_name,
+        COALESCE(ct.color, '#6B7280') as type_color
       FROM project_costs pc
       JOIN projects p ON pc.project_id = p.id
       LEFT JOIN users u ON pc.created_by = u.id
+      LEFT JOIN cost_types ct ON ct.code = pc.cost_type
       WHERE 1=1
     `
     const params: any[] = []
@@ -4525,10 +4621,10 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     else if (profitMargin !== null && profitMargin > 0 && profitMargin < 10) validation_warnings.push(`Lợi nhuận thấp: ${profitMargin}% (< 10%)`)
     if (revenueBase > 0 && laborCost > revenueBase * 0.8) validation_warnings.push(`Chi phí lương chiếm ${((laborCost/revenueBase)*100).toFixed(1)}% doanh thu (> 80%)`)
 
-    const costTypeNames: Record<string, string> = { material:'Vật liệu', equipment:'Thiết bị', transport:'Vận chuyển', other:'Chi phí khác', salary:'Lương nhân sự' }
+    const costTypeNames: Record<string, string> = { material:'Chi phí vật liệu', equipment:'Chi phí thiết bị', transport:'Chi phí vận chuyển', other:'Chi phí khác', salary:'Chi phí lương', manmonth:'Chi phí tháng', department:'Chi phí phòng', depreciation:'Chi phí khấu hao', travel:'Chi phí đi lại', office:'Chi phí văn phòng' }
 
     const costBreakdown = [
-      { type: 'Lương nhân sự', cost_type: 'salary', amount: laborCost,
+      { type: 'Chi phí lương', cost_type: 'salary', amount: laborCost,
         percentage: totalCosts > 0 ? parseFloat(((laborCost/totalCosts)*100).toFixed(1)) : 0,
         source: laborSource, is_auto: true,
         details: { total_hours: laborHours, cost_per_hour: Math.round(laborPerHour), months_count: laborMonthsCount }
@@ -4705,12 +4801,13 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
 
     // Cost type name mapping
     const costTypeNames: Record<string, string> = {
-      material: 'Vật liệu', equipment: 'Thiết bị', transport: 'Vận chuyển',
-      other: 'Chi phí khác', salary: 'Lương nhân sự'
+      material: 'Chi phí vật liệu', equipment: 'Chi phí thiết bị', transport: 'Chi phí vận chuyển',
+      other: 'Chi phí khác', salary: 'Chi phí lương', manmonth: 'Chi phí tháng',
+      department: 'Chi phí phòng', depreciation: 'Chi phí khấu hao', travel: 'Chi phí đi lại', office: 'Chi phí văn phòng'
     }
 
     const breakdown = [
-      { type: 'Lương nhân sự', cost_type: 'salary', amount: laborCost,
+      { type: 'Chi phí lương', cost_type: 'salary', amount: laborCost,
         hours: projectHrs, cost_per_hour: Math.round(costPerHourFinal), is_auto: true,
         pct: totalCostsWithShared > 0 ? parseFloat(((laborCost / totalCostsWithShared) * 100).toFixed(1)) : 0 },
       ...otherCostRows.map(r => ({
@@ -4986,10 +5083,12 @@ app.get('/api/data-cleanup/project-costs-duplicates', authMiddleware, adminOnly,
 
     const dupCosts = await db.prepare(`
       SELECT pc.project_id, p.code as project_code, pc.cost_type, pc.cost_date,
+             COALESCE(ct.name, pc.cost_type) as type_name,
              COUNT(*) as duplicate_count, SUM(pc.amount) as total_amount,
              GROUP_CONCAT(pc.id) as ids
       FROM project_costs pc
       LEFT JOIN projects p ON p.id = pc.project_id
+      LEFT JOIN cost_types ct ON ct.code = pc.cost_type
       GROUP BY pc.project_id, pc.cost_type, pc.cost_date
       HAVING COUNT(*) > 1
       ORDER BY duplicate_count DESC
@@ -6763,7 +6862,8 @@ app.put('/api/system-config', authMiddleware, adminOnly, async (c) => {
     const user = c.get('user') as any
     const data = await c.req.json() as Record<string, string>
     
-    const allowedKeys = ['resend_api_key', 'email_from_name', 'email_from_address', 'email_enabled']
+    const allowedKeys = ['resend_api_key', 'email_from_name', 'email_from_address', 'email_enabled',
+                          'weekly_report_enabled', 'weekly_report_day', 'weekly_report_hour']
     
     for (const [key, value] of Object.entries(data)) {
       if (!allowedKeys.includes(key)) continue
@@ -7842,6 +7942,146 @@ app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c)
 })
 
 // ===================================================
+// WEEKLY TASK REPORT — báo cáo task hàng tuần cho System Admin
+// ===================================================
+
+// Helper: lấy thống kê task cho toàn bộ nhân sự
+async function getWeeklyTaskStats(db: any) {
+  // Thống kê task của từng user (được giao task)
+  const rows = await db.prepare(`
+    SELECT
+      u.id,
+      u.full_name AS name,
+      u.email,
+      COUNT(DISTINCT t.id)                                                    AS total,
+      COUNT(DISTINCT CASE WHEN t.status IN ('completed','review') THEN t.id END) AS done,
+      COUNT(DISTINCT CASE WHEN t.status = 'in_progress'           THEN t.id END) AS inprogress,
+      COUNT(DISTINCT CASE WHEN t.status IN ('todo','open')         THEN t.id END) AS todo,
+      COUNT(DISTINCT CASE WHEN t.status NOT IN ('completed','review','cancelled')
+                           AND t.due_date IS NOT NULL
+                           AND t.due_date < date('now')                       THEN t.id END) AS overdue
+    FROM users u
+    JOIN tasks t ON t.assigned_to = u.id
+    WHERE u.is_active = 1
+      AND t.status != 'cancelled'
+    GROUP BY u.id, u.full_name, u.email
+    ORDER BY done DESC, total DESC
+  `).all()
+  return (rows.results as any[])
+}
+
+// GET /api/admin/weekly-task-report/preview
+app.get('/api/admin/weekly-task-report/preview', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const stats = await getWeeklyTaskStats(db)
+    const cfg = await db.prepare(
+      `SELECT key, value FROM system_config WHERE key IN ('weekly_report_enabled','weekly_report_day','weekly_report_hour')`
+    ).all()
+    const cfgMap: Record<string,string> = {}
+    ;(cfg.results as any[]).forEach((r: any) => { cfgMap[r.key] = r.value })
+
+    return c.json({
+      config: {
+        enabled:      cfgMap['weekly_report_enabled'] ?? '1',
+        day:          cfgMap['weekly_report_day']     ?? '5',
+        hour:         cfgMap['weekly_report_hour']    ?? '8',
+      },
+      memberStats: stats,
+      totalMembers: stats.length,
+      summary: {
+        totalTasks:    stats.reduce((s: number, m: any) => s + m.total, 0),
+        totalDone:     stats.reduce((s: number, m: any) => s + m.done, 0),
+        totalInprog:   stats.reduce((s: number, m: any) => s + m.inprogress, 0),
+        totalTodo:     stats.reduce((s: number, m: any) => s + m.todo, 0),
+        totalOverdue:  stats.reduce((s: number, m: any) => s + m.overdue, 0),
+      }
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/admin/weekly-task-report/send
+// Gửi báo cáo task cho tất cả system_admin. Có thể gọi thủ công hoặc từ cron.
+app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    // Kiểm tra enabled (bỏ qua nếu gọi với ?force=1)
+    const force = c.req.query('force') === '1'
+    if (!force) {
+      const enabledRow = await db.prepare(`SELECT value FROM system_config WHERE key='weekly_report_enabled'`).first() as any
+      if (enabledRow?.value === '0') {
+        return c.json({ success: false, message: 'Báo cáo tuần đang bị tắt. Dùng ?force=1 để gửi thủ công.' })
+      }
+    }
+
+    // Lấy danh sách system_admin có email
+    const admins = await db.prepare(
+      `SELECT id, full_name, email FROM users WHERE role='system_admin' AND is_active=1 AND email IS NOT NULL AND email!=''`
+    ).all()
+    if ((admins.results as any[]).length === 0) {
+      return c.json({ success: false, message: 'Không có System Admin nào có email để gửi báo cáo.' })
+    }
+
+    // Lấy thống kê task
+    const memberStats = await getWeeklyTaskStats(db)
+    if (memberStats.length === 0) {
+      return c.json({ success: true, sent: 0, message: 'Không có dữ liệu task nào để báo cáo.' })
+    }
+
+    // Tạo nhãn tuần
+    const now = new Date()
+    // Giờ VN (UTC+7)
+    const vnNow = new Date(now.getTime() + 7 * 3600 * 1000)
+    const dayNames = ['Chủ nhật','Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7']
+    // Tính đầu tuần (thứ 2)
+    const dow = vnNow.getUTCDay()  // 0=Sun
+    const diffToMon = dow === 0 ? -6 : 1 - dow
+    const monday = new Date(vnNow.getTime() + diffToMon * 86400000)
+    const sunday = new Date(monday.getTime() + 6 * 86400000)
+    const fmt = (d: Date) => `${d.getUTCDate().toString().padStart(2,'0')}/${(d.getUTCMonth()+1).toString().padStart(2,'0')}`
+    const weekLabel = `Tuần ${fmt(monday)} – ${fmt(sunday)}/${sunday.getUTCFullYear()}`
+    const generatedAt = `${vnNow.getUTCHours().toString().padStart(2,'0')}:${vnNow.getUTCMinutes().toString().padStart(2,'0')} ${dayNames[vnNow.getUTCDay()]} ${fmt(vnNow)}/${vnNow.getUTCFullYear()}`
+
+    let sent = 0
+    const errors: string[] = []
+
+    for (const admin of admins.results as any[]) {
+      try {
+        await sendEmail(c.env, {
+          to:        admin.email,
+          toName:    admin.full_name,
+          eventType: 'weekly_task_report',
+          data: {
+            recipientName: admin.full_name,
+            weekLabel,
+            generatedAt,
+            memberStats,
+            totalMembers: memberStats.length,
+          },
+          db,
+          userId:      admin.id,
+          relatedType: 'system',
+          relatedId:   0,
+        })
+        sent++
+      } catch (e: any) {
+        errors.push(`admin#${admin.id} (${admin.email}): ${e.message}`)
+      }
+    }
+
+    return c.json({
+      success: true,
+      sent,
+      total_admins: (admins.results as any[]).length,
+      week: weekLabel,
+      total_members: memberStats.length,
+      errors: errors.length ? errors : undefined,
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
 // COST TYPES (System Admin CRUD)
 // ===================================================
 app.get('/api/cost-types', authMiddleware, async (c) => {
@@ -8328,9 +8568,9 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
         else if (profitR !== null && marginR !== null && marginR < 10 && marginR > 0) validation_warnings.push(`Lợi nhuận thấp: ${marginR}%`)
         if (totalRevenueR > 0 && laborCostR > totalRevenueR * 0.8) validation_warnings.push(`Chi phí lương chiếm ${((laborCostR/totalRevenueR)*100).toFixed(1)}% doanh thu`)
 
-        const costTypeNamesR: Record<string, string> = { material: 'Vật liệu', equipment: 'Thiết bị', transport: 'Vận chuyển', other: 'Chi phí khác', salary: 'Lương nhân sự' }
+        const costTypeNamesR: Record<string, string> = { material: 'Chi phí vật liệu', equipment: 'Chi phí thiết bị', transport: 'Chi phí vận chuyển', other: 'Chi phí khác', salary: 'Chi phí lương', manmonth: 'Chi phí tháng', department: 'Chi phí phòng', depreciation: 'Chi phí khấu hao', travel: 'Chi phí đi lại', office: 'Chi phí văn phòng' }
         const costsByTypeR = [
-          ...(laborCostR > 0 ? [{ cost_type: 'salary', total: laborCostR, label: 'Lương nhân sự', is_auto: true }] : []),
+          ...(laborCostR > 0 ? [{ cost_type: 'salary', total: laborCostR, label: 'Chi phí lương', is_auto: true }] : []),
           ...(otherCostsR.results as any[]).map((c: any) => ({ ...c, label: costTypeNamesR[c.cost_type] || c.cost_type, is_auto: false })),
           ...(sharedTotalR > 0 ? [{ cost_type: 'shared', total: sharedTotalR, label: 'Chi phí chung (phân bổ)', is_auto: true, shared_count: sharedCountR }] : [])
         ]
@@ -8548,11 +8788,12 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     if (totalRevenue > 0 && laborCost > totalRevenue * 0.8) validation_warnings.push(`Chi phí lương chiếm ${((laborCost/totalRevenue)*100).toFixed(1)}% doanh thu (> 80%)`)
 
     const costTypeNames: Record<string, string> = {
-      material: 'Vật liệu', equipment: 'Thiết bị', transport: 'Vận chuyển',
-      other: 'Chi phí khác', salary: 'Lương nhân sự'
+      material: 'Chi phí vật liệu', equipment: 'Chi phí thiết bị', transport: 'Chi phí vận chuyển',
+      other: 'Chi phí khác', salary: 'Chi phí lương', manmonth: 'Chi phí tháng',
+      department: 'Chi phí phòng', depreciation: 'Chi phí khấu hao', travel: 'Chi phí đi lại', office: 'Chi phí văn phòng'
     }
     const costsByType = [
-      ...(laborCost > 0 ? [{ cost_type: 'salary', total: laborCost, label: 'Lương nhân sự', is_auto: true }] : []),
+      ...(laborCost > 0 ? [{ cost_type: 'salary', total: laborCost, label: 'Chi phí lương', is_auto: true }] : []),
       ...(otherCosts.results as any[]).map((c: any) => ({ ...c, label: costTypeNames[c.cost_type] || c.cost_type, is_auto: false })),
       ...(sharedCostTotal > 0 ? [{ cost_type: 'shared', total: sharedCostTotal, label: 'Chi phí chung (phân bổ)', is_auto: true, shared_count: sharedCostCount }] : [])
     ]
@@ -9070,7 +9311,7 @@ app.post('/api/system/init', async (c) => {
     // Seed default cost types
     await db.prepare('DELETE FROM cost_types').run()
     const costTypes = [
-      ['salary',    'Lương nhân sự',      'Chi phí lương và phúc lợi nhân sự', '#00A651', 1],
+      ['salary',    'Chi phí lương',      'Chi phí lương và phúc lợi nhân sự', '#00A651', 1],
       ['material',  'Chi phí vật liệu',   'Vật tư, nguyên liệu thi công',       '#0066CC', 2],
       ['equipment', 'Chi phí thiết bị',   'Thuê hoặc khấu hao thiết bị',        '#8B5CF6', 3],
       ['transport', 'Chi phí vận chuyển', 'Di chuyển, vận chuyển hàng hóa',     '#FF6B00', 4],
@@ -9569,7 +9810,7 @@ app.post('/api/system/cleanup-production', authMiddleware, async (c) => {
 
     // STEP 5 — Ensure default cost_types exist (5 types)
     const defaultCostTypes = [
-      ['salary', 'Lương nhân sự', 'Chi phí lương và phúc lợi nhân sự', '#00A651', 1],
+      ['salary', 'Chi phí lương', 'Chi phí lương và phúc lợi nhân sự', '#00A651', 1],
       ['material', 'Chi phí vật liệu', 'Vật tư, nguyên liệu thi công', '#0066CC', 2],
       ['equipment', 'Chi phí thiết bị', 'Thuê hoặc khấu hao thiết bị', '#8B5CF6', 3],
       ['transport', 'Chi phí vận chuyển', 'Di chuyển, vận chuyển hàng hóa', '#FF6B00', 4],

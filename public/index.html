@@ -1204,19 +1204,9 @@
           </div>
         </div>
 
-        <!-- Tabs -->
-        <div class="card">
-          <div class="flex gap-2 mb-4 flex-wrap items-center justify-between">
-            <div class="flex gap-2 flex-wrap">
-              <button onclick="switchCostTab('costs')" id="tabCosts" class="tab-btn active">Chi phí riêng</button>
-              <button onclick="switchCostTab('revenues')" id="tabRevenues" class="tab-btn">Doanh thu</button>
-              <button onclick="switchCostTab('shared')" id="tabShared" class="tab-btn"><i class="fas fa-share-alt mr-1"></i>Chi phí chung</button>
-              <button onclick="switchCostTab('analysis')" id="tabAnalysis" class="tab-btn">Phân tích chi tiết</button>
-              <button onclick="switchCostTab('duplicates')" id="tabDuplicates" class="tab-btn">Kiểm tra trùng lặp</button>
-            </div>
-            <button id="btnAddSharedCost" onclick="openSharedCostModal()" class="hidden btn-warning flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Thêm chi phí chung</button>
-          </div>
-          <div id="costFilter" class="flex gap-3 mb-4 flex-wrap items-center">
+        <!-- Global filter bar: year + project (always visible, above tabs) -->
+        <div class="card mb-3">
+          <div id="costFilter" class="flex gap-3 flex-wrap items-center">
             <div id="costProjectFilterCombobox" style="width:200px"></div>
             <div class="flex items-center gap-2">
               <select id="costYearFilter" class="select-field" style="width:100px" onchange="loadCostDashboard()">
@@ -1228,6 +1218,20 @@
             <select id="costTypeFilterSel" class="select-field" style="width:170px" onchange="onCostTypeFilterChange()">
               <option value="">-- Tất cả loại CP --</option>
             </select>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="card">
+          <div class="flex gap-2 mb-4 flex-wrap items-center justify-between">
+            <div class="flex gap-2 flex-wrap">
+              <button onclick="switchCostTab('costs')" id="tabCosts" class="tab-btn active">Chi phí riêng</button>
+              <button onclick="switchCostTab('revenues')" id="tabRevenues" class="tab-btn">Doanh thu</button>
+              <button onclick="switchCostTab('shared')" id="tabShared" class="tab-btn"><i class="fas fa-share-alt mr-1"></i>Chi phí chung</button>
+              <button onclick="switchCostTab('analysis')" id="tabAnalysis" class="tab-btn">Phân tích chi tiết</button>
+              <button onclick="switchCostTab('duplicates')" id="tabDuplicates" class="tab-btn">Kiểm tra trùng lặp</button>
+            </div>
+            <button id="btnAddSharedCost" onclick="openSharedCostModal()" class="hidden btn-warning flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Thêm chi phí chung</button>
           </div>
 
           <!-- Tab: Chi phí / Doanh thu (existing table) -->
@@ -1269,12 +1273,33 @@
 
             <!-- Phân bổ theo dự án -->
             <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-              <h4 class="font-semibold text-blue-800 mb-2 text-sm"><i class="fas fa-info-circle mr-1"></i>Chi phí chung được phân bổ về từng dự án</h4>
+              <div class="flex items-center justify-between mb-2">
+                <h4 class="font-semibold text-blue-800 text-sm"><i class="fas fa-info-circle mr-1"></i>Chi phí chung được phân bổ về từng dự án</h4>
+                <button id="btnToggleAllocation" onclick="toggleAllocationPanel()" class="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 border border-blue-300 rounded px-2 py-1 bg-white hover:bg-blue-50 transition">
+                  <i id="iconToggleAllocation" class="fas fa-chevron-up text-xs"></i>
+                  <span id="lblToggleAllocation">Thu nhỏ</span>
+                </button>
+              </div>
               <div id="sharedAllocationByProject" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
             </div>
 
+            <!-- Filter bar -->
+            <div class="flex gap-3 mb-3 flex-wrap items-center">
+              <select id="sharedTypeFilter" class="select-field" style="width:200px" onchange="renderSharedCostTable()">
+                <option value="">-- Tất cả loại CP --</option>
+              </select>
+              <div class="relative flex-1 min-w-[180px] max-w-xs">
+                <i class="fas fa-search absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                <input id="sharedDescSearch" type="text" placeholder="Tìm theo mô tả..." class="input-field pl-7 w-full text-sm" oninput="renderSharedCostTable()">
+              </div>
+              <button onclick="clearSharedFilters()" class="btn-secondary text-xs px-3 py-1.5">
+                <i class="fas fa-times mr-1"></i>Xóa lọc
+              </button>
+              <span id="sharedFilterInfo" class="text-xs text-gray-400 ml-auto"></span>
+            </div>
+
             <!-- Danh sách chi phí chung -->
-            <div class="overflow-x-auto">
+            <div id="sharedTableWrapper" class="overflow-x-auto">
               <table class="w-full text-sm">
                 <thead>
                   <tr class="bg-gray-50">
@@ -2390,6 +2415,91 @@
                 Email được gửi tự động đến địa chỉ email của từng nhân sự. Cập nhật email tại <strong class="text-gray-500">Nhân sự → Chỉnh sửa → Email</strong>.
               </p>
             </div>
+
+            <!-- ===== WEEKLY TASK REPORT ===== -->
+            <div class="card hidden" id="weeklyReportCard">
+              <div class="flex items-center gap-3 mb-4">
+                <i class="fas fa-chart-bar text-indigo-500 text-lg"></i>
+                <div>
+                  <h3 class="font-bold text-gray-800">Báo cáo Task Hàng Tuần</h3>
+                  <p class="text-xs text-gray-400 mt-0.5">Tổng hợp trạng thái task toàn bộ nhân sự, gửi tự động đến System Admin</p>
+                </div>
+              </div>
+
+              <!-- Config row -->
+              <div class="flex flex-wrap items-center gap-4 mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
+                <!-- Toggle bật/tắt -->
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <div class="relative">
+                    <input type="checkbox" id="weeklyReportEnabled" class="sr-only peer" checked>
+                    <div class="w-10 h-5 bg-gray-300 rounded-full peer-checked:bg-indigo-500 transition-colors"></div>
+                    <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
+                  </div>
+                  <span class="text-sm font-medium text-gray-700">Bật báo cáo tuần</span>
+                </label>
+
+                <!-- Ngày gửi -->
+                <div class="flex items-center gap-2">
+                  <label class="text-xs text-gray-500 font-medium whitespace-nowrap">Ngày gửi:</label>
+                  <select id="weeklyReportDay" class="select-field text-sm py-1.5" style="width:130px">
+                    <option value="1">Thứ 2</option>
+                    <option value="2">Thứ 3</option>
+                    <option value="3">Thứ 4</option>
+                    <option value="4">Thứ 5</option>
+                    <option value="5" selected>Thứ 6</option>
+                    <option value="6">Thứ 7</option>
+                    <option value="0">Chủ nhật</option>
+                  </select>
+                </div>
+
+                <!-- Giờ gửi -->
+                <div class="flex items-center gap-2">
+                  <label class="text-xs text-gray-500 font-medium whitespace-nowrap">Lúc:</label>
+                  <select id="weeklyReportHour" class="select-field text-sm py-1.5" style="width:90px">
+                    <option value="7">07:00</option>
+                    <option value="8" selected>08:00</option>
+                    <option value="9">09:00</option>
+                    <option value="10">10:00</option>
+                    <option value="12">12:00</option>
+                    <option value="17">17:00</option>
+                  </select>
+                </div>
+
+                <!-- Lưu config -->
+                <button onclick="saveWeeklyReportConfig()" class="btn-primary text-sm px-3 py-1.5">
+                  <i class="fas fa-save mr-1"></i>Lưu cấu hình
+                </button>
+              </div>
+
+              <!-- Preview thống kê hiện tại -->
+              <div class="mb-3">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-xs font-semibold text-gray-600 uppercase tracking-wide">📊 Xem trước — Thống kê task hiện tại</span>
+                  <button onclick="loadWeeklyReportConfig()" class="text-xs text-indigo-600 hover:text-indigo-800">
+                    <i class="fas fa-sync-alt mr-1"></i>Làm mới
+                  </button>
+                </div>
+                <div id="weeklyReportPreview">
+                  <p class="text-xs text-gray-400 py-4 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</p>
+                </div>
+              </div>
+
+              <!-- Gửi ngay -->
+              <div class="flex items-center gap-3 pt-3 border-t border-gray-100">
+                <button id="btnSendWeeklyReport" onclick="sendWeeklyReportNow()"
+                  class="btn-primary flex items-center gap-2 text-sm" style="background:#6366f1;border-color:#6366f1">
+                  <i class="fas fa-paper-plane"></i>Gửi báo cáo ngay
+                </button>
+                <span id="weeklyReportResult" class="text-xs text-gray-500"></span>
+              </div>
+
+              <p class="text-xs text-gray-400 mt-3 flex items-start gap-1.5">
+                <i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>
+                Báo cáo được gửi tự động mỗi <strong class="text-gray-600">Thứ 6</strong> đến tất cả System Admin có email. Nhấn "Gửi báo cáo ngay" để gửi thủ công bất kỳ lúc nào.
+              </p>
+            </div>
+            <!-- ===== END WEEKLY TASK REPORT ===== -->
+
             <!-- ===== END EMAIL SETTINGS ===== -->
 
           </div>
@@ -4470,7 +4580,7 @@
           </div>
           <!-- (hint removed – each row has its own category selector) -->
           <!-- Header: Hạng mục | Task | HC | OT | Xóa -->
-          <div style="display:grid;grid-template-columns:150px 1fr 76px 76px 28px;gap:6px;padding:0 2px;margin-bottom:4px">
+          <div style="display:grid;grid-template-columns:minmax(160px,1.2fr) minmax(0,2.5fr) 72px 72px 28px;gap:6px;padding:0 2px;margin-bottom:4px">
             <span class="text-xs font-semibold text-blue-500">Hạng mục</span>
             <span class="text-xs font-semibold text-gray-500">Task</span>
             <span class="text-xs font-semibold text-blue-500 text-center">Giờ HC</span>
@@ -4480,7 +4590,7 @@
           <!-- Task rows container -->
           <div id="tsMultiTaskRows" class="space-y-1.5 mb-2" style="max-height:300px;overflow-y:auto;padding-right:2px"></div>
           <!-- Tổng giờ — căn đúng theo grid header -->
-          <div style="display:grid;grid-template-columns:150px 1fr 76px 76px 28px;gap:6px;padding:5px 2px 0;border-top:1px solid #e5e7eb;margin-top:4px">
+          <div style="display:grid;grid-template-columns:minmax(160px,1.2fr) minmax(0,2.5fr) 72px 72px 28px;gap:6px;padding:5px 2px 0;border-top:1px solid #e5e7eb;margin-top:4px">
             <span class="text-xs text-gray-400 italic">Tổng cộng</span>
             <span></span>
             <strong id="tsMultiTotalReg" class="text-sm font-bold text-blue-600 text-center block">0h</strong>
