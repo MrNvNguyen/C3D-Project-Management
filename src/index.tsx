@@ -1758,7 +1758,11 @@ app.get('/api/tasks', authMiddleware, async (c) => {
         p.name as project_name, p.code as project_code,
         cat.name as category_name,
         (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id) as subtask_count,
-        (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id AND st.status = 'done') as subtask_done_count
+        (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id AND st.status = 'done') as subtask_done_count,
+        (SELECT DATE(MIN(th.created_at)) FROM task_history th
+         WHERE th.task_id = t.id AND th.field_changed = 'status'
+           AND th.new_value IN ('review','completed')
+        ) as first_review_date
       FROM tasks t
       LEFT JOIN users u1 ON t.assigned_to = u1.id
       LEFT JOIN users u2 ON t.assigned_by = u2.id
@@ -1971,16 +1975,27 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
 
-    // Auto-set actual_end_date và xóa overdue khi chuyển sang review hoặc completed
+    // Auto-set actual_end_date và xóa overdue khi CHUYỂN sang review hoặc completed
     // Lý do: 'review' nghĩa là member đã hoàn thành phần công việc, đang chờ QA/PM duyệt
     // → cần ghi nhận ngày hoàn thành thực tế để tính đúng ontime_rate
-    if (data.status === 'completed' || data.status === 'review') {
+    // CHÚ Ý: Chỉ xử lý khi status THỰC SỰ THAY ĐỔI sang review/completed
+    //         Nếu chỉ cập nhật thông tin khác (title, discipline_code...) mà status không đổi
+    //         thì KHÔNG ghi đè actual_end_date đã có → tránh tính sai ngày hoàn thành
+    const statusChangingToFinished = (data.status === 'completed' || data.status === 'review')
+      && data.status !== task.status  // chỉ khi status thực sự thay đổi
+    if (statusChangingToFinished) {
       updates.push('is_overdue = ?')
       values.push(0)
-      if (!data.actual_end_date) {
+      // Chỉ set actual_end_date nếu chưa có trong DB và không truyền từ client
+      if (!task.actual_end_date && !data.actual_end_date) {
         updates.push('actual_end_date = ?')
         values.push(new Date().toISOString().split('T')[0])
       }
+    } else if (data.status && data.status !== task.status
+      && data.status !== 'completed' && data.status !== 'review') {
+      // Khi chuyển từ review/completed về trạng thái khác (ví dụ: in_progress)
+      // thì xóa actual_end_date để tính lại khi hoàn thành lần sau
+      // (không xóa nếu admin không đổi status)
     }
 
     updates.push('updated_at = CURRENT_TIMESTAMP')
@@ -7053,7 +7068,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         SUM(CASE WHEN t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks
       FROM projects p
       LEFT JOIN tasks t ON t.project_id = p.id
-      WHERE p.status NOT IN ('cancelled', 'completed')
+      WHERE p.status = 'active'
       GROUP BY p.id
       ORDER BY p.start_date DESC
       LIMIT 10
@@ -9904,7 +9919,7 @@ app.get('/api/analytics/project-performance', authMiddleware, adminOnly, async (
         SELECT project_id,
           COUNT(*) as total_tasks,
           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed_tasks,
-          SUM(CASE WHEN is_overdue=1 AND status!='completed' THEN 1 ELSE 0 END) as overdue_tasks,
+          SUM(CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks,
           SUM(CASE WHEN priority='urgent' AND status!='completed' THEN 1 ELSE 0 END) as urgent_tasks
         FROM tasks GROUP BY project_id
       ) t_stats ON t_stats.project_id = p.id
@@ -10039,7 +10054,7 @@ app.get('/api/analytics/task-analytics', authMiddleware, adminOnly, async (c) =>
     const byDiscipline = await db.prepare(`
       SELECT discipline_code, COUNT(*) as count,
         SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN is_overdue=1 AND status!='completed' THEN 1 ELSE 0 END) as overdue
+        SUM(CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue
       FROM tasks t WHERE discipline_code IS NOT NULL AND discipline_code != '' ${projectFilter}
       GROUP BY discipline_code ORDER BY count DESC
     `).bind(...binds).all()
@@ -10845,7 +10860,7 @@ app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) =>
         SELECT project_id,
           COUNT(*) as total_tasks,
           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as done_tasks,
-          SUM(CASE WHEN is_overdue=1 AND status!='completed' THEN 1 ELSE 0 END) as overdue_tasks,
+          SUM(CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks,
           SUM(CASE WHEN priority='urgent' AND status!='completed' THEN 1 ELSE 0 END) as urgent_pending
         FROM tasks GROUP BY project_id
       ) t_stats ON t_stats.project_id = p.id

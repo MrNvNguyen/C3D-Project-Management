@@ -2847,7 +2847,7 @@ let _taskAllData     = []   // full filtered dataset
 // Default: status order (pending→in_progress→review→approved→completed→cancelled)
 // then due_date asc, then title asc
 const STATUS_ORDER = { pending: 0, in_progress: 1, review: 2, approved: 3, completed: 4, cancelled: 5 }
-let _taskSortField = 'default'   // 'default'|'title'|'project'|'due_date'|'progress'|'status'|'priority'
+let _taskSortField = 'default'   // 'default'|'title'|'project'|'due_date'|'first_review_date'|'progress'|'status'|'priority'
 let _taskSortDir   = 'asc'       // 'asc' | 'desc'
 
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 }
@@ -2879,6 +2879,10 @@ function _taskSortCompare(a, b) {
     case 'due_date':
       va = a.due_date ? new Date(a.due_date) : (_taskSortDir === 'asc' ? new Date('9999-12-31') : new Date('0000-01-01'))
       vb = b.due_date ? new Date(b.due_date) : (_taskSortDir === 'asc' ? new Date('9999-12-31') : new Date('0000-01-01'))
+      break
+    case 'first_review_date':
+      va = a.first_review_date ? new Date(a.first_review_date) : (_taskSortDir === 'asc' ? new Date('9999-12-31') : new Date('0000-01-01'))
+      vb = b.first_review_date ? new Date(b.first_review_date) : (_taskSortDir === 'asc' ? new Date('9999-12-31') : new Date('0000-01-01'))
       break
     case 'progress':
       va = a.progress || 0
@@ -3033,7 +3037,7 @@ function renderTaskRows() {
   const effGlobal = getEffectiveGlobalRole()
 
   if (_taskAllData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="12" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="13" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
     return
   }
 
@@ -3098,6 +3102,16 @@ function renderTaskRows() {
       <td class="py-2 pr-3">${getPriorityBadge(t.priority)}</td>
       <td class="py-2 pr-3 text-sm text-gray-600">${t.assigned_to_name || '<span class="text-gray-300 text-xs">Chưa giao</span>'}</td>
       <td class="py-2 pr-3 text-sm ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
+      <td class="py-2 pr-3 text-xs whitespace-nowrap">${(() => {
+        const d = t.first_review_date
+        if (!d) return '<span class="text-gray-300">—</span>'
+        const isOnTime = d <= (t.due_date || '9999')
+        const isLate   = d >  (t.due_date || '9999')
+        const color    = isOnTime ? '#16a34a' : '#dc2626'
+        const icon     = isOnTime ? 'fa-check-circle' : 'fa-clock'
+        const title    = isOnTime ? 'Hoàn thành đúng hạn' : 'Hoàn thành trễ hạn'
+        return `<span style="color:${color};font-weight:600" title="${title}"><i class="fas ${icon} mr-1"></i>${fmtDate(d)}</span>`
+      })()}</td>
       <td class="py-2 pr-3">
         <div class="flex items-center gap-2 min-w-20">
           <div class="progress-bar flex-1"><div class="progress-fill ${isOverdue(t)?'danger':''}" style="width:${t.progress||0}%"></div></div>
@@ -3113,7 +3127,7 @@ function renderTaskRows() {
       </td>
     </tr>
     <tr id="subtask-rows-${t.id}" class="subtask-container-row" style="display:none">
-      <td colspan="12" class="p-0">
+      <td colspan="13" class="p-0">
         <div id="subtask-panel-${t.id}" class="subtask-panel"></div>
       </td>
     </tr>`
@@ -5863,6 +5877,8 @@ async function openTimesheetModal(tsId = null) {
     _tsMultiRows = []; _tsMultiRowIdx = 0; _tsCachedTasks = []
     document.querySelectorAll('input[name="tsModeRadio"]').forEach(r => { r.checked = r.value === 'single' })
     tsModeChanged('single')
+    // Load hạng mục TRƯỚC khi init task rows để _tsCachedCategories có dữ liệu khi render
+    if (ts.project_id) await _loadTsCategories(ts.project_id, ts.category_id || null, locked)
     await _loadAndInitTsTaskCombobox(ts.project_id, ts.task_id, locked)
     // Nếu timesheet có task_entries → chuyển sang multi mode
     if (ts.task_entries && ts.task_entries.length > 0) {
@@ -5870,8 +5886,6 @@ async function openTimesheetModal(tsId = null) {
       tsModeChanged('multi')
       _tsInitMultiRowsFromEntries(ts.task_entries)
     }
-    // Load hạng mục dự án theo dự án đang sửa
-    if (ts.project_id) _loadTsCategories(ts.project_id, ts.category_id || null, locked)
 
   } else {
     // ─── Thêm mới ────────────────────────────────────────────
@@ -15637,6 +15651,7 @@ function renderLegalLetters(letters) {
       <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Hạng mục</th>
       <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Người nhận</th>
       <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Ngày gửi</th>
+      <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Ghi chú</th>
       <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Trạng thái</th>
       <th class="py-2 px-3 text-center text-xs font-semibold text-gray-500 uppercase">Thao tác</th>
     </tr></thead>
@@ -15663,6 +15678,9 @@ function renderLegalLetters(letters) {
         : '<span class="text-gray-300">—</span>'}</td>
       <td class="py-2 px-3 text-xs text-gray-500">${l.recipient||'-'}</td>
       <td class="py-2 px-3 text-xs text-gray-500">${l.sent_date ? fmtDate(l.sent_date) : '-'}</td>
+      <td class="py-2 px-3 text-xs text-gray-500 max-w-xs">${l.notes
+        ? `<span title="${l.notes.replace(/"/g,'&quot;')}" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.4;max-width:180px">${l.notes}</span>`
+        : '<span class="text-gray-300">—</span>'}</td>
       <td class="py-2 px-3">${statusBadge}</td>
       <td class="py-2 px-3 text-center">
         <div class="flex items-center justify-center gap-1">
