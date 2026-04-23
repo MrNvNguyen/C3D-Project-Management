@@ -611,7 +611,7 @@ function navigate(page) {
     productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
     'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí',
     'system-config': 'Cấu hình hệ thống', analytics: 'Báo cáo & Phân tích',
-    legal: 'Hồ Sơ Pháp Lý Dự Án'
+    legal: 'Hồ Sơ Pháp Lý Dự Án', leave: 'Đăng ký Nghỉ phép'
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
@@ -633,6 +633,7 @@ function navigate(page) {
   else if (page === 'system-config') loadSystemConfig()
   else if (page === 'analytics') loadAnalytics()
   else if (page === 'legal') loadLegal()
+  else if (page === 'leave') loadLeaveRequests()
 
   closeAllDropdowns()
 }
@@ -18101,3 +18102,710 @@ async function exportCostBreakdownExcel() {
   }
 }
 // ═══ END COST BREAKDOWN MODULE ═══════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LEAVE REQUESTS MODULE — Đăng ký nghỉ phép
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const LEAVE_TYPE_CONFIG = {
+  annual_leave:  { label: 'Nghỉ phép năm',        icon: '🌴', cls: 'bg-green-100 text-green-700',   hint: 'Nghỉ phép năm theo quy định — được tính vào quota phép năm của bạn.' },
+  sick_leave:    { label: 'Nghỉ ốm',              icon: '🤒', cls: 'bg-orange-100 text-orange-700',  hint: 'Nghỉ ốm — cần có xác nhận từ bác sĩ nếu nghỉ quá 2 ngày liên tiếp.' },
+  unpaid_leave:  { label: 'Nghỉ không lương',     icon: '💸', cls: 'bg-red-100 text-red-700',        hint: 'Nghỉ không hưởng lương — không tính vào quota phép năm.' },
+  compensatory:  { label: 'Nghỉ bù',              icon: '🔄', cls: 'bg-amber-100 text-amber-700',    hint: 'Nghỉ bù cho những ngày làm thêm / làm ngày lễ trước đó.' },
+  holiday:       { label: 'Nghỉ lễ',              icon: '🎉', cls: 'bg-purple-100 text-purple-700',  hint: 'Ngày nghỉ lễ theo quy định nhà nước.' },
+  half_day_am:   { label: 'Nghỉ nửa ngày (sáng)', icon: '🌅', cls: 'bg-sky-100 text-sky-700',        hint: 'Nghỉ buổi sáng (0.5 ngày) — chỉ áp dụng cho 1 ngày duy nhất.' },
+  half_day_pm:   { label: 'Nghỉ nửa ngày (chiều)',icon: '🌆', cls: 'bg-indigo-100 text-indigo-700',  hint: 'Nghỉ buổi chiều (0.5 ngày) — chỉ áp dụng cho 1 ngày duy nhất.' },
+}
+
+const LEAVE_STATUS_CONFIG = {
+  pending:  { label: 'Chờ duyệt', cls: 'bg-amber-100 text-amber-700',  icon: '⏳' },
+  approved: { label: 'Đã duyệt',  cls: 'bg-green-100 text-green-700',  icon: '✅' },
+  rejected: { label: 'Từ chối',   cls: 'bg-red-100 text-red-700',      icon: '❌' },
+}
+
+let _leaveData = []
+
+// ── Load & Render ─────────────────────────────────────────────────────────────
+async function loadLeaveRequests() {
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  const isAdmin = cu?.role === 'system_admin'
+
+  // Show/hide admin-only UI elements
+  const kpiRow = $('leaveKpiRow')
+  const colEmp = $('leaveColEmployee')
+  const filterStatus = $('leaveFilterStatus')
+
+  if (isAdmin) {
+    kpiRow?.classList.remove('hidden')
+    colEmp?.classList.remove('hidden')
+    document.getElementById('btnManageLeaveQuota')?.classList.remove('hidden')
+  } else {
+    kpiRow?.classList.add('hidden')
+    colEmp?.classList.add('hidden')
+    document.getElementById('btnManageLeaveQuota')?.classList.add('hidden')
+  }
+
+  const statusFilter = filterStatus?.value || ''
+  let url = '/leave-requests'
+  const params = []
+  if (statusFilter) params.push(`status=${statusFilter}`)
+  if (params.length) url += '?' + params.join('&')
+
+  try {
+    const res = await api(url)
+    _leaveData = res.data || []
+
+    // KPI
+    if (isAdmin) {
+      $('leaveKpiTotal').textContent    = _leaveData.length
+      $('leaveKpiPending').textContent  = _leaveData.filter(r => r.status === 'pending').length
+      $('leaveKpiApproved').textContent = _leaveData.filter(r => r.status === 'approved').length
+      $('leaveKpiRejected').textContent = _leaveData.filter(r => r.status === 'rejected').length
+    }
+
+    // Summary cá nhân + quota bar
+    await renderLeaveSummary()
+
+    renderLeaveTable(_leaveData)
+  } catch (e) {
+    console.error('loadLeaveRequests error', e)
+    toast('Lỗi tải danh sách nghỉ phép: ' + (e.message || e), 'error')
+  }
+}
+
+async function renderLeaveSummary() {
+  const container = $('leaveSummaryCards')
+  if (!container) return
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  const isAdmin = cu?.role === 'system_admin'
+
+  try {
+    // Lấy summary đơn đã duyệt
+    const res = await api('/leave-requests/summary')
+    const rows = res.data || []
+
+    // Lấy quota phép năm
+    let balance = null
+    try { balance = await api('/leave-balances/me') } catch (_) {}
+
+    // Build quota card cho phép năm (annual_leave)
+    let quotaCard = ''
+    if (balance) {
+      const pct      = Math.min(100, Math.round((balance.used_days / balance.total_days) * 100))
+      const barColor = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#00A651'
+      const remaining = balance.remaining
+      quotaCard = `
+        <div class="relative overflow-hidden rounded-2xl p-4 bg-white shadow-sm border border-gray-100 col-span-2 md:col-span-2" style="border-left:4px solid #00A651">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">🌴</span>
+              <div>
+                <p class="text-xs font-semibold text-gray-500">Phép năm ${new Date().getFullYear()}</p>
+                <p class="text-xs text-gray-400">Tổng quota: <strong class="text-gray-700">${balance.total_days} ngày</strong></p>
+              </div>
+            </div>
+            <div class="text-right">
+              <p class="text-2xl font-black" style="color:${barColor}">${remaining}</p>
+              <p class="text-xs text-gray-400">ngày còn lại</p>
+            </div>
+          </div>
+          <div class="w-full bg-gray-100 rounded-full h-2.5 mt-1 overflow-hidden">
+            <div class="h-2.5 rounded-full transition-all duration-700" style="width:${pct}%;background:${barColor}"></div>
+          </div>
+          <div class="flex justify-between text-xs text-gray-400 mt-1">
+            <span>Đã dùng: <strong>${balance.used_days}</strong> ngày</span>
+            <span>${pct}% quota</span>
+          </div>
+          ${!isAdmin && remaining <= 2 && remaining > 0 ? `<div class="mt-2 text-xs text-amber-600 font-medium">⚠️ Còn ít ngày phép — hãy sắp xếp hợp lý!</div>` : ''}
+          ${!isAdmin && remaining <= 0 ? `<div class="mt-2 text-xs text-red-600 font-medium">🚨 Đã hết quota phép năm!</div>` : ''}
+        </div>`
+    }
+
+    // Summary cards cho các loại nghỉ khác
+    const otherCards = rows.map(r => {
+      const cfg = LEAVE_TYPE_CONFIG[r.leave_type] || { label: r.leave_type, icon: '📋', cls: 'bg-gray-100 text-gray-700' }
+      return `
+        <div class="relative overflow-hidden rounded-2xl p-4 bg-white shadow-sm border border-gray-100 flex items-center gap-3">
+          <div class="w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0 ${cfg.cls}">${cfg.icon}</div>
+          <div class="min-w-0">
+            <p class="text-xs text-gray-400 font-medium truncate">${cfg.label}</p>
+            <p class="text-2xl font-bold text-gray-800 leading-tight">${r.total_days}<span class="text-sm font-normal text-gray-400 ml-1">ngày</span></p>
+            <p class="text-xs text-gray-400">${r.count} đơn đã duyệt</p>
+          </div>
+        </div>`
+    }).join('')
+
+    container.innerHTML = quotaCard + otherCards
+    if (!quotaCard && !otherCards) container.innerHTML = ''
+  } catch (_) { container.innerHTML = '' }
+}
+
+function renderLeaveTable(data) {
+  const tbody = $('leaveTableBody')
+  if (!tbody) return
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  const isAdmin = cu?.role === 'system_admin'
+  const myId    = Number(cu?.id)
+
+  // Update count badge
+  const countBadge = document.getElementById('leaveCountBadge')
+  if (countBadge) countBadge.textContent = data.length ? `(${data.length} đơn)` : ''
+
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="text-center py-16 text-gray-400">
+      <div class="flex flex-col items-center gap-3">
+        <div class="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7)">🏖️</div>
+        <div class="font-medium text-gray-500">Chưa có đơn xin nghỉ nào</div>
+        <div class="text-xs text-gray-300">Nhấn "Đăng ký nghỉ" để tạo đơn mới</div>
+      </div>
+    </td></tr>`
+    return
+  }
+
+  // Color palette for avatar backgrounds
+  const avatarColors = [
+    'linear-gradient(135deg,#00A651,#00c060)',
+    'linear-gradient(135deg,#3b82f6,#60a5fa)',
+    'linear-gradient(135deg,#8b5cf6,#a78bfa)',
+    'linear-gradient(135deg,#f59e0b,#fbbf24)',
+    'linear-gradient(135deg,#ef4444,#f87171)',
+    'linear-gradient(135deg,#06b6d4,#22d3ee)',
+  ]
+
+  tbody.innerHTML = data.map((r, idx) => {
+    const typeCfg   = LEAVE_TYPE_CONFIG[r.leave_type]   || { label: r.leave_type, icon: '📋', cls: 'bg-gray-100 text-gray-700' }
+    const statusCfg = LEAVE_STATUS_CONFIG[r.status] || { label: r.status, cls: 'bg-gray-100 text-gray-700', icon: '' }
+
+    // Type tag with left border accent
+    const typeTag = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${typeCfg.cls}" style="border-left:3px solid currentColor;border-radius:6px">${typeCfg.icon} ${typeCfg.label}</span>`
+
+    // Status tag with dot indicator
+    const dotColor = r.status==='approved' ? '#22c55e' : r.status==='rejected' ? '#ef4444' : '#f59e0b'
+    const statusTag = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${statusCfg.cls}">
+      <span class="leave-status-dot" style="background:${dotColor};box-shadow:0 0 0 2px ${dotColor}33"></span>
+      ${statusCfg.label}
+    </span>`
+
+    const isSelf    = myId && Number(r.user_id) === myId
+    const isPending = r.status === 'pending'
+    const canEdit   = isPending && (isSelf || isAdmin)
+    const canDel    = isPending && (isSelf || isAdmin)
+    const canReview = isAdmin && isPending
+
+    let actions = ''
+    if (canReview) {
+      actions += `<button onclick="openLeaveReviewModal(${r.id})" title="Xét duyệt đơn này"
+        class="leave-action-btn btn-review">
+        <i class="fas fa-clipboard-check"></i> Duyệt</button>`
+    }
+    if (canEdit) {
+      actions += `<button onclick="openLeaveModal(${r.id})" title="Chỉnh sửa đơn"
+        class="leave-action-btn btn-edit">
+        <i class="fas fa-pen"></i> Sửa</button>`
+    }
+    if (canDel) {
+      actions += `<button onclick="deleteLeaveRequest(${r.id})" title="Xóa đơn"
+        class="leave-action-btn btn-del">
+        <i class="fas fa-trash"></i> Xóa</button>`
+    }
+    if (!actions) {
+      const doneIcon = r.status==='approved' ? '✅' : r.status==='rejected' ? '❌' : '—'
+      actions = `<span class="text-gray-300 text-xs italic">${doneIcon}</span>`
+    }
+
+    const reviewerInfo = r.reviewer_name
+      ? `<div class="flex items-center gap-1 mt-1.5"><span class="inline-block w-4 h-4 rounded-full bg-gray-200 flex items-center justify-center text-gray-500" style="font-size:9px">👤</span><span class="text-xs text-gray-400">${r.reviewer_name}</span></div>` : ''
+    const reviewNote = r.review_note
+      ? `<div class="text-xs text-amber-600 mt-0.5 italic pl-5">"${r.review_note}"</div>` : ''
+
+    // Employee avatar initials (admin view)
+    const empName = r.employee_name || r.employee_username || ''
+    const nameParts = empName.trim().split(' ')
+    const initials = nameParts.length >= 2
+      ? (nameParts[nameParts.length-2][0] + nameParts[nameParts.length-1][0]).toUpperCase()
+      : empName.substring(0,2).toUpperCase()
+    const avatarColor = avatarColors[r.user_id % avatarColors.length]
+    const empCell = isAdmin ? `
+      <td class="py-3.5 px-4">
+        <div class="flex items-center gap-2.5">
+          <div class="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold text-white flex-shrink-0 shadow-sm"
+               style="background:${avatarColor}">${initials}</div>
+          <div>
+            <div class="font-semibold text-gray-800 text-sm leading-snug">${empName}</div>
+            <div class="text-xs text-gray-400 leading-tight">${r.employee_email || r.employee_username || ''}</div>
+          </div>
+        </div>
+      </td>` : ''
+
+    const rowClass = idx % 2 === 0 ? 'leave-row-even' : 'leave-row-odd'
+
+    // Days badge color based on count
+    const daysColor = r.total_days >= 5 ? '#ef4444' : r.total_days >= 3 ? '#f59e0b' : '#00A651'
+    const daysBg    = r.total_days >= 5 ? '#fff1f2' : r.total_days >= 3 ? '#fffbeb' : '#f0fdf4'
+
+    return `<tr class="${rowClass}" style="border-bottom:1px solid #f0faf4">
+      <td class="py-3.5 px-4">
+        <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-gray-500 text-xs font-bold">${idx + 1}</span>
+      </td>
+      ${empCell}
+      <td class="py-3.5 px-4">${typeTag}</td>
+      <td class="py-3.5 px-4">
+        <div class="text-sm font-semibold text-gray-800">${formatDateVN(r.start_date)}</div>
+        <div class="text-xs font-medium" style="color:${getDowColor(r.start_date)}">${getDowLabel(r.start_date)}</div>
+      </td>
+      <td class="py-3.5 px-4">
+        <div class="text-sm font-semibold text-gray-800">${formatDateVN(r.end_date)}</div>
+        <div class="text-xs font-medium" style="color:${getDowColor(r.end_date)}">${getDowLabel(r.end_date)}</div>
+      </td>
+      <td class="py-3.5 px-4 text-center">
+        <span class="leave-days-badge" style="color:${daysColor};background:${daysBg};border:1.5px solid ${daysColor}22">${r.total_days}</span>
+      </td>
+      <td class="py-3.5 px-4 text-sm text-gray-500 max-w-[200px]">
+        <div class="truncate" title="${r.reason || ''}">${r.reason || '<span class="text-gray-300 italic text-xs">Không có lý do</span>'}</div>
+      </td>
+      <td class="py-3.5 px-4">
+        <div class="flex flex-col items-center gap-0.5">
+          ${statusTag}
+          ${reviewerInfo}${reviewNote}
+        </div>
+      </td>
+      <td class="py-3.5 px-4">
+        <div class="flex items-center justify-center gap-1.5 flex-wrap">${actions}</div>
+      </td>
+    </tr>`
+  }).join('')
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function formatDateVN(dateStr) {
+  if (!dateStr) return '—'
+  const d = new Date(dateStr + 'T00:00:00')
+  return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+
+function getDowLabel(dateStr) {
+  if (!dateStr) return ''
+  const d   = new Date(dateStr + 'T00:00:00')
+  const dow = d.getDay()
+  const labels = ['Chủ nhật', 'Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy']
+  return labels[dow] || ''
+}
+
+function getDowColor(dateStr) {
+  if (!dateStr) return '#9ca3af'
+  const dow = new Date(dateStr + 'T00:00:00').getDay()
+  if (dow === 0) return '#ef4444'   // Chủ nhật – đỏ
+  if (dow === 6) return '#f59e0b'   // Thứ 7 – vàng
+  return '#22c55e'                  // T2–T6 – xanh
+}
+
+// ── Tính số ngày nghỉ (T2→T7, chỉ bỏ Chủ nhật) ────────────────────────────
+const DOW_LABELS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']
+
+function countWorkdaysBetween(startStr, endStr) {
+  const start = new Date(startStr + 'T00:00:00')
+  const end   = new Date(endStr   + 'T00:00:00')
+  let count = 0
+  const cur = new Date(start)
+  while (cur <= end) {
+    const d = cur.getDay()
+    if (d !== 0) count++  // Tính T2→T7, chỉ bỏ CN
+    cur.setDate(cur.getDate() + 1)
+  }
+  return count
+}
+
+function updateDateLabel(inputId, labelId) {
+  const val = $(inputId)?.value
+  const el  = $(labelId)
+  if (!el) return
+  if (!val) { el.textContent = ''; return }
+  const dt  = new Date(val + 'T00:00:00')
+  const dow = dt.getDay()
+  const isWeekend = dow === 0  // Chỉ CN mới hiển thị đỏ
+  el.textContent  = DOW_LABELS[dow]
+  el.className    = `text-xs font-semibold mt-0.5 ${isWeekend ? 'text-red-500' : 'text-green-600'}`
+}
+
+function calcLeaveDays() {
+  const leaveType  = $('leaveTypeSelect')?.value
+  const startDate  = $('leaveStartDate')?.value
+  const endDate    = $('leaveEndDate')?.value || startDate
+  const preview    = $('leaveDaysPreview')
+  const daysText   = $('leaveDaysText')
+  if (!leaveType || !startDate) { preview?.classList.add('hidden'); return }
+
+  // Cập nhật nhãn thứ
+  updateDateLabel('leaveStartDate', 'leaveStartDow')
+  updateDateLabel('leaveEndDate',   'leaveEndDow')
+
+  let days = 0
+  let weekendNote = ''
+  if (leaveType === 'half_day_am' || leaveType === 'half_day_pm') {
+    days = 0.5
+  } else {
+    const start    = new Date(startDate + 'T00:00:00')
+    const end      = new Date(endDate   + 'T00:00:00')
+    let totalCalendar = 0
+    const cur = new Date(start)
+    while (cur <= end) {
+      totalCalendar++
+      const dow = cur.getDay()
+      if (dow !== 0) days++  // T2→T7 đều tính, chỉ bỏ CN
+      cur.setDate(cur.getDate() + 1)
+    }
+    const sundayDays = totalCalendar - days
+    if (sundayDays > 0) {
+      weekendNote = ` <span class="text-amber-600">(bỏ ${sundayDays} Chủ nhật)</span>`
+    }
+  }
+
+  if (daysText) daysText.innerHTML = `<strong>${days} ngày nghỉ</strong>${weekendNote} <span class="text-xs font-normal text-gray-500">(T2–T7, không tính CN)</span>`
+  preview?.classList.remove('hidden')
+}
+
+function onLeaveTypeChange() {
+  const leaveType = $('leaveTypeSelect')?.value
+  const hint      = $('leaveTypeHint')
+  const hintText  = $('leaveTypeHintText')
+  const endGroup  = $('leaveEndDateGroup')
+  const cfg       = LEAVE_TYPE_CONFIG[leaveType]
+
+  if (cfg?.hint && hint) {
+    if (hintText) hintText.textContent = cfg.hint
+    else hint.textContent = cfg.hint
+    hint.classList.remove('hidden')
+  } else if (hint) {
+    hint.classList.add('hidden')
+  }
+
+  // Half-day: chỉ 1 ngày, ẩn end date
+  if (leaveType === 'half_day_am' || leaveType === 'half_day_pm') {
+    endGroup?.classList.add('hidden')
+    if ($('leaveEndDate')) $('leaveEndDate').value = $('leaveStartDate')?.value || ''
+  } else {
+    endGroup?.classList.remove('hidden')
+  }
+
+  // Khi chọn nghỉ phép năm: hiển thị quota còn lại
+  const quotaHint = $('leaveQuotaHint')
+  if (leaveType === 'annual_leave' && quotaHint) {
+    api('/leave-balances/me').then(b => {
+      if (b && b.remaining !== undefined) {
+        const color = b.remaining <= 2 ? '#ef4444' : b.remaining <= 5 ? '#f59e0b' : '#00A651'
+        quotaHint.innerHTML = `<span style="color:${color}">🌴 Phép năm còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong></span>`
+        quotaHint.classList.remove('hidden')
+      }
+    }).catch(() => {})
+  } else if (quotaHint) {
+    quotaHint.classList.add('hidden')
+  }
+
+  calcLeaveDays()
+}
+
+// ── Modal: Tạo / Sửa đơn ──────────────────────────────────────────────────────
+function openLeaveModal(id = null) {
+  $('leaveEditId').value    = id || ''
+  $('leaveTypeSelect').value = ''
+  $('leaveStartDate').value  = ''
+  $('leaveEndDate').value    = ''
+  $('leaveReason').value     = ''
+  $('leaveTypeHint')?.classList.add('hidden')
+  $('leaveDaysPreview')?.classList.add('hidden')
+  $('leaveEndDateGroup')?.classList.remove('hidden')
+
+  if (id) {
+    const r = _leaveData.find(x => x.id === id)
+    if (r) {
+      $('leaveTypeSelect').value = r.leave_type
+      $('leaveStartDate').value  = r.start_date
+      $('leaveEndDate').value    = r.end_date
+      $('leaveReason').value     = r.reason || ''
+      onLeaveTypeChange()
+      calcLeaveDays()
+    }
+  } else {
+    // Default: today
+    const today = new Date().toISOString().slice(0, 10)
+    $('leaveStartDate').value = today
+    $('leaveEndDate').value   = today
+    calcLeaveDays()  // show DOW labels for default dates
+  }
+
+  $('modalLeaveRequest')?.classList.remove('hidden')
+}
+
+function closeLeaveModal() {
+  $('modalLeaveRequest')?.classList.add('hidden')
+}
+
+async function submitLeaveRequest() {
+  const id        = $('leaveEditId')?.value
+  const leaveType = $('leaveTypeSelect')?.value
+  const startDate = $('leaveStartDate')?.value
+  const endDate   = $('leaveEndDate')?.value || startDate
+  const reason    = $('leaveReason')?.value?.trim()
+
+  if (!leaveType) { toast('Vui lòng chọn loại nghỉ', 'error'); return }
+  if (!startDate) { toast('Vui lòng chọn ngày bắt đầu', 'error'); return }
+
+  const payload = { leave_type: leaveType, start_date: startDate, end_date: endDate, reason }
+
+  try {
+    if (id) {
+      await api(`/leave-requests/${id}`, { method: 'PUT', data: payload })
+      toast('✅ Đã cập nhật đơn xin nghỉ', 'success')
+    } else {
+      const res = await api('/leave-requests', { method: 'POST', data: payload })
+      if (res.error) {
+        // Lỗi quota phép năm
+        if (res.remaining !== undefined) {
+          toast(`🚫 Không đủ ngày phép năm! Còn lại: ${res.remaining} ngày, yêu cầu: ${res.requested} ngày`, 'error')
+        } else {
+          toast('Lỗi: ' + res.error, 'error')
+        }
+        return
+      }
+      toast(`✅ Đã gửi đơn xin nghỉ (${res.total_days} ngày). Admin sẽ nhận được thông báo email.`, 'success')
+    }
+    closeLeaveModal()
+    loadLeaveRequests()
+  } catch (e) {
+    toast('Lỗi: ' + (e.message || e), 'error')
+  }
+}
+
+// ── Modal: Xét duyệt (admin) ──────────────────────────────────────────────────
+function openLeaveReviewModal(id) {
+  const r = _leaveData.find(x => x.id === id)
+  if (!r) return
+
+  $('reviewLeaveId').value = id
+  $('reviewLeaveNote').value = ''
+
+  const typeCfg = LEAVE_TYPE_CONFIG[r.leave_type] || { label: r.leave_type, icon: '📋', cls: '' }
+  const info = $('reviewLeaveInfo')
+  if (info) {
+    info.innerHTML = `
+      <div class="grid grid-cols-2 gap-2 text-sm">
+        <div class="text-gray-500">Nhân viên:</div>
+        <div class="font-semibold text-gray-800">${r.employee_name || r.employee_username}</div>
+        <div class="text-gray-500">Loại nghỉ:</div>
+        <div class="font-semibold">${typeCfg.icon} ${typeCfg.label}</div>
+        <div class="text-gray-500">Từ ngày:</div>
+        <div class="font-semibold">${formatDateVN(r.start_date)}</div>
+        <div class="text-gray-500">Đến ngày:</div>
+        <div class="font-semibold">${formatDateVN(r.end_date)}</div>
+        <div class="text-gray-500">Số ngày:</div>
+        <div class="font-semibold text-green-700">${r.total_days} ngày</div>
+        ${r.reason ? `<div class="text-gray-500">Lý do:</div><div class="text-gray-700 italic">${r.reason}</div>` : ''}
+      </div>
+      <div class="mt-3 p-2 bg-blue-50 rounded text-xs text-blue-700">
+        <i class="fas fa-info-circle mr-1"></i>
+        Nếu <strong>Phê duyệt</strong>, hệ thống sẽ tự động tạo timesheet nghỉ phép cho nhân viên trong các ngày này và gửi email thông báo.
+      </div>`
+  }
+
+  $('modalLeaveReview')?.classList.remove('hidden')
+}
+
+function closeLeaveReviewModal() {
+  $('modalLeaveReview')?.classList.add('hidden')
+}
+
+async function submitLeaveReview(status) {
+  const id         = $('reviewLeaveId')?.value
+  const reviewNote = $('reviewLeaveNote')?.value?.trim()
+  if (!id) return
+
+  try {
+    const res = await api(`/leave-requests/${id}/review`, {
+      method: 'POST',
+      data: { status, review_note: reviewNote }
+    })
+    const msg = status === 'approved'
+      ? `✅ Đã phê duyệt! Đã tự động tạo ${res.auto_created_timesheets} timesheet nghỉ phép cho nhân viên.`
+      : '❌ Đã từ chối đơn xin nghỉ. Email thông báo đã gửi cho nhân viên.'
+    toast(msg, status === 'approved' ? 'success' : 'warning')
+    closeLeaveReviewModal()
+    loadLeaveRequests()
+  } catch (e) {
+    toast('Lỗi: ' + (e.message || e), 'error')
+  }
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+async function deleteLeaveRequest(id) {
+  if (!confirm('Xóa đơn xin nghỉ này?')) return
+  try {
+    await api(`/leave-requests/${id}`, { method: 'DELETE' })
+    toast('Đã xóa đơn xin nghỉ', 'success')
+    loadLeaveRequests()
+  } catch (e) {
+    toast('Lỗi: ' + (e.message || e), 'error')
+  }
+}
+
+// ── Quota Management (admin) ──────────────────────────────────────────────────
+let _leaveQuotaData = []
+
+function openLeaveQuotaModal() {
+  const modal = document.getElementById('modalLeaveQuota')
+  if (!modal) return
+  modal.classList.remove('hidden')
+  loadLeaveQuota()
+}
+
+function closeLeaveQuotaModal() {
+  document.getElementById('modalLeaveQuota')?.classList.add('hidden')
+}
+
+async function loadLeaveQuota() {
+  const year  = document.getElementById('leaveQuotaYear')?.value || new Date().getFullYear()
+  const tbody = document.getElementById('leaveQuotaTableBody')
+  if (!tbody) return
+
+  tbody.innerHTML = `<div class="flex items-center justify-center py-10 text-gray-400 text-sm">
+    <i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...
+  </div>`
+
+  try {
+    const cfg = await api('/leave-balances?year=' + year)
+    _leaveQuotaData = Array.isArray(cfg) ? cfg : []
+
+    // Update header label
+    const label = document.getElementById('leaveQuotaYearLabel')
+    if (label) label.textContent = `Năm ${year} · ${_leaveQuotaData.length} nhân viên`
+
+    if (!_leaveQuotaData.length) {
+      tbody.innerHTML = `<div class="text-center py-10 text-gray-400 text-sm">Không có dữ liệu</div>`
+      return
+    }
+
+    // Avatar color palette
+    const avatarPalettes = [
+      ['#4f46e5','#7c3aed'], ['#0891b2','#0e7490'], ['#16a34a','#15803d'],
+      ['#d97706','#b45309'], ['#dc2626','#b91c1c'], ['#7c3aed','#6d28d9'],
+    ]
+
+    tbody.innerHTML = _leaveQuotaData.map((r, idx) => {
+      const pct       = r.total_days > 0 ? Math.min(100, Math.round((r.used_days / r.total_days) * 100)) : 0
+      const remaining = r.remaining
+      const [c1, c2]  = avatarPalettes[idx % avatarPalettes.length]
+
+      // Status color
+      const statusColor  = pct >= 90 ? '#ef4444' : pct >= 60 ? '#f59e0b' : '#22c55e'
+      const statusBg     = pct >= 90 ? '#fef2f2' : pct >= 60 ? '#fffbeb' : '#f0fdf4'
+      const statusLabel  = pct >= 90 ? 'Gần hết' : pct >= 60 ? 'Đang dùng' : 'Còn nhiều'
+      const statusIcon   = pct >= 90 ? 'fa-exclamation-circle' : pct >= 60 ? 'fa-minus-circle' : 'fa-check-circle'
+
+      // Initials
+      const nameParts = (r.full_name || '').trim().split(' ')
+      const initials  = nameParts.length >= 2
+        ? (nameParts[nameParts.length-2][0] + nameParts[nameParts.length-1][0]).toUpperCase()
+        : (r.full_name || 'U').substring(0, 2).toUpperCase()
+
+      return `
+      <div class="quota-card bg-white rounded-2xl border border-gray-100 hover:border-indigo-100 transition-all hover:shadow-md"
+           style="box-shadow:0 1px 4px rgba(0,0,0,0.05)">
+        <div class="flex items-center gap-4 px-4 py-3.5">
+
+          <!-- Avatar -->
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold text-white flex-shrink-0"
+               style="background:linear-gradient(135deg,${c1},${c2});box-shadow:0 2px 8px ${c1}55">
+            ${initials}
+          </div>
+
+          <!-- Name + dept -->
+          <div class="flex-1 min-w-0">
+            <div class="font-semibold text-gray-800 text-sm leading-tight truncate">${r.full_name || r.username}</div>
+            <div class="text-xs text-gray-400 leading-tight truncate mt-0.5">${r.department || r.email || ''}</div>
+          </div>
+
+          <!-- Status badge -->
+          <div class="flex-shrink-0 hidden sm:flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium"
+               style="background:${statusBg};color:${statusColor}">
+            <i class="fas ${statusIcon} text-xs"></i>
+            ${statusLabel}
+          </div>
+
+          <!-- Stats: Used / Remaining -->
+          <div class="flex items-center gap-3 flex-shrink-0">
+            <div class="text-center">
+              <div class="text-xs text-gray-400 leading-none mb-0.5">Đã dùng</div>
+              <div class="text-sm font-bold text-gray-600">${r.used_days}</div>
+            </div>
+            <div class="w-px h-8 bg-gray-100"></div>
+            <div class="text-center">
+              <div class="text-xs text-gray-400 leading-none mb-0.5">Còn lại</div>
+              <div class="text-sm font-black" style="color:${statusColor}">${remaining}</div>
+            </div>
+          </div>
+
+          <!-- Quota input -->
+          <div class="flex items-center gap-1.5 flex-shrink-0 ml-1">
+            <div class="text-center">
+              <div class="text-xs text-gray-400 leading-none mb-0.5">Quota</div>
+              <input type="number" min="0" max="365" step="0.5" value="${r.total_days}"
+                id="quota_${r.user_id}"
+                class="w-14 text-center py-1.5 rounded-lg text-sm font-bold focus:outline-none focus:ring-2 focus:ring-green-300 transition-all"
+                style="border:1.5px solid #bbf7d0;color:#059669;background:#f0fdf4">
+            </div>
+            <button onclick="saveOneQuota(${r.user_id})" title="Lưu quota"
+              class="w-8 h-8 rounded-lg flex items-center justify-center text-emerald-600 hover:text-white hover:bg-emerald-500 border border-emerald-100 hover:border-emerald-500 transition-all mt-3.5">
+              <i class="fas fa-check text-xs"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Progress bar -->
+        <div class="px-4 pb-3">
+          <div class="flex items-center gap-2">
+            <div class="flex-1 bg-gray-100 rounded-full overflow-hidden" style="height:6px">
+              <div class="h-full rounded-full transition-all duration-700"
+                   style="width:${pct}%;background:linear-gradient(90deg,${statusColor},${statusColor}cc)"></div>
+            </div>
+            <span class="text-xs font-semibold flex-shrink-0" style="color:${statusColor};min-width:32px;text-align:right">${pct}%</span>
+            <span class="text-xs text-gray-400 flex-shrink-0">(${r.used_days}/${r.total_days} ngày)</span>
+          </div>
+        </div>
+      </div>`
+    }).join('')
+
+  } catch (e) {
+    tbody.innerHTML = `<div class="text-center py-10 text-red-400 text-sm">
+      <i class="fas fa-exclamation-triangle mr-2"></i>Lỗi: ${e.message}
+    </div>`
+  }
+}
+
+async function saveOneQuota(userId) {
+  const year  = document.getElementById('leaveQuotaYear')?.value || new Date().getFullYear()
+  const input = document.getElementById(`quota_${userId}`)
+  if (!input) return
+  const days = parseFloat(input.value)
+  if (isNaN(days) || days < 0) { toast('Quota không hợp lệ', 'error'); return }
+
+  try {
+    await api(`/leave-balances/${userId}`, { method: 'PUT', data: { total_days: days, year: parseInt(year) } })
+    toast('✅ Đã lưu quota', 'success')
+    loadLeaveQuota()
+  } catch (e) {
+    toast('Lỗi: ' + (e.message || e), 'error')
+  }
+}
+
+async function saveLeaveDefaultDays() {
+  const days = parseFloat(document.getElementById('leaveDefaultDays')?.value)
+  if (isNaN(days) || days < 0) { toast('Giá trị không hợp lệ', 'error'); return }
+  try {
+    await api('/leave-balances-default', { method: 'PUT', data: { default_days: days } })
+    toast(`✅ Đã lưu quota mặc định: ${days} ngày/năm`, 'success')
+    loadLeaveQuota()
+  } catch (e) {
+    toast('Lỗi: ' + (e.message || e), 'error')
+  }
+}
+
+// ═══ END LEAVE REQUESTS MODULE ════════════════════════════════════════════════

@@ -440,6 +440,76 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       }
     }
 
+    // ── Leave Request: thông báo cho admin ──────────────────────────────────
+    case 'leave_request_new': {
+      const leaveTypeLabels: Record<string, string> = {
+        annual_leave: '🌴 Nghỉ phép năm', sick_leave: '🤒 Nghỉ ốm',
+        unpaid_leave: '💸 Nghỉ không lương', compensatory: '🔄 Nghỉ bù',
+        holiday: '🎉 Nghỉ lễ', half_day_am: '🌅 Nghỉ nửa ngày (sáng)',
+        half_day_pm: '🌆 Nghỉ nửa ngày (chiều)'
+      }
+      const leaveLabel = leaveTypeLabels[data.leaveType] || data.leaveType
+      const metaItems = [
+        { label: 'Loại nghỉ', value: leaveLabel },
+        { label: 'Từ ngày', value: '📅 ' + data.startDate },
+        { label: 'Đến ngày', value: '📅 ' + data.endDate },
+        { label: 'Số ngày', value: data.totalDays + ' ngày' },
+        ...(data.reason ? [{ label: 'Lý do', value: data.reason }] : []),
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 16px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">
+          Nhân viên <strong style="color:#1f2937;">${data.employeeName}</strong> vừa gửi đơn xin nghỉ phép và cần bạn phê duyệt.
+        </p>
+        ${emailCard('Nhân viên', '👤 ' + data.employeeName, '#0066CC')}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">
+          Vui lòng đăng nhập vào hệ thống để <strong>Phê duyệt</strong> hoặc <strong>Từ chối</strong> đơn xin nghỉ này.
+        </p>`
+      return {
+        subject: `[OneCad BIM] 🏖️ Đơn xin nghỉ mới từ ${data.employeeName}`,
+        html: emailBase('🏖️ Đơn Xin Nghỉ Phép Mới', body)
+      }
+    }
+
+    // ── Leave Request: thông báo kết quả cho nhân viên ───────────────────────
+    case 'leave_request_reviewed': {
+      const leaveTypeLabels: Record<string, string> = {
+        annual_leave: '🌴 Nghỉ phép năm', sick_leave: '🤒 Nghỉ ốm',
+        unpaid_leave: '💸 Nghỉ không lương', compensatory: '🔄 Nghỉ bù',
+        holiday: '🎉 Nghỉ lễ', half_day_am: '🌅 Nghỉ nửa ngày (sáng)',
+        half_day_pm: '🌆 Nghỉ nửa ngày (chiều)'
+      }
+      const isApproved = data.status === 'approved'
+      const leaveLabel = leaveTypeLabels[data.leaveType] || data.leaveType
+      const metaItems = [
+        { label: 'Loại nghỉ', value: leaveLabel },
+        { label: 'Từ ngày', value: '📅 ' + data.startDate },
+        { label: 'Đến ngày', value: '📅 ' + data.endDate },
+        { label: 'Số ngày', value: data.totalDays + ' ngày' },
+        { label: 'Phê duyệt bởi', value: data.reviewedBy },
+        ...(data.reviewNote ? [{ label: 'Ghi chú', value: data.reviewNote }] : []),
+      ]
+      const statusText = isApproved
+        ? '<strong style="color:#16a34a;">✅ ĐƯỢC CHẤP THUẬN</strong>'
+        : '<strong style="color:#dc2626;">❌ BỊ TỪ CHỐI</strong>'
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 16px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">
+          Đơn xin nghỉ phép của bạn vừa được xem xét và ${statusText}.
+          ${isApproved ? '<br/>Timesheet của bạn sẽ tự động được ghi nhận trong các ngày nghỉ đã duyệt.' : ''}
+        </p>
+        ${emailCard('Kết quả', isApproved ? '✅ Đã phê duyệt' : '❌ Đã từ chối', isApproved ? '#16a34a' : '#dc2626')}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập để xem chi tiết đơn xin nghỉ của bạn.</p>`
+      return {
+        subject: `[OneCad BIM] ${isApproved ? '✅ Đơn nghỉ phép được duyệt' : '❌ Đơn nghỉ phép bị từ chối'}`,
+        html: emailBase(isApproved ? '✅ Đơn Nghỉ Phép Được Duyệt' : '❌ Đơn Nghỉ Phép Bị Từ Chối', body)
+      }
+    }
+
     default:
       return { subject: '[OneCad BIM] Thông báo mới', html: emailBase('Thông báo', '<p>Bạn có thông báo mới từ OneCad BIM.</p>') }
 
@@ -13226,5 +13296,586 @@ app.get('/badge-72.png',  serveStatic({ path: './badge-72.png' }))
 // For local dev with wrangler, we serve it directly
 app.get('/', serveStatic({ path: './index.html' }))
 app.get('/index.html', serveStatic({ path: './index.html' }))
+
+// ===================================================
+// LEAVE REQUESTS API
+// ===================================================
+
+// Helper: tính số ngày nghỉ (không tính thứ 7, CN)
+function countLeaveDays(startDate: string, endDate: string, leaveType: string): number {
+  if (leaveType === 'half_day_am' || leaveType === 'half_day_pm') return 0.5
+  // Use T00:00:00 to parse as local time, avoid UTC offset shifting the date
+  const start = new Date(startDate + 'T00:00:00')
+  const end   = new Date(endDate   + 'T00:00:00')
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0
+  let count = 0
+  const cur = new Date(start)
+  while (cur <= end) {
+    const dow = cur.getDay() // 0=Sun, 6=Sat
+    if (dow !== 0) count++  // Tính T2→T7, chỉ bỏ Chủ nhật
+    cur.setDate(cur.getDate() + 1)
+  }
+  return count
+}
+
+// Helper: expand leave request thành mảng các ngày ISO (chỉ bỏ CN)
+function expandLeaveDates(startDate: string, endDate: string, leaveType: string): string[] {
+  if (leaveType === 'half_day_am' || leaveType === 'half_day_pm') return [startDate]
+  const dates: string[] = []
+  const start = new Date(startDate + 'T00:00:00')
+  const end   = new Date(endDate   + 'T00:00:00')
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return dates
+  const cur = new Date(start)
+  while (cur <= end) {
+    const dow = cur.getDay()
+    if (dow !== 0) {  // Tính T2→T7, chỉ bỏ Chủ nhật
+      dates.push(cur.toISOString().slice(0, 10))
+    }
+    cur.setDate(cur.getDate() + 1)
+  }
+  return dates
+}
+
+// GET /api/leave-requests — danh sách (admin thấy tất cả, member thấy của mình)
+app.get('/api/leave-requests', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const isAdmin = user.role === 'system_admin'
+    const { status, user_id, month, year } = c.req.query() as any
+
+    let sql = `
+      SELECT lr.*,
+             u.full_name  AS employee_name,
+             u.username   AS employee_username,
+             u.email      AS employee_email,
+             rv.full_name AS reviewer_name
+      FROM leave_requests lr
+      JOIN users u ON u.id = lr.user_id
+      LEFT JOIN users rv ON rv.id = lr.reviewed_by
+      WHERE 1=1`
+    const params: any[] = []
+
+    if (!isAdmin) {
+      sql += ' AND lr.user_id = ?'; params.push(user.id)
+    } else if (user_id) {
+      sql += ' AND lr.user_id = ?'; params.push(parseInt(user_id))
+    }
+    if (status)  { sql += ' AND lr.status = ?';  params.push(status) }
+    if (year)    { sql += ' AND strftime(\'%Y\', lr.start_date) = ?'; params.push(year) }
+    if (month)   { sql += ' AND strftime(\'%m\', lr.start_date) = ?'; params.push(month.toString().padStart(2, '0')) }
+
+    sql += ' ORDER BY lr.created_at DESC'
+
+    const rows = await db.prepare(sql).bind(...params).all()
+    return c.json({ success: true, data: rows.results })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/leave-requests/summary — thống kê số ngày nghỉ theo loại (cho user hoặc admin)
+app.get('/api/leave-requests/summary', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const isAdmin = user.role === 'system_admin'
+    const { year, user_id } = c.req.query() as any
+    const targetUserId = (isAdmin && user_id) ? parseInt(user_id) : user.id
+    const targetYear   = year || new Date().getFullYear().toString()
+
+    const rows = await db.prepare(`
+      SELECT leave_type, SUM(total_days) as total_days, COUNT(*) as count
+      FROM leave_requests
+      WHERE user_id = ?
+        AND status = 'approved'
+        AND strftime('%Y', start_date) = ?
+      GROUP BY leave_type
+    `).bind(targetUserId, targetYear).all()
+
+    return c.json({ success: true, data: rows.results, year: targetYear })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ── Leave Balance helpers (dùng bởi POST leave-requests & review) ──────────
+async function ensureLeaveBalance(db: D1Database, userId: number, year: number, defaultDays = 12) {
+  const existing = await db.prepare(
+    'SELECT id FROM leave_balances WHERE user_id = ? AND year = ?'
+  ).bind(userId, year).first()
+  if (!existing) {
+    await db.prepare(`
+      INSERT OR IGNORE INTO leave_balances (user_id, year, total_days, used_days)
+      VALUES (?, ?, ?, 0)
+    `).bind(userId, year, defaultDays).run()
+  }
+}
+
+async function recalcUsedDays(db: D1Database, userId: number, year: number) {
+  const row = await db.prepare(`
+    SELECT COALESCE(SUM(total_days), 0) AS used
+    FROM leave_requests
+    WHERE user_id = ? AND leave_type = 'annual_leave'
+      AND status = 'approved'
+      AND strftime('%Y', start_date) = ?
+  `).bind(userId, String(year)).first() as any
+  const used = row?.used ?? 0
+  await db.prepare(`
+    UPDATE leave_balances SET used_days = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE user_id = ? AND year = ?
+  `).bind(used, userId, year).run()
+  return used
+}
+
+// POST /api/leave-requests — tạo đơn xin nghỉ
+app.post('/api/leave-requests', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const data = await c.req.json()
+    const { leave_type, start_date, end_date, reason } = data
+
+    if (!leave_type || !start_date) {
+      return c.json({ error: 'leave_type và start_date là bắt buộc' }, 400)
+    }
+
+    const effectiveEndDate = end_date || start_date
+    const totalDays = countLeaveDays(start_date, effectiveEndDate, leave_type)
+
+    if (totalDays <= 0) {
+      return c.json({ error: 'Khoảng thời gian nghỉ không hợp lệ (0 ngày làm việc)' }, 400)
+    }
+
+    // ── Kiểm tra quota nếu là nghỉ phép năm ──────────────────────────────────
+    if (leave_type === 'annual_leave') {
+      const year = new Date(start_date).getFullYear()
+      const cfg  = await db.prepare(
+        `SELECT value FROM system_config WHERE key = 'annual_leave_default_days'`
+      ).first() as any
+      const defaultDays = cfg ? parseFloat(cfg.value) || 12 : 12
+
+      await ensureLeaveBalance(db, user.id, year, defaultDays)
+      await recalcUsedDays(db, user.id, year)
+
+      const balance = await db.prepare(
+        `SELECT total_days, used_days FROM leave_balances WHERE user_id = ? AND year = ?`
+      ).bind(user.id, year).first() as any
+
+      if (balance) {
+        const remaining = parseFloat((balance.total_days - balance.used_days).toFixed(1))
+        if (totalDays > remaining) {
+          return c.json({
+            error: `Không đủ ngày phép năm. Còn lại: ${remaining} ngày, bạn đang yêu cầu: ${totalDays} ngày`,
+            remaining,
+            requested: totalDays,
+          }, 422)
+        }
+      }
+    }
+
+    // Kiểm tra trùng đơn chưa xử lý
+    const overlap = await db.prepare(`
+      SELECT id FROM leave_requests
+      WHERE user_id = ? AND status != 'rejected'
+        AND start_date <= ? AND end_date >= ?
+    `).bind(user.id, effectiveEndDate, start_date).first()
+    if (overlap) {
+      return c.json({ error: 'Đã có đơn xin nghỉ trong khoảng thời gian này chưa được xử lý' }, 409)
+    }
+
+    const result = await db.prepare(`
+      INSERT INTO leave_requests (user_id, leave_type, start_date, end_date, total_days, reason, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending')
+    `).bind(user.id, leave_type, start_date, effectiveEndDate, totalDays, reason || null).run()
+
+    const newId = result.meta.last_row_id
+
+    // Gửi email thông báo cho tất cả system_admin
+    const admins = await db.prepare(
+      `SELECT id, email, full_name FROM users WHERE role = 'system_admin' AND is_active = 1 AND email IS NOT NULL AND email != ''`
+    ).all()
+
+    const leaveTypeLabels: Record<string, string> = {
+      annual_leave: 'Nghỉ phép năm', sick_leave: 'Nghỉ ốm',
+      unpaid_leave: 'Nghỉ không lương', compensatory: 'Nghỉ bù',
+      holiday: 'Nghỉ lễ', half_day_am: 'Nghỉ nửa ngày (sáng)',
+      half_day_pm: 'Nghỉ nửa ngày (chiều)'
+    }
+
+    for (const admin of (admins.results as any[])) {
+      await sendEmail(c.env, {
+        to:        admin.email,
+        toName:    admin.full_name || admin.email,
+        eventType: 'leave_request_new',
+        data: {
+          employeeName: user.full_name || user.username,
+          leaveType:    leave_type,
+          leaveLabel:   leaveTypeLabels[leave_type] || leave_type,
+          startDate:    start_date,
+          endDate:      effectiveEndDate,
+          totalDays:    totalDays,
+          reason:       reason || '',
+        },
+        db,
+        userId: admin.id,
+        relatedType: 'leave_request',
+        relatedId:   newId,
+      })
+    }
+
+    // Tạo notification trong DB cho system_admin
+    for (const admin of (admins.results as any[])) {
+      await db.prepare(`
+        INSERT INTO notifications (user_id, title, message, type, related_type, related_id)
+        VALUES (?, ?, ?, 'info', 'leave_request', ?)
+      `).bind(
+        admin.id,
+        `🏖️ Đơn xin nghỉ mới từ ${user.full_name || user.username}`,
+        `${leaveTypeLabels[leave_type] || leave_type}: ${start_date} → ${effectiveEndDate} (${totalDays} ngày)`,
+        newId
+      ).run()
+    }
+
+    return c.json({ success: true, id: newId, total_days: totalDays })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PUT /api/leave-requests/:id — cập nhật đơn (chỉ pending, chỉ chủ sở hữu hoặc admin)
+app.put('/api/leave-requests/:id', authMiddleware, async (c) => {
+  try {
+    const db     = c.env.DB
+    const user   = c.get('user') as any
+    const id     = parseInt(c.req.param('id'))
+    const isAdmin = user.role === 'system_admin'
+
+    const leave = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(id).first() as any
+    if (!leave) return c.json({ error: 'Không tìm thấy đơn xin nghỉ' }, 404)
+
+    if (!isAdmin && leave.user_id !== user.id) {
+      return c.json({ error: 'Không có quyền chỉnh sửa đơn này' }, 403)
+    }
+    if (!isAdmin && leave.status !== 'pending') {
+      return c.json({ error: 'Chỉ có thể chỉnh sửa đơn đang chờ duyệt' }, 400)
+    }
+
+    const data = await c.req.json()
+    const { leave_type, start_date, end_date, reason } = data
+    const effectiveEndDate = end_date || start_date || leave.end_date
+    const effectiveStartDate = start_date || leave.start_date
+    const effectiveType = leave_type || leave.leave_type
+    const totalDays = countLeaveDays(effectiveStartDate, effectiveEndDate, effectiveType)
+
+    await db.prepare(`
+      UPDATE leave_requests
+      SET leave_type = ?, start_date = ?, end_date = ?, total_days = ?, reason = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(effectiveType, effectiveStartDate, effectiveEndDate, totalDays, reason ?? leave.reason, id).run()
+
+    return c.json({ success: true, total_days: totalDays })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/leave-requests/:id/review — admin phê duyệt / từ chối
+app.post('/api/leave-requests/:id/review', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const id   = parseInt(c.req.param('id'))
+    const { status, review_note } = await c.req.json()
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return c.json({ error: 'status phải là approved hoặc rejected' }, 400)
+    }
+
+    const leave = await db.prepare(`
+      SELECT lr.*, u.full_name AS employee_name, u.email AS employee_email, u.username AS employee_username
+      FROM leave_requests lr
+      JOIN users u ON u.id = lr.user_id
+      WHERE lr.id = ?
+    `).bind(id).first() as any
+    if (!leave) return c.json({ error: 'Không tìm thấy đơn xin nghỉ' }, 404)
+    if (leave.status !== 'pending') return c.json({ error: 'Đơn này đã được xử lý rồi' }, 400)
+
+    // Cập nhật trạng thái
+    await db.prepare(`
+      UPDATE leave_requests
+      SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP, review_note = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(status, user.id, review_note || null, id).run()
+
+    // Nếu approved → tự động tạo timesheet cho từng ngày nghỉ
+    let autoCreatedDates: string[] = []
+    if (status === 'approved') {
+      // Cập nhật used_days trong leave_balances nếu là nghỉ phép năm
+      if (leave.leave_type === 'annual_leave') {
+        const year = new Date(leave.start_date).getFullYear()
+        await ensureLeaveBalance(db, leave.user_id, year)
+        await recalcUsedDays(db, leave.user_id, year)
+      }
+
+      const dates = expandLeaveDates(leave.start_date, leave.end_date, leave.leave_type)
+      for (const dateStr of dates) {
+        // Kiểm tra đã có timesheet chưa
+        const existing = await db.prepare(
+          `SELECT id FROM timesheets WHERE user_id = ? AND work_date = ? LIMIT 1`
+        ).bind(leave.user_id, dateStr).first()
+
+        if (!existing) {
+          await db.prepare(`
+            INSERT INTO timesheets (user_id, project_id, task_id, work_date, day_type, regular_hours, overtime_hours, description, status)
+            VALUES (?, NULL, NULL, ?, ?, 0, 0, ?, 'approved')
+          `).bind(
+            leave.user_id, dateStr, leave.leave_type,
+            `[Tự động] ${leave.leave_type === 'annual_leave' ? 'Nghỉ phép năm' :
+              leave.leave_type === 'sick_leave' ? 'Nghỉ ốm' :
+              leave.leave_type === 'unpaid_leave' ? 'Nghỉ không lương' :
+              leave.leave_type === 'compensatory' ? 'Nghỉ bù' :
+              leave.leave_type === 'holiday' ? 'Nghỉ lễ' :
+              leave.leave_type === 'half_day_am' ? 'Nghỉ nửa ngày (sáng)' :
+              leave.leave_type === 'half_day_pm' ? 'Nghỉ nửa ngày (chiều)' : 'Ngày nghỉ'
+            } — Đã được phê duyệt`
+          ).run()
+          autoCreatedDates.push(dateStr)
+        } else {
+          // Nếu đã có → cập nhật thành ngày nghỉ và tự động approve
+          await db.prepare(`
+            UPDATE timesheets SET day_type = ?, project_id = NULL, task_id = NULL,
+              regular_hours = 0, overtime_hours = 0, status = 'approved',
+              description = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND work_date = ?
+          `).bind(
+            leave.leave_type,
+            `[Tự động] ${leave.leave_type === 'annual_leave' ? 'Nghỉ phép năm' :
+              leave.leave_type === 'sick_leave' ? 'Nghỉ ốm' :
+              leave.leave_type === 'unpaid_leave' ? 'Nghỉ không lương' :
+              leave.leave_type === 'compensatory' ? 'Nghỉ bù' :
+              leave.leave_type === 'holiday' ? 'Nghỉ lễ' :
+              leave.leave_type === 'half_day_am' ? 'Nghỉ nửa ngày (sáng)' :
+              leave.leave_type === 'half_day_pm' ? 'Nghỉ nửa ngày (chiều)' : 'Ngày nghỉ'
+            } — Đã được phê duyệt`,
+            leave.user_id, dateStr
+          ).run()
+          autoCreatedDates.push(dateStr)
+        }
+      }
+    }
+
+    // Gửi email kết quả cho nhân viên
+    if (leave.employee_email) {
+      await sendEmail(c.env, {
+        to:        leave.employee_email,
+        toName:    leave.employee_name || leave.employee_username,
+        eventType: 'leave_request_reviewed',
+        data: {
+          leaveType:   leave.leave_type,
+          startDate:   leave.start_date,
+          endDate:     leave.end_date,
+          totalDays:   leave.total_days,
+          status:      status,
+          reviewedBy:  user.full_name || user.username,
+          reviewNote:  review_note || '',
+        },
+        db,
+        userId: leave.user_id,
+        relatedType: 'leave_request',
+        relatedId:   id,
+      })
+    }
+
+    // Tạo notification cho nhân viên
+    const leaveTypeLabels: Record<string, string> = {
+      annual_leave: 'Nghỉ phép năm', sick_leave: 'Nghỉ ốm',
+      unpaid_leave: 'Nghỉ không lương', compensatory: 'Nghỉ bù',
+      holiday: 'Nghỉ lễ', half_day_am: 'Nghỉ nửa ngày (sáng)',
+      half_day_pm: 'Nghỉ nửa ngày (chiều)'
+    }
+    await db.prepare(`
+      INSERT INTO notifications (user_id, title, message, type, related_type, related_id)
+      VALUES (?, ?, ?, ?, 'leave_request', ?)
+    `).bind(
+      leave.user_id,
+      status === 'approved' ? `✅ Đơn nghỉ phép được duyệt` : `❌ Đơn nghỉ phép bị từ chối`,
+      `${leaveTypeLabels[leave.leave_type] || leave.leave_type}: ${leave.start_date} → ${leave.end_date}` +
+        (review_note ? ` — ${review_note}` : ''),
+      status === 'approved' ? 'success' : 'error',
+      id
+    ).run()
+
+    return c.json({
+      success: true,
+      status,
+      auto_created_timesheets: autoCreatedDates.length,
+      dates: autoCreatedDates
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// DELETE /api/leave-requests/:id — xóa đơn (chỉ pending, chỉ chủ sở hữu hoặc admin)
+app.delete('/api/leave-requests/:id', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const id   = parseInt(c.req.param('id'))
+    const isAdmin = user.role === 'system_admin'
+
+    const leave = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(id).first() as any
+    if (!leave) return c.json({ error: 'Không tìm thấy đơn xin nghỉ' }, 404)
+    if (!isAdmin && leave.user_id !== user.id) return c.json({ error: 'Không có quyền xóa' }, 403)
+    if (!isAdmin && leave.status !== 'pending') return c.json({ error: 'Chỉ xóa được đơn đang chờ duyệt' }, 400)
+
+    await db.prepare('DELETE FROM leave_requests WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ===================================================
+// LEAVE BALANCES API (Quota ngày phép năm)
+// ===================================================
+
+// GET /api/leave-balances/me — quota của bản thân (năm hiện tại)
+app.get('/api/leave-balances/me', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user = c.get('user') as any
+    const year = parseInt(c.req.query('year') || String(new Date().getFullYear()))
+
+    // Lấy default từ system_config nếu có
+    const cfg = await db.prepare(
+      `SELECT value FROM system_config WHERE key = 'annual_leave_default_days'`
+    ).first() as any
+    const defaultDays = cfg ? parseFloat(cfg.value) || 12 : 12
+
+    await ensureLeaveBalance(db, user.id, year, defaultDays)
+    await recalcUsedDays(db, user.id, year)
+
+    const balance = await db.prepare(`
+      SELECT lb.*, u.full_name, u.username
+      FROM leave_balances lb
+      JOIN users u ON u.id = lb.user_id
+      WHERE lb.user_id = ? AND lb.year = ?
+    `).bind(user.id, year).first() as any
+
+    return c.json({
+      user_id:    balance.user_id,
+      year:       balance.year,
+      total_days: balance.total_days,
+      used_days:  balance.used_days,
+      remaining:  parseFloat((balance.total_days - balance.used_days).toFixed(1)),
+      note:       balance.note,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/leave-balances — admin: xem quota toàn bộ nhân viên trong năm
+app.get('/api/leave-balances', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db   = c.env.DB
+    const year = parseInt(c.req.query('year') || String(new Date().getFullYear()))
+
+    // Lấy default từ system_config
+    const cfg = await db.prepare(
+      `SELECT value FROM system_config WHERE key = 'annual_leave_default_days'`
+    ).first() as any
+    const defaultDays = cfg ? parseFloat(cfg.value) || 12 : 12
+
+    // Đảm bảo tất cả active users có row balance
+    const users = await db.prepare(
+      `SELECT id FROM users WHERE is_active = 1`
+    ).all()
+    for (const u of (users.results as any[])) {
+      await ensureLeaveBalance(db, u.id, year, defaultDays)
+      await recalcUsedDays(db, u.id, year)
+    }
+
+    const rows = await db.prepare(`
+      SELECT lb.id, lb.user_id, lb.year, lb.total_days, lb.used_days, lb.note, lb.updated_at,
+             u.full_name, u.username, u.email, u.department
+      FROM leave_balances lb
+      JOIN users u ON u.id = lb.user_id
+      WHERE lb.year = ? AND u.is_active = 1
+      ORDER BY u.full_name
+    `).bind(year).all()
+
+    return c.json((rows.results as any[]).map(r => ({
+      ...r,
+      remaining: parseFloat((r.total_days - r.used_days).toFixed(1)),
+    })))
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PUT /api/leave-balances-default — admin đặt quota mặc định (lưu vào system_config)
+// ⚠️ Dùng path riêng (không phải /default) để tránh Hono/Vite đảo thứ tự route khi build
+app.put('/api/leave-balances-default', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { default_days } = await c.req.json()
+    if (isNaN(default_days) || default_days < 0) {
+      return c.json({ error: 'default_days phải là số >= 0' }, 400)
+    }
+    await db.prepare(`
+      INSERT INTO system_config (key, value, updated_at)
+      VALUES ('annual_leave_default_days', ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+    `).bind(String(default_days)).run()
+    return c.json({ success: true, default_days })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PUT /api/leave-balances/:userId — admin đặt quota cho 1 nhân viên
+app.put('/api/leave-balances/:userId', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db     = c.env.DB
+    const admin  = c.get('user') as any
+    const userId = parseInt(c.req.param('userId'))
+    const { total_days, year: yearParam, note } = await c.req.json()
+    const year = parseInt(yearParam || String(new Date().getFullYear()))
+
+    if (isNaN(total_days) || total_days < 0) {
+      return c.json({ error: 'total_days phải là số >= 0' }, 400)
+    }
+
+    const targetUser = await db.prepare('SELECT id, full_name FROM users WHERE id = ?').bind(userId).first()
+    if (!targetUser) return c.json({ error: 'Không tìm thấy nhân viên' }, 404)
+
+    await ensureLeaveBalance(db, userId, year)
+    const used = await recalcUsedDays(db, userId, year)
+
+    await db.prepare(`
+      UPDATE leave_balances
+      SET total_days = ?, note = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = ? AND year = ?
+    `).bind(total_days, note || null, admin.id, userId, year).run()
+
+    return c.json({
+      success: true,
+      user_id:    userId,
+      year,
+      total_days,
+      used_days:  used,
+      remaining:  parseFloat((total_days - used).toFixed(1)),
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ===================================================
+// END LEAVE REQUESTS API
+// ===================================================
 
 export default app

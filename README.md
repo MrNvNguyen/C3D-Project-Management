@@ -60,10 +60,10 @@
 
 | Tài khoản | Mật khẩu | Vai trò | Quyền hạn |
 |-----------|----------|---------|-----------|
-| `admin` | `Admin@123` | System Admin | Toàn quyền hệ thống |
-| `pham.thi.d` | `Pass@123` | Project Admin | Quản lý dự án + nhân sự |
-| `le.van.c` | `Pass@123` | Project Leader | Theo dõi + báo cáo |
-| `nguyen.van.a` | `Pass@123` | Member | Task + Timesheet |
+| `admin` | `Admin@123456` | System Admin | Toàn quyền hệ thống |
+| `pham.thi.d` | `Bim@2024` | Project Admin | Quản lý dự án + nhân sự |
+| `le.van.c` | `Bim@2024` | Project Leader | Theo dõi + báo cáo |
+| `nguyen.van.a` | `Bim@2024` | Member | Task + Timesheet |
 
 ---
 
