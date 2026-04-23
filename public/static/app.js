@@ -12338,8 +12338,10 @@ document.addEventListener('DOMContentLoaded', () => {
 // SHARED COSTS (Chi phí chung)
 // ============================================================
 
-let _sharedCosts = []
-let _sharedCostSummary = null
+let _sharedCosts        = []
+let _sharedCostSummary  = null
+let _sharedCostPage     = 1
+const SHARED_PAGE_SIZE  = 10
 
 // Mở tab chi phí chung và load dữ liệu
 async function loadSharedCosts() {
@@ -12399,6 +12401,7 @@ async function loadSharedCosts() {
     }
 
     // Bảng danh sách
+    _sharedCostPage = 1
     renderSharedCostTable()
   } catch (e) {
     toast('Lỗi tải chi phí chung: ' + e.message, 'error')
@@ -12418,20 +12421,32 @@ function renderSharedCostTable() {
     return true
   })
 
+  const totalItems = filtered.length
+  const totalPages = Math.max(1, Math.ceil(totalItems / SHARED_PAGE_SIZE))
+  if (_sharedCostPage > totalPages) _sharedCostPage = totalPages
+
   // Update filter info
   const infoEl = $('sharedFilterInfo')
   if (infoEl) {
     const hasFilter = typeFilter || descSearch
-    infoEl.textContent = hasFilter ? `Hiển thị ${filtered.length} / ${_sharedCosts.length} khoản` : `${_sharedCosts.length} khoản`
+    infoEl.textContent = hasFilter
+      ? `Đã lọc: ${totalItems} / ${_sharedCosts.length} khoản`
+      : `${_sharedCosts.length} khoản`
   }
 
-  if (filtered.length === 0) {
+  if (totalItems === 0) {
     tbody.innerHTML = `<tr><td colspan="8" class="text-center py-8 text-gray-400">
       <i class="fas fa-folder-open text-2xl mb-2 block"></i>
       ${_sharedCosts.length === 0 ? `Chưa có chi phí chung. <button onclick="openSharedCostModal()" class="text-blue-600 hover:underline">Thêm ngay</button>` : 'Không có kết quả phù hợp với bộ lọc.'}
     </td></tr>`
+    $('sharedCostPagination').innerHTML = ''
     return
   }
+
+  // Slice for current page
+  const start    = (_sharedCostPage - 1) * SHARED_PAGE_SIZE
+  const pageData = filtered.slice(start, start + SHARED_PAGE_SIZE)
+  const globalOffset = start
 
   const basisLabel = { contract_value: '% GTHĐ', equal: 'Chia đều', manual: 'Thủ công' }
   const costTypeLabel = {
@@ -12441,16 +12456,16 @@ function renderSharedCostTable() {
     department: 'Chi phí phòng', shared: 'Chi phí chung (phân bổ)'
   }
   const costTypeStyle = {
-    depreciation: 'background:#ede9fe;color:#5b21b6',  // tím cho khấu hao
-    salary:       'background:#dbeafe;color:#1e40af',  // xanh lam cho lương
-    equipment:    'background:#fef3c7;color:#92400e',  // vàng cho thiết bị
-    material:     'background:#dcfce7;color:#166534',  // xanh lá cho vật liệu
-    travel:       'background:#fce7f3;color:#9d174d',  // hồng cho đi lại
-    transport:    'background:#ffedd5;color:#9a3412',  // cam cho vận chuyển
-    office:       'background:#e0f2fe;color:#075985',  // xanh nhạt cho văn phòng
-    manmonth:     'background:#fef9c3;color:#854d0e',  // vàng nhạt cho tháng
-    department:   'background:#f0fdf4;color:#166534',  // xanh nhạt cho phòng
-    other:        'background:#f3f4f6;color:#374151',  // xám cho khác
+    depreciation: 'background:#ede9fe;color:#5b21b6',
+    salary:       'background:#dbeafe;color:#1e40af',
+    equipment:    'background:#fef3c7;color:#92400e',
+    material:     'background:#dcfce7;color:#166534',
+    travel:       'background:#fce7f3;color:#9d174d',
+    transport:    'background:#ffedd5;color:#9a3412',
+    office:       'background:#e0f2fe;color:#075985',
+    manmonth:     'background:#fef9c3;color:#854d0e',
+    department:   'background:#f0fdf4;color:#166534',
+    other:        'background:#f3f4f6;color:#374151',
   }
 
   // Helper lấy màu từ allCostTypes (DB) cho loại tuỳ chỉnh
@@ -12461,19 +12476,25 @@ function renderSharedCostTable() {
     return 'background:#fef3c7;color:#92400e'
   }
 
-  tbody.innerHTML = filtered.map(sc => {
+  tbody.innerHTML = pageData.map((sc, idx) => {
     const allocInfo = (sc.allocations || []).map(a =>
       `<span class="inline-block bg-indigo-100 text-indigo-700 rounded px-1 py-0.5 mr-1 mb-1 text-xs" title="${a.project_name}: ${fmtMoney(a.allocated_amount)} (${a.allocation_pct.toFixed(1)}%)">${a.project_code}: ${fmtMoney(a.allocated_amount)}</span>`
     ).join('')
-    const period = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `NTC${sc.year}` : '-')
+    const period    = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `NTC${sc.year}` : '-')
     const typeStyle = _getSharedTypeStyle(sc.cost_type)
     const typeLabel = costTypeLabel[sc.cost_type] || getCostTypeNameDynamic(sc.cost_type)
-    const isDepr = sc.cost_type === 'depreciation'
+    const isDepr    = sc.cost_type === 'depreciation'
+    const rowNum    = globalOffset + idx + 1
     return `<tr class="hover:bg-gray-50${isDepr ? ' bg-purple-50' : ''}">
       <td class="px-3 py-2">
-        <div class="font-medium text-gray-800">${sc.description}</div>
-        ${sc.notes ? `<div class="text-xs text-gray-400">${sc.notes}</div>` : ''}
-        <div class="mt-1">${allocInfo}</div>
+        <div class="flex items-start gap-2">
+          <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 text-gray-400 text-xs font-bold flex-shrink-0 mt-0.5">${rowNum}</span>
+          <div>
+            <div class="font-medium text-gray-800">${sc.description}</div>
+            ${sc.notes ? `<div class="text-xs text-gray-400">${sc.notes}</div>` : ''}
+            <div class="mt-1">${allocInfo}</div>
+          </div>
+        </div>
       </td>
       <td class="px-3 py-2 text-xs"><span class="badge" style="${typeStyle}">${typeLabel}</span></td>
       <td class="px-3 py-2 text-right font-semibold text-yellow-700">${fmtMoney(sc.amount)}</td>
@@ -12487,6 +12508,76 @@ function renderSharedCostTable() {
       </td>
     </tr>`
   }).join('')
+
+  // ── Render pagination ──
+  _renderSharedCostPagination(totalItems, totalPages)
+}
+
+function _renderSharedCostPagination(totalItems, totalPages) {
+  const container = $('sharedCostPagination')
+  if (!container) return
+
+  if (totalPages <= 1) {
+    container.innerHTML = `<div class="flex items-center justify-end text-xs text-gray-400">Tổng: <strong class="mx-1 text-gray-600">${totalItems}</strong> khoản</div>`
+    return
+  }
+
+  const cur   = _sharedCostPage
+  const start = (cur - 1) * SHARED_PAGE_SIZE + 1
+  const end   = Math.min(cur * SHARED_PAGE_SIZE, totalItems)
+
+  const btnBase     = 'inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-semibold transition-all'
+  const btnNormal   = `${btnBase} text-gray-600 bg-white border border-gray-200 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50`
+  const btnDisabled = `${btnBase} text-gray-300 bg-gray-50 border border-gray-100 cursor-not-allowed`
+
+  // Which page numbers to show (max 7)
+  let visible = []
+  if (totalPages <= 7) {
+    for (let p = 1; p <= totalPages; p++) visible.push(p)
+  } else {
+    const left  = Math.max(2, cur - 1)
+    const right = Math.min(totalPages - 1, cur + 1)
+    visible = [1]
+    if (left > 2)  visible.push('...')
+    for (let p = left; p <= right; p++) visible.push(p)
+    if (right < totalPages - 1) visible.push('...')
+    visible.push(totalPages)
+  }
+
+  const pageButtons = visible.map(p => {
+    if (p === '...') return `<span class="inline-flex items-center justify-center w-6 text-gray-400 text-xs">…</span>`
+    if (p === cur)   return `<button class="${btnBase} text-white" style="background:linear-gradient(135deg,#2563eb,#3b82f6);box-shadow:0 2px 8px rgba(37,99,235,0.3)" disabled>${p}</button>`
+    return `<button class="${btnNormal}" onclick="_sharedCostGoPage(${p})">${p}</button>`
+  }).join('')
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between w-full">
+      <span class="text-xs text-gray-400">Hiển thị <strong class="text-gray-600">${start}–${end}</strong> / <strong class="text-gray-600">${totalItems}</strong> khoản</span>
+      <div class="flex items-center gap-1">
+        <button class="${cur === 1 ? btnDisabled : btnNormal}" onclick="_sharedCostGoPage(${cur - 1})" ${cur === 1 ? 'disabled' : ''}>
+          <i class="fas fa-chevron-left text-xs"></i>
+        </button>
+        ${pageButtons}
+        <button class="${cur === totalPages ? btnDisabled : btnNormal}" onclick="_sharedCostGoPage(${cur + 1})" ${cur === totalPages ? 'disabled' : ''}>
+          <i class="fas fa-chevron-right text-xs"></i>
+        </button>
+      </div>
+    </div>`
+}
+
+function _sharedCostGoPage(page) {
+  const totalItems  = _sharedCosts.filter(sc => {
+    const tf = $('sharedTypeFilter')?.value || ''
+    const ds = ($('sharedDescSearch')?.value || '').toLowerCase().trim()
+    if (tf && sc.cost_type !== tf) return false
+    if (ds && !(sc.description || '').toLowerCase().includes(ds)) return false
+    return true
+  }).length
+  const totalPages = Math.max(1, Math.ceil(totalItems / SHARED_PAGE_SIZE))
+  if (page < 1 || page > totalPages) return
+  _sharedCostPage = page
+  renderSharedCostTable()
+  $('sharedTableWrapper')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 // Hiển thị NTC year hint khi user chọn tháng/năm trong form chi phí chung
@@ -12510,6 +12601,7 @@ function updateScNtcHint() {
 function clearSharedFilters() {
   const tf = $('sharedTypeFilter'); if (tf) tf.value = ''
   const ds = $('sharedDescSearch'); if (ds) ds.value = ''
+  _sharedCostPage = 1
   renderSharedCostTable()
 }
 
@@ -18123,7 +18215,9 @@ const LEAVE_STATUS_CONFIG = {
   rejected: { label: 'Từ chối',   cls: 'bg-red-100 text-red-700',      icon: '❌' },
 }
 
-let _leaveData = []
+let _leaveData        = []
+let _leaveCurrentPage = 1
+const _leavePageSize  = 10
 
 // ── Load & Render ─────────────────────────────────────────────────────────────
 async function loadLeaveRequests() {
@@ -18166,6 +18260,7 @@ async function loadLeaveRequests() {
     // Summary cá nhân + quota bar
     await renderLeaveSummary()
 
+    _leaveCurrentPage = 1
     renderLeaveTable(_leaveData)
   } catch (e) {
     console.error('loadLeaveRequests error', e)
@@ -18247,11 +18342,15 @@ function renderLeaveTable(data) {
   const isAdmin = cu?.role === 'system_admin'
   const myId    = Number(cu?.id)
 
+  const totalItems = data.length
+  const totalPages = Math.max(1, Math.ceil(totalItems / _leavePageSize))
+  if (_leaveCurrentPage > totalPages) _leaveCurrentPage = totalPages
+
   // Update count badge
   const countBadge = document.getElementById('leaveCountBadge')
-  if (countBadge) countBadge.textContent = data.length ? `(${data.length} đơn)` : ''
+  if (countBadge) countBadge.textContent = totalItems ? `${totalItems} đơn` : ''
 
-  if (!data.length) {
+  if (!totalItems) {
     tbody.innerHTML = `<tr><td colspan="9" class="text-center py-16 text-gray-400">
       <div class="flex flex-col items-center gap-3">
         <div class="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7)">🏖️</div>
@@ -18259,8 +18358,14 @@ function renderLeaveTable(data) {
         <div class="text-xs text-gray-300">Nhấn "Đăng ký nghỉ" để tạo đơn mới</div>
       </div>
     </td></tr>`
+    $('leavePagination').innerHTML = ''
     return
   }
+
+  // Slice data for current page
+  const start    = (_leaveCurrentPage - 1) * _leavePageSize
+  const pageData = data.slice(start, start + _leavePageSize)
+  const globalOffset = start  // used for row numbering
 
   // Color palette for avatar backgrounds
   const avatarColors = [
@@ -18272,7 +18377,7 @@ function renderLeaveTable(data) {
     'linear-gradient(135deg,#06b6d4,#22d3ee)',
   ]
 
-  tbody.innerHTML = data.map((r, idx) => {
+  tbody.innerHTML = pageData.map((r, idx) => {
     const typeCfg   = LEAVE_TYPE_CONFIG[r.leave_type]   || { label: r.leave_type, icon: '📋', cls: 'bg-gray-100 text-gray-700' }
     const statusCfg = LEAVE_STATUS_CONFIG[r.status] || { label: r.status, cls: 'bg-gray-100 text-gray-700', icon: '' }
 
@@ -18342,10 +18447,11 @@ function renderLeaveTable(data) {
     // Days badge color based on count
     const daysColor = r.total_days >= 5 ? '#ef4444' : r.total_days >= 3 ? '#f59e0b' : '#00A651'
     const daysBg    = r.total_days >= 5 ? '#fff1f2' : r.total_days >= 3 ? '#fffbeb' : '#f0fdf4'
+    const rowNum    = globalOffset + idx + 1
 
     return `<tr class="${rowClass}" style="border-bottom:1px solid #f0faf4">
       <td class="py-3.5 px-4">
-        <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-gray-500 text-xs font-bold">${idx + 1}</span>
+        <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-gray-500 text-xs font-bold">${rowNum}</span>
       </td>
       ${empCell}
       <td class="py-3.5 px-4">${typeTag}</td>
@@ -18374,6 +18480,70 @@ function renderLeaveTable(data) {
       </td>
     </tr>`
   }).join('')
+
+  // ── Pagination bar ──────────────────────────────────────────────────────────
+  renderLeavePagination(totalItems, totalPages)
+}
+
+function renderLeavePagination(totalItems, totalPages) {
+  const container = $('leavePagination')
+  if (!container) return
+
+  const cur   = _leaveCurrentPage
+  const start = (cur - 1) * _leavePageSize + 1
+  const end   = Math.min(cur * _leavePageSize, totalItems)
+
+  // Build page buttons (max 7 visible: first, last, cur±2, ellipsis)
+  const pages = []
+  for (let p = 1; p <= totalPages; p++) pages.push(p)
+
+  const btnBase = 'inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-semibold transition-all'
+  const btnActive = `${btnBase} text-white` + ' style="background:linear-gradient(135deg,#00A651,#00c060);box-shadow:0 2px 8px rgba(0,166,81,0.3)"'
+  const btnNormal = `${btnBase} text-gray-600 bg-white border border-gray-200 hover:border-green-300 hover:text-green-600 hover:bg-green-50`
+  const btnDisabled = `${btnBase} text-gray-300 bg-gray-50 border border-gray-100 cursor-not-allowed`
+
+  // Which page numbers to show
+  let visible = []
+  if (totalPages <= 7) {
+    visible = pages
+  } else {
+    const left  = Math.max(2, cur - 1)
+    const right = Math.min(totalPages - 1, cur + 1)
+    visible = [1]
+    if (left > 2)  visible.push('...')
+    for (let p = left; p <= right; p++) visible.push(p)
+    if (right < totalPages - 1) visible.push('...')
+    visible.push(totalPages)
+  }
+
+  const pageButtons = visible.map(p => {
+    if (p === '...') return `<span class="inline-flex items-center justify-center w-6 text-gray-400 text-xs">…</span>`
+    if (p === cur) return `<button class="${btnBase} text-white" style="background:linear-gradient(135deg,#00A651,#00c060);box-shadow:0 2px 8px rgba(0,166,81,0.3)" disabled>${p}</button>`
+    return `<button class="${btnNormal}" onclick="_leaveGoPage(${p})">${p}</button>`
+  }).join('')
+
+  container.innerHTML = `
+    <div class="flex items-center justify-between w-full">
+      <span class="text-xs text-gray-400">Hiển thị <strong class="text-gray-600">${start}–${end}</strong> / <strong class="text-gray-600">${totalItems}</strong> đơn</span>
+      <div class="flex items-center gap-1">
+        <button class="${cur === 1 ? btnDisabled : btnNormal}" onclick="_leaveGoPage(${cur - 1})" ${cur === 1 ? 'disabled' : ''}>
+          <i class="fas fa-chevron-left text-xs"></i>
+        </button>
+        ${pageButtons}
+        <button class="${cur === totalPages ? btnDisabled : btnNormal}" onclick="_leaveGoPage(${cur + 1})" ${cur === totalPages ? 'disabled' : ''}>
+          <i class="fas fa-chevron-right text-xs"></i>
+        </button>
+      </div>
+    </div>`
+}
+
+function _leaveGoPage(page) {
+  const totalPages = Math.max(1, Math.ceil(_leaveData.length / _leavePageSize))
+  if (page < 1 || page > totalPages) return
+  _leaveCurrentPage = page
+  renderLeaveTable(_leaveData)
+  // Scroll table into view smoothly
+  document.getElementById('leaveTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

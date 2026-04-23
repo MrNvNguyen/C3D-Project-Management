@@ -1292,7 +1292,7 @@
               </tbody>
             </table>
           </div>
-          <div id="leavePagination" class="px-5 py-3 border-t border-gray-100 flex justify-between items-center text-xs text-gray-400" style="background:#f9fafb"></div>
+          <div id="leavePagination" class="px-5 py-3 border-t border-gray-100 min-h-[52px]" style="background:#f9fafb"></div>
         </div>
       </div>
 
@@ -1444,12 +1444,12 @@
 
             <!-- Filter bar -->
             <div class="flex gap-3 mb-3 flex-wrap items-center">
-              <select id="sharedTypeFilter" class="select-field" style="width:200px" onchange="renderSharedCostTable()">
+              <select id="sharedTypeFilter" class="select-field" style="width:200px" onchange="_sharedCostPage=1;renderSharedCostTable()">
                 <option value="">-- Tất cả loại CP --</option>
               </select>
               <div class="relative flex-1 min-w-[180px] max-w-xs">
                 <i class="fas fa-search absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
-                <input id="sharedDescSearch" type="text" placeholder="Tìm theo mô tả..." class="input-field pl-7 w-full text-sm" oninput="renderSharedCostTable()">
+                <input id="sharedDescSearch" type="text" placeholder="Tìm theo mô tả..." class="input-field pl-7 w-full text-sm" oninput="_sharedCostPage=1;renderSharedCostTable()">
               </div>
               <button onclick="clearSharedFilters()" class="btn-secondary text-xs px-3 py-1.5">
                 <i class="fas fa-times mr-1"></i>Xóa lọc
@@ -1477,6 +1477,8 @@
                 </tbody>
               </table>
             </div>
+            <!-- Shared cost pagination -->
+            <div id="sharedCostPagination" class="px-3 py-3 border-t border-gray-100 min-h-[48px]" style="background:#f9fafb"></div>
           </div>
 
           <!-- Tab: Phân tích chi tiết -->
