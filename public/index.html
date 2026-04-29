@@ -3674,7 +3674,20 @@
         <div id="analytics-cost-breakdown" class="analytics-content hidden">
           <!-- Filter bar -->
           <div class="flex flex-wrap gap-3 mb-5 items-center">
-            <div>
+            <!-- Toggle: Toàn bộ / Theo NTC -->
+            <div class="flex items-center gap-1.5 rounded-xl overflow-hidden border border-gray-200 text-xs font-semibold" style="background:#f8fafc">
+              <button id="cbModeAll" onclick="setCbMode('all')"
+                class="px-3 py-2 transition-all"
+                style="background:linear-gradient(135deg,#0f4c35,#00A651);color:#fff">
+                🌍 Toàn bộ dự án
+              </button>
+              <button id="cbModeNtc" onclick="setCbMode('ntc')"
+                class="px-3 py-2 transition-all text-gray-500 hover:text-gray-700">
+                📅 Theo NTC
+              </button>
+            </div>
+            <!-- Year selector (ẩn khi chọn Toàn bộ) -->
+            <div id="cbYearWrap">
               <label class="text-xs text-gray-500 mr-1">Năm</label>
               <select id="cbYear" class="select-field text-sm" style="width:110px" onchange="loadCostBreakdown()"></select>
             </div>

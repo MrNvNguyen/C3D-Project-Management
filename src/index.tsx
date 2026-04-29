@@ -8173,7 +8173,10 @@ app.get('/api/cost-types', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const rows = await db.prepare(`
-      SELECT ct.*, (SELECT COUNT(*) FROM project_costs pc WHERE pc.cost_type = ct.code) as usage_count
+      SELECT ct.*,
+        (SELECT COUNT(*) FROM project_costs pc WHERE pc.cost_type = ct.code) +
+        (SELECT COUNT(*) FROM shared_costs   sc WHERE sc.cost_type = ct.code)
+        as usage_count
       FROM cost_types ct ORDER BY ct.sort_order, ct.id
     `).all()
     return c.json(rows.results)
@@ -8213,8 +8216,10 @@ app.delete('/api/cost-types/:id', authMiddleware, adminOnly, async (c) => {
     const id = parseInt(c.req.param('id'))
     const ct = await db.prepare('SELECT code FROM cost_types WHERE id = ?').bind(id).first() as any
     if (!ct) return c.json({ error: 'Not found' }, 404)
-    const usage = await db.prepare('SELECT COUNT(*) as cnt FROM project_costs WHERE cost_type = ?').bind(ct.code).first() as any
-    if (usage?.cnt > 0) return c.json({ error: `Loại chi phí này đang được dùng trong ${usage.cnt} bản ghi, không thể xóa` }, 400)
+    const usagePC = await db.prepare('SELECT COUNT(*) as cnt FROM project_costs WHERE cost_type = ?').bind(ct.code).first() as any
+    const usageSC = await db.prepare('SELECT COUNT(*) as cnt FROM shared_costs   WHERE cost_type = ?').bind(ct.code).first() as any
+    const totalUsage = (usagePC?.cnt || 0) + (usageSC?.cnt || 0)
+    if (totalUsage > 0) return c.json({ error: `Loại chi phí này đang được dùng trong ${totalUsage} bản ghi (${usagePC?.cnt || 0} chi phí riêng, ${usageSC?.cnt || 0} chi phí chung), không thể xóa` }, 400)
     await db.prepare('DELETE FROM cost_types WHERE id = ?').bind(id).run()
     return c.json({ success: true })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -8232,11 +8237,28 @@ app.delete('/api/cost-types/:id', authMiddleware, adminOnly, async (c) => {
 app.get('/api/analytics/cost-breakdown', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
-    const { year, project_id, cost_type } = c.req.query()
+    const { year, project_id, cost_type, all_time } = c.req.query()
+    const isAllTime = all_time === '1'
+
     const fySettings = await getFiscalYearSettings(db)
     const currentYear = new Date().getFullYear()
     const yInt = year ? parseInt(year) : currentYear
-    const { startDate, endDate } = getFiscalYearDateRange(yInt, fySettings)
+
+    let startDate: string, endDate: string, periodLabel: string
+    if (isAllTime) {
+      // Lấy min/max từ DB để tính range thực tế
+      const rangeRow = await db.prepare(`
+        SELECT MIN(cost_date) as min_d, MAX(cost_date) as max_d FROM project_costs
+      `).first() as any
+      startDate  = rangeRow?.min_d || '2000-01-01'
+      endDate    = rangeRow?.max_d || new Date().toISOString().slice(0, 10)
+      periodLabel = 'Toàn bộ dự án'
+    } else {
+      const range = getFiscalYearDateRange(yInt, fySettings)
+      startDate   = range.startDate
+      endDate     = range.endDate
+      periodLabel = `NTC ${yInt} (${startDate} → ${endDate})`
+    }
 
     // Derive year+month list from fiscal year range (for labor/depreciation queries)
     const fyStartDt = new Date(startDate)
@@ -8253,6 +8275,12 @@ app.get('/api/analytics/cost-breakdown', authMiddleware, adminOnly, async (c) =>
     const params: any[] = []
     if (project_id) { where += ` AND pc.project_id = ?`; params.push(parseInt(project_id)) }
     if (cost_type)  { where += ` AND pc.cost_type = ?`; params.push(cost_type) }
+
+    // Build WHERE clause for shared_costs (dùng trong UNION của details)
+    let scWhere = `sc.cost_date >= '${startDate}' AND sc.cost_date <= '${endDate}' AND sc.status != 'deleted'`
+    const scParams: any[] = []
+    if (project_id) { scWhere += ` AND sca.project_id = ?`; scParams.push(parseInt(project_id)) }
+    if (cost_type)  { scWhere += ` AND sc.cost_type = ?`;   scParams.push(cost_type) }
 
     // 1. Tổng hợp theo loại chi phí
     const byType = await db.prepare(`
@@ -8322,20 +8350,41 @@ app.get('/api/analytics/cost-breakdown', authMiddleware, adminOnly, async (c) =>
       LIMIT 15
     `).bind(...params).all()
 
-    // 6. Danh sách chi tiết từng chi phí
+    // 6. Danh sách chi tiết: gộp project_costs + shared_cost_allocations (phân bổ từng dự án)
     const details = await db.prepare(`
       SELECT pc.id, pc.cost_date, pc.cost_type,
         COALESCE(ct.name, pc.cost_type) as type_name,
         COALESCE(ct.color, '#6B7280')   as color,
         pc.amount, pc.description, pc.vendor, pc.invoice_number,
-        p.code as project_code, p.name as project_name, p.contract_value
+        p.code as project_code, p.name as project_name, p.contract_value,
+        'direct' as source
       FROM project_costs pc
       JOIN projects p ON pc.project_id = p.id
       LEFT JOIN cost_types ct ON ct.code = pc.cost_type
       WHERE ${where}
-      ORDER BY pc.cost_date DESC, pc.amount DESC
-      LIMIT 500
-    `).bind(...params).all()
+      UNION ALL
+      SELECT
+        sc.id * -1 as id,
+        sc.cost_date,
+        sc.cost_type,
+        COALESCE(ct.name, sc.cost_type) as type_name,
+        COALESCE(ct.color, '#6B7280')   as color,
+        sca.allocated_amount            as amount,
+        sc.description || ' (phân bổ)' as description,
+        sc.vendor,
+        sc.invoice_number,
+        p.code  as project_code,
+        p.name  as project_name,
+        p.contract_value,
+        'shared' as source
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc  ON sc.id  = sca.shared_cost_id
+      JOIN projects p       ON p.id   = sca.project_id
+      LEFT JOIN cost_types ct ON ct.code = sc.cost_type
+      WHERE ${scWhere}
+      ORDER BY cost_date DESC, amount DESC
+      LIMIT 1000
+    `).bind(...params, ...scParams).all()
 
     // 7. Chi phí lương theo dự án — tính REALTIME từ timesheets × monthly_labor_costs
     //    Công thức: labor_cost_proj = (proj_eff_hours / comp_eff_hours) × monthly_budget
@@ -8497,7 +8546,7 @@ app.get('/api/analytics/cost-breakdown', authMiddleware, adminOnly, async (c) =>
     }
 
     return c.json({
-      period: { year: yInt, startDate, endDate, label: `NTC ${yInt} (${startDate} → ${endDate})` },
+      period: { year: isAllTime ? 0 : yInt, startDate, endDate, label: periodLabel, all_time: isAllTime },
       grand_total: grandTotal + totalSharedNonDepr,
       total_labor: totalLabor,
       total_depr: totalDepr,

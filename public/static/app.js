@@ -18,6 +18,8 @@ let allCosts = []
 let allRevenues = []
 let _costPage = 1
 let _costTypeFilter = ''
+let _costSortCol = 'cost_date'   // mặc định sort theo ngày
+let _costSortDir = 'desc'        // mới → cũ
 const COST_PAGE_SIZE = 20
 let allDisciplines = []
 let currentCostTab = 'costs'
@@ -7207,6 +7209,11 @@ async function loadCosts() {
     let revUrl = `/revenues?year=${year}`
     if (projectId) { costUrl += `&project_id=${projectId}`; revUrl += `&project_id=${projectId}` }
 
+    // Đảm bảo allCostTypes đã load trước khi render (để filter dropdown hiển thị đủ loại)
+    if (!allCostTypes.length) {
+      try { allCostTypes = await api('/cost-types') } catch(e) {}
+    }
+
     allCosts = await api(costUrl)
     allRevenues = await api(revUrl)
     _costPage = 1          // Reset về trang 1 khi load dữ liệu mới
@@ -7708,19 +7715,30 @@ async function runFullDuplicateCleanup() {
 function populateCostTypeFilter() {
   const sel = $('costTypeFilterSel')
   if (!sel) return
-  // Thu thập các loại chi phí thực sự có trong allCosts
-  const usedTypes = [...new Set((allCosts || []).map(c => c.cost_type).filter(Boolean))]
+  // Thu thập từ allCostTypes (tất cả loại đã tạo), fallback sang allCosts nếu chưa load
+  const usedInData = new Set((allCosts || []).map(c => c.cost_type).filter(Boolean))
+  // Ưu tiên: dùng allCostTypes (load từ DB), lọc ra loại active hoặc đang dùng
+  let typeList = []
+  if (allCostTypes.length) {
+    typeList = allCostTypes
+      .filter(ct => ct.is_active || usedInData.has(ct.code))
+      .map(ct => ({ code: ct.code, name: ct.name }))
+  } else {
+    // Fallback: lấy từ data đang có
+    typeList = [...usedInData].sort().map(code => ({ code, name: getCostTypeName(code) || code }))
+  }
+  typeList.sort((a, b) => a.name.localeCompare(b.name, 'vi'))
   // Giữ lựa chọn hiện tại
   const prev = sel.value
   sel.innerHTML = '<option value="">-- Tất cả loại CP --</option>'
-  usedTypes.sort().forEach(code => {
-    const name = (allCostTypes.find(ct => ct.code === code)?.name) || getCostTypeName(code) || code
+  typeList.forEach(({ code, name }) => {
     const opt = document.createElement('option')
     opt.value = code
-    opt.textContent = name
+    opt.textContent = name + (usedInData.has(code) ? '' : ' (0)')
     sel.appendChild(opt)
   })
-  if (prev && usedTypes.includes(prev)) sel.value = prev
+  const validCodes = typeList.map(t => t.code)
+  if (prev && validCodes.includes(prev)) sel.value = prev
   else { sel.value = ''; _costTypeFilter = '' }
 }
 
@@ -7767,15 +7785,26 @@ function renderCostTable() {
   }
 
   // ── Tab Chi phí riêng ───────────────────────────────────────────────────
-  head.innerHTML = `<tr class="text-left text-gray-500 border-b text-xs uppercase">
-      <th class="pb-3 pr-3">Dự án</th>
-      <th class="pb-3 pr-3">Loại</th>
-      <th class="pb-3 pr-3">Mô tả</th>
-      <th class="pb-3 pr-3">Nhà CC</th>
-      <th class="pb-3 pr-3">Ngày</th>
-      <th class="pb-3 pr-3 text-right">Số tiền</th>
+  head.innerHTML = (() => {
+    const sortCols = [
+      { key: 'project_code', label: 'Dự án' },
+      { key: 'cost_type',    label: 'Loại' },
+      { key: 'description',  label: 'Mô tả' },
+      { key: 'vendor',       label: 'Nhà CC' },
+      { key: 'cost_date',    label: 'Ngày' },
+      { key: 'amount',       label: 'Số tiền', align: 'right' },
+    ]
+    const si = (col) => {
+      if (_costSortCol !== col) return '<i class="fas fa-sort text-gray-300 ml-1 text-xs"></i>'
+      return _costSortDir === 'asc'
+        ? '<i class="fas fa-sort-up text-blue-500 ml-1 text-xs"></i>'
+        : '<i class="fas fa-sort-down text-blue-500 ml-1 text-xs"></i>'
+    }
+    return `<tr class="text-left text-gray-500 border-b text-xs uppercase select-none">
+      ${sortCols.map(col => `<th class="pb-3 pr-3 ${col.align === 'right' ? 'text-right' : ''} cursor-pointer hover:text-blue-600 whitespace-nowrap" onclick="_costToggleSort('${col.key}')">${col.label}${si(col.key)}</th>`).join('')}
       <th class="pb-3">Thao tác</th>
     </tr>`
+  })()
 
   // Populate filter dropdown & ẩn/hiện select filter (chỉ hiện khi ở tab Chi phí riêng)
   populateCostTypeFilter()
@@ -7783,9 +7812,27 @@ function renderCostTable() {
   if (filterSel) filterSel.style.display = (currentCostTab === 'costs') ? '' : 'none'
 
   // Lọc theo loại chi phí
-  const filtered = _costTypeFilter
+  let filtered = _costTypeFilter
     ? allCosts.filter(c => c.cost_type === _costTypeFilter)
     : allCosts
+
+  // ── Sắp xếp ──
+  filtered = [...filtered].sort((a, b) => {
+    let va = a[_costSortCol], vb = b[_costSortCol]
+    if (_costSortCol === 'cost_date') {
+      va = va ? new Date(va).getTime() : 0
+      vb = vb ? new Date(vb).getTime() : 0
+    } else if (_costSortCol === 'amount') {
+      va = Number(va) || 0
+      vb = Number(vb) || 0
+    } else {
+      va = (va || '').toString().toLowerCase()
+      vb = (vb || '').toString().toLowerCase()
+    }
+    if (va < vb) return _costSortDir === 'asc' ? -1 : 1
+    if (va > vb) return _costSortDir === 'asc' ?  1 : -1
+    return 0
+  })
 
   // Phân trang
   const total = filtered.length
@@ -7858,6 +7905,17 @@ function renderCostTable() {
       }
     }
   }
+}
+
+function _costToggleSort(col) {
+  if (_costSortCol === col) {
+    _costSortDir = _costSortDir === 'asc' ? 'desc' : 'asc'
+  } else {
+    _costSortCol = col
+    _costSortDir = (col === 'cost_date' || col === 'amount') ? 'desc' : 'asc'
+  }
+  _costPage = 1
+  renderCostTable()
 }
 
 function setCostPage(p) {
@@ -17445,9 +17503,36 @@ async function deleteMeetingMinute(id) {
 
 let _cbInitialized = false
 let _cbCharts = {}
+let _cbMode = 'all'  // 'all' = Toàn bộ dự án, 'ntc' = Theo NTC
 
 function destroyCbChart(key) {
   if (_cbCharts[key]) { try { _cbCharts[key].destroy() } catch(e){} delete _cbCharts[key] }
+}
+
+function setCbMode(mode) {
+  _cbMode = mode
+  // Update button styles
+  const btnAll = $('cbModeAll')
+  const btnNtc = $('cbModeNtc')
+  if (btnAll && btnNtc) {
+    if (mode === 'all') {
+      btnAll.style.background = 'linear-gradient(135deg,#0f4c35,#00A651)'
+      btnAll.style.color = '#fff'
+      btnNtc.style.background = ''
+      btnNtc.style.color = ''
+      btnNtc.classList.add('text-gray-500')
+    } else {
+      btnNtc.style.background = 'linear-gradient(135deg,#1e3a5f,#2563eb)'
+      btnNtc.style.color = '#fff'
+      btnAll.style.background = ''
+      btnAll.style.color = ''
+      btnAll.classList.add('text-gray-500')
+    }
+  }
+  // Show/hide year selector
+  const yearWrap = $('cbYearWrap')
+  if (yearWrap) yearWrap.style.display = mode === 'ntc' ? '' : 'none'
+  loadCostBreakdown()
 }
 
 async function initCostBreakdownTab(force = false) {
@@ -17492,7 +17577,8 @@ async function initCostBreakdownTab(force = false) {
     } catch(e) {}
   }
 
-  loadCostBreakdown()
+  // Apply mode UI then load (setCbMode will call loadCostBreakdown)
+  setCbMode(_cbMode)
 }
 
 async function loadCostBreakdown() {
@@ -17501,13 +17587,21 @@ async function loadCostBreakdown() {
   el.innerHTML = '<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang tải dữ liệu chi phí...</p></div>'
 
   try {
+    const isAllTime = _cbMode === 'all'
     const year     = $('cbYear')?.value || String(new Date().getFullYear())
     const projId   = _cbGetValue('cbProjectCombobox')
     const costType = $('cbCostType')?.value || ''
 
-    let q = `/analytics/cost-breakdown?year=${year}`
+    let q = isAllTime
+      ? `/analytics/cost-breakdown?all_time=1`
+      : `/analytics/cost-breakdown?year=${year}`
     if (projId)   q += `&project_id=${projId}`
     if (costType) q += `&cost_type=${costType}`
+
+    // Đảm bảo allCostTypes đã load để dropdown lọc hiển thị đầy đủ
+    if (!allCostTypes.length) {
+      try { allCostTypes = await api('/cost-types') } catch(e) {}
+    }
 
     const data = await api(q)
     renderCostBreakdown(el, data)
@@ -17755,16 +17849,24 @@ function renderCostBreakdown(el, data) {
   })
   detailProjects.sort((a, b) => a.code.localeCompare(b.code))
 
-  // Build unique type list for dropdown
+  // Build unique type list for dropdown — ưu tiên dùng allCostTypes (đầy đủ), fallback sang details
   const detailTypes = []
   const _seenType = new Set()
+  // Thêm từ allCostTypes trước (đầy đủ mọi loại active)
+  if (allCostTypes.length) {
+    allCostTypes.filter(ct => ct.is_active).forEach(ct => {
+      _seenType.add(ct.code)
+      detailTypes.push({ code: ct.code, name: ct.name, color: ct.color || '#6B7280' })
+    })
+  }
+  // Thêm thêm từ details nếu có loại nào chưa có trong allCostTypes
   details.forEach(d => {
     if (!_seenType.has(d.cost_type)) {
       _seenType.add(d.cost_type)
-      detailTypes.push({ code: d.cost_type, name: d.type_name, color: d.color })
+      detailTypes.push({ code: d.cost_type, name: d.type_name || d.cost_type, color: d.color })
     }
   })
-  detailTypes.sort((a, b) => a.name.localeCompare(b.name))
+  detailTypes.sort((a, b) => a.name.localeCompare(b.name, 'vi'))
 
   const detailHtml = `
     <div class="card" id="cbDetailCard">
@@ -17988,12 +18090,13 @@ function cbRenderDetailPage(page) {
 
   const tbody = document.getElementById('cbDetailTbody')
   if (!tbody) return
-  tbody.innerHTML = slice.map((d, i) => `<tr class="hover:bg-gray-50">
+  tbody.innerHTML = slice.map((d, i) => `<tr class="hover:bg-gray-50 ${d.source === 'shared' ? 'bg-amber-50' : ''}">
     <td class="py-1.5 pr-3 text-gray-400">${start + i + 1}</td>
     <td class="py-1.5 pr-3 whitespace-nowrap">${fmtDate(d.cost_date)}</td>
     <td class="py-1.5 pr-3 whitespace-nowrap"><span class="text-gray-400">[${d.project_code}]</span> <span class="text-gray-600">${d.project_name ? (d.project_name.length > 20 ? d.project_name.substring(0,20)+'…' : d.project_name) : ''}</span></td>
     <td class="py-1.5 pr-3 whitespace-nowrap">
       <span class="inline-block px-1.5 py-0.5 rounded text-white text-xs" style="background:${d.color}">${d.type_name}</span>
+      ${d.source === 'shared' ? '<span class="ml-1 inline-block px-1 py-0.5 rounded text-xs bg-amber-100 text-amber-700 border border-amber-200">CP chung</span>' : ''}
     </td>
     <td class="py-1.5 pr-3 max-w-xs truncate" title="${(d.description||'').replace(/"/g,'&quot;')}">${d.description||'—'}</td>
     <td class="py-1.5 pr-3 text-gray-500 whitespace-nowrap">${d.vendor||'—'}</td>
