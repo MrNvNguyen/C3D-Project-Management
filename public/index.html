@@ -1117,6 +1117,7 @@
               <thead>
                 <tr id="tsTableHeader" class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
                   <th class="py-2.5 px-3 font-medium">Ngày</th>
+                  <th class="py-2.5 px-3 font-medium text-center">Thứ</th>
                   <th class="py-2.5 px-3 font-medium ts-col-user">Nhân viên</th>
                   <th class="py-2.5 px-3 font-medium">Loại</th>
                   <th class="py-2.5 px-3 font-medium">Dự án</th>
@@ -6250,6 +6251,29 @@
     color: #1e293b;
     background: #fff;
   }
+
+  /* ── Timesheet weekend row highlight ── */
+  /* Thứ 7: nền cam nhạt (250,192,144) */
+  tr.ts-sat td { background-color: rgb(250,192,144) !important; }
+  /* Chủ nhật: nền cam đậm (228,108,10), chữ trắng */
+  tr.ts-sun td { background-color: rgb(228,108,10) !important; color: #1a1a1a !important; }
+  tr.ts-sun td .badge,
+  tr.ts-sun td span[class*="bg-"],
+  tr.ts-sun td span[class*="text-"] { opacity: 1; }
+  tr.ts-sun td .text-orange-500,
+  tr.ts-sun td .text-primary,
+  tr.ts-sun td .text-gray-700,
+  tr.ts-sun td .text-gray-600,
+  tr.ts-sun td .text-gray-500,
+  tr.ts-sun td .text-gray-400,
+  tr.ts-sun td .text-gray-300,
+  tr.ts-sun td .text-sm,
+  tr.ts-sun td .text-xs { color: #1a1a1a !important; }
+  tr.ts-sun td .text-green-600,
+  tr.ts-sun td .text-indigo-600 { color: #1a1a1a !important; }
+  tr.ts-sun td font,
+  tr.ts-sun td b,
+  tr.ts-sun td span { color: #1a1a1a !important; }
 </style>
 
 <script>

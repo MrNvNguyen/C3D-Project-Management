@@ -1862,16 +1862,20 @@ async function openProjectDetail(id, openChatTab = false) {
         </div>
       </div>
 
-      <!-- Project Tabs: Tasks / Chat -->
+      <!-- Project Tabs: Tasks / Weekly Plan / Chat -->
       <div class="card p-0 overflow-hidden">
         <!-- Tab bar -->
-        <div class="flex border-b bg-gray-50 px-4 pt-2">
+        <div class="flex border-b bg-gray-50 px-4 pt-2 overflow-x-auto">
           <button id="projTab-tasks" onclick="switchProjectTab('tasks',${project.id})"
-            class="tab-btn active text-xs py-2 px-4 mr-1">
+            class="tab-btn active text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-tasks mr-1"></i>Danh sách Task (${tasks.length})
           </button>
+          <button id="projTab-weekly" onclick="switchProjectTab('weekly',${project.id})"
+            class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
+            <i class="fas fa-calendar-week mr-1"></i>Kế hoạch tuần
+          </button>
           <button id="projTab-chat" onclick="switchProjectTab('chat',${project.id})"
-            class="tab-btn text-xs py-2 px-4">
+            class="tab-btn text-xs py-2 px-4 whitespace-nowrap">
             <i class="fas fa-comments mr-1"></i>Chat nhóm
           </button>
         </div>
@@ -1897,6 +1901,11 @@ async function openProjectDetail(id, openChatTab = false) {
             </table>
           </div>
           <div id="projTasksPagination" class="mt-3"></div>
+        </div>
+
+        <!-- Weekly Plan panel (lazy-loaded) -->
+        <div id="projPanel-weekly" class="hidden p-4" style="min-height:400px">
+          <div id="weeklyPlanContainer_${project.id}"></div>
         </div>
 
         <!-- Chat panel (lazy-loaded) -->
@@ -4359,19 +4368,29 @@ function openImageViewer(src, name) {
 function switchProjectTab(tab, projectId) {
   const pid = projectId || window._currentProjectDetailId
   // Show/hide panels
-  const taskPanel = $('projPanel-tasks')
-  const chatPanel = $('projPanel-chat')
-  if (taskPanel) taskPanel.style.display = tab === 'tasks' ? 'block' : 'none'
+  const taskPanel   = $('projPanel-tasks')
+  const weeklyPanel = $('projPanel-weekly')
+  const chatPanel   = $('projPanel-chat')
+  if (taskPanel)   taskPanel.style.display   = tab === 'tasks'  ? 'block' : 'none'
+  if (weeklyPanel) weeklyPanel.style.display = tab === 'weekly' ? 'block' : 'none'
   if (chatPanel) {
     chatPanel.classList.remove('hidden')
     chatPanel.style.display = tab === 'chat' ? 'block' : 'none'
   }
 
   // Update tab buttons
-  ;['tasks','chat'].forEach(key => {
+  ;['tasks','weekly','chat'].forEach(key => {
     const btn = $(`projTab-${key}`)
-    if (btn) btn.className = `tab-btn text-xs py-2 px-4 mr-1${key === tab ? ' active' : ''}`
+    if (btn) btn.className = `tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap${key === tab ? ' active' : ''}`
   })
+
+  if (tab === 'weekly') {
+    const container = $(`weeklyPlanContainer_${pid}`)
+    if (container && !container._initialized) {
+      container._initialized = true
+      initWeeklyPlanTab(container, pid)
+    }
+  }
 
   if (tab === 'chat') {
     const container = $(`projectChatPanel_${pid}`)
@@ -4807,7 +4826,7 @@ let _tsMembersCache = []              // cached result from /api/timesheets/memb
 let _tsProjectsCache = []             // cached result from /api/timesheets/projects
 
 // ── Pagination state ──────────────────────────────────────────────
-const TS_PAGE_SIZE = 20               // rows per page
+const TS_PAGE_SIZE = 35               // rows per page
 let _tsCurrentPage = 1                // current page (1-based)
 let _tsAllData     = []               // full dataset after filter (set by renderTimesheetTable)
 
@@ -5389,6 +5408,12 @@ function renderTsRows() {
     const isFullLeaveRow = !['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
     const isHalfDayRow   = t.day_type === 'half_day_am' || t.day_type === 'half_day_pm'
     const isLeaveRow     = isFullLeaveRow  // backward compat variable (row highlight)
+
+    // Weekend highlight: detect day-of-week from work_date
+    const _wd = t.work_date ? new Date(t.work_date + 'T00:00:00') : null
+    const _dow = _wd ? _wd.getDay() : -1   // 0=Sun, 6=Sat
+    const isSaturday = _dow === 6
+    const isSunday   = _dow === 0
     // Multi-task: task_entries array with > 0 items
     const hasMultiTask   = Array.isArray(t.task_entries) && t.task_entries.length > 0
     // Build task cell content
@@ -5402,9 +5427,18 @@ function renderTsRows() {
       taskCellContent = `<span class="max-w-28 truncate block" title="${t.task_title||''}">${t.task_title || '-'}</span>`
     }
 
+    // Row background: weekend > leave/halfday > default
+    const rowClass = isSunday   ? 'table-row ts-sun'
+                   : isSaturday ? 'table-row ts-sat'
+                   : isFullLeaveRow ? 'table-row bg-amber-50/40'
+                   : isHalfDayRow   ? 'table-row bg-sky-50/30'
+                   : (isOwner && !canSeeAll) ? 'table-row bg-green-50/30'
+                   : 'table-row'
+
     return `
-    <tr class="table-row ${isFullLeaveRow ? 'bg-amber-50/40' : (isHalfDayRow ? 'bg-sky-50/30' : (isOwner && !canSeeAll ? 'bg-green-50/30' : ''))}">
+    <tr class="${rowClass}">
       <td class="py-2 pr-3 text-sm font-medium">${fmtDate(t.work_date)}</td>
+      <td class="py-2 pr-3 text-sm text-center font-medium">${['CN','T2','T3','T4','T5','T6','T7'][new Date(t.work_date+'T00:00:00').getDay()]}</td>
       <td class="py-2 pr-3 text-sm ts-col-user" style="display:${canSeeAll ? '' : 'none'}">
         <div class="flex items-center gap-1.5">
           <div class="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(t.user_name||'?').split(' ').pop()?.charAt(0)}</div>
@@ -13547,6 +13581,75 @@ async function renderTasksTab(force = false) {
 // ================================================================
 // TAB 4: TEAM PRODUCTIVITY
 // ================================================================
+
+// Global state for team productivity pagination
+let _teamProdData = []
+const TEAM_PROD_PAGE_SIZE = 15
+
+function renderProdTable(page) {
+  const total = _teamProdData.length
+  const pages = Math.max(1, Math.ceil(total / TEAM_PROD_PAGE_SIZE))
+  page = Math.max(1, Math.min(page, pages))
+  const start = (page - 1) * TEAM_PROD_PAGE_SIZE
+  const slice = _teamProdData.slice(start, start + TEAM_PROD_PAGE_SIZE)
+
+  const tbody = document.getElementById('teamProdTbody')
+  const info  = document.getElementById('teamProdPageInfo')
+  const btns  = document.getElementById('teamProdPageBtns')
+  const count = document.getElementById('teamProdCount')
+  if (!tbody) return
+
+  // Count label
+  if (count) count.textContent = `${total} nhân sự`
+
+  // Rows
+  tbody.innerHTML = slice.map((m, idx) => {
+    const rate = m.assigned_tasks > 0 ? Math.min(100, Math.round((m.completed_tasks||0) / m.assigned_tasks * 100)) : 0
+    const barColor = rate >= 80 ? 'bg-green-500' : rate >= 50 ? 'bg-blue-500' : rate > 0 ? 'bg-red-400' : 'bg-gray-300'
+    const rowBg = (start + idx) % 2 === 1 ? 'bg-gray-50/40' : ''
+    return `<tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
+      <td class="py-2.5 px-3 font-medium text-gray-800 text-sm">${m.full_name}</td>
+      <td class="py-2.5 px-3 text-gray-500 text-xs">${m.department||'—'}</td>
+      <td class="py-2.5 px-3 text-right text-sm">${(m.regular_hours||0).toFixed(1)}h</td>
+      <td class="py-2.5 px-3 text-right text-orange-600 text-sm">${(m.overtime_hours||0).toFixed(1)}h</td>
+      <td class="py-2.5 px-3 text-right font-semibold text-sm">${(m.total_hours||0).toFixed(1)}h</td>
+      <td class="py-2.5 px-3 text-right text-sm">${m.completed_tasks||0}/${m.assigned_tasks||0}</td>
+      <td class="py-2.5 px-3 text-right">
+        <div class="flex items-center justify-end gap-2">
+          <div class="w-16 bg-gray-200 rounded-full h-2 flex-shrink-0">
+            <div class="h-2 rounded-full ${barColor}" style="width:${rate}%"></div>
+          </div>
+          <span class="text-xs font-medium w-8 text-right ${rate>=80?'text-green-600':rate>=50?'text-blue-600':rate>0?'text-red-500':'text-gray-400'}">${rate}%</span>
+        </div>
+      </td>
+    </tr>`
+  }).join('')
+
+  // Page info
+  if (info) info.innerHTML = `<span>Hiển thị <b>${start+1}–${Math.min(start+TEAM_PROD_PAGE_SIZE,total)}</b> / ${total} nhân sự</span>`
+
+  // Page buttons
+  if (btns) {
+    const maxBtn = 7
+    let html = ''
+    html += `<button onclick="renderProdTable(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded text-xs border ${page<=1?'text-gray-300 border-gray-200 cursor-not-allowed':'text-gray-600 border-gray-300 hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i></button>`
+    let startP = Math.max(1, page - Math.floor(maxBtn/2))
+    let endP   = Math.min(pages, startP + maxBtn - 1)
+    if (endP - startP < maxBtn - 1) startP = Math.max(1, endP - maxBtn + 1)
+    if (startP > 1) html += `<button onclick="renderProdTable(1)" class="px-2.5 py-1 rounded text-xs border border-gray-300 hover:bg-gray-100 text-gray-600">1</button>${startP>2?'<span class="text-gray-400 text-xs px-1">…</span>':''}`
+    for (let p = startP; p <= endP; p++) {
+      html += `<button onclick="renderProdTable(${p})" class="px-2.5 py-1 rounded text-xs border ${p===page?'bg-green-600 text-white border-green-600 font-semibold':'border-gray-300 hover:bg-gray-100 text-gray-600'}">${p}</button>`
+    }
+    if (endP < pages) html += `${endP<pages-1?'<span class="text-gray-400 text-xs px-1">…</span>':''}<button onclick="renderProdTable(${pages})" class="px-2.5 py-1 rounded text-xs border border-gray-300 hover:bg-gray-100 text-gray-600">${pages}</button>`
+    html += `<button onclick="renderProdTable(${page+1})" ${page>=pages?'disabled':''} class="px-2 py-1 rounded text-xs border ${page>=pages?'text-gray-300 border-gray-200 cursor-not-allowed':'text-gray-600 border-gray-300 hover:bg-gray-100'}"><i class="fas fa-chevron-right"></i></button>`
+    btns.innerHTML = html
+  }
+
+  // Hide pager if only 1 page
+  const pager = document.getElementById('teamProdPager')
+  if (pager) pager.style.display = pages <= 1 ? 'none' : 'flex'
+}
+
 async function renderTeamTab(force = false) {
   const el = document.getElementById('analyticsTeamContent')
   el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang phân tích năng suất nhân sự...</p></div>`
@@ -13609,91 +13712,24 @@ async function renderTeamTab(force = false) {
     `
 
     // ── Pagination for detail table ──────────────────────────────────
-    const PROD_PAGE_SIZE = 15
-    const sortedMembers = members.slice().sort((a,b)=>(b.total_hours||0)-(a.total_hours||0))
-    let _prodPage = 1
-
-    function renderProdTable(page) {
-      _prodPage = page
-      const total   = sortedMembers.length
-      const pages   = Math.max(1, Math.ceil(total / PROD_PAGE_SIZE))
-      const start   = (page - 1) * PROD_PAGE_SIZE
-      const slice   = sortedMembers.slice(start, start + PROD_PAGE_SIZE)
-
-      const tbody = document.getElementById('teamProdTbody')
-      const info  = document.getElementById('teamProdPageInfo')
-      const btns  = document.getElementById('teamProdPageBtns')
-      const count = document.getElementById('teamProdCount')
-      if (!tbody) return
-
-      // Count label
-      if (count) count.textContent = `${total} nhân sự`
-
-      // Rows
-      tbody.innerHTML = slice.map((m, idx) => {
-        const rate = m.assigned_tasks > 0 ? Math.min(100, Math.round((m.completed_tasks||0) / m.assigned_tasks * 100)) : 0
-        const barColor = rate >= 80 ? 'bg-green-500' : rate >= 50 ? 'bg-blue-500' : rate > 0 ? 'bg-red-400' : 'bg-gray-300'
-        const rowBg = (start + idx) % 2 === 1 ? 'bg-gray-50/40' : ''
-        return `<tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
-          <td class="py-2.5 px-3 font-medium text-gray-800 text-sm">${m.full_name}</td>
-          <td class="py-2.5 px-3 text-gray-500 text-xs">${m.department||'—'}</td>
-          <td class="py-2.5 px-3 text-right text-sm">${(m.regular_hours||0).toFixed(1)}h</td>
-          <td class="py-2.5 px-3 text-right text-orange-600 text-sm">${(m.overtime_hours||0).toFixed(1)}h</td>
-          <td class="py-2.5 px-3 text-right font-semibold text-sm">${(m.total_hours||0).toFixed(1)}h</td>
-          <td class="py-2.5 px-3 text-right text-sm">${m.completed_tasks||0}/${m.assigned_tasks||0}</td>
-          <td class="py-2.5 px-3 text-right">
-            <div class="flex items-center justify-end gap-2">
-              <div class="w-16 bg-gray-200 rounded-full h-2 flex-shrink-0">
-                <div class="h-2 rounded-full ${barColor}" style="width:${rate}%"></div>
-              </div>
-              <span class="text-xs font-medium w-8 text-right ${rate>=80?'text-green-600':rate>=50?'text-blue-600':rate>0?'text-red-500':'text-gray-400'}">${rate}%</span>
-            </div>
-          </td>
-        </tr>`
-      }).join('')
-
-      // Page info
-      if (info) info.innerHTML = `<span>Hiển thị <b>${start+1}–${Math.min(start+PROD_PAGE_SIZE,total)}</b> / ${total} nhân sự</span>`
-
-      // Page buttons
-      if (btns) {
-        const maxBtn = 7
-        let html = ''
-        // Prev
-        html += `<button onclick="renderProdTable(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded text-xs border ${page<=1?'text-gray-300 border-gray-200 cursor-not-allowed':'text-gray-600 border-gray-300 hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i></button>`
-        // Page numbers
-        let startP = Math.max(1, page - Math.floor(maxBtn/2))
-        let endP   = Math.min(pages, startP + maxBtn - 1)
-        if (endP - startP < maxBtn - 1) startP = Math.max(1, endP - maxBtn + 1)
-        if (startP > 1) html += `<button onclick="renderProdTable(1)" class="px-2.5 py-1 rounded text-xs border border-gray-300 hover:bg-gray-100 text-gray-600">1</button>${startP>2?'<span class="text-gray-400 text-xs px-1">…</span>':''}`
-        for (let p = startP; p <= endP; p++) {
-          html += `<button onclick="renderProdTable(${p})" class="px-2.5 py-1 rounded text-xs border ${p===page?'bg-green-600 text-white border-green-600 font-semibold':'border-gray-300 hover:bg-gray-100 text-gray-600'}">${p}</button>`
-        }
-        if (endP < pages) html += `${endP<pages-1?'<span class="text-gray-400 text-xs px-1">…</span>':''}<button onclick="renderProdTable(${pages})" class="px-2.5 py-1 rounded text-xs border border-gray-300 hover:bg-gray-100 text-gray-600">${pages}</button>`
-        // Next
-        html += `<button onclick="renderProdTable(${page+1})" ${page>=pages?'disabled':''} class="px-2 py-1 rounded text-xs border ${page>=pages?'text-gray-300 border-gray-200 cursor-not-allowed':'text-gray-600 border-gray-300 hover:bg-gray-100'}"><i class="fas fa-chevron-right"></i></button>`
-        btns.innerHTML = html
-      }
-
-      // Hide pager if only 1 page
-      const pager = document.getElementById('teamProdPager')
-      if (pager) pager.style.display = pages <= 1 ? 'none' : 'flex'
-    }
-
-    // Initial render
+    // Populate global data array, then call the global renderProdTable
+    _teamProdData = members.slice().sort((a,b)=>(b.assigned_tasks||0)-(a.assigned_tasks||0))
     renderProdTable(1)
 
     destroyAnalyticsChart('teamTopHours'); destroyAnalyticsChart('teamTaskRate')
-    const top10 = members.slice(0, 10)
+    // Top 10 by hours (chart trái)
+    const top10Hours = members.slice().sort((a,b)=>(b.total_hours||0)-(a.total_hours||0)).slice(0, 10)
+    // Top 10 by assigned tasks (chart phải) - sort từ lớn đến nhỏ
+    const top10Tasks = members.slice().sort((a,b)=>(b.assigned_tasks||0)-(a.assigned_tasks||0)).slice(0, 10)
 
     const ctxH = document.getElementById('chartTeamTopHours')?.getContext('2d')
     if (ctxH) _analyticsCharts['teamTopHours'] = safeChart(ctxH, {
       type: 'bar',
       data: {
-        labels: top10.map(m => m.full_name.split(' ').pop()),
+        labels: top10Hours.map(m => m.full_name.split(' ').pop()),
         datasets: [
-          { label: 'Giờ thường', data: top10.map(m=>+(m.regular_hours||0).toFixed(1)), backgroundColor: '#00A651bb', borderRadius: 3 },
-          { label: 'Tăng ca', data: top10.map(m=>+(m.overtime_hours||0).toFixed(1)), backgroundColor: '#f59e0bbb', borderRadius: 3 }
+          { label: 'Giờ thường', data: top10Hours.map(m=>+(m.regular_hours||0).toFixed(1)), backgroundColor: '#00A651bb', borderRadius: 3 },
+          { label: 'Tăng ca', data: top10Hours.map(m=>+(m.overtime_hours||0).toFixed(1)), backgroundColor: '#f59e0bbb', borderRadius: 3 }
         ]
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } },
@@ -13704,10 +13740,10 @@ async function renderTeamTab(force = false) {
     if (ctxR) _analyticsCharts['teamTaskRate'] = safeChart(ctxR, {
       type: 'bar',
       data: {
-        labels: top10.map(m => m.full_name.split(' ').pop()),
+        labels: top10Tasks.map(m => m.full_name.split(' ').pop()),
         datasets: [
-          { label: 'Được giao', data: top10.map(m=>m.assigned_tasks||0), backgroundColor: '#93c5fdbb', borderRadius: 3 },
-          { label: 'Hoàn thành', data: top10.map(m=>m.completed_tasks||0), backgroundColor: '#00A651bb', borderRadius: 3 }
+          { label: 'Được giao', data: top10Tasks.map(m=>m.assigned_tasks||0), backgroundColor: '#93c5fdbb', borderRadius: 3 },
+          { label: 'Hoàn thành', data: top10Tasks.map(m=>m.completed_tasks||0), backgroundColor: '#00A651bb', borderRadius: 3 }
         ]
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } },
@@ -13721,6 +13757,107 @@ async function renderTeamTab(force = false) {
 // ================================================================
 // TAB 5: TIMESHEET ANALYTICS
 // ================================================================
+
+// ── Task-vs-plan pagination (global) ────────────────────────────
+const TS_TASK_PAGE_SIZE = 20
+
+function renderTsTaskPage(page) {
+  const tasks      = window._tsTaskData     || []
+  const totPlan    = window._tsTaskTotalPlanned || 0
+  const totActual  = window._tsTaskTotalActual  || 0
+  const total      = tasks.length
+  const totalPages = Math.max(1, Math.ceil(total / TS_TASK_PAGE_SIZE))
+  page = Math.max(1, Math.min(page, totalPages))
+
+  const start = (page - 1) * TS_TASK_PAGE_SIZE
+  const end   = Math.min(start + TS_TASK_PAGE_SIZE, total)
+  const slice = tasks.slice(start, end)
+
+  const tbody = document.getElementById('tsTaskTbody')
+  const tfoot = document.getElementById('tsTaskTfoot')
+  const pager = document.getElementById('tsTaskPager')
+  const countEl = document.getElementById('tsTaskCount')
+  if (!tbody) return
+
+  // Update count label
+  if (countEl) countEl.textContent = `${total} task có chấm công`
+
+  const taskStatusColors = {
+    todo:'bg-gray-100 text-gray-600', in_progress:'bg-blue-100 text-blue-700',
+    review:'bg-yellow-100 text-yellow-700', completed:'bg-green-100 text-green-700', cancelled:'bg-red-100 text-red-600'
+  }
+  const taskStatusLabel = { todo:'Chờ', in_progress:'Đang làm', review:'Đang duyệt', completed:'Hoàn thành', cancelled:'Huỷ' }
+
+  tbody.innerHTML = slice.map((t, idx) => {
+    const diff = (t.ts_actual_hours||0) - (t.planned_hours||0)
+    const diffColor = t.planned_hours > 0 ? (diff > 0 ? '#ef4444' : '#00A651') : '#9ca3af'
+    const diffText  = t.planned_hours > 0 ? `${diff >= 0 ? '+' : ''}${diff.toFixed(1)}h` : '—'
+    const rowBg = t.pct_used > 120 ? 'background:#fff5f5' : t.pct_used > 100 ? 'background:#fff8f0' : ''
+    const rowAlt = (start + idx) % 2 === 1 ? 'background:#f9fafb' : ''
+    return `<tr class="border-b border-gray-100 hover:bg-gray-50 transition" style="${rowBg || rowAlt}">
+      <td class="py-2 px-3">
+        <div class="font-medium text-gray-800" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(t.task_title||'').replace(/"/g,'&quot;')}">${t.task_title||'—'}</div>
+        ${t.discipline_code ? `<span class="text-gray-400">[${t.discipline_code}]</span>` : ''}
+      </td>
+      <td class="py-2 px-3">
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-white font-bold" style="background:#0066CC;font-size:10px">${t.project_code||'—'}</span>
+      </td>
+      <td class="py-2 px-3 text-gray-600" style="white-space:nowrap">${t.assignee||'—'}</td>
+      <td class="py-2 px-3 text-center">
+        <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${taskStatusColors[t.task_status]||'bg-gray-100 text-gray-600'}">
+          ${taskStatusLabel[t.task_status]||t.task_status||'—'}
+        </span>
+      </td>
+      <td class="py-2 px-3 text-right font-medium text-blue-600">
+        ${t.planned_hours > 0 ? t.planned_hours.toFixed(1)+'h' : '<span class="text-gray-400">—</span>'}
+      </td>
+      <td class="py-2 px-3 text-right font-bold text-green-600">${(t.ts_actual_hours||0).toFixed(1)}h</td>
+      <td class="py-2 px-3 text-right font-semibold" style="color:${diffColor}">${diffText}</td>
+      <td class="py-2 px-3">${progressBar(t.ts_actual_hours||0, t.planned_hours)}</td>
+      <td class="py-2 px-3 text-right text-gray-500">${t.days_logged||0}d · ${t.members_logged||0}người</td>
+    </tr>`
+  }).join('')
+
+  // Footer totals (always shows full totals, not per-page)
+  if (tfoot) {
+    tfoot.innerHTML = `<tr class="bg-gray-100 font-bold text-xs border-t-2 border-gray-300">
+      <td class="py-2 px-3 text-gray-700" colspan="4">Tổng cộng (${total} tasks)</td>
+      <td class="py-2 px-3 text-right text-blue-600">${totPlan.toFixed(1)}h</td>
+      <td class="py-2 px-3 text-right text-green-600">${totActual.toFixed(1)}h</td>
+      <td class="py-2 px-3 text-right" style="color:${totActual-totPlan>=0?'#ef4444':'#00A651'}">
+        ${totPlan>0 ? `${totActual-totPlan>=0?'+':''}${(totActual-totPlan).toFixed(1)}h` : '—'}
+      </td>
+      <td class="py-2 px-3">
+        ${totPlan > 0 ? progressBar(totActual, totPlan) : '<span class="text-gray-400 text-xs">—</span>'}
+      </td>
+      <td></td>
+    </tr>`
+  }
+
+  // Pager
+  if (pager) {
+    if (totalPages <= 1) { pager.style.display = 'none'; return }
+    pager.style.display = 'flex'
+    const pageWindow = 2
+    let btns = ''
+    btns += `<span class="text-gray-400">Hiển thị ${start+1}–${end} / ${total} task</span>`
+    btns += `<div class="flex items-center gap-1">`
+    btns += `<button onclick="renderTsTaskPage(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded border text-xs ${page<=1?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i> Trước</button>`
+    const pagesHtml = []
+    if (page > pageWindow + 1) pagesHtml.push(`<button onclick="renderTsTaskPage(1)" class="px-2 py-1 rounded border text-xs hover:bg-gray-100">1</button>`)
+    if (page > pageWindow + 2) pagesHtml.push(`<span class="px-1 text-gray-400">…</span>`)
+    for (let p = Math.max(1, page-pageWindow); p <= Math.min(totalPages, page+pageWindow); p++) {
+      pagesHtml.push(`<button onclick="renderTsTaskPage(${p})" class="px-2 py-1 rounded border text-xs ${p===page?'bg-blue-500 text-white border-blue-500':'hover:bg-gray-100'}">${p}</button>`)
+    }
+    if (page < totalPages - pageWindow - 1) pagesHtml.push(`<span class="px-1 text-gray-400">…</span>`)
+    if (page < totalPages - pageWindow) pagesHtml.push(`<button onclick="renderTsTaskPage(${totalPages})" class="px-2 py-1 rounded border text-xs hover:bg-gray-100">${totalPages}</button>`)
+    btns += pagesHtml.join('')
+    btns += `<button onclick="renderTsTaskPage(${page+1})" ${page>=totalPages?'disabled':''} class="px-2 py-1 rounded border text-xs ${page>=totalPages?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}">Tiếp <i class="fas fa-chevron-right"></i></button>`
+    btns += `</div>`
+    pager.innerHTML = btns
+  }
+}
+
 async function renderTimesheetAnalyticsTab(force = false) {
   const el = document.getElementById('analyticsTimesheetContent')
   el.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mb-3"></i><p>Đang phân tích chấm công...</p></div>`
@@ -13898,7 +14035,7 @@ async function renderTimesheetAnalyticsTab(force = false) {
         <div>
           <div class="flex items-center justify-between mb-3">
             <h4 class="text-xs font-semibold text-gray-500 uppercase flex items-center gap-1">
-              <i class="fas fa-table text-gray-400"></i> Chi tiết từng task (${taskVsPlan.length} task có chấm công)
+              <i class="fas fa-table text-gray-400"></i> Chi tiết từng task (<span id="tsTaskCount">${taskVsPlan.length} task có chấm công</span>)
             </h4>
             <div class="flex items-center gap-2">
               <span class="text-xs text-gray-400 flex items-center gap-1"><span class="w-3 h-3 rounded-full inline-block" style="background:#00A651"></span> ≤100% bình thường</span>
@@ -13923,64 +14060,21 @@ async function renderTimesheetAnalyticsTab(force = false) {
                     <th class="py-2 px-3 text-right">Ngày log</th>
                   </tr>
                 </thead>
-                <tbody>
-                  ${taskVsPlan.map(t => {
-                    const diff = (t.ts_actual_hours||0) - (t.planned_hours||0)
-                    const diffColor = t.planned_hours > 0
-                      ? (diff > 0 ? '#ef4444' : '#00A651')
-                      : '#9ca3af'
-                    const diffText = t.planned_hours > 0
-                      ? `${diff >= 0 ? '+' : ''}${diff.toFixed(1)}h`
-                      : '—'
-                    const rowBg = t.pct_used > 120 ? 'background:#fff5f5' : t.pct_used > 100 ? 'background:#fff8f0' : ''
-                    const taskStatusColors = {
-                      todo:'bg-gray-100 text-gray-600', in_progress:'bg-blue-100 text-blue-700',
-                      review:'bg-yellow-100 text-yellow-700', completed:'bg-green-100 text-green-700', cancelled:'bg-red-100 text-red-600'
-                    }
-                    return `<tr class="border-b border-gray-100 hover:bg-gray-50 transition" style="${rowBg}">
-                      <td class="py-2 px-3">
-                        <div class="font-medium text-gray-800" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.task_title}">${t.task_title}</div>
-                        ${t.discipline_code ? `<span class="text-gray-400">[${t.discipline_code}]</span>` : ''}
-                      </td>
-                      <td class="py-2 px-3">
-                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-white font-bold" style="background:#0066CC;font-size:10px">${t.project_code}</span>
-                      </td>
-                      <td class="py-2 px-3 text-gray-600" style="white-space:nowrap">${t.assignee||'—'}</td>
-                      <td class="py-2 px-3 text-center">
-                        <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${taskStatusColors[t.task_status]||'bg-gray-100 text-gray-600'}">
-                          ${taskStatusLabel[t.task_status]||t.task_status}
-                        </span>
-                      </td>
-                      <td class="py-2 px-3 text-right font-medium text-blue-600">
-                        ${t.planned_hours > 0 ? t.planned_hours.toFixed(1)+'h' : '<span class="text-gray-400">—</span>'}
-                      </td>
-                      <td class="py-2 px-3 text-right font-bold text-green-600">${(t.ts_actual_hours||0).toFixed(1)}h</td>
-                      <td class="py-2 px-3 text-right font-semibold" style="color:${diffColor}">${diffText}</td>
-                      <td class="py-2 px-3">${progressBar(t.ts_actual_hours||0, t.planned_hours)}</td>
-                      <td class="py-2 px-3 text-right text-gray-500">${t.days_logged||0}d · ${t.members_logged||0}người</td>
-                    </tr>`
-                  }).join('')}
-                </tbody>
-                <tfoot>
-                  <tr class="bg-gray-100 font-bold text-xs border-t-2 border-gray-300">
-                    <td class="py-2 px-3 text-gray-700" colspan="4">Tổng cộng (${taskVsPlan.length} tasks)</td>
-                    <td class="py-2 px-3 text-right text-blue-600">${totalPlanned.toFixed(1)}h</td>
-                    <td class="py-2 px-3 text-right text-green-600">${totalActual.toFixed(1)}h</td>
-                    <td class="py-2 px-3 text-right" style="color:${totalActual-totalPlanned>=0?'#ef4444':'#00A651'}">
-                      ${totalPlanned>0 ? `${totalActual-totalPlanned>=0?'+':''}${(totalActual-totalPlanned).toFixed(1)}h` : '—'}
-                    </td>
-                    <td class="py-2 px-3">
-                      ${totalPlanned > 0 ? progressBar(totalActual, totalPlanned) : '<span class="text-gray-400 text-xs">—</span>'}
-                    </td>
-                    <td></td>
-                  </tr>
-                </tfoot>
+                <tbody id="tsTaskTbody"></tbody>
+                <tfoot id="tsTaskTfoot"></tfoot>
               </table>
-            </div>`
+            </div>
+            <div id="tsTaskPager" class="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t text-xs text-gray-500"></div>`
           }
         </div>
       </div>
     `
+
+    // ── Task table pagination ──────────────────────────────────────
+    window._tsTaskData = taskVsPlan
+    window._tsTaskTotalPlanned = totalPlanned
+    window._tsTaskTotalActual  = totalActual
+    renderTsTaskPage(1)
 
     // ── Render charts ──
     destroyAnalyticsChart('tsMonthly'); destroyAnalyticsChart('tsStatus'); destroyAnalyticsChart('tsDept'); destroyAnalyticsChart('taskVsPlan')
@@ -17925,6 +18019,7 @@ function renderCostBreakdown(el, data) {
             <th class="pb-2 text-right whitespace-nowrap">Số tiền</th>
           </tr></thead>
           <tbody id="cbDetailTbody"></tbody>
+          <tfoot id="cbDetailTfoot"></tfoot>
         </table>
       </div>
       <div id="cbDetailPager" class="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t text-xs text-gray-500"></div>
@@ -18109,6 +18204,31 @@ function cbRenderDetailPage(page) {
   const allCount = (window._cbDetailsAll || []).length
   const isFiltered = total < allCount
   if (countEl) countEl.textContent = isFiltered ? `(${total} / ${allCount} phiếu — trang ${page}/${totalPages})` : `(${total} phiếu — trang ${page}/${totalPages})`
+
+  // ── Tổng cộng footer ──────────────────────────────────────────
+  const tfoot = document.getElementById('cbDetailTfoot')
+  if (tfoot) {
+    const filteredTotal = details.reduce((s, d) => s + (d.amount || 0), 0)
+    const allTotal      = (window._cbDetailsAll || []).reduce((s, d) => s + (d.amount || 0), 0)
+    let tfootHtml = `<tr class="border-t-2 border-blue-200 bg-blue-50/60">
+      <td colspan="7" class="py-2 px-3 font-semibold text-blue-700 text-xs">
+        <i class="fas fa-calculator mr-1 text-blue-500"></i>
+        Tổng cộng ${isFiltered
+          ? `<span class="font-normal text-gray-500">(lọc: ${total} / ${allCount} phiếu)</span>`
+          : `<span class="font-normal text-gray-500">(${total} phiếu)</span>`}
+      </td>
+      <td class="py-2 pr-1 text-right font-bold text-blue-700 text-sm whitespace-nowrap">${fmt(filteredTotal)}</td>
+    </tr>`
+    if (isFiltered) {
+      tfootHtml += `<tr class="bg-gray-50/80 border-t border-gray-100">
+        <td colspan="7" class="py-1.5 px-3 text-xs text-gray-400 italic">
+          <i class="fas fa-list-ol mr-1"></i>Tổng toàn bộ (chưa lọc — ${allCount} phiếu)
+        </td>
+        <td class="py-1.5 pr-1 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">${fmt(allTotal)}</td>
+      </tr>`
+    }
+    tfoot.innerHTML = tfootHtml
+  }
 
   // Render pager
   const pager = document.getElementById('cbDetailPager')
@@ -19082,3 +19202,839 @@ async function saveLeaveDefaultDays() {
 }
 
 // ═══ END LEAVE REQUESTS MODULE ════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEEKLY PLAN & REPORT MODULE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function getWeekStartEnd(dateStr) {
+  const d = new Date(dateStr || Date.now())
+  const day = d.getDay()
+  const diffToMon = (day === 0 ? -6 : 1 - day)
+  const mon = new Date(d); mon.setDate(d.getDate() + diffToMon)
+  const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
+  const fmt = dt => dt.toISOString().slice(0, 10)
+  return { weekStart: fmt(mon), weekEnd: fmt(sun) }
+}
+function getISOWeekNumber(dateStr) {
+  const d = new Date(dateStr)
+  d.setHours(0,0,0,0)
+  d.setDate(d.getDate() + 3 - (d.getDay()||7) + 1)
+  const yearStart = new Date(d.getFullYear(), 0, 1)
+  return Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+}
+function fmtWeekLabel(weekStart, weekEnd) {
+  const ws = new Date(weekStart), we = new Date(weekEnd)
+  const dd = d => d.getDate().toString().padStart(2,'0')
+  const mm = d => (d.getMonth()+1).toString().padStart(2,'0')
+  return `${dd(ws)}/${mm(ws)} – ${dd(we)}/${mm(we)}/${we.getFullYear()}`
+}
+const WP_PRIORITY_CFG = {
+  low:    { label:'Thấp',    cls:'bg-gray-100 text-gray-500' },
+  normal: { label:'Bình thường', cls:'bg-blue-100 text-blue-700' },
+  high:   { label:'Cao',    cls:'bg-orange-100 text-orange-700' },
+  urgent: { label:'Khẩn',   cls:'bg-red-100 text-red-700' },
+}
+const WRI_STATUS_CFG = {
+  not_started: { label:'Chưa bắt đầu', cls:'bg-gray-100 text-gray-500', icon:'fa-circle' },
+  in_progress: { label:'Đang thực hiện', cls:'bg-blue-100 text-blue-700', icon:'fa-spinner' },
+  completed:   { label:'Hoàn thành',  cls:'bg-green-100 text-green-700', icon:'fa-check-circle' },
+  blocked:     { label:'Vướng mắc',   cls:'bg-red-100 text-red-700',    icon:'fa-exclamation-circle' },
+  postponed:   { label:'Hoãn lại',    cls:'bg-yellow-100 text-yellow-700', icon:'fa-pause-circle' },
+}
+
+// ── Main init ─────────────────────────────────────────────────────────────────
+async function initWeeklyPlanTab(container, projectId) {
+  container.innerHTML = `<div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i></div>`
+  await renderWeeklyPlanList(container, projectId)
+}
+
+async function renderWeeklyPlanList(container, projectId) {
+  try {
+    const plans = await api(`/projects/${projectId}/weekly-plans?limit=30`)
+    const todayWeek = getWeekStartEnd(new Date().toISOString().slice(0,10))
+
+    container.innerHTML = `
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-calendar-week mr-2 text-green-600"></i>Kế hoạch tuần</h3>
+          <p class="text-xs text-gray-400 mt-0.5">Lập và theo dõi tiến độ công việc từng tuần</p>
+        </div>
+        <button onclick="openWeeklyPlanModal(null,${projectId})" class="btn-primary text-xs px-4 py-2">
+          <i class="fas fa-plus mr-1"></i>Tạo kế hoạch tuần
+        </button>
+      </div>
+
+      ${plans.length === 0 ? `
+        <div class="text-center py-16 text-gray-400">
+          <i class="fas fa-calendar-plus text-5xl mb-4 text-gray-200"></i>
+          <p class="font-semibold text-gray-500">Chưa có kế hoạch tuần nào</p>
+          <p class="text-xs mt-1">Bắt đầu bằng cách tạo kế hoạch cho tuần này</p>
+          <button onclick="openWeeklyPlanModal(null,${projectId})" class="btn-primary text-xs px-4 py-2 mt-4">
+            <i class="fas fa-plus mr-1"></i>Tạo kế hoạch tuần này
+          </button>
+        </div>
+      ` : `
+        <div class="space-y-3">
+          ${plans.map(plan => {
+            const isCurrentWeek = plan.week_start === todayWeek.weekStart
+            const isPast = plan.week_end < new Date().toISOString().slice(0,10)
+            const hasReport = plan.has_report > 0
+            const statusBadge = hasReport
+              ? '<span class="badge text-xs bg-green-100 text-green-700"><i class="fas fa-file-check mr-1"></i>Có báo cáo</span>'
+              : (isPast ? '<span class="badge text-xs bg-red-100 text-red-600"><i class="fas fa-exclamation mr-1"></i>Chưa báo cáo</span>' : '<span class="badge text-xs bg-gray-100 text-gray-500">Chưa báo cáo</span>')
+            return `
+              <div class="border rounded-xl p-4 hover:shadow-md transition-all cursor-pointer ${isCurrentWeek ? 'border-green-300 bg-green-50' : 'border-gray-200 bg-white'}"
+                onclick="openWeeklyPlanDetail(${plan.id},${projectId})">
+                <div class="flex flex-wrap items-start justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    ${isCurrentWeek ? '<span class="text-xs font-bold text-green-600 bg-green-100 px-2 py-0.5 rounded-full">Tuần này</span>' : ''}
+                    <span class="text-sm font-semibold text-gray-800">${plan.title || fmtWeekLabel(plan.week_start, plan.week_end)}</span>
+                  </div>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    ${statusBadge}
+                    <button onclick="event.stopPropagation();openWeeklyPlanModal(${plan.id},${projectId})" class="text-xs text-blue-500 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50">
+                      <i class="fas fa-edit mr-1"></i>Sửa KH
+                    </button>
+                    <button onclick="event.stopPropagation();openWeeklyReportModal(${plan.id},${projectId})" class="text-xs text-purple-600 hover:text-purple-800 px-2 py-1 rounded hover:bg-purple-50">
+                      <i class="fas fa-clipboard-list mr-1"></i>${hasReport ? 'Xem/Sửa BC' : 'Lập báo cáo'}
+                    </button>
+                    <button onclick="event.stopPropagation();confirmDeleteWeeklyPlan(${plan.id},${projectId})" class="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="flex flex-wrap gap-4 mt-2 text-xs text-gray-500">
+                  <span><i class="fas fa-calendar-alt mr-1"></i>${fmtWeekLabel(plan.week_start, plan.week_end)}</span>
+                  <span><i class="fas fa-list-check mr-1"></i>${plan.item_count} hạng mục</span>
+                  <span><i class="fas fa-user mr-1"></i>${plan.creator_name || '—'}</span>
+                  ${plan.overall_goal ? `<span class="text-gray-600"><i class="fas fa-bullseye mr-1"></i>${plan.overall_goal.substring(0,60)}${plan.overall_goal.length>60?'…':''}</span>` : ''}
+                </div>
+              </div>`
+          }).join('')}
+        </div>
+      `}
+    `
+  } catch(e) {
+    container.innerHTML = `<div class="text-center py-10 text-red-400"><i class="fas fa-exclamation-circle mr-2"></i>Lỗi: ${e.message}</div>`
+  }
+}
+
+// ── Plan Detail (read-only view) ──────────────────────────────────────────────
+async function openWeeklyPlanDetail(planId, projectId) {
+  const pid = projectId || window._currentProjectDetailId
+  try {
+    const plan = await api(`/projects/${pid}/weekly-plans/${planId}`)
+    const report = await api(`/projects/${pid}/weekly-plans/${planId}/report`)
+    showWeeklyPlanDetailModal(plan, report, pid)
+  } catch(e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+function showWeeklyPlanDetailModal(plan, report, projectId) {
+  const existing = $('modalWeeklyPlanDetail')
+  if (existing) existing.remove()
+
+  const items = plan.items || []
+  const rptItems = report?.items || []
+
+  // Map plan_item_id → report_item
+  const rptMap = {}
+  rptItems.filter(r => !r.is_extra).forEach(r => { if (r.plan_item_id) rptMap[r.plan_item_id] = r })
+  const extraItems = rptItems.filter(r => r.is_extra)
+
+  const planRows = items.map(it => {
+    const ri = rptMap[it.id]
+    const pCfg = WP_PRIORITY_CFG[it.priority] || WP_PRIORITY_CFG.normal
+    const sCfg = ri ? (WRI_STATUS_CFG[ri.status] || WRI_STATUS_CFG.in_progress) : null
+    return `
+      <tr class="border-b hover:bg-gray-50 text-xs">
+        <td class="py-2 px-3">${it.category || '—'}</td>
+        <td class="py-2 px-3 max-w-xs">${it.description}</td>
+        <td class="py-2 px-3 whitespace-nowrap">${it.assignee_names || '—'}</td>
+        <td class="py-2 px-3 whitespace-nowrap">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
+        <td class="py-2 px-3"><span class="badge text-xs ${pCfg.cls}">${pCfg.label}</span></td>
+        <td class="py-2 px-3">${ri ? `
+          <div class="flex items-center gap-2">
+            <span class="badge text-xs ${sCfg.cls}"><i class="fas ${sCfg.icon} mr-1"></i>${sCfg.label}</span>
+            <div class="flex-1 min-w-16">
+              <div class="w-full bg-gray-200 rounded-full h-1.5">
+                <div class="h-1.5 rounded-full ${ri.completion_pct>=100?'bg-green-500':ri.completion_pct>=50?'bg-blue-500':'bg-yellow-400'}" style="width:${ri.completion_pct}%"></div>
+              </div>
+              <span class="text-gray-400">${ri.completion_pct}%</span>
+            </div>
+          </div>` : '<span class="text-gray-300 text-xs">Chưa báo cáo</span>'}</td>
+        <td class="py-2 px-3 max-w-xs text-gray-500">${ri?.result || '—'}</td>
+      </tr>`
+  }).join('')
+
+  const extraRows = extraItems.map(it => {
+    const sCfg = WRI_STATUS_CFG[it.status] || WRI_STATUS_CFG.in_progress
+    return `
+      <tr class="border-b hover:bg-amber-50 text-xs bg-amber-50/50">
+        <td class="py-2 px-3">${it.category || '—'}</td>
+        <td class="py-2 px-3 max-w-xs">${it.description} <span class="ml-1 text-xs text-amber-600">(Ngoài KH)</span></td>
+        <td class="py-2 px-3">${it.assignee_names || '—'}</td>
+        <td colspan="2" class="py-2 px-3"></td>
+        <td class="py-2 px-3">
+          <div class="flex items-center gap-2">
+            <span class="badge text-xs ${sCfg.cls}"><i class="fas ${sCfg.icon} mr-1"></i>${sCfg.label}</span>
+            <span class="text-gray-400 text-xs">${it.completion_pct}%</span>
+          </div>
+        </td>
+        <td class="py-2 px-3 text-gray-500 max-w-xs">${it.result || '—'}</td>
+      </tr>`
+  }).join('')
+
+  const modal = document.createElement('div')
+  modal.id = 'modalWeeklyPlanDetail'
+  modal.className = 'fixed inset-0 z-50 flex items-start justify-center pt-8 px-4 pb-4'
+  modal.style.background = 'rgba(0,0,0,0.5)'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+      <!-- Header -->
+      <div class="px-6 py-4 border-b flex items-start justify-between" style="background:linear-gradient(135deg,#0f4c35,#00A651)">
+        <div>
+          <h2 class="text-lg font-bold text-white"><i class="fas fa-calendar-week mr-2"></i>${plan.title || fmtWeekLabel(plan.week_start, plan.week_end)}</h2>
+          <p class="text-green-100 text-xs mt-0.5">${fmtWeekLabel(plan.week_start, plan.week_end)} · ${items.length} hạng mục kế hoạch</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="openWeeklyReportModal(${plan.id},${projectId})" class="text-xs bg-white/20 hover:bg-white/30 text-white px-3 py-1.5 rounded-lg">
+            <i class="fas fa-clipboard-list mr-1"></i>${report ? 'Xem/Sửa báo cáo' : 'Lập báo cáo'}
+          </button>
+          <button onclick="$('modalWeeklyPlanDetail').remove()" class="text-white hover:text-green-200 text-xl leading-none">×</button>
+        </div>
+      </div>
+      <!-- Body -->
+      <div class="overflow-y-auto flex-1 p-6">
+        ${plan.overall_goal ? `<div class="mb-4 p-3 bg-green-50 border border-green-100 rounded-xl text-sm text-green-800"><i class="fas fa-bullseye mr-2 text-green-500"></i><strong>Mục tiêu tuần:</strong> ${plan.overall_goal}</div>` : ''}
+        ${report ? `
+          <div class="mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+            ${report.overall_summary ? `<div class="p-3 bg-blue-50 rounded-xl text-xs"><p class="font-semibold text-blue-700 mb-1"><i class="fas fa-chart-bar mr-1"></i>Tổng kết tuần</p><p class="text-gray-600">${report.overall_summary}</p></div>` : ''}
+            ${report.issues ? `<div class="p-3 bg-red-50 rounded-xl text-xs"><p class="font-semibold text-red-700 mb-1"><i class="fas fa-exclamation-triangle mr-1"></i>Vướng mắc</p><p class="text-gray-600">${report.issues}</p></div>` : ''}
+            ${report.next_week_plan ? `<div class="p-3 bg-purple-50 rounded-xl text-xs"><p class="font-semibold text-purple-700 mb-1"><i class="fas fa-forward mr-1"></i>Kế hoạch tuần tới</p><p class="text-gray-600">${report.next_week_plan}</p></div>` : ''}
+          </div>
+        ` : ''}
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs border rounded-xl overflow-hidden">
+            <thead>
+              <tr class="bg-gray-50 text-gray-500 border-b text-left">
+                <th class="py-2 px-3 whitespace-nowrap">Nhóm</th>
+                <th class="py-2 px-3">Nội dung</th>
+                <th class="py-2 px-3 whitespace-nowrap">Phụ trách</th>
+                <th class="py-2 px-3 whitespace-nowrap">Dự kiến</th>
+                <th class="py-2 px-3 whitespace-nowrap">Ưu tiên</th>
+                <th class="py-2 px-3 whitespace-nowrap">Kết quả</th>
+                <th class="py-2 px-3">Ghi chú</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${planRows || '<tr><td colspan="7" class="py-8 text-center text-gray-400">Chưa có hạng mục nào</td></tr>'}
+              ${extraRows}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+}
+
+// ── Plan Modal (Create / Edit) ────────────────────────────────────────────────
+async function openWeeklyPlanModal(planId, projectId) {
+  const pid = projectId || window._currentProjectDetailId
+  let plan = null
+  if (planId) {
+    try { plan = await api(`/projects/${pid}/weekly-plans/${planId}`) } catch(e) {}
+  }
+
+  // Load project members for assignee picker
+  let members = []
+  try {
+    const proj = await api(`/projects/${pid}`)
+    members = proj.members || []
+  } catch(e) {}
+
+  const existing = $('modalWeeklyPlan')
+  if (existing) existing.remove()
+
+  const todayISO = new Date().toISOString().slice(0,10)
+  const defaultWeek = getWeekStartEnd(plan?.week_start || todayISO)
+  const items = plan?.items || [{ category:'', description:'', assignee_names:'', target_date:'', priority:'normal', notes:'' }]
+
+  // Store members on window for use in dynamic rows
+  window._wpMembers = members
+
+  // Parse existing assignee_ids from plan items
+  const parseAssigneeIds = (it) => {
+    try { return JSON.parse(it.assignee_ids || '[]') } catch { return [] }
+  }
+
+  // Build avatar color from name
+  const avatarColor = (name) => {
+    const colors = ['#4f46e5','#0891b2','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0284c7']
+    let h = 0; for(let c of (name||'')) h = (h*31+c.charCodeAt(0))%colors.length
+    return colors[h]
+  }
+
+  // Render the member picker cell HTML for a row
+  const renderAssigneeCell = (it) => {
+    const selectedIds = parseAssigneeIds(it)
+    const selectedNames = (it.assignee_names || '').split(',').map(s=>s.trim()).filter(Boolean)
+    // Build initial selected set: match by id if available, else by name
+    const initSelected = members.filter(m =>
+      selectedIds.includes(m.user_id) ||
+      selectedNames.includes(m.full_name)
+    )
+    const tagsHtml = initSelected.map(m =>
+      `<span class="wp-tag inline-flex items-center gap-1 text-xs rounded-full px-1.5 py-0.5 text-white font-medium" data-uid="${m.user_id}" data-name="${m.full_name}" style="background:${avatarColor(m.full_name)}">
+        ${m.full_name.split(' ').pop()}
+        <button type="button" onclick="wpRemoveAssignee(this)" class="leading-none text-white/80 hover:text-white ml-0.5">×</button>
+      </span>`
+    ).join('')
+    const addBtn = members.length > 0
+      ? `<button type="button" class="wp-add-assignee flex-shrink-0 w-5 h-5 rounded-full border border-dashed border-gray-400 text-gray-400 hover:border-green-500 hover:text-green-600 text-xs leading-none flex items-center justify-center" onclick="wpOpenAssigneePicker(this)" title="Thêm phụ trách"><i class="fas fa-plus" style="font-size:9px"></i></button>`
+      : ''
+    return `<div class="wp-assignee-cell flex flex-wrap items-center gap-1 min-w-[100px]">${tagsHtml}${addBtn}</div>`
+  }
+
+  const renderItemRow = (it, idx) => `
+    <tr class="item-row border-b" data-idx="${idx}">
+      <td class="py-1 px-2"><input type="text" value="${(it.category||'').replace(/"/g,'&quot;')}" placeholder="Nhóm" class="w-full border rounded px-2 py-1 text-xs wp-cat"></td>
+      <td class="py-1 px-2"><input type="text" value="${(it.description||'').replace(/"/g,'&quot;')}" placeholder="Nội dung *" class="w-full border rounded px-2 py-1 text-xs wp-desc" required></td>
+      <td class="py-1 px-2">${renderAssigneeCell(it)}</td>
+      <td class="py-1 px-2"><input type="date" value="${it.target_date||''}" class="w-full border rounded px-2 py-1 text-xs wp-target"></td>
+      <td class="py-1 px-2">
+        <select class="w-full border rounded px-2 py-1 text-xs wp-priority">
+          ${Object.entries(WP_PRIORITY_CFG).map(([v,c])=>`<option value="${v}" ${it.priority===v?'selected':''}>${c.label}</option>`).join('')}
+        </select>
+      </td>
+      <td class="py-1 px-2"><input type="text" value="${(it.notes||'').replace(/"/g,'&quot;')}" placeholder="Ghi chú" class="w-full border rounded px-2 py-1 text-xs wp-notes"></td>
+      <td class="py-1 px-2 text-center">
+        <button type="button" onclick="this.closest('tr').remove()" class="text-red-400 hover:text-red-600 text-sm"><i class="fas fa-times"></i></button>
+      </td>
+    </tr>`
+
+  const modal = document.createElement('div')
+  modal.id = 'modalWeeklyPlan'
+  modal.className = 'fixed inset-0 z-50 flex items-start justify-center pt-6 px-4 pb-4'
+  modal.style.background = 'rgba(0,0,0,0.5)'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
+      <!-- Header -->
+      <div class="px-6 py-4 border-b flex items-center justify-between" style="background:linear-gradient(135deg,#0f4c35,#00A651)">
+        <h2 class="text-lg font-bold text-white"><i class="fas fa-calendar-plus mr-2"></i>${planId ? 'Sửa kế hoạch tuần' : 'Tạo kế hoạch tuần'}</h2>
+        <button onclick="$('modalWeeklyPlan').remove()" class="text-white hover:text-green-200 text-2xl leading-none">×</button>
+      </div>
+      <!-- Body -->
+      <div class="overflow-y-auto flex-1 p-6">
+        <form id="weeklyPlanForm" onsubmit="submitWeeklyPlan(event,${pid},${planId||'null'})">
+          <!-- Basic info -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <div>
+              <label class="text-xs font-semibold text-gray-600 block mb-1">Tuần bắt đầu từ ngày *</label>
+              <input type="date" id="wpWeekDate" value="${plan?.week_start || defaultWeek.weekStart}" required
+                class="w-full border rounded-lg px-3 py-2 text-sm" onchange="updateWeekLabel()">
+              <p id="wpWeekLabel" class="text-xs text-green-600 mt-1 font-medium"></p>
+            </div>
+            <div class="md:col-span-2">
+              <label class="text-xs font-semibold text-gray-600 block mb-1">Mục tiêu tổng quan tuần</label>
+              <input type="text" id="wpGoal" value="${plan?.overall_goal||''}" placeholder="Ví dụ: Hoàn thiện hồ sơ thiết kế cơ sở block A..."
+                class="w-full border rounded-lg px-3 py-2 text-sm">
+            </div>
+          </div>
+
+          <!-- Items table -->
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="font-semibold text-gray-700 text-sm"><i class="fas fa-list-ul mr-2 text-green-500"></i>Hạng mục kế hoạch</h3>
+            <button type="button" onclick="addWeeklyPlanItemRow()" class="text-xs text-green-600 hover:text-green-800 border border-green-300 rounded-lg px-3 py-1.5 hover:bg-green-50">
+              <i class="fas fa-plus mr-1"></i>Thêm hạng mục
+            </button>
+          </div>
+          <div class="overflow-x-auto rounded-xl border">
+            <table class="w-full text-xs">
+              <thead><tr class="bg-gray-50 border-b text-gray-500 text-left">
+                <th class="py-2 px-2 w-24">Nhóm</th>
+                <th class="py-2 px-2">Nội dung công việc *</th>
+                <th class="py-2 px-2 w-36">Phụ trách</th>
+                <th class="py-2 px-2 w-28">Ngày dự kiến</th>
+                <th class="py-2 px-2 w-24">Ưu tiên</th>
+                <th class="py-2 px-2 w-32">Ghi chú</th>
+                <th class="py-2 px-2 w-8"></th>
+              </tr></thead>
+              <tbody id="wpItemsTbody">
+                ${items.map((it, i) => renderItemRow(it, i)).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Submit -->
+          <div class="flex justify-end gap-3 mt-5">
+            <button type="button" onclick="$('modalWeeklyPlan').remove()" class="btn-secondary text-sm px-5 py-2">Hủy</button>
+            <button type="submit" class="btn-primary text-sm px-6 py-2"><i class="fas fa-save mr-1"></i>Lưu kế hoạch</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  setTimeout(updateWeekLabel, 50)
+  // Store renderItemRow & renderAssigneeCell for dynamic add
+  window._wpRenderRow = renderItemRow
+  window._wpRenderAssigneeCell = renderAssigneeCell
+  window._wpAvatarColor = avatarColor
+}
+
+function updateWeekLabel() {
+  const dateEl = $('wpWeekDate')
+  const labelEl = $('wpWeekLabel')
+  if (!dateEl || !labelEl) return
+  const { weekStart, weekEnd } = getWeekStartEnd(dateEl.value)
+  const wn = getISOWeekNumber(weekStart)
+  labelEl.textContent = `Tuần ${wn}: ${fmtWeekLabel(weekStart, weekEnd)}`
+}
+
+function addWeeklyPlanItemRow() {
+  const tbody = $('wpItemsTbody')
+  if (!tbody) return
+  const idx = tbody.querySelectorAll('tr').length
+  const row = document.createElement('tr')
+  row.className = 'item-row border-b'
+  row.setAttribute('data-idx', idx)
+  row.innerHTML = window._wpRenderRow({ category:'', description:'', assignee_ids:'[]', assignee_names:'', target_date:'', priority:'normal', notes:'' }, idx).replace(/^<tr[^>]*>|<\/tr>$/g,'')
+  tbody.appendChild(row)
+}
+
+// ── Assignee picker helpers ───────────────────────────────────────────────────
+function wpOpenAssigneePicker(btn) {
+  // Remove any existing picker
+  document.querySelectorAll('.wp-assignee-picker').forEach(p => p.remove())
+
+  const cell = btn.closest('.wp-assignee-cell')
+  const members = window._wpMembers || []
+  if (!members.length) return
+
+  // Get already-selected user ids in this cell
+  const selectedUids = new Set(
+    [...cell.querySelectorAll('.wp-tag')].map(t => parseInt(t.getAttribute('data-uid')))
+  )
+
+  const picker = document.createElement('div')
+  picker.className = 'wp-assignee-picker absolute z-[200] bg-white border border-gray-200 rounded-xl shadow-xl py-1 min-w-[180px]'
+  picker.style.cssText = 'max-height:220px;overflow-y:auto;'
+
+  picker.innerHTML = members.map(m => {
+    const selected = selectedUids.has(m.user_id)
+    const color = (window._wpAvatarColor || (() => '#4f46e5'))(m.full_name)
+    const initial = m.full_name.split(' ').pop().charAt(0).toUpperCase()
+    return `
+      <div class="wp-picker-item flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer ${selected ? 'bg-green-50' : ''}"
+           onclick="wpToggleAssignee(this,${m.user_id},'${m.full_name.replace(/'/g,"\\'")}')"
+           data-uid="${m.user_id}" data-name="${m.full_name}">
+        <span class="w-6 h-6 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0" style="font-size:10px;background:${color}">${initial}</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-xs font-medium text-gray-800 truncate">${m.full_name}</div>
+          <div class="text-xs text-gray-400 truncate">${m.department || ''}</div>
+        </div>
+        <i class="fas fa-check text-green-500 text-xs ${selected ? '' : 'invisible'} wp-check-icon"></i>
+      </div>`
+  }).join('')
+
+  // Position relative to button
+  const btnRect = btn.getBoundingClientRect()
+  picker.style.position = 'fixed'
+  picker.style.top = (btnRect.bottom + 4) + 'px'
+  picker.style.left = Math.min(btnRect.left, window.innerWidth - 200) + 'px'
+
+  document.body.appendChild(picker)
+
+  // Store ref on button
+  btn._pickerEl = picker
+  btn._pickerCell = cell
+
+  // Close on outside click
+  const closePicker = (e) => {
+    if (!picker.contains(e.target) && e.target !== btn) {
+      picker.remove()
+      document.removeEventListener('mousedown', closePicker)
+    }
+  }
+  setTimeout(() => document.addEventListener('mousedown', closePicker), 10)
+}
+
+function wpToggleAssignee(itemEl, uid, name) {
+  // Find cell from picker position
+  const picker = itemEl.closest('.wp-assignee-picker')
+  if (!picker) return
+
+  // Find all cells in wpItemsTbody
+  const allCells = document.querySelectorAll('#wpItemsTbody .wp-assignee-cell')
+  // Find which cell the add button belongs to by traversing DOM
+  // We stored info: find add btn that opened this picker
+  const addBtns = document.querySelectorAll('.wp-add-assignee')
+  let targetCell = null
+  addBtns.forEach(btn => { if (btn._pickerEl === picker) targetCell = btn._pickerCell })
+  if (!targetCell) return
+
+  const existing = targetCell.querySelector(`.wp-tag[data-uid="${uid}"]`)
+  const checkIcon = itemEl.querySelector('.wp-check-icon')
+
+  if (existing) {
+    // Deselect
+    existing.remove()
+    itemEl.classList.remove('bg-green-50')
+    if (checkIcon) checkIcon.classList.add('invisible')
+  } else {
+    // Select — insert tag before the add button
+    const addBtn = targetCell.querySelector('.wp-add-assignee')
+    const color = (window._wpAvatarColor || (() => '#4f46e5'))(name)
+    const tag = document.createElement('span')
+    tag.className = 'wp-tag inline-flex items-center gap-1 text-xs rounded-full px-1.5 py-0.5 text-white font-medium'
+    tag.setAttribute('data-uid', uid)
+    tag.setAttribute('data-name', name)
+    tag.style.background = color
+    tag.innerHTML = `${name.split(' ').pop()}<button type="button" onclick="wpRemoveAssignee(this)" class="leading-none text-white/80 hover:text-white ml-0.5">×</button>`
+    if (addBtn) targetCell.insertBefore(tag, addBtn)
+    else targetCell.appendChild(tag)
+    itemEl.classList.add('bg-green-50')
+    if (checkIcon) checkIcon.classList.remove('invisible')
+  }
+}
+
+function wpRemoveAssignee(closeBtn) {
+  closeBtn.closest('.wp-tag').remove()
+}
+
+async function submitWeeklyPlan(e, projectId, planId) {
+  e.preventDefault()
+  const weekDate = $('wpWeekDate')?.value
+  const goal = $('wpGoal')?.value?.trim() || ''
+  if (!weekDate) { toast('Vui lòng chọn tuần', 'error'); return }
+
+  const rows = document.querySelectorAll('#wpItemsTbody .item-row')
+  const items = []
+  let hasError = false
+  rows.forEach(row => {
+    const desc = row.querySelector('.wp-desc')?.value?.trim()
+    if (!desc) { hasError = true; return }
+    // Read assignees from tag chips
+    const tags = row.querySelectorAll('.wp-assignee-cell .wp-tag')
+    const assigneeIds = [...tags].map(t => parseInt(t.getAttribute('data-uid'))).filter(Boolean)
+    const assigneeNames = [...tags].map(t => t.getAttribute('data-name')).filter(Boolean).join(', ')
+    items.push({
+      category:       row.querySelector('.wp-cat')?.value?.trim() || '',
+      description:    desc,
+      assignee_ids:   assigneeIds,
+      assignee_names: assigneeNames,
+      target_date:    row.querySelector('.wp-target')?.value || '',
+      priority:       row.querySelector('.wp-priority')?.value || 'normal',
+      notes:          row.querySelector('.wp-notes')?.value?.trim() || '',
+    })
+  })
+  if (hasError) { toast('Vui lòng nhập nội dung cho tất cả hạng mục', 'warning'); return }
+
+  try {
+    const r = await api(`/projects/${projectId}/weekly-plans`, {
+      method: 'POST',
+      data: { week_date: weekDate, overall_goal: goal, items }
+    })
+    if (r.success) {
+      toast('Đã lưu kế hoạch tuần!', 'success')
+      $('modalWeeklyPlan')?.remove()
+      // Refresh list
+      const container = $(`weeklyPlanContainer_${projectId}`)
+      if (container) await renderWeeklyPlanList(container, projectId)
+    }
+  } catch(ex) { toast('Lỗi: ' + ex.message, 'error') }
+}
+
+async function confirmDeleteWeeklyPlan(planId, projectId) {
+  if (!confirm('Xóa kế hoạch tuần này và toàn bộ báo cáo liên quan?')) return
+  try {
+    await api(`/projects/${projectId}/weekly-plans/${planId}`, { method: 'DELETE' })
+    toast('Đã xóa kế hoạch tuần', 'success')
+    const container = $(`weeklyPlanContainer_${projectId}`)
+    if (container) await renderWeeklyPlanList(container, projectId)
+  } catch(e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+// ── Report Modal ──────────────────────────────────────────────────────────────
+async function openWeeklyReportModal(planId, projectId) {
+  const pid = projectId || window._currentProjectDetailId
+  // Close detail modal if open
+  $('modalWeeklyPlanDetail')?.remove()
+
+  try {
+    const plan   = await api(`/projects/${pid}/weekly-plans/${planId}`)
+    const report = await api(`/projects/${pid}/weekly-plans/${planId}/report`)
+    showWeeklyReportModal(plan, report, pid)
+  } catch(e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+function showWeeklyReportModal(plan, report, projectId) {
+  const existing = $('modalWeeklyReport')
+  if (existing) existing.remove()
+
+  const planItems = plan.items || []
+  const rptItems  = report?.items || []
+
+  // Map plan_item_id → report_item
+  const rptMap = {}
+  rptItems.filter(r => !r.is_extra).forEach(r => { if (r.plan_item_id) rptMap[r.plan_item_id] = r })
+  const extraItems = rptItems.filter(r => r.is_extra)
+
+  const renderPlanRow = (it) => {
+    const ri = rptMap[it.id] || {}
+    const pCfg = WP_PRIORITY_CFG[it.priority] || WP_PRIORITY_CFG.normal
+    return `
+      <tr class="border-b rpt-plan-row" data-plan-item-id="${it.id}">
+        <td class="py-2 px-2 text-xs text-gray-500">${it.category||'—'}</td>
+        <td class="py-2 px-2 text-xs">
+          <div class="font-medium text-gray-700 rpt-item-desc" data-desc="${(it.description||'').replace(/"/g,'&quot;')}">${it.description}</div>
+          <div class="text-gray-400 text-xs mt-0.5">${it.assignee_names||''} ${it.target_date ? '· DK: '+fmtDate(it.target_date) : ''}</div>
+        </td>
+        <td class="py-2 px-2">
+          <select class="w-full border rounded px-1 py-1 text-xs rpt-status">
+            ${Object.entries(WRI_STATUS_CFG).map(([v,c])=>`<option value="${v}" ${(ri.status||'in_progress')===v?'selected':''}>${c.label}</option>`).join('')}
+          </select>
+        </td>
+        <td class="py-2 px-2">
+          <div class="flex items-center gap-1">
+            <input type="range" min="0" max="100" step="5" value="${ri.completion_pct||0}" class="flex-1 rpt-pct" oninput="this.nextElementSibling.textContent=this.value+'%'">
+            <span class="text-xs w-8 text-right text-gray-500">${ri.completion_pct||0}%</span>
+          </div>
+        </td>
+        <td class="py-2 px-2"><textarea class="w-full border rounded px-2 py-1 text-xs rpt-result" rows="2" placeholder="Kết quả thực tế...">${ri.result||''}</textarea></td>
+        <td class="py-2 px-2"><input type="text" class="w-full border rounded px-2 py-1 text-xs rpt-notes" value="${ri.notes||''}" placeholder="Ghi chú"></td>
+      </tr>`
+  }
+
+  const renderExtraRow = (it, idx) => {
+    // Reuse assignee picker helpers from weekly plan module
+    const members = window._wpMembers || []
+    const avatarColor = window._wpAvatarColor || (() => '#4f46e5')
+    const selectedNames = (it.assignee_names || '').split(',').map(s=>s.trim()).filter(Boolean)
+    const initSelected = members.filter(m => selectedNames.includes(m.full_name))
+    const tagsHtml = initSelected.map(m =>
+      `<span class="wp-tag inline-flex items-center gap-1 text-xs rounded-full px-1.5 py-0.5 text-white font-medium" data-uid="${m.user_id}" data-name="${m.full_name}" style="background:${avatarColor(m.full_name)}">
+        ${m.full_name.split(' ').pop()}
+        <button type="button" onclick="wpRemoveAssignee(this)" class="leading-none text-white/80 hover:text-white ml-0.5">×</button>
+      </span>`
+    ).join('')
+    const addBtn = members.length > 0
+      ? `<button type="button" class="wp-add-assignee flex-shrink-0 w-5 h-5 rounded-full border border-dashed border-gray-400 text-gray-400 hover:border-amber-500 hover:text-amber-600 text-xs leading-none flex items-center justify-center" onclick="wpOpenAssigneePicker(this)" title="Thêm phụ trách"><i class="fas fa-plus" style="font-size:9px"></i></button>`
+      : ''
+    const assigneeHtml = `<div class="wp-assignee-cell flex flex-wrap items-center gap-1 mt-1 min-w-[90px]">${tagsHtml}${addBtn}</div>`
+    return `
+    <tr class="border-b rpt-extra-row bg-amber-50/30" data-extra-idx="${idx}">
+      <td class="py-2 px-2"><input type="text" value="${(it.category||'').replace(/"/g,'&quot;')}" class="w-full border rounded px-2 py-1 text-xs extra-cat" placeholder="Nhóm"></td>
+      <td class="py-2 px-2">
+        <input type="text" value="${(it.description||'').replace(/"/g,'&quot;')}" class="w-full border rounded px-2 py-1 text-xs extra-desc" placeholder="Nội dung *">
+        ${assigneeHtml}
+      </td>
+      <td class="py-2 px-2">
+        <select class="w-full border rounded px-1 py-1 text-xs extra-status">
+          ${Object.entries(WRI_STATUS_CFG).map(([v,c])=>`<option value="${v}" ${(it.status||'in_progress')===v?'selected':''}>${c.label}</option>`).join('')}
+        </select>
+      </td>
+      <td class="py-2 px-2">
+        <div class="flex items-center gap-1">
+          <input type="range" min="0" max="100" step="5" value="${it.completion_pct||0}" class="flex-1 extra-pct" oninput="this.nextElementSibling.textContent=this.value+'%'">
+          <span class="text-xs w-8 text-right text-gray-500">${it.completion_pct||0}%</span>
+        </div>
+      </td>
+      <td class="py-2 px-2"><textarea class="w-full border rounded px-2 py-1 text-xs extra-result" rows="2" placeholder="Kết quả...">${it.result||''}</textarea></td>
+      <td class="py-2 px-2 flex gap-1 items-start pt-3">
+        <input type="text" value="${(it.notes||'').replace(/"/g,'&quot;')}" class="flex-1 border rounded px-2 py-1 text-xs extra-notes" placeholder="Ghi chú">
+        <button type="button" onclick="this.closest('tr').remove()" class="text-red-400 hover:text-red-600 text-sm ml-1"><i class="fas fa-times"></i></button>
+      </td>
+    </tr>`
+  }
+
+  const modal = document.createElement('div')
+  modal.id = 'modalWeeklyReport'
+  modal.className = 'fixed inset-0 z-50 flex items-start justify-center pt-4 px-4 pb-4'
+  modal.style.background = 'rgba(0,0,0,0.55)'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[95vh] overflow-hidden flex flex-col">
+      <!-- Header -->
+      <div class="px-6 py-4 border-b flex items-center justify-between" style="background:linear-gradient(135deg,#1e3a5f,#2563eb)">
+        <div>
+          <h2 class="text-lg font-bold text-white"><i class="fas fa-clipboard-list mr-2"></i>Báo cáo tình hình tuần</h2>
+          <p class="text-blue-200 text-xs mt-0.5">${plan.title || fmtWeekLabel(plan.week_start, plan.week_end)}</p>
+        </div>
+        <button onclick="$('modalWeeklyReport').remove()" class="text-white hover:text-blue-200 text-2xl leading-none">×</button>
+      </div>
+      <!-- Body -->
+      <div class="overflow-y-auto flex-1 p-6">
+        <form id="weeklyReportForm" onsubmit="submitWeeklyReport(event,${plan.id},${projectId})">
+
+          <!-- Summary section -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div>
+              <label class="text-xs font-semibold text-gray-600 block mb-1"><i class="fas fa-chart-bar mr-1 text-blue-500"></i>Tổng kết tuần</label>
+              <textarea id="rptSummary" rows="3" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Mô tả chung tình hình thực hiện công việc tuần này...">${report?.overall_summary||''}</textarea>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-600 block mb-1"><i class="fas fa-forward mr-1 text-purple-500"></i>Kế hoạch tuần tới</label>
+              <textarea id="rptNextWeek" rows="3" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Dự kiến công việc tuần tới...">${report?.next_week_plan||''}</textarea>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-600 block mb-1"><i class="fas fa-exclamation-triangle mr-1 text-red-500"></i>Vướng mắc / Rủi ro</label>
+              <textarea id="rptIssues" rows="2" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Các vấn đề gặp phải, cần hỗ trợ...">${report?.issues||''}</textarea>
+            </div>
+            <div class="flex gap-3">
+              <div class="flex-1">
+                <label class="text-xs font-semibold text-gray-600 block mb-1"><i class="fas fa-users mr-1 text-green-500"></i>Ghi chú nhân sự</label>
+                <textarea id="rptAttendance" rows="2" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Nghỉ phép, tăng ca, vắng mặt...">${report?.attendance_note||''}</textarea>
+              </div>
+              <div class="w-36">
+                <label class="text-xs font-semibold text-gray-600 block mb-1"><i class="fas fa-calendar mr-1"></i>Ngày báo cáo</label>
+                <input type="date" id="rptDate" value="${report?.report_date || new Date().toISOString().slice(0,10)}" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+            </div>
+          </div>
+
+          <!-- Plan items table -->
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="font-semibold text-gray-700 text-sm"><i class="fas fa-tasks mr-2 text-blue-500"></i>Tình hình theo kế hoạch (${planItems.length} hạng mục)</h3>
+          </div>
+          <div class="overflow-x-auto rounded-xl border mb-5">
+            <table class="w-full text-xs">
+              <thead><tr class="bg-gray-50 border-b text-gray-500 text-left">
+                <th class="py-2 px-2 w-20">Nhóm</th>
+                <th class="py-2 px-2">Nội dung kế hoạch</th>
+                <th class="py-2 px-2 w-32">Trạng thái</th>
+                <th class="py-2 px-2 w-32">Tiến độ</th>
+                <th class="py-2 px-2">Kết quả thực tế</th>
+                <th class="py-2 px-2 w-28">Ghi chú</th>
+              </tr></thead>
+              <tbody id="rptPlanItemsTbody">
+                ${planItems.length ? planItems.map(renderPlanRow).join('') : '<tr><td colspan="6" class="py-6 text-center text-gray-400">Kế hoạch tuần chưa có hạng mục</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Extra items table -->
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="font-semibold text-gray-700 text-sm"><i class="fas fa-plus-circle mr-2 text-amber-500"></i>Nội dung bổ sung ngoài kế hoạch</h3>
+            <button type="button" onclick="addExtraReportRow()" class="text-xs text-amber-600 hover:text-amber-800 border border-amber-300 rounded-lg px-3 py-1.5 hover:bg-amber-50">
+              <i class="fas fa-plus mr-1"></i>Thêm nội dung
+            </button>
+          </div>
+          <div class="overflow-x-auto rounded-xl border mb-5">
+            <table class="w-full text-xs">
+              <thead><tr class="bg-amber-50 border-b text-gray-500 text-left">
+                <th class="py-2 px-2 w-20">Nhóm</th>
+                <th class="py-2 px-2">Nội dung phát sinh / bổ sung</th>
+                <th class="py-2 px-2 w-32">Trạng thái</th>
+                <th class="py-2 px-2 w-32">Tiến độ</th>
+                <th class="py-2 px-2">Kết quả</th>
+                <th class="py-2 px-2 w-32">Ghi chú</th>
+              </tr></thead>
+              <tbody id="rptExtraItemsTbody">
+                ${extraItems.length ? extraItems.map((it,i) => renderExtraRow(it,i)).join('') : '<tr id="rptExtraEmpty"><td colspan="6" class="py-4 text-center text-gray-300 text-xs italic">Không có nội dung bổ sung</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Submit -->
+          <div class="flex flex-wrap justify-between items-center gap-3 pt-4 border-t">
+            <p class="text-xs text-gray-400"><i class="fas fa-info-circle mr-1"></i>Có thể lưu nháp và hoàn thiện sau</p>
+            <div class="flex gap-3">
+              <button type="button" onclick="$('modalWeeklyReport').remove()" class="btn-secondary text-sm px-5 py-2">Hủy</button>
+              <button type="submit" name="save_status" value="draft" onclick="this.form._saveStatus='draft'" class="btn-secondary text-sm px-5 py-2"><i class="fas fa-save mr-1"></i>Lưu nháp</button>
+              <button type="submit" name="save_status" value="submitted" onclick="this.form._saveStatus='submitted'" class="btn-primary text-sm px-6 py-2"><i class="fas fa-paper-plane mr-1"></i>Hoàn tất báo cáo</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  // Store renderExtraRow
+  window._rptRenderExtraRow = renderExtraRow
+}
+
+function addExtraReportRow() {
+  const tbody = $('rptExtraItemsTbody')
+  if (!tbody) return
+  const empty = $('rptExtraEmpty')
+  if (empty) empty.remove()
+  const idx = tbody.querySelectorAll('tr').length
+  const row = document.createElement('tr')
+  row.className = 'border-b rpt-extra-row bg-amber-50/30'
+  row.setAttribute('data-extra-idx', idx)
+  row.innerHTML = window._rptRenderExtraRow({ category:'', description:'', assignee_names:'', status:'in_progress', completion_pct:0, result:'', notes:'' }, idx)
+    .replace(/^<tr[^>]*>|<\/tr>$/g,'')
+  tbody.appendChild(row)
+}
+
+async function submitWeeklyReport(e, planId, projectId) {
+  e.preventDefault()
+  const form = e.target
+  const saveStatus = form._saveStatus || 'draft'
+
+  // Collect plan items
+  const items = []
+  document.querySelectorAll('#rptPlanItemsTbody .rpt-plan-row').forEach(row => {
+    const planItemId = parseInt(row.getAttribute('data-plan-item-id'))
+    // Get description from data-desc attribute or text content
+    const descEl = row.querySelector('.rpt-item-desc')
+    const description = descEl ? (descEl.getAttribute('data-desc') || descEl.textContent?.trim() || '—') : '—'
+    items.push({
+      plan_item_id:   planItemId,
+      description:    description,
+      status:         row.querySelector('.rpt-status')?.value || 'in_progress',
+      completion_pct: parseInt(row.querySelector('.rpt-pct')?.value || '0'),
+      result:         row.querySelector('.rpt-result')?.value?.trim() || '',
+      notes:          row.querySelector('.rpt-notes')?.value?.trim() || '',
+      is_extra:       false,
+    })
+  })
+  // Collect extra items
+  document.querySelectorAll('#rptExtraItemsTbody .rpt-extra-row').forEach(row => {
+    const desc = row.querySelector('.extra-desc')?.value?.trim()
+    if (!desc) return
+    // Read assignees from tag chips
+    const tags = row.querySelectorAll('.wp-assignee-cell .wp-tag')
+    const assigneeNames = [...tags].map(t => t.getAttribute('data-name')).filter(Boolean).join(', ')
+    items.push({
+      plan_item_id:   null,
+      category:       row.querySelector('.extra-cat')?.value?.trim() || '',
+      description:    desc,
+      assignee_names: assigneeNames,
+      status:         row.querySelector('.extra-status')?.value || 'in_progress',
+      completion_pct: parseInt(row.querySelector('.extra-pct')?.value || '0'),
+      result:         row.querySelector('.extra-result')?.value?.trim() || '',
+      notes:          row.querySelector('.extra-notes')?.value?.trim() || '',
+      is_extra:       true,
+    })
+  })
+
+  try {
+    const r = await api(`/projects/${projectId}/weekly-plans/${planId}/report`, {
+      method: 'POST',
+      data: {
+        overall_summary: $('rptSummary')?.value?.trim() || '',
+        next_week_plan:  $('rptNextWeek')?.value?.trim() || '',
+        issues:          $('rptIssues')?.value?.trim() || '',
+        attendance_note: $('rptAttendance')?.value?.trim() || '',
+        report_date:     $('rptDate')?.value || new Date().toISOString().slice(0,10),
+        status:          saveStatus,
+        items,
+      }
+    })
+    if (r.success) {
+      toast(saveStatus === 'submitted' ? 'Báo cáo đã hoàn tất!' : 'Đã lưu nháp báo cáo', 'success')
+      $('modalWeeklyReport')?.remove()
+      const container = $(`weeklyPlanContainer_${projectId}`)
+      if (container) await renderWeeklyPlanList(container, projectId)
+    }
+  } catch(ex) { toast('Lỗi: ' + ex.message, 'error') }
+}
+
+// ═══ END WEEKLY PLAN & REPORT MODULE ══════════════════════════════════════════

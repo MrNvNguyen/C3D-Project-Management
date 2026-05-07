@@ -8590,25 +8590,35 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     let dateTo: string
     let periodLabel: string
     let periodMode: string = mode || 'all_time'
+    let sharedCostNtcYear: number | null = null  // NTC year để filter shared_costs (null = không lọc)
 
     const projectStart = project.start_date || '2020-01-01'
     const projectEnd   = project.end_date   || today
 
     if (periodMode === 'all_time' || !mode) {
-      // Toàn bộ thời gian dự án: từ start_date đến ngày có timesheet cuối cùng (hoặc today)
-      // KHÔNG giới hạn tại end_date vì timesheet thực tế có thể vượt qua end_date
+      // Toàn bộ thời gian dự án: từ ngày sớm nhất có dữ liệu đến ngày có timesheet cuối cùng (hoặc today)
+      // Dùng min(start_date, ngày chi phí sớm nhất, ngày timesheet sớm nhất) để bao phủ toàn bộ
       const lastTsRow = await db.prepare(
-        `SELECT MAX(work_date) as last_date FROM timesheets WHERE project_id = ?`
+        `SELECT MAX(work_date) as last_date, MIN(work_date) as first_date FROM timesheets WHERE project_id = ?`
       ).bind(projectId).first() as any
       const lastTimesheetDate = lastTsRow?.last_date || null
-      dateFrom = projectStart
+      const firstTimesheetDate = lastTsRow?.first_date || null
+      // Tìm ngày chi phí sớm nhất (other costs)
+      const firstCostRow = await db.prepare(
+        `SELECT MIN(cost_date) as first_date FROM project_costs WHERE project_id = ? AND cost_type != 'salary'`
+      ).bind(projectId).first() as any
+      const firstCostDate = firstCostRow?.first_date || null
+      // dateFrom = ngày sớm nhất trong: start_date, first timesheet, first cost
+      const fromCandidates = [projectStart, firstTimesheetDate, firstCostDate].filter(Boolean) as string[]
+      dateFrom = fromCandidates.sort()[0]  // lấy ngày nhỏ nhất
       // dateTo = max(end_date, lastTimesheetDate, today) để bao phủ toàn bộ dữ liệu
       const candidates = [projectEnd, lastTimesheetDate, today].filter(Boolean) as string[]
       dateTo = candidates.sort().reverse()[0]  // lấy ngày lớn nhất
       const endLabel = lastTimesheetDate && lastTimesheetDate > projectEnd
         ? lastTimesheetDate.slice(0,7)
         : project.status === 'completed' ? projectEnd.slice(0,7) : 'hiện tại'
-      periodLabel = `Toàn dự án (${projectStart.slice(0,7)} → ${endLabel})`
+      const startLabel = dateFrom.slice(0,7)
+      periodLabel = `Toàn dự án (${startLabel} → ${endLabel})`
       periodMode = 'all_time'
     } else if (periodMode === 'ytd') {
       // Year-to-date: từ đầu năm hiện tại đến hôm nay
@@ -8624,6 +8634,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       dateFrom = fyStart
       dateTo   = fyEnd
       periodLabel = getFiscalYearLabel(fyYear, fySettings)
+      sharedCostNtcYear = fyYear  // Dùng NTC year để filter shared_costs
     } else if (periodMode === 'year' && year) {
       // Cả năm dương lịch
       dateFrom = `${year}-01-01`
@@ -8877,8 +8888,8 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       .sort((a, b) => a.month.localeCompare(b.month))
 
     // ── Shared cost ───────────────────────────────────────────────────────
-    // all_time / year / range: lấy tất cả shared_costs của dự án trong khoảng ngày
-    // Dùng ngày giao dịch (year+month của shared_costs) hoặc allocated_date nếu có
+    // shared_costs.year là NTC year (không phải calendar year)
+    // Phải dùng sc.year = ntcYear khi filter theo NTC để tránh lấy nhầm NTC khác
     let sharedRow: any
     if (periodMode === 'all_time' || periodMode === 'ytd') {
       // Tất cả shared costs được phân bổ cho dự án (không giới hạn năm)
@@ -8888,25 +8899,24 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
         JOIN shared_costs sc ON sc.id = sca.shared_cost_id
         WHERE sca.project_id = ? AND sc.status != 'deleted'
       `).bind(projectId).first() as any
+    } else if (sharedCostNtcYear !== null) {
+      // NTC mode: luôn dùng sc.year = ntcYear (NTC year, không phải calendar year)
+      sharedRow = await db.prepare(`
+        SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt
+        FROM shared_cost_allocations sca
+        JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+        WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ?
+      `).bind(projectId, sharedCostNtcYear).first() as any
     } else {
-      // Năm cụ thể hoặc range: lọc theo năm trong khoảng
-      const yearsInRange = [...new Set(calMonthsInRange.map(p => p.calYear))]
-      if (yearsInRange.length === 1) {
-        sharedRow = await db.prepare(`
-          SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt
-          FROM shared_cost_allocations sca
-          JOIN shared_costs sc ON sc.id = sca.shared_cost_id
-          WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ?
-        `).bind(projectId, yearsInRange[0]).first() as any
-      } else {
-        sharedRow = await db.prepare(`
-          SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt
-          FROM shared_cost_allocations sca
-          JOIN shared_costs sc ON sc.id = sca.shared_cost_id
-          WHERE sca.project_id = ? AND sc.status != 'deleted'
-            AND sc.year >= ? AND sc.year <= ?
-        `).bind(projectId, Math.min(...yearsInRange), Math.max(...yearsInRange)).first() as any
-      }
+      // year / range / month / months: dùng sc.cost_date trong khoảng dateFrom→dateTo
+      // (calendar year mode — không phải NTC)
+      sharedRow = await db.prepare(`
+        SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt
+        FROM shared_cost_allocations sca
+        JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+        WHERE sca.project_id = ? AND sc.status != 'deleted'
+          AND sc.cost_date >= ? AND sc.cost_date <= ?
+      `).bind(projectId, dateFrom, dateTo).first() as any
     }
     const sharedCostTotal = sharedRow?.total || 0
     const sharedCostCount = sharedRow?.cnt || 0
@@ -10495,13 +10505,15 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
     const rtMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR_FIN, fyStart, fyEnd)
     const laborMap: Record<number, any> = {}
     rtMap.forEach((v, pid) => { laborMap[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
+    // Shared costs: dùng sc.year = fyYear để nhất quán với finance/project NTC mode
+    // (shared_costs.year là NTC year, không phải calendar year)
     const sharedAllocRows = await db.prepare(`
       SELECT sca.project_id, SUM(sca.allocated_amount) as shared_cost
       FROM shared_cost_allocations sca
       JOIN shared_costs sc ON sc.id = sca.shared_cost_id
-      WHERE sc.cost_date >= ? AND sc.cost_date <= ?
+      WHERE sc.year = ? AND sc.status != 'deleted'
       GROUP BY sca.project_id
-    `).bind(fyStart, fyEnd).all()
+    `).bind(fyYear).all()
 
     // ── 6. Build maps
     const revMap: Record<number, any> = {}
@@ -10660,10 +10672,12 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
     const laborMapLT: Record<number, any> = {}
     rtMapLT.forEach((v, pid) => { laborMapLT[pid] = { labor_cost: v.labor_cost, labor_hours: v.labor_hours } })
 
-    // ── 5. Chi phí chung phân bổ (TOÀN BỘ)
+    // ── 5. Chi phí chung phân bổ (TOÀN BỘ – không lọc năm, nhưng loại trừ deleted)
     const sharedAllocRows = await db.prepare(`
       SELECT sca.project_id, SUM(sca.allocated_amount) as shared_cost
       FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      WHERE sc.status != 'deleted'
       GROUP BY sca.project_id
     `).all()
 
@@ -13925,6 +13939,209 @@ app.put('/api/leave-balances/:userId', authMiddleware, adminOnly, async (c) => {
 
 // ===================================================
 // END LEAVE REQUESTS API
+// ===================================================
+
+// ===================================================
+// WEEKLY PLANS & WEEKLY REPORTS API
+// ===================================================
+
+// Helper: get ISO week number + Monday of week
+function getISOWeekInfo(dateStr: string): { weekNumber: number; year: number; weekStart: string; weekEnd: string } {
+  const d = new Date(dateStr)
+  d.setHours(0, 0, 0, 0)
+  const day = d.getDay()                       // 0=Sun, 1=Mon...
+  const diffToMon = (day === 0 ? -6 : 1 - day) // days to shift to get Monday
+  const mon = new Date(d)
+  mon.setDate(d.getDate() + diffToMon)
+  const sun = new Date(mon)
+  sun.setDate(mon.getDate() + 6)
+  const toISO = (dt: Date) => dt.toISOString().slice(0, 10)
+  // ISO week number
+  const thu = new Date(mon)
+  thu.setDate(mon.getDate() + 3)
+  const yearStart = new Date(thu.getFullYear(), 0, 1)
+  const weekNum = Math.ceil(((thu.getTime() - yearStart.getTime()) / 86400000 + 1) / 7)
+  return { weekNumber: weekNum, year: thu.getFullYear(), weekStart: toISO(mon), weekEnd: toISO(sun) }
+}
+
+// ── WEEKLY PLANS ─────────────────────────────────────────────────────────────
+
+// GET /api/projects/:projectId/weekly-plans — list plans for a project
+app.get('/api/projects/:projectId/weekly-plans', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('projectId'))
+    const { limit: lim = '20', offset: off = '0' } = c.req.query()
+    const plans = await db.prepare(`
+      SELECT wp.*, u.full_name as creator_name,
+        (SELECT COUNT(*) FROM weekly_plan_items wpi WHERE wpi.plan_id = wp.id) as item_count,
+        (SELECT COUNT(*) FROM weekly_reports wr WHERE wr.plan_id = wp.id) as has_report
+      FROM weekly_plans wp
+      LEFT JOIN users u ON u.id = wp.created_by
+      WHERE wp.project_id = ?
+      ORDER BY wp.week_start DESC
+      LIMIT ? OFFSET ?
+    `).bind(projectId, parseInt(lim), parseInt(off)).all()
+    return c.json(plans.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:projectId/weekly-plans/:planId — detail with items
+app.get('/api/projects/:projectId/weekly-plans/:planId', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const planId = parseInt(c.req.param('planId'))
+    const plan = await db.prepare(`
+      SELECT wp.*, u.full_name as creator_name
+      FROM weekly_plans wp LEFT JOIN users u ON u.id = wp.created_by
+      WHERE wp.id = ?
+    `).bind(planId).first()
+    if (!plan) return c.json({ error: 'Not found' }, 404)
+    const items = await db.prepare(`
+      SELECT wpi.*, t.title as task_title
+      FROM weekly_plan_items wpi
+      LEFT JOIN tasks t ON t.id = wpi.linked_task_id
+      WHERE wpi.plan_id = ?
+      ORDER BY wpi.sort_order, wpi.id
+    `).bind(planId).all()
+    return c.json({ ...plan, items: items.results })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/projects/:projectId/weekly-plans — create plan
+app.post('/api/projects/:projectId/weekly-plans', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('projectId'))
+    const userId: number | null = (c as any).get('userId') ?? null
+    const body = await c.req.json()
+    const { week_date, overall_goal, title, items = [] } = body
+    if (!week_date) return c.json({ error: 'week_date required' }, 400)
+    const wi = getISOWeekInfo(week_date)
+    const planTitle = title ? String(title) : `Tuần ${wi.weekNumber} (${wi.weekStart} → ${wi.weekEnd})`
+    // Upsert plan
+    const existing = await db.prepare(`SELECT id FROM weekly_plans WHERE project_id = ? AND week_start = ?`).bind(projectId, wi.weekStart).first() as any
+    let planId: number
+    if (existing) {
+      await db.prepare(`UPDATE weekly_plans SET title=?, overall_goal=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .bind(planTitle, overall_goal ? String(overall_goal) : null, existing.id).run()
+      planId = existing.id
+    } else {
+      const r = await db.prepare(`
+        INSERT INTO weekly_plans (project_id, week_start, week_end, week_number, year, title, overall_goal, status, created_by)
+        VALUES (?,?,?,?,?,?,?,'draft',?)
+      `).bind(projectId, wi.weekStart, wi.weekEnd, Number(wi.weekNumber), Number(wi.year), planTitle, overall_goal ? String(overall_goal) : null, userId).run()
+      planId = r.meta.last_row_id as number
+    }
+    // Replace items
+    await db.prepare(`DELETE FROM weekly_plan_items WHERE plan_id = ?`).bind(planId).run()
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]
+      if (!it.description) continue
+      await db.prepare(`
+        INSERT INTO weekly_plan_items (plan_id, sort_order, category, description, assignee_ids, assignee_names, target_date, linked_task_id, priority, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+      `).bind(planId, i,
+              it.category != null ? String(it.category) : null,
+              String(it.description),
+              JSON.stringify(it.assignee_ids || []),
+              it.assignee_names != null ? String(it.assignee_names) : null,
+              it.target_date != null ? String(it.target_date) : null,
+              it.linked_task_id != null ? Number(it.linked_task_id) : null,
+              it.priority || 'normal',
+              it.notes != null ? String(it.notes) : null).run()
+    }
+    return c.json({ success: true, id: planId, week_start: wi.weekStart, week_end: wi.weekEnd })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/projects/:projectId/weekly-plans/:planId
+app.delete('/api/projects/:projectId/weekly-plans/:planId', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const planId = parseInt(c.req.param('planId'))
+    await db.prepare(`DELETE FROM weekly_plans WHERE id = ?`).bind(planId).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ── WEEKLY REPORTS ────────────────────────────────────────────────────────────
+
+// GET /api/projects/:projectId/weekly-plans/:planId/report
+app.get('/api/projects/:projectId/weekly-plans/:planId/report', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const planId = parseInt(c.req.param('planId'))
+    const report = await db.prepare(`
+      SELECT wr.*, u.full_name as submitter_name
+      FROM weekly_reports wr LEFT JOIN users u ON u.id = wr.submitted_by
+      WHERE wr.plan_id = ?
+    `).bind(planId).first()
+    if (!report) return c.json(null)
+    const items = await db.prepare(`
+      SELECT * FROM weekly_report_items WHERE report_id = ? ORDER BY is_extra, sort_order, id
+    `).bind((report as any).id).all()
+    return c.json({ ...report, items: items.results })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/projects/:projectId/weekly-plans/:planId/report — create/update report
+app.post('/api/projects/:projectId/weekly-plans/:planId/report', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const planId = parseInt(c.req.param('planId'))
+    const projectId = parseInt(c.req.param('projectId'))
+    const userId: number | null = (c as any).get('userId') ?? null
+    const body = await c.req.json()
+    const { overall_summary, next_week_plan, issues, attendance_note, report_date, status = 'draft', items = [] } = body
+    const statusStr = status ? String(status) : 'draft'
+    // Upsert report
+    const existing = await db.prepare(`SELECT id FROM weekly_reports WHERE plan_id = ?`).bind(planId).first() as any
+    let reportId: number
+    if (existing) {
+      await db.prepare(`
+        UPDATE weekly_reports SET overall_summary=?, next_week_plan=?, issues=?, attendance_note=?,
+          report_date=?, status=?, submitted_by=?, submitted_at=CASE WHEN ?='submitted' THEN CURRENT_TIMESTAMP ELSE submitted_at END,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?
+      `).bind(overall_summary ? String(overall_summary) : null, next_week_plan ? String(next_week_plan) : null,
+              issues ? String(issues) : null, attendance_note ? String(attendance_note) : null,
+              report_date ? String(report_date) : null, statusStr, userId, statusStr, existing.id).run()
+      reportId = existing.id
+    } else {
+      const r = await db.prepare(`
+        INSERT INTO weekly_reports (plan_id, project_id, overall_summary, next_week_plan, issues, attendance_note, report_date, status, submitted_by, submitted_at)
+        VALUES (?,?,?,?,?,?,?,?,?,CASE WHEN ?='submitted' THEN CURRENT_TIMESTAMP ELSE NULL END)
+      `).bind(planId, projectId, overall_summary ? String(overall_summary) : null, next_week_plan ? String(next_week_plan) : null,
+              issues ? String(issues) : null, attendance_note ? String(attendance_note) : null,
+              report_date ? String(report_date) : null, statusStr, userId, statusStr).run()
+      reportId = r.meta.last_row_id as number
+    }
+    // Replace items
+    await db.prepare(`DELETE FROM weekly_report_items WHERE report_id = ?`).bind(reportId).run()
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]
+      if (!it.description) continue
+      await db.prepare(`
+        INSERT INTO weekly_report_items (report_id, plan_item_id, sort_order, category, description, result, completion_pct, status, assignee_names, is_extra, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(reportId,
+              it.plan_item_id != null ? Number(it.plan_item_id) : null,
+              i,
+              it.category != null ? String(it.category) : null,
+              String(it.description),
+              it.result != null ? String(it.result) : null,
+              it.completion_pct != null ? Number(it.completion_pct) : 0,
+              it.status || 'in_progress',
+              it.assignee_names != null ? String(it.assignee_names) : null,
+              it.is_extra ? 1 : 0,
+              it.notes != null ? String(it.notes) : null).run()
+    }
+    return c.json({ success: true, id: reportId })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// END WEEKLY PLANS & REPORTS API
 // ===================================================
 
 export default app
