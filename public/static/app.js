@@ -7065,8 +7065,11 @@ async function loadCostDashboard() {
       api(`/shared-costs/summary?year=${year}`).catch(() => ({ total_shared_cost: 0, by_project: [] }))
     ])
 
-    let totalRevenue = 0, totalCost = 0
-    summary.revenue_by_project?.forEach(p => totalRevenue += p.total_revenue || 0)
+    let totalRevenue = 0, totalPendingRevenue = 0, totalCost = 0
+    summary.revenue_by_project?.forEach(p => {
+      totalRevenue        += p.total_revenue   || 0
+      totalPendingRevenue += p.pending_revenue || 0
+    })
 
     // Aggregate OTHER costs (non-salary) by project from project_costs
     const costByProject = {}
@@ -7099,7 +7102,10 @@ async function loadCostDashboard() {
     const laborDiff = poolTotalLabor - projLaborTotal
     const hasLaborDiff = poolTotalLabor > 0 && Math.abs(laborDiff) > 1000 // > 1,000đ thì mới cảnh báo
 
-    $('costKpiRevenue').textContent = fmtMoney(totalRevenue)
+    $('costKpiRevenue').innerHTML = fmtMoney(totalRevenue) +
+      (totalPendingRevenue > 0
+        ? `<br><span class="text-xs font-normal text-amber-600" title="Doanh thu trạng thái 'Chờ thanh toán' — chưa tính vào doanh thu thực tế"><i class="fas fa-clock mr-1"></i>⏳ Chờ thu: ${fmtMoney(totalPendingRevenue)}</span>`
+        : '')
     $('costKpiCost').innerHTML = fmtMoney(totalCost) +
       (totalSharedAllocated > 0
         ? `<br><span class="text-xs font-normal text-yellow-600" title="Đã bao gồm ${fmtMoney(totalSharedAllocated)} chi phí chung phân bổ"><i class="fas fa-share-alt mr-1"></i>Gồm ${fmtMoney(totalSharedAllocated)} chi phí chung</span>`
@@ -7785,7 +7791,10 @@ function onCostTypeFilterChange() {
 function renderCostTable() {
   const head = $('costTableHead')
   const tbody = $('costTableBody')
+  const tfoot = $('revTfoot')
   if (!head || !tbody) return
+  // Xoá tfoot khi chuyển sang tab khác (không phải revenues)
+  if (tfoot && currentCostTab !== 'revenues') tfoot.innerHTML = ''
 
   if (currentCostTab === 'revenues') {
     // ── Tab Doanh thu: chỉ xem, không có nút thêm/sửa/xóa ─────────────────
@@ -7793,28 +7802,71 @@ function renderCostTable() {
       <th class="pb-3 pr-3">Dự án</th>
       <th class="pb-3 pr-3">Mô tả</th>
       <th class="pb-3 pr-3">Số HĐ</th>
-      <th class="pb-3 pr-3">Ngày TT</th>
+      <th class="pb-3 pr-3">Ngày</th>
       <th class="pb-3 pr-3">Trạng thái</th>
       <th class="pb-3 pr-3 text-right">Số tiền</th>
       <th class="pb-3 pr-3 text-center">Nguồn</th>
     </tr>`
     const payColors  = { pending: 'badge-todo', processing: 'badge-in_progress', partial: 'badge-in_progress', paid: 'badge-completed', rejected: 'badge-canceled' }
     const payLabels  = { pending: '⏳ Chờ TT', processing: '🔄 Đang xử lý', partial: '💰 TT một phần', paid: '✅ Đã TT', rejected: '❌ Từ chối' }
-    tbody.innerHTML = allRevenues.map(r => `
-      <tr class="table-row">
+
+    // Chỉ hiển thị doanh thu đã thu (paid/partial) — pending ẩn khỏi tab này
+    const displayRevenues = allRevenues.filter(r => r.payment_status !== 'pending')
+
+    // Tính tổng theo trạng thái
+    const revTotalPaid    = displayRevenues.filter(r => r.payment_status === 'paid').reduce((s, r) => s + (r.amount || 0), 0)
+    const revTotalPartial = displayRevenues.filter(r => r.payment_status === 'partial').reduce((s, r) => s + (r.amount || 0), 0)
+    const revTotalAll     = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
+    const revTotalCollected = revTotalPaid + revTotalPartial
+
+    tbody.innerHTML = displayRevenues.map(r => {
+      // Hiển thị ngày thông minh:
+      // - paid/partial: hiển thị revenue_date (ngày thanh toán thực tế)
+      // - pending: hiển thị request_date (ngày yêu cầu) kèm nhãn, hoặc "Chưa xác định"
+      let dateCell
+      if (r.payment_status === 'pending') {
+        dateCell = r.request_date
+          ? `<span class="text-amber-600">${fmtDate(r.request_date)}</span><br><span class="text-xs text-gray-400">Ngày YC</span>`
+          : `<span class="text-gray-400 italic text-xs">Chưa xác định</span>`
+      } else {
+        dateCell = fmtDate(r.revenue_date)
+      }
+      return `
+      <tr class="table-row ${r.payment_status === 'pending' ? 'bg-amber-50/40' : ''}">
         <td class="py-2 pr-3 text-sm font-medium">${r.project_code || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-700">${r.description}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
-        <td class="py-2 pr-3 text-sm text-gray-500">${fmtDate(r.revenue_date)}</td>
+        <td class="py-2 pr-3 text-sm text-gray-500">${dateCell}</td>
         <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right font-bold text-green-600">${fmt(r.amount)}</td>
+        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'}">${fmt(r.amount)}</td>
         <td class="py-2 pr-3 text-center">
-          <span class="text-xs text-blue-500 bg-blue-50 rounded px-2 py-0.5 whitespace-nowrap">
-            <i class="fas fa-sync-alt mr-1"></i>Tình trạng TT
+          <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
+            <i class="fas fa-${r.source === 'payment_request' ? 'file-invoice' : 'sync-alt'} mr-1"></i>${r.source === 'payment_request' ? 'Hồ Sơ PL' : 'Tình trạng TT'}
           </span>
         </td>
-      </tr>
-    `).join('') || '<tr><td colspan="7" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
+      </tr>`
+    }).join('') || '<tr><td colspan="7" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
+
+    // ── Tổng cộng footer ──────────────────────────────────────────
+    const revTfoot = document.getElementById('revTfoot')
+    if (revTfoot) {
+      revTfoot.innerHTML = `
+        <tr class="border-t-2 border-green-200 bg-green-50/60">
+          <td colspan="5" class="py-2 px-0 font-semibold text-green-700 text-xs">
+            <i class="fas fa-check-circle mr-1 text-green-500"></i>
+            Đã thu (paid + partial) — ${displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).length} khoản
+          </td>
+          <td class="py-2 pr-3 text-right font-bold text-green-700 text-sm whitespace-nowrap">${fmt(revTotalCollected)}</td>
+          <td></td>
+        </tr>
+        <tr class="border-t border-gray-200 bg-gray-50">
+          <td colspan="5" class="py-2 px-0 font-semibold text-gray-600 text-xs">
+            <i class="fas fa-sigma mr-1"></i>Tổng cộng (${displayRevenues.length} khoản)
+          </td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-700 text-sm whitespace-nowrap">${fmt(revTotalAll)}</td>
+          <td></td>
+        </tr>`
+    }
     return
   }
 
@@ -12750,8 +12802,8 @@ async function openSharedCostModal(id = null) {
   const selAllBtn = $('scSelectAllBtn')
   if (selAllBtn) { selAllBtn.innerHTML = '<i class="fas fa-check-square"></i> Chọn tất cả'; selAllBtn._allSelected = false }
 
-  // Render project checkboxes
-  const activeProjects = allProjects.filter(p => p.status !== 'cancelled')
+  // Render project checkboxes — chỉ hiển thị dự án đang hoạt động (active)
+  const activeProjects = allProjects.filter(p => p.status === 'active')
   $('scProjectList').innerHTML = activeProjects.map(p => `
     <label data-proj-id="${p.id}" data-proj-code="${p.code}" data-proj-name="${p.name}"
       class="flex items-center gap-2 p-2 hover:bg-white rounded cursor-pointer border border-transparent hover:border-gray-200 transition-colors">
@@ -14199,6 +14251,7 @@ async function renderFinancialTab(force = false) {
     const revenueStatus = data.revenueByStatus || []
 
     const totalRev = kpi.total_revenue || 0
+    const totalPendingRev = kpi.total_pending_revenue || 0
     const totalCost = kpi.total_cost || 0
     const totalLaborCost = kpi.total_labor_cost || 0
     const totalDirectCost = kpi.total_direct_cost || 0
@@ -14228,6 +14281,7 @@ async function renderFinancialTab(force = false) {
           <div class="text-xs text-gray-500 mb-1">Tổng doanh thu</div>
           <div class="text-xl font-bold text-green-600">${fmtM(totalRev)} VNĐ</div>
           <div class="text-xs text-gray-400 mt-1">Đã thu (paid/partial)</div>
+          ${totalPendingRev > 0 ? `<div class="text-xs text-amber-600 mt-1"><i class="fas fa-clock mr-1"></i>⏳ Chờ thu: ${fmtM(totalPendingRev)}</div>` : ''}
         </div>
         <div class="kpi-card card border-l-4 border-red-400">
           <div class="text-xs text-gray-500 mb-1">Tổng chi phí</div>
@@ -14273,6 +14327,7 @@ async function renderFinancialTab(force = false) {
             <div class="flex justify-between text-sm"><span class="text-gray-500">Dự án hoàn thành (${fyLabel})</span><span class="font-bold text-green-600">${kpi.completed_projects||0}</span></div>
             <div class="border-t pt-3 space-y-1">
               <div class="flex justify-between text-sm"><span class="text-gray-500">Doanh thu (đã thu)</span><span class="font-bold text-green-600">${fmtM(totalRev)}</span></div>
+              ${totalPendingRev>0?`<div class="flex justify-between text-sm"><span class="text-amber-600"><i class="fas fa-clock mr-1"></i>⏳ Chờ thu</span><span class="font-semibold text-amber-600">${fmtM(totalPendingRev)}</span></div>`:''}
               <div class="flex justify-between text-sm"><span class="text-gray-500">Chi phí trực tiếp</span><span class="font-semibold text-red-500">${fmtM(totalDirectCost)}</span></div>
               ${totalLaborCost>0?`<div class="flex justify-between text-sm"><span class="text-gray-500">Chi phí lương</span><span class="font-semibold text-orange-500">${fmtM(totalLaborCost)}</span></div>`:''}
               ${totalSharedCost>0?`<div class="flex justify-between text-sm"><span class="text-gray-500">Chi phí chung</span><span class="font-semibold text-yellow-600">${fmtM(totalSharedCost)}</span></div>`:''}
@@ -17839,7 +17894,7 @@ function renderCostBreakdown(el, data) {
         <table class="w-full text-sm">
           <thead><tr class="text-left text-gray-400 border-b text-xs">
             <th class="pb-2 pr-4">Loại chi phí</th>
-            <th class="pb-2 pr-4 text-right">Số phiếu/DA</th>
+            <th class="pb-2 pr-4 text-right" title="Số phiếu chi/dự án trong kỳ ${period?.label || ''}. Khác với số phiếu all-time trong Quản lý Loại Chi Phí.">Số phiếu/DA <span class="text-gray-300 font-normal">(kỳ này)</span></th>
             <th class="pb-2 pr-4 text-right">Tổng tiền</th>
             <th class="pb-2 pr-4 text-right">% tổng CP</th>
             ${total_contract_value > 0 ? `<th class="pb-2 pr-4 text-right text-indigo-600">% GTHĐ</th>` : ''}
@@ -18622,9 +18677,12 @@ function renderLeaveTable(data) {
 
     let actions = ''
     if (canReview) {
-      actions += `<button onclick="openLeaveReviewModal(${r.id})" title="Xét duyệt đơn này"
+      actions += `<button onclick="openLeaveReviewModal(${r.id})" title="Phê duyệt đơn này"
         class="leave-action-btn btn-review">
-        <i class="fas fa-clipboard-check"></i> Duyệt</button>`
+        <i class="fas fa-check"></i> Duyệt</button>
+        <button onclick="quickRejectLeave(${r.id})" title="Không duyệt đơn này"
+        class="leave-action-btn btn-del">
+        <i class="fas fa-times"></i> Không duyệt</button>`
     }
     if (canEdit) {
       actions += `<button onclick="openLeaveModal(${r.id})" title="Chỉnh sửa đơn"
@@ -18823,6 +18881,10 @@ function updateDateLabel(inputId, labelId) {
 function calcLeaveDays() {
   const leaveType  = $('leaveTypeSelect')?.value
   const startDate  = $('leaveStartDate')?.value
+  // Half-day: end luôn = start (đồng bộ khi user đổi ngày)
+  if ((leaveType === 'half_day_am' || leaveType === 'half_day_pm') && startDate) {
+    if ($('leaveEndDate')) $('leaveEndDate').value = startDate
+  }
   const endDate    = $('leaveEndDate')?.value || startDate
   const preview    = $('leaveDaysPreview')
   const daysText   = $('leaveDaysText')
@@ -18943,7 +19005,9 @@ async function submitLeaveRequest() {
   if (!leaveType) { toast('Vui lòng chọn loại nghỉ', 'error'); return }
   if (!startDate) { toast('Vui lòng chọn ngày bắt đầu', 'error'); return }
 
-  const payload = { leave_type: leaveType, start_date: startDate, end_date: endDate, reason }
+  // Half-day: đảm bảo end_date = start_date trước khi gửi
+  const finalEndDate = (leaveType === 'half_day_am' || leaveType === 'half_day_pm') ? startDate : endDate
+  const payload = { leave_type: leaveType, start_date: startDate, end_date: finalEndDate, reason }
 
   try {
     if (id) {
@@ -19022,6 +19086,25 @@ async function submitLeaveReview(status) {
       : '❌ Đã từ chối đơn xin nghỉ. Email thông báo đã gửi cho nhân viên.'
     toast(msg, status === 'approved' ? 'success' : 'warning')
     closeLeaveReviewModal()
+    loadLeaveRequests()
+  } catch (e) {
+    toast('Lỗi: ' + (e.message || e), 'error')
+  }
+}
+
+// ── Quick Reject (không cần mở modal) ──────────────────────────────────────
+async function quickRejectLeave(id) {
+  const r = _leaveData.find(x => x.id === id)
+  if (!r) return
+  const empName = r.employee_name || r.employee_username || ''
+  const note = prompt(`Lý do không duyệt đơn của ${empName}?\n(Để trống nếu không cần ghi chú)`)
+  if (note === null) return  // user bấm Cancel
+  try {
+    await api(`/leave-requests/${id}/review`, {
+      method: 'POST',
+      data: { status: 'rejected', review_note: note?.trim() || '' }
+    })
+    toast('❌ Đã không duyệt đơn xin nghỉ. Email thông báo đã gửi cho nhân viên.', 'warning')
     loadLeaveRequests()
   } catch (e) {
     toast('Lỗi: ' + (e.message || e), 'error')
