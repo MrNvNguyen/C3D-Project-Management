@@ -4894,8 +4894,9 @@ async function initTsFilterDropdowns() {
   _tsDropdownsInitialised = true
 
   const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
-  const canSeeAll   = isAdmin || isProjAdmin
+  const isGlobalAdmin = isAdmin || currentUser.role === 'project_admin'
+  // Cho phép project leader xem bộ lọc nhân viên (backend sẽ trả chỉ người trong project của họ)
+  const canSeeAll   = isGlobalAdmin || isAnyProjectLeaderOrAdmin()
 
   // ------ Month ------
   const monthSel = $('tsMonthFilter')
@@ -5012,16 +5013,20 @@ async function initTsFilterDropdowns() {
 // ================================================================
 async function loadTimesheets() {
   try {
-    const isAdmin     = currentUser.role === 'system_admin'
-    const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
-    const canSeeAll   = isAdmin || isProjAdmin
+    const isAdmin      = currentUser.role === 'system_admin'
+    const isGlobalAdmin = isAdmin || currentUser.role === 'project_admin'
+    // canSeeAll: true nếu là global admin HOẶC là leader/admin của bất kỳ project nào
+    // → project_leader thấy cột nhân viên và bộ lọc thành viên
+    const canSeeAll    = isGlobalAdmin || isAnyProjectLeaderOrAdmin()
 
     // Subtitle
     const subtitle = $('tsPageSubtitle')
     if (subtitle) {
-      if (isAdmin)          subtitle.textContent = 'Xem toàn bộ timesheet tất cả thành viên, tất cả dự án'
-      else if (isProjAdmin) subtitle.textContent = 'Xem & duyệt timesheet của các thành viên trong dự án bạn quản lý'
-      else                  subtitle.textContent = 'Timesheet cá nhân của bạn'
+      const isAnyLeader = isAnyProjectLeaderOrAdmin()
+      if (isAdmin)            subtitle.textContent = 'Xem toàn bộ timesheet tất cả thành viên, tất cả dự án'
+      else if (isGlobalAdmin) subtitle.textContent = 'Xem & duyệt timesheet của các thành viên trong tất cả dự án'
+      else if (isAnyLeader)   subtitle.textContent = 'Xem timesheet của các thành viên trong dự án bạn quản lý'
+      else                    subtitle.textContent = 'Timesheet cá nhân của bạn'
     }
 
     // Show/hide cleanup button
@@ -5277,8 +5282,8 @@ function resetTimesheetFilters() {
 function exportTimesheetExcel() {
   if (!allTimesheets.length) { toast('Không có dữ liệu để xuất', 'warning'); return }
   const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
-  const canSeeAll   = isAdmin || isProjAdmin
+  const isGlobalAdmin = isAdmin || currentUser.role === 'project_admin'
+  const canSeeAll   = isGlobalAdmin || isAnyProjectLeaderOrAdmin()
   const statusLabels = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
 
   // Build CSV rows
@@ -5313,10 +5318,12 @@ function renderTimesheetTable(timesheets, apiSummary = null) {
   const tbody = $('timesheetTable')
   if (!tbody) return
 
-  const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
-  const canSeeAll   = isAdmin || isProjAdmin
-  const canApprove  = canApproveTimesheet()
+  const isAdmin      = currentUser.role === 'system_admin'
+  const isGlobalAdmin = isAdmin || currentUser.role === 'project_admin'
+  // canSeeAll: true nếu là global admin hoặc là leader/admin của bất kỳ project nào
+  // → project_leader luôn thấy cột nhân viên (backend kiểm soát data thực tế trả về)
+  const canSeeAll    = isGlobalAdmin || isAnyProjectLeaderOrAdmin()
+  const canApprove   = canApproveTimesheet()
 
   // Save full dataset for pagination, reset to page 1 on new data load
   _tsAllData     = timesheets
@@ -5361,10 +5368,11 @@ function renderTsRows() {
   const tbody = $('timesheetTable')
   if (!tbody) return
 
-  const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader' || isAnyProjectLeaderOrAdmin()
-  const canSeeAll   = isAdmin || isProjAdmin
-  const canApprove  = canApproveTimesheet()
+  const isAdmin      = currentUser.role === 'system_admin'
+  const isGlobalAdmin = isAdmin || currentUser.role === 'project_admin'
+  // canSeeAll: nhất quán với renderTimesheetTable
+  const canSeeAll    = isGlobalAdmin || isAnyProjectLeaderOrAdmin()
+  const canApprove   = canApproveTimesheet()
 
   const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
   const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
@@ -5397,8 +5405,15 @@ function renderTsRows() {
     const isRejected = t.status === 'rejected'
     const isSubmitted = t.status === 'submitted'
 
-    const canEdit      = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
-    const canDelete    = isAdmin || isProjAdmin || (isOwner && (isDraft || isRejected))
+    // Quyền theo project cụ thể của timesheet này
+    // Chính sách mới: chỉ system_admin / project_admin mới được sửa/xóa/duyệt timesheet người khác
+    // project_leader và member: chỉ được sửa/xóa timesheet CỦA CHÍNH MÌNH khi draft/rejected
+    const effForThisTs = getEffectiveRoleForProject(t.project_id)
+    const isProjAdminForThisTs = isAdmin || effForThisTs === 'project_admin'
+    // (project_leader KHÔNG có quyền sửa/xóa/duyệt timesheet người khác)
+
+    const canEdit      = isProjAdminForThisTs || (isOwner && (isDraft || isRejected))
+    const canDelete    = isProjAdminForThisTs || (isOwner && (isDraft || isRejected))
     const canSubmit    = isOwner && (isDraft || isRejected)
     const canApproveBt = canApprove && isSubmitted
     const canRejectBt  = canApprove && isSubmitted
@@ -5778,9 +5793,8 @@ async function openTimesheetModal(tsId = null) {
   if (!allProjects.length) allProjects = await api('/projects')
 
   const isAdmin     = currentUser.role === 'system_admin'
-  const isProjAdmin = currentUser.role === 'project_admin' ||
-                      currentUser.role === 'project_leader' ||
-                      isAnyProjectLeaderOrAdmin()
+  const isGlobalAdmin = isAdmin || currentUser.role === 'project_admin'
+  // isProjAdmin: chỉ dùng để check quyền global (dùng per-ts check bên dưới khi có ts cụ thể)
 
   // system_admin cần danh sách đầy đủ tất cả nhân viên (không phải chỉ những người có timesheet)
   // Luôn fetch lại /users cho admin để tránh dùng allUsers đã bị ghi đè bởi /timesheets/members
@@ -5860,13 +5874,17 @@ async function openTimesheetModal(tsId = null) {
 
     // Kiểm tra quyền sửa
     const isOwner = ts.user_id === currentUser.id
-    if (!isAdmin && !isProjAdmin && !(isOwner && ['draft', 'rejected'].includes(ts.status))) {
+    // Chỉ system_admin / project_admin được mở modal sửa timesheet người khác
+    const effForTs = getEffectiveRoleForProject(ts.project_id)
+    const isProjAdminForTs = isGlobalAdmin || effForTs === 'project_admin'
+    // (project_leader KHÔNG được sửa timesheet người khác)
+    if (!isProjAdminForTs && !(isOwner && ['draft', 'rejected'].includes(ts.status))) {
       toast('Bạn không có quyền sửa timesheet này', 'warning')
       return
     }
 
     // ── Kiểm tra giới hạn tuần (chặn sớm ở frontend) ──
-    if (!canEditFreeDate && !isProjAdmin) {
+    if (!canEditFreeDate && !isProjAdminForTs) {
       const workDate = new Date(ts.work_date + 'T00:00:00')
       const wkStart  = new Date(weekRange.start + 'T00:00:00')
       const wkEnd    = new Date(weekRange.end   + 'T00:00:00')
@@ -5877,7 +5895,7 @@ async function openTimesheetModal(tsId = null) {
     }
 
     // locked = chỉ khi member thường & timesheet đã submitted
-    const locked = !isAdmin && !isProjAdmin && ts.status === 'submitted'
+    const locked = !isAdmin && !isProjAdminForTs && ts.status === 'submitted'
 
     $('tsDate').value             = ts.work_date || ''
     $('tsDate').disabled          = locked

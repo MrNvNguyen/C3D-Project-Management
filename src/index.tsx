@@ -2702,21 +2702,51 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     `
     const params: any[] = []
 
-    const effRoleTS = await getEffectiveRole(db, user, project_id ? parseInt(project_id) : undefined)
-    if (effRoleTS === 'system_admin') {
+    // ── Phân quyền xem timesheet ──────────────────────────────────────────────
+    // Nguyên tắc:
+    //   system_admin           → thấy tất cả, có thể lọc tùy ý
+    //   project_admin (global) → thấy tất cả (tương tự admin)
+    //   project_leader/member có project role → CHỈ thấy timesheet trong project mà
+    //     họ là leader/admin. Khi không có project_id filter, chỉ thấy timesheet
+    //     của chính mình + các project họ đang quản lý (scope hẹp hơn)
+    //   member (không có project role nào) → chỉ thấy timesheet của chính mình
+    //
+    // Fix: phân biệt "global admin/leader" vs "project-scoped leader":
+    //   - getEffectiveRole với project_id cụ thể → dùng để check quyền trong project đó
+    //   - Khi KHÔNG có project_id: dùng user.role gốc (không inflate từ project role)
+    //     để quyết định branch, chỉ inflate khi đang lọc theo project cụ thể
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const globalBaseRole = user.role  // role gốc từ users table (chưa inflate từ project)
+    const isGlobalAdmin = globalBaseRole === 'system_admin' || globalBaseRole === 'project_admin'
+
+    if (isGlobalAdmin) {
+      // system_admin / project_admin: thấy tất cả, lọc theo filter nếu có
       if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
-    } else if (effRoleTS === 'project_admin' || effRoleTS === 'project_leader') {
-      // Thấy timesheets trong project mình quản lý + LUÔN thấy timesheet của chính mình
+    } else if (project_id) {
+      // Có project_id filter: kiểm tra role trong project đó
+      const effRoleInProject = await getEffectiveRole(db, user, parseInt(project_id))
+      if (effRoleInProject === 'project_admin' || effRoleInProject === 'project_leader') {
+        // Leader/admin của project này → thấy tất cả timesheets trong project + của chính mình
+        query += ` AND (ts.user_id = ? OR ts.project_id = ?)`
+        params.push(user.id, parseInt(project_id))
+        if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
+      } else {
+        // Chỉ member thường trong project → chỉ thấy timesheet của mình trong project đó
+        query += ` AND ts.user_id = ? AND ts.project_id = ?`
+        params.push(user.id, parseInt(project_id))
+      }
+    } else {
+      // KHÔNG có project_id filter: user là member/project_leader nhưng nhìn tổng thể
+      // → chỉ cho thấy timesheet của chính mình + các project họ là leader/admin
+      // (tránh lộ timesheet toàn công ty chỉ vì user được gán leader 1 dự án)
       const sub = projectAccessSubquery(user.id)
       query += ` AND (ts.user_id = ? OR ts.project_id IN ${sub.sql})`
       params.push(user.id, ...sub.params)
+      // Nhưng nếu không có managed projects thì vẫn chỉ thấy của mình
+      // (projectAccessSubquery trả rỗng nếu không là leader/admin ở đâu cả)
       if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
-      if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
-    } else {
-      query += ` AND ts.user_id = ?`
-      params.push(user.id)
-      if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     }
 
     if (status) { query += ` AND ts.status = ?`; params.push(status) }
@@ -2735,22 +2765,27 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       FROM timesheets ts
       WHERE 1=1
     `
-    // Build identical WHERE conditions for summary (using same effRoleTS)
+    // Build identical WHERE conditions for summary (mirror logic above)
     let sumQ = sumQuery
     const sumParams: any[] = []
-    if (effRoleTS === 'system_admin') {
+    if (isGlobalAdmin) {
       if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
       if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
-    } else if (effRoleTS === 'project_admin' || effRoleTS === 'project_leader') {
+    } else if (project_id) {
+      const effRoleInProjectSum = await getEffectiveRole(db, user, parseInt(project_id))
+      if (effRoleInProjectSum === 'project_admin' || effRoleInProjectSum === 'project_leader') {
+        sumQ += ` AND (ts.user_id = ? OR ts.project_id = ?)`
+        sumParams.push(user.id, parseInt(project_id))
+        if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
+      } else {
+        sumQ += ` AND ts.user_id = ? AND ts.project_id = ?`
+        sumParams.push(user.id, parseInt(project_id))
+      }
+    } else {
       const sub = projectAccessSubquery(user.id)
       sumQ += ` AND (ts.user_id = ? OR ts.project_id IN ${sub.sql})`
       sumParams.push(user.id, ...sub.params)
       if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
-      if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
-    } else {
-      sumQ += ` AND ts.user_id = ?`
-      sumParams.push(user.id)
-      if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
     }
     if (status) { sumQ += ` AND ts.status = ?`; sumParams.push(status) }
     if (month)  { sumQ += ` AND strftime('%m', ts.work_date) = ?`; sumParams.push(month.padStart(2, '0')) }
@@ -2902,19 +2937,21 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     if (!work_date) return c.json({ error: 'work_date required' }, 400)
     if (!isLeaveDay && !project_id) return c.json({ error: 'project_id required for work day' }, 400)
 
-    // ── Giới hạn tuần: member & project_admin/leader chỉ khai báo trong tuần hiện tại ──
-    const effRoleGlobalCheck = await getEffectiveRole(db, user)
-    if (effRoleGlobalCheck !== 'system_admin' && !isWithinCurrentWeek(work_date)) {
+    // Lấy role một lần dùng cho cả giới hạn tuần lẫn quyền tạo cho người khác
+    const effRoleGlobal = await getEffectiveRole(db, user)
+
+    // ── Giới hạn tuần: chỉ system_admin được khai báo timesheet tuần cũ ──
+    if (effRoleGlobal !== 'system_admin' && !isWithinCurrentWeek(work_date)) {
       return c.json({
         error: 'Chỉ được khai báo timesheet trong tuần làm việc hiện tại (Thứ Hai – Chủ Nhật). Tuần đã qua không thể khai báo lại.',
         week_limit: true
       }, 422)
     }
 
-    // member chỉ được tạo timesheet cho chính mình
-    // system_admin/project_admin/project_leader có thể tạo cho user_id bất kỳ (nếu truyền vào)
-    const effRoleGlobal = await getEffectiveRole(db, user)
-    const targetUserId = (data.user_id && effRoleGlobal !== 'member') ? data.user_id : user.id
+    // Chỉ system_admin / project_admin được tạo timesheet cho người khác
+    // project_leader và member: chỉ được tạo cho chính mình
+    const canCreateForOthers = effRoleGlobal === 'system_admin' || effRoleGlobal === 'project_admin'
+    const targetUserId = (data.user_id && canCreateForOthers) ? data.user_id : user.id
 
     // Kiểm tra quyền tạo timesheet:
     // - system_admin: được tạo cho mọi dự án, mọi user
@@ -2924,12 +2961,15 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
 
     if (effRoleGlobal !== 'system_admin') {
       if (targetUserId !== user.id) {
-        // Đang tạo timesheet cho người khác → phải là admin/leader
+        // Đang tạo timesheet cho người khác → phải là project_admin/system_admin
+        if (!canCreateForOthers) {
+          return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác' }, 403)
+        }
         if (!isLeaveDay) {
           const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
           if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác trong dự án này' }, 403)
         }
-        // Leave day for others: only system_admin (already guarded above)
+        // Leave day for others: only project_admin/system_admin (already guarded above)
       } else if (!isLeaveDay) {
         // Tạo timesheet công việc / nửa ngày cho chính mình → kiểm tra là thành viên dự án
         const projIdToCheck = parseInt(project_id)
@@ -3043,19 +3083,27 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     const ts = await db.prepare('SELECT * FROM timesheets WHERE id = ?').bind(id).first() as any
     if (!ts) return c.json({ error: 'Timesheet not found' }, 404)
 
-    // Kiểm tra quyền chỉnh sửa
+    // ── Quyền timesheet ──────────────────────────────────────────────────────
+    // Chính sách:
+    //   system_admin / project_admin (trong project đó) → sửa + duyệt tất cả
+    //   project_leader / member                         → CHỈ sửa timesheet CỦA CHÍNH MÌNH
+    //                                                     khi trạng thái draft/rejected
+    // ─────────────────────────────────────────────────────────────────────────
     const isOwner = ts.user_id === user.id
     const isAdmin = user.role === 'system_admin'
-    const isProjAdmin = await isProjectLeaderOrAdmin(db, user, ts.project_id)
-    // Chỉ system_admin và project_admin mới được DUYỆT/TỪ CHỐI timesheet
-    const canApproveTs = await isProjectAdminOrAbove(db, user, ts.project_id)
+    // isProjAdmin: chỉ true khi user là system_admin hoặc project_admin của project đó
+    // (KHÔNG bao gồm project_leader)
+    const isProjAdmin = await isProjectAdminOrAbove(db, user, ts.project_id)
+    // canApproveTs: đồng nghĩa với isProjAdmin (project_admin trở lên)
+    const canApproveTs = isProjAdmin
 
-    if (!isOwner && !isAdmin && !isProjAdmin) {
+    // Không phải owner và không phải admin → từ chối
+    if (!isOwner && !isProjAdmin) {
       return c.json({ error: 'Bạn không có quyền chỉnh sửa timesheet này' }, 403)
     }
 
-    // member chỉ sửa được timesheet ở trạng thái draft/rejected của chính mình
-    if (isOwner && !isAdmin && !isProjAdmin) {
+    // Owner nhưng không phải admin → chỉ được sửa khi draft/rejected
+    if (isOwner && !isProjAdmin) {
       if (!['draft', 'rejected'].includes(ts.status)) {
         return c.json({ error: 'Không thể sửa timesheet đã được duyệt hoặc đang chờ duyệt' }, 403)
       }
@@ -3070,9 +3118,7 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
     const updates: string[] = []
     const values: any[] = []
 
-    // ── Giới hạn tuần cho member/project_admin khi sửa nội dung timesheet ──
-    // Kiểm tra ngày gốc của timesheet: nếu nằm ngoài tuần hiện tại → không cho sửa
-    // (chỉ system_admin được phép sửa timesheet tuần cũ)
+    // ── Giới hạn tuần: chỉ system_admin hoặc project_admin được sửa timesheet tuần cũ ──
     if (!isAdmin && !isProjAdmin && !isWithinCurrentWeek(ts.work_date)) {
       // Chỉ chặn sửa nội dung (không chặn admin phê duyệt/từ chối)
       const isContentEdit = project_id !== undefined || task_id !== undefined || work_date !== undefined ||
@@ -3148,25 +3194,25 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
 
     if (status !== undefined) {
       if (canApproveTs && (status === 'approved' || status === 'rejected')) {
-        // Chỉ project_admin trở lên mới được duyệt / từ chối
+        // Chỉ project_admin / system_admin mới được duyệt / từ chối
         updates.push('status = ?'); values.push(status)
         updates.push('approved_by = ?'); values.push(user.id)
         updates.push('approved_at = CURRENT_TIMESTAMP')
-      } else if (isAdmin || isProjAdmin) {
-        // project_leader và các admin khác: được đổi status draft/submitted (không phải approve/reject)
-        if (!['approved', 'rejected'].includes(status)) {
-          updates.push('status = ?'); values.push(status)
-        } else {
-          return c.json({ error: 'Bạn không có quyền duyệt hoặc từ chối timesheet' }, 403)
-        }
-      } else if (isOwner) {
-        // member chỉ được submit (draft → submitted) hoặc rút lại (submitted → draft)
-        // Hoặc gửi lại sau khi bị từ chối (rejected → submitted)
+      } else if (isProjAdmin && !['approved', 'rejected'].includes(status)) {
+        // project_admin: được đổi status khác (draft/submitted) nhưng không approve/reject qua nhánh này
+        updates.push('status = ?'); values.push(status)
+      } else if (isOwner && !isProjAdmin) {
+        // member/project_leader: chỉ được submit (draft→submitted), gửi lại (rejected→submitted),
+        // hoặc rút lại (submitted→draft)
         if ((ts.status === 'draft' && status === 'submitted') ||
             (ts.status === 'rejected' && status === 'submitted') ||
             (ts.status === 'submitted' && status === 'draft')) {
           updates.push('status = ?'); values.push(status)
+        } else if (status === 'approved' || status === 'rejected') {
+          return c.json({ error: 'Bạn không có quyền duyệt hoặc từ chối timesheet' }, 403)
         }
+      } else if (!isOwner && !isProjAdmin) {
+        return c.json({ error: 'Bạn không có quyền thay đổi trạng thái timesheet này' }, 403)
       }
     }
 
@@ -3290,9 +3336,11 @@ app.delete('/api/timesheets/:id', authMiddleware, async (c) => {
 
     const isOwner2 = ts.user_id === user.id
     const isAdmin2 = user.role === 'system_admin'
-    const isProjAdmin2 = await isProjectLeaderOrAdmin(db, user, ts.project_id)
+    // Chỉ system_admin / project_admin được xóa timesheet người khác
+    // project_leader / member: chỉ xóa được của chính mình khi draft/rejected
+    const isProjAdmin2 = await isProjectAdminOrAbove(db, user, ts.project_id)
 
-    if (!isAdmin2 && !isProjAdmin2 && !(isOwner2 && ['draft', 'rejected'].includes(ts.status))) {
+    if (!isProjAdmin2 && !(isOwner2 && ['draft', 'rejected'].includes(ts.status))) {
       return c.json({ error: 'Không có quyền xóa timesheet này' }, 403)
     }
 
