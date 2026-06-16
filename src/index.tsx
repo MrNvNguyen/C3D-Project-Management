@@ -1302,13 +1302,19 @@ app.get('/api/projects/:id', authMiddleware, async (c) => {
       overdue_tasks: taskStats?.overdue_tasks  || 0
     }
 
+    // Tính project_budget = contract_value * (1 - management_fee_pct/100)
+    const p = project as any
+    const feePct2 = p.management_fee_pct || 0
+    const projectBudget = p.contract_value > 0 ? Math.round(p.contract_value * (1 - feePct2 / 100)) : 0
+    const projectWithBudget = { ...p, project_budget: projectBudget }
+
     // Hide financial data from non-system_admin
     const user = c.get('user') as any
     if (user.role !== 'system_admin') {
-      const { contract_value, budget, ...safeProject } = project as any
+      const { contract_value, budget, management_fee_pct, project_budget, ...safeProject } = projectWithBudget
       return c.json({ ...safeProject, members: members.results, task_stats: taskStatsObj })
     }
-    return c.json({ ...project, members: members.results, task_stats: taskStatsObj })
+    return c.json({ ...projectWithBudget, members: members.results, task_stats: taskStatsObj })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1324,15 +1330,16 @@ app.post('/api/projects', authMiddleware, async (c) => {
     }
 
     const data = await c.req.json()
-    const { code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, location, admin_id, leader_id, project_code_letter } = data
+    const { code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter } = data
 
     if (!code || !name) return c.json({ error: 'Code and name required' }, 400)
 
+    const feePct = Math.min(100, Math.max(0, parseFloat(management_fee_pct) || 0))
     const result = await db.prepare(
-      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, location, admin_id, leader_id, project_code_letter, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(code, name, description || null, client || null, project_type || 'building', status || 'planning',
-      start_date || null, end_date || null, budget || 0, contract_value || 0, location || null,
+      start_date || null, end_date || null, budget || 0, contract_value || 0, feePct, location || null,
       admin_id || user.id, leader_id || null, project_code_letter || code, user.id).run()
 
     const projectId = result.meta.last_row_id
@@ -1405,7 +1412,7 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     if (user.role !== 'system_admin' && proj.admin_id !== user.id)
       return c.json({ error: 'Không có quyền chỉnh sửa dự án này' }, 403)
     const allowedFields = user.role === 'system_admin'
-      ? ['code','name','description','client','project_type','status','start_date','end_date','budget','contract_value','location','admin_id','leader_id','progress','project_code_letter']
+      ? ['code','name','description','client','project_type','status','start_date','end_date','budget','contract_value','management_fee_pct','location','admin_id','leader_id','progress','project_code_letter']
       : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress','project_code_letter']
     const updates = allowedFields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = allowedFields.filter(f => data[f] !== undefined).map(f => data[f])
@@ -10654,7 +10661,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
 
     // ── 1. Tất cả dự án (kể cả chưa có doanh thu/chi phí)
     const projects = await db.prepare(`
-      SELECT id, code, name, status, project_type, contract_value, start_date, end_date, progress
+      SELECT id, code, name, status, project_type, contract_value, management_fee_pct, start_date, end_date, progress
       FROM projects WHERE status != 'cancelled'
       ORDER BY name ASC
     `).all()
@@ -10731,6 +10738,8 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       const shared = sharedMap[p.id] || {}
 
       const contractValue    = p.contract_value || 0
+      const feePct           = p.management_fee_pct || 0
+      const projectBudget    = contractValue > 0 ? Math.round(contractValue * (1 - feePct / 100)) : 0
       const revenueCollected = rev.revenue_collected || 0
       const revenuePaid      = rev.revenue_paid || 0
       const revenuePartial   = rev.revenue_partial || 0
@@ -10745,7 +10754,9 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
       // Tỷ lệ doanh thu đã thu / GTHĐ
       const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
-      // Tỷ lệ % từng khoản trên GTHĐ (khi có); nếu không có GTHĐ thì trên doanh thu đã thu
+      // Tiến độ so với ngân sách (nếu có)
+      const budgetProgress   = projectBudget > 0 ? Math.round((revenueTotal / projectBudget) * 100 * 10) / 10 : contractProgress
+      // Tỷ lệ % từng khoản luôn tính trên GTHĐ (hợp đồng), hoặc DT đã thu nếu chưa có GTHĐ
       const pctBase   = contractValue > 0 ? contractValue : revenueCollected
       const pctDirect = pctBase > 0 ? Math.round((directCost / pctBase) * 100 * 10) / 10 : 0
       const pctLabor  = pctBase > 0 ? Math.round((laborCost  / pctBase) * 100 * 10) / 10 : 0
@@ -10760,6 +10771,8 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         project_type: p.project_type,
         progress: p.progress || 0,
         contract_value: contractValue,
+        management_fee_pct: feePct,
+        project_budget: projectBudget,
         revenue_collected: revenueCollected,
         revenue_paid: revenuePaid,
         revenue_partial: revenuePartial,
@@ -10773,6 +10786,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         profit,
         margin,
         contract_progress: contractProgress,
+        budget_progress: budgetProgress,
         pct_direct: pctDirect,
         pct_labor: pctLabor,
         pct_shared: pctShared,
@@ -10788,6 +10802,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
     // ── 8. KPI tổng
     const totals = projectData.reduce((acc: any, p: any) => {
       acc.contract_value    += p.contract_value
+      acc.project_budget    += p.project_budget
       acc.revenue_collected += p.revenue_collected
       acc.revenue_pending   += p.revenue_pending
       acc.revenue_total     += p.revenue_total
@@ -10797,14 +10812,16 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       acc.total_cost        += p.total_cost
       acc.profit            += p.profit
       return acc
-    }, { contract_value:0, revenue_collected:0, revenue_pending:0, revenue_total:0,
+    }, { contract_value:0, project_budget:0, revenue_collected:0, revenue_pending:0, revenue_total:0,
          direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
 
     totals.margin = totals.revenue_collected > 0
       ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
     totals.contract_progress = totals.contract_value > 0
       ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
-    // % tổng tính trên tổng GTHĐ; nếu không có thì trên tổng DT đã thu
+    totals.budget_progress = totals.project_budget > 0
+      ? Math.round((totals.revenue_total / totals.project_budget) * 100 * 10) / 10 : totals.contract_progress
+    // % tổng luôn tính trên tổng GTHĐ (hợp đồng); nếu không có thì trên tổng DT đã thu
     const totalsPctBase = totals.contract_value > 0 ? totals.contract_value : totals.revenue_collected
     totals.pct_cost   = totalsPctBase > 0 ? Math.round((totals.total_cost   / totalsPctBase) * 100 * 10) / 10 : 0
     totals.pct_direct = totalsPctBase > 0 ? Math.round((totals.direct_cost  / totalsPctBase) * 100 * 10) / 10 : 0
@@ -10832,7 +10849,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
 
     // ── 1. Tất cả dự án (kể cả chưa có doanh thu/chi phí)
     const projects = await db.prepare(`
-      SELECT id, code, name, status, project_type, contract_value, start_date, end_date, progress
+      SELECT id, code, name, status, project_type, contract_value, management_fee_pct, start_date, end_date, progress
       FROM projects WHERE status != 'cancelled'
       ORDER BY name ASC
     `).all()
@@ -10908,6 +10925,8 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       const shared = sharedMap[p.id] || {}
 
       const contractValue    = p.contract_value || 0
+      const feePctLT         = p.management_fee_pct || 0
+      const projectBudgetLT  = contractValue > 0 ? Math.round(contractValue * (1 - feePctLT / 100)) : 0
       const revenueCollected = rev.revenue_collected || 0
       const revenuePaid      = rev.revenue_paid      || 0
       const revenuePartial   = rev.revenue_partial   || 0
@@ -10921,7 +10940,8 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       const profit           = revenueCollected - totalCost
       const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
       const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
-      // Tỷ lệ % từng khoản trên GTHĐ (khi có); nếu không có GTHĐ thì trên doanh thu đã thu
+      const budgetProgressLT = projectBudgetLT > 0 ? Math.round((revenueTotal / projectBudgetLT) * 100 * 10) / 10 : contractProgress
+      // Tỷ lệ % từng khoản luôn tính trên GTHĐ (hợp đồng); nếu không có thì trên doanh thu đã thu
       const pctBaseLT = contractValue > 0 ? contractValue : revenueCollected
       const pctDirect = pctBaseLT > 0 ? Math.round((directCost / pctBaseLT) * 100 * 10) / 10 : 0
       const pctLabor  = pctBaseLT > 0 ? Math.round((laborCost  / pctBaseLT) * 100 * 10) / 10 : 0
@@ -10942,6 +10962,8 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         start_date: startDate,
         end_date: endDate,
         contract_value: contractValue,
+        management_fee_pct: feePctLT,
+        project_budget: projectBudgetLT,
         revenue_collected: revenueCollected,
         revenue_paid: revenuePaid,
         revenue_partial: revenuePartial,
@@ -10955,6 +10977,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         profit,
         margin,
         contract_progress: contractProgress,
+        budget_progress: budgetProgressLT,
         pct_direct: pctDirect,
         pct_labor:  pctLabor,
         pct_shared: pctShared,
@@ -10970,6 +10993,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
     // ── 8. KPI tổng
     const totals = projectData.reduce((acc: any, p: any) => {
       acc.contract_value    += p.contract_value
+      acc.project_budget    += p.project_budget
       acc.revenue_collected += p.revenue_collected
       acc.revenue_pending   += p.revenue_pending
       acc.revenue_total     += p.revenue_total
@@ -10979,14 +11003,16 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       acc.total_cost        += p.total_cost
       acc.profit            += p.profit
       return acc
-    }, { contract_value:0, revenue_collected:0, revenue_pending:0, revenue_total:0,
+    }, { contract_value:0, project_budget:0, revenue_collected:0, revenue_pending:0, revenue_total:0,
          direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
 
     totals.margin = totals.revenue_collected > 0
       ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
     totals.contract_progress = totals.contract_value > 0
       ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
-    // % tổng tính trên tổng GTHĐ; nếu không có thì trên tổng DT đã thu
+    totals.budget_progress = totals.project_budget > 0
+      ? Math.round((totals.revenue_total / totals.project_budget) * 100 * 10) / 10 : totals.contract_progress
+    // % tổng luôn tính trên tổng GTHĐ (hợp đồng); nếu không có thì trên tổng DT đã thu
     const totalsPctBaseLT = totals.contract_value > 0 ? totals.contract_value : totals.revenue_collected
     totals.pct_cost   = totalsPctBaseLT > 0 ? Math.round((totals.total_cost   / totalsPctBaseLT) * 100 * 10) / 10 : 0
     totals.pct_direct = totalsPctBaseLT > 0 ? Math.round((totals.direct_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
