@@ -18497,7 +18497,7 @@ async function exportCostBreakdownExcel() {
 
 const LEAVE_TYPE_CONFIG = {
   annual_leave:  { label: 'Nghỉ phép năm',        icon: '🌴', cls: 'bg-green-100 text-green-700',   hint: 'Nghỉ phép năm theo quy định — được tính vào quota phép năm của bạn.' },
-  sick_leave:    { label: 'Nghỉ ốm',              icon: '🤒', cls: 'bg-orange-100 text-orange-700',  hint: 'Nghỉ ốm — cần có xác nhận từ bác sĩ nếu nghỉ quá 2 ngày liên tiếp.' },
+  sick_leave:    { label: 'Nghỉ ốm',              icon: '🤒', cls: 'bg-orange-100 text-orange-700',  hint: 'Nghỉ ốm ≤ 3 ngày: tính vào quota phép năm. Nghỉ ốm > 3 ngày liên tiếp: được miễn trừ, không trừ phép năm.' },
   unpaid_leave:  { label: 'Nghỉ không lương',     icon: '💸', cls: 'bg-red-100 text-red-700',        hint: 'Nghỉ không hưởng lương — không tính vào quota phép năm.' },
   compensatory:  { label: 'Nghỉ bù',              icon: '🔄', cls: 'bg-amber-100 text-amber-700',    hint: 'Nghỉ bù cho những ngày làm thêm / làm ngày lễ trước đó.' },
   holiday:       { label: 'Nghỉ lễ',              icon: '🎉', cls: 'bg-purple-100 text-purple-700',  hint: 'Ngày nghỉ lễ theo quy định nhà nước.' },
@@ -18680,6 +18680,19 @@ function renderLeaveTable(data) {
     // Type tag with left border accent
     const typeTag = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${typeCfg.cls}" style="border-left:3px solid currentColor;border-radius:6px">${typeCfg.icon} ${typeCfg.label}</span>`
 
+    // Quota badge: show whether this leave counts against annual leave quota
+    let sickLeaveBadge = ''
+    if (r.leave_type === 'half_day_am' || r.leave_type === 'half_day_pm') {
+      // Nửa ngày: luôn tính 0.5 ngày vào phép năm
+      sickLeaveBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium mt-1" style="background:#ede9fe;color:#5b21b6;border:1px solid #ddd6fe;font-size:10px" title="Nghỉ nửa ngày: tính 0.5 ngày vào quota phép năm">🌗 0.5 ngày phép</span>`
+    } else if (r.leave_type === 'sick_leave') {
+      if (r.total_days <= 3) {
+        sickLeaveBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium mt-1" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-size:10px" title="Nghỉ ốm ≤ 3 ngày: tính trừ vào quota phép năm">📋 Tính phép năm</span>`
+      } else {
+        sickLeaveBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium mt-1" style="background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;font-size:10px" title="Nghỉ ốm > 3 ngày: được miễn trừ, không trừ phép năm">✅ Miễn trừ</span>`
+      }
+    }
+
     // Status tag with dot indicator
     const dotColor = r.status==='approved' ? '#22c55e' : r.status==='rejected' ? '#ef4444' : '#f59e0b'
     const statusTag = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${statusCfg.cls}">
@@ -18743,9 +18756,19 @@ function renderLeaveTable(data) {
 
     const rowClass = idx % 2 === 0 ? 'leave-row-even' : 'leave-row-odd'
 
-    // Days badge color based on count
-    const daysColor = r.total_days >= 5 ? '#ef4444' : r.total_days >= 3 ? '#f59e0b' : '#00A651'
-    const daysBg    = r.total_days >= 5 ? '#fff1f2' : r.total_days >= 3 ? '#fffbeb' : '#f0fdf4'
+    // Days badge color based on count and leave type
+    // sick_leave >3 days: green (exempt from quota)
+    // half_day: purple to distinguish 0.5 day
+    // others: normal color scale
+    let daysColor, daysBg
+    if (r.leave_type === 'sick_leave' && r.total_days > 3) {
+      daysColor = '#15803d'; daysBg = '#f0fdf4'   // green = miễn trừ
+    } else if (r.leave_type === 'half_day_am' || r.leave_type === 'half_day_pm') {
+      daysColor = '#5b21b6'; daysBg = '#ede9fe'   // purple = nửa ngày phép
+    } else {
+      daysColor = r.total_days >= 5 ? '#ef4444' : r.total_days >= 3 ? '#f59e0b' : '#00A651'
+      daysBg    = r.total_days >= 5 ? '#fff1f2' : r.total_days >= 3 ? '#fffbeb' : '#f0fdf4'
+    }
     const rowNum    = globalOffset + idx + 1
 
     return `<tr class="${rowClass}" style="border-bottom:1px solid #f0faf4">
@@ -18753,7 +18776,9 @@ function renderLeaveTable(data) {
         <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-gray-500 text-xs font-bold">${rowNum}</span>
       </td>
       ${empCell}
-      <td class="py-3.5 px-4">${typeTag}</td>
+      <td class="py-3.5 px-4">
+        <div class="flex flex-col items-start gap-0.5">${typeTag}${sickLeaveBadge}</div>
+      </td>
       <td class="py-3.5 px-4">
         <div class="text-sm font-semibold text-gray-800">${formatDateVN(r.start_date)}</div>
         <div class="text-xs font-medium" style="color:${getDowColor(r.start_date)}">${getDowLabel(r.start_date)}</div>
@@ -18935,6 +18960,21 @@ function calcLeaveDays() {
 
   if (daysText) daysText.innerHTML = `<strong>${days} ngày nghỉ</strong>${weekendNote} <span class="text-xs font-normal text-gray-500">(T2–T7, không tính CN)</span>`
   preview?.classList.remove('hidden')
+
+  // Cập nhật hint quota động theo loại nghỉ và số ngày
+  const quotaHint = $('leaveQuotaHint')
+  if (quotaHint && !quotaHint.classList.contains('hidden')) {
+    if (leaveType === 'half_day_am' || leaveType === 'half_day_pm') {
+      // nửa ngày: luôn tính 0.5 vào quota
+      quotaHint.innerHTML = `<span style="color:#6366f1">🌗 Nghỉ nửa ngày: tính <strong>0.5 ngày</strong> vào quota phép năm.</span>`
+    } else if (leaveType === 'sick_leave' && days > 0) {
+      if (days <= 3) {
+        quotaHint.innerHTML = `<span style="color:#f59e0b">🤒 Nghỉ ốm <strong>${days} ngày ≤ 3</strong>: sẽ <strong>trừ vào quota phép năm</strong>. Kiểm tra số dư trước khi gửi.</span>`
+      } else {
+        quotaHint.innerHTML = `<span style="color:#00A651">🤒 Nghỉ ốm <strong>${days} ngày > 3</strong>: được <strong>miễn trừ, không trừ phép năm</strong>. Cần xác nhận từ cơ sở y tế.</span>`
+      }
+    }
+  }
 }
 
 function onLeaveTypeChange() {
@@ -18960,13 +19000,21 @@ function onLeaveTypeChange() {
     endGroup?.classList.remove('hidden')
   }
 
-  // Khi chọn nghỉ phép năm: hiển thị quota còn lại
+  // Khi chọn loại nghỉ ảnh hưởng quota phép năm: hiển thị quota còn lại
   const quotaHint = $('leaveQuotaHint')
-  if (leaveType === 'annual_leave' && quotaHint) {
+  const isHalfDay = leaveType === 'half_day_am' || leaveType === 'half_day_pm'
+  if ((leaveType === 'annual_leave' || leaveType === 'sick_leave' || isHalfDay) && quotaHint) {
     api('/leave-balances/me').then(b => {
       if (b && b.remaining !== undefined) {
         const color = b.remaining <= 2 ? '#ef4444' : b.remaining <= 5 ? '#f59e0b' : '#00A651'
-        quotaHint.innerHTML = `<span style="color:${color}">🌴 Phép năm còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong></span>`
+        if (leaveType === 'annual_leave') {
+          quotaHint.innerHTML = `<span style="color:${color}">🌴 Phép năm còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong></span>`
+        } else if (isHalfDay) {
+          quotaHint.innerHTML = `<span style="color:${color}">🌗 Nghỉ nửa ngày tính <strong>0.5 ngày</strong> vào quota phép năm (còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong>)</span>`
+        } else {
+          // sick_leave: hint động — sẽ cập nhật lại khi calcLeaveDays() chạy
+          quotaHint.innerHTML = `<span style="color:#f59e0b">🤒 Nghỉ ốm ≤ 3 ngày sẽ trừ phép năm (còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong>). > 3 ngày được miễn trừ.</span>`
+        }
         quotaHint.classList.remove('hidden')
       }
     }).catch(() => {})

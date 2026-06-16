@@ -13686,10 +13686,21 @@ async function ensureLeaveBalance(db: D1Database, userId: number, year: number, 
 }
 
 async function recalcUsedDays(db: D1Database, userId: number, year: number) {
+  // Tính ngày đã dùng phép năm:
+  //   annual_leave          → luôn tính
+  //   half_day_am/pm        → luôn tính (0.5 ngày)
+  //   sick_leave ≤ 3 ngày   → tính
+  //   sick_leave > 3 ngày   → miễn trừ
   const row = await db.prepare(`
     SELECT COALESCE(SUM(total_days), 0) AS used
     FROM leave_requests
-    WHERE user_id = ? AND leave_type = 'annual_leave'
+    WHERE user_id = ?
+      AND (
+        leave_type = 'annual_leave'
+        OR leave_type = 'half_day_am'
+        OR leave_type = 'half_day_pm'
+        OR (leave_type = 'sick_leave' AND total_days <= 3)
+      )
       AND status = 'approved'
       AND strftime('%Y', start_date) = ?
   `).bind(userId, String(year)).first() as any
@@ -13720,8 +13731,15 @@ app.post('/api/leave-requests', authMiddleware, async (c) => {
       return c.json({ error: 'Khoảng thời gian nghỉ không hợp lệ (0 ngày làm việc)' }, 400)
     }
 
-    // ── Kiểm tra quota nếu là nghỉ phép năm ──────────────────────────────────
-    if (leave_type === 'annual_leave') {
+    // ── Kiểm tra quota nếu loại nghỉ ảnh hưởng phép năm ────────────────────
+    // Quy tắc:
+    //   annual_leave          → luôn tính vào quota
+    //   half_day_am/pm        → tính 0.5 ngày vào quota
+    //   sick_leave ≤ 3 ngày   → tính vào quota
+    //   sick_leave > 3 ngày   → miễn trừ, không trừ quota
+    const isHalfDay = leave_type === 'half_day_am' || leave_type === 'half_day_pm'
+    const isSickLeaveShort = leave_type === 'sick_leave' && totalDays <= 3
+    if (leave_type === 'annual_leave' || isHalfDay || isSickLeaveShort) {
       const year = new Date(start_date).getFullYear()
       const cfg  = await db.prepare(
         `SELECT value FROM system_config WHERE key = 'annual_leave_default_days'`
@@ -13738,8 +13756,11 @@ app.post('/api/leave-requests', authMiddleware, async (c) => {
       if (balance) {
         const remaining = parseFloat((balance.total_days - balance.used_days).toFixed(1))
         if (totalDays > remaining) {
+          const typeLabel = leave_type === 'sick_leave' ? 'Nghỉ ốm ngắn (≤3 ngày)'
+            : (leave_type === 'half_day_am' || leave_type === 'half_day_pm') ? 'Nghỉ nửa ngày'
+            : 'Nghỉ phép năm'
           return c.json({
-            error: `Không đủ ngày phép năm. Còn lại: ${remaining} ngày, bạn đang yêu cầu: ${totalDays} ngày`,
+            error: `Không đủ ngày phép năm. ${typeLabel} tính vào quota. Còn lại: ${remaining} ngày, bạn đang yêu cầu: ${totalDays} ngày`,
             remaining,
             requested: totalDays,
           }, 422)
@@ -13883,9 +13904,16 @@ app.post('/api/leave-requests/:id/review', authMiddleware, adminOnly, async (c) 
 
     // Nếu approved → tự động tạo timesheet cho từng ngày nghỉ
     let autoCreatedDates: string[] = []
+    // Loại đơn ảnh hưởng quota phép năm:
+    //   annual_leave, half_day_am/pm, sick_leave ≤ 3 ngày
+    const affectsQuota = leave.leave_type === 'annual_leave' ||
+      leave.leave_type === 'half_day_am' ||
+      leave.leave_type === 'half_day_pm' ||
+      (leave.leave_type === 'sick_leave' && leave.total_days <= 3)
+
     if (status === 'approved') {
-      // Cập nhật used_days trong leave_balances nếu là nghỉ phép năm
-      if (leave.leave_type === 'annual_leave') {
+      // Cập nhật used_days khi duyệt
+      if (affectsQuota) {
         const year = new Date(leave.start_date).getFullYear()
         await ensureLeaveBalance(db, leave.user_id, year)
         await recalcUsedDays(db, leave.user_id, year)
@@ -13936,6 +13964,13 @@ app.post('/api/leave-requests/:id/review', authMiddleware, adminOnly, async (c) 
           autoCreatedDates.push(dateStr)
         }
       }
+    }
+
+    // Nếu rejected → recalc để hoàn trả quota (phòng trường hợp đã tính trước)
+    if (status === 'rejected' && affectsQuota) {
+      const year = new Date(leave.start_date).getFullYear()
+      await ensureLeaveBalance(db, leave.user_id, year)
+      await recalcUsedDays(db, leave.user_id, year)
     }
 
     // Gửi email kết quả cho nhân viên
