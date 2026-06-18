@@ -8390,6 +8390,119 @@ function filterAssets() {
   renderAssetsTable(flatAssets)
 }
 
+// ─────────────────────────────────────────────────────────────
+// Xuất Excel tài sản
+// ─────────────────────────────────────────────────────────────
+function exportAssetsExcel() {
+  if (!allAssets || allAssets.length === 0) {
+    toast('Không có dữ liệu tài sản để xuất', 'warning')
+    return
+  }
+
+  const statusLabels  = { active: 'Đang sử dụng', unused: 'Chưa sử dụng', maintenance: 'Bảo trì', repair: 'Sửa chữa', retired: 'Thanh lý', lost: 'Mất' }
+  const deprLabels    = { active: 'Đang khấu hao', none: 'Không KH', completed: 'Đã hết KH', paused: 'Tạm dừng' }
+  const locationLabels = { office: 'Văn phòng', home: 'Nhà riêng', site: 'Công trường', other: 'Khác' }
+
+  // Flatten cây cha-con, giữ thứ tự: cha → con ngay sau cha
+  const flatRows = []
+  ;(allAssets || []).forEach(a => {
+    flatRows.push({ ...a, _level: 0, _parentCode: '' })
+    ;(a.children || []).forEach(c => {
+      flatRows.push({ ...c, _level: 1, _parentCode: a.asset_code })
+    })
+  })
+
+  // Helper
+  const numFmt = n => (n || 0).toLocaleString('vi-VN')
+  const dateFmt = d => d ? d.substring(0, 10) : ''
+  const getUserName = id => id ? (allUsers.find(u => u.id === id)?.full_name || '') : ''
+
+  // Header
+  const headers = [
+    'STT', 'Mã tài sản', 'Tên tài sản', 'Tài sản cha',
+    'Loại', 'Thương hiệu', 'Model', 'Thông số kỹ thuật',
+    'Ngày mua', 'Địa điểm', 'Người sử dụng',
+    'Giá mua (VNĐ)', 'Thời gian KH (năm)', 'KH/tháng (VNĐ)',
+    'Khấu hao luỹ kế (VNĐ)', 'Giá trị còn lại (VNĐ)', '% đã KH',
+    'Bắt đầu KH', 'Kết thúc KH', 'Trạng thái KH',
+    'Trạng thái', 'Ghi chú'
+  ]
+
+  // Rows
+  const rows = flatRows.map((a, i) => {
+    const netVal   = a.net_book_value || a.current_value || 0
+    const pctDepr  = a.purchase_price > 0
+      ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100))
+      : 0
+    const deprSt   = a.depreciation_status || 'none'
+    const prefix   = a._level === 1 ? '  └ ' : ''
+    return [
+      i + 1,
+      (a._level === 1 ? '  ' : '') + (a.asset_code || ''),
+      prefix + (a.name || ''),
+      a._parentCode || '',
+      getAssetCategoryName(a.category || ''),
+      a.brand || '',
+      a.model || '',
+      a.specifications || '',
+      dateFmt(a.purchase_date),
+      locationLabels[a.location] || (a.location || ''),
+      getUserName(a.assigned_to),
+      a.purchase_price || 0,
+      a.depreciation_years || '',
+      deprSt === 'active' ? (a.monthly_depreciation || 0) : '',
+      a.accumulated_depreciation || 0,
+      netVal,
+      pctDepr + '%',
+      dateFmt(a.depreciation_start),
+      dateFmt(a.depreciation_end),
+      deprLabels[deprSt] || deprSt,
+      statusLabels[a.status] || (a.status || ''),
+      a.notes || ''
+    ]
+  })
+
+  // Tính tổng footer
+  const totalPurchase = flatRows.reduce((s, a) => s + (a.purchase_price || 0), 0)
+  const totalMonthly  = flatRows.filter(a => (a.depreciation_status || 'none') === 'active').reduce((s, a) => s + (a.monthly_depreciation || 0), 0)
+  const totalAccum    = flatRows.reduce((s, a) => s + (a.accumulated_depreciation || 0), 0)
+  const totalNet      = flatRows.reduce((s, a) => s + (a.net_book_value || a.current_value || 0), 0)
+  const footerRow     = ['', 'TỔNG CỘNG', `${flatRows.length} tài sản`, '', '', '', '', '', '', '', '',
+    totalPurchase, '', totalMonthly, totalAccum, totalNet, '', '', '', '', '', '']
+
+  // ── Build CSV (UTF-8 BOM để Excel đọc đúng tiếng Việt) ──
+  const escape = v => {
+    const s = String(v === null || v === undefined ? '' : v)
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
+    return s
+  }
+  const csvLines = [
+    '=== BÁO CÁO TÀI SẢN CÔNG TY ===',
+    `Ngày xuất: ${new Date().toLocaleDateString('vi-VN')} ${new Date().toLocaleTimeString('vi-VN')}`,
+    `Tổng số tài sản: ${allAssets.length} (${flatRows.length} bao gồm linh kiện)`,
+    '',
+    headers.map(escape).join(','),
+    ...rows.map(r => r.map(escape).join(',')),
+    '',
+    footerRow.map(escape).join(',')
+  ]
+
+  const BOM = '\uFEFF'
+  const csvContent = BOM + csvLines.join('\r\n')
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const today = new Date().toISOString().substring(0, 10).replace(/-/g, '')
+  link.href     = url
+  link.download = `BIM_TaiSan_${today}.csv`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+
+  toast(`Đã xuất ${flatRows.length} tài sản ra file Excel`, 'success')
+}
+
 async function openAssetModal(assetId = null) {
   if (!allUsers.length) allUsers = await api('/users')
   $('assetModalTitle').textContent = assetId ? 'Chỉnh sửa tài sản' : 'Thêm tài sản mới'
@@ -13874,6 +13987,21 @@ async function renderTeamTab(force = false) {
 // ── Task-vs-plan pagination (global) ────────────────────────────
 const TS_TASK_PAGE_SIZE = 20
 
+function progressBar(actual, planned) {
+  if (!planned || planned === 0) return '<span class="text-xs text-gray-400">—</span>'
+  const p = Math.min(Math.round(actual / planned * 100), 150)
+  const color = p > 120 ? '#ef4444' : p > 100 ? '#f97316' : p > 80 ? '#f59e0b' : '#00A651'
+  const display = Math.min(p, 100)
+  return `<div class="flex items-center gap-2 min-w-[100px]">
+    <div style="flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:visible;position:relative">
+      <div style="width:${display}%;height:100%;background:${color};border-radius:3px;position:relative">
+        ${p > 100 ? `<div style="position:absolute;right:-2px;top:-2px;width:10px;height:10px;background:${color};border-radius:50%;border:2px solid white"></div>` : ''}
+      </div>
+    </div>
+    <span style="font-size:11px;color:${color};font-weight:600;min-width:28px">${p}%</span>
+  </div>`
+}
+
 function renderTsTaskPage(page) {
   const tasks      = window._tsTaskData     || []
   const totPlan    = window._tsTaskTotalPlanned || 0
@@ -14010,21 +14138,7 @@ async function renderTimesheetAnalyticsTab(force = false) {
       return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${color}">${icon} ${pct}%</span>`
     }
 
-    // ── Progress bar inline ──
-    function progressBar(actual, planned) {
-      if (!planned || planned === 0) return `<span class="text-xs text-gray-400">—</span>`
-      const p = Math.min(Math.round(actual / planned * 100), 150)
-      const color = p > 120 ? '#ef4444' : p > 100 ? '#f97316' : p > 80 ? '#f59e0b' : '#00A651'
-      const display = Math.min(p, 100)
-      return `<div class="flex items-center gap-2 min-w-[100px]">
-        <div style="flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:visible;position:relative">
-          <div style="width:${display}%;height:100%;background:${color};border-radius:3px;position:relative">
-            ${p > 100 ? `<div style="position:absolute;right:-2px;top:-2px;width:10px;height:10px;background:${color};border-radius:50%;border:2px solid white"></div>` : ''}
-          </div>
-        </div>
-        <span style="font-size:11px;color:${color};font-weight:600;min-width:28px">${p}%</span>
-      </div>`
-    }
+    // progressBar dùng global function (định nghĩa bên ngoài renderTimesheetAnalyticsTab)
 
     el.innerHTML = `
       <!-- ═══ KPI CARDS ═══ -->

@@ -1693,9 +1693,14 @@
             <h1 class="text-2xl font-bold text-gray-800">Quản lý Tài sản</h1>
             <p class="text-gray-500 text-sm">Theo dõi thiết bị và tài sản công ty</p>
           </div>
-          <button onclick="openAssetModal()" class="btn-primary flex items-center gap-2">
-            <i class="fas fa-plus"></i>Thêm tài sản
-          </button>
+          <div class="flex items-center gap-2">
+            <button onclick="exportAssetsExcel()" class="btn-secondary flex items-center gap-2 text-green-700 border-green-300 hover:bg-green-50" title="Xuất toàn bộ tài sản ra Excel">
+              <i class="fas fa-file-excel text-green-600"></i>Xuất Excel
+            </button>
+            <button onclick="openAssetModal()" class="btn-primary flex items-center gap-2">
+              <i class="fas fa-plus"></i>Thêm tài sản
+            </button>
+          </div>
         </div>
 
         <!-- Stats -->
