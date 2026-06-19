@@ -72,7 +72,7 @@ let _lastAnalysisKey = ''              // cache key: projId+periodType+month+yea
 // UTILITY FUNCTIONS
 // ================================================================
 const $ = id => document.getElementById(id)
-const fmt = (n) => new Intl.NumberFormat('vi-VN').format(n || 0)
+const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(n || 0))
 const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0)
 
 // ── Money Input Helpers ──────────────────────────────────────────────────────
@@ -790,7 +790,8 @@ async function initApp() {
   // Load disciplines
   try {
     allDisciplines = await api('/disciplines')
-  } catch (e) { allDisciplines = [] }
+    window.allDisciplines = allDisciplines   // sync to window for weekly plan module
+  } catch (e) { allDisciplines = []; window.allDisciplines = [] }
 
   // Load fiscal year settings để dùng khi tính NTC cho chi phí chung
   try {
@@ -1784,8 +1785,11 @@ async function openProjectDetail(id, openChatTab = false) {
     const overdue = ts.overdue_tasks ?? tasks.filter(t => isOverdue(t)).length
     const pct    = total > 0 ? Math.round((done / total) * 100) : 0
 
+    const _detailCols = currentUser.role === 'system_admin'
+      ? (project.project_budget > 0 ? 'md:grid-cols-4' : 'md:grid-cols-3')
+      : 'md:grid-cols-2'
     $('projectDetailContent').innerHTML = `
-      <div class="grid grid-cols-1 ${currentUser.role === 'system_admin' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4 mb-6">
+      <div class="grid grid-cols-1 ${_detailCols} gap-4 mb-6">
         <div class="card">
           <p class="text-xs text-gray-500 mb-1">Chủ đầu tư</p>
           <p class="font-bold text-gray-800">${project.client || '-'}</p>
@@ -1794,7 +1798,14 @@ async function openProjectDetail(id, openChatTab = false) {
         <div class="card">
           <p class="text-xs text-gray-500 mb-1">Giá trị HĐ</p>
           <p class="font-bold text-green-600">${fmt(project.contract_value)} VNĐ</p>
-        </div>` : ''}
+          ${project.management_fee_pct > 0 ? `<p class="text-xs text-gray-400 mt-0.5">Phí QL: ${project.management_fee_pct}%</p>` : ''}
+        </div>
+        ${project.project_budget > 0 ? `
+        <div class="card" style="border-left:3px solid #059669">
+          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-wallet mr-1 text-emerald-500"></i>Ngân sách dự án</p>
+          <p class="font-bold text-emerald-700">${fmt(project.project_budget)} VNĐ</p>
+          <p class="text-xs text-gray-400 mt-0.5">= HĐ × (1 - ${project.management_fee_pct || 0}%)</p>
+        </div>` : ''}` : ''}
         <div class="card">
           <p class="text-xs text-gray-500 mb-1">Tiến độ tổng</p>
           <div class="flex items-center gap-2">
@@ -1953,6 +1964,22 @@ function confirmDeleteProject(id, name) {
   )
 }
 
+function updateProjectBudgetPreview() {
+  const previewEl = $('projectBudgetPreview')
+  if (!previewEl) return
+  const contractVal = parseMoneyVal('projectContractValue') || 0
+  const feePctEl = $('projectMgmtFeePct')
+  const feePct = feePctEl ? (parseFloat(feePctEl.value) || 0) : 0
+  if (contractVal <= 0) {
+    previewEl.textContent = '—'
+    previewEl.className = 'font-bold text-gray-400 text-base mt-1'
+    return
+  }
+  const budget = Math.round(contractVal * (1 - feePct / 100))
+  previewEl.textContent = new Intl.NumberFormat('vi-VN').format(budget) + ' ₫'
+  previewEl.className = 'font-bold text-green-700 text-base mt-1'
+}
+
 function openProjectModal(project = null) {
   // Chỉ system_admin mới được tạo dự án mới
   if (!project && currentUser?.role !== 'system_admin') {
@@ -1985,9 +2012,16 @@ function openProjectModal(project = null) {
   $('projectStartDate').value = project?.start_date || ''
   $('projectEndDate').value = project?.end_date || ''
   setMoneyInput('projectContractValue', project?.contract_value || 0)
-  // Show/hide contract value field based on role
+  // Show/hide contract value & management fee fields based on role
   const contractRow = document.getElementById('contractValueRow')
   if (contractRow) contractRow.style.display = isAdmin ? '' : 'none'
+  const mgmtFeeRow = document.getElementById('managementFeeRow')
+  if (mgmtFeeRow) mgmtFeeRow.style.display = isAdmin ? '' : 'none'
+  // Set management fee %
+  const feePctEl = $('projectMgmtFeePct')
+  if (feePctEl) feePctEl.value = project?.management_fee_pct != null ? project.management_fee_pct : ''
+  // Update budget preview
+  updateProjectBudgetPreview()
   $('projectStatus').value = project?.status || 'planning'
   $('projectLocation').value = project?.location || ''
 
@@ -2008,6 +2042,7 @@ $('projectForm').addEventListener('submit', async (e) => {
     project_type: $('projectType').value, status: $('projectStatus').value,
     start_date: $('projectStartDate').value, end_date: $('projectEndDate').value,
     contract_value: currentUser?.role === 'system_admin' ? (parseMoneyVal('projectContractValue') || 0) : undefined,
+    management_fee_pct: currentUser?.role === 'system_admin' ? (parseFloat($('projectMgmtFeePct')?.value) || 0) : undefined,
     location: $('projectLocation').value,
     admin_id: parseInt($('projectAdmin').value) || null,
     leader_id: parseInt($('projectLeader').value) || null
@@ -7822,7 +7857,12 @@ function renderCostTable() {
       <th class="pb-3 pr-3">Số HĐ</th>
       <th class="pb-3 pr-3">Ngày</th>
       <th class="pb-3 pr-3">Trạng thái</th>
-      <th class="pb-3 pr-3 text-right">Số tiền</th>
+      <th class="pb-3 pr-3 text-right">
+        <span title="Số tiền theo Hợp Đồng — số tiền gốc khách hàng thanh toán, chưa trừ phí quản lý">Theo HĐ <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
+      </th>
+      <th class="pb-3 pr-3 text-right">
+        <span title="Số tiền theo Ngân Sách — doanh thu thực ghi nhận sau khi trừ % phí quản lý. Công thức: Theo HĐ × (1 − % phí QL)">Theo NS <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
+      </th>
       <th class="pb-3 pr-3 text-center">Nguồn</th>
     </tr>`
     const payColors  = { pending: 'badge-todo', processing: 'badge-in_progress', partial: 'badge-in_progress', paid: 'badge-completed', rejected: 'badge-canceled' }
@@ -7832,10 +7872,11 @@ function renderCostTable() {
     const displayRevenues = allRevenues.filter(r => r.payment_status !== 'pending')
 
     // Tính tổng theo trạng thái
-    const revTotalPaid    = displayRevenues.filter(r => r.payment_status === 'paid').reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalPartial = displayRevenues.filter(r => r.payment_status === 'partial').reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalAll     = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalCollected = revTotalPaid + revTotalPartial
+    const revTotalCollected    = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.amount || 0), 0)
+    const revTotalAll          = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
+    // Tổng "theo HĐ" = paid_amount_original (trước phí QL)
+    const revTotalOrigCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
+    const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
 
     tbody.innerHTML = displayRevenues.map(r => {
       // Hiển thị ngày thông minh:
@@ -7849,6 +7890,17 @@ function renderCostTable() {
       } else {
         dateCell = fmtDate(r.revenue_date)
       }
+
+      // Tính cột "Theo HĐ" và "Theo NS"
+      const origAmount = r.paid_amount_original || r.amount || 0
+      const netAmount  = r.amount || 0
+      const feePct     = r.fee_pct || 0
+      // Chỉ hiện cột phí khi có fee > 0 và 2 số khác nhau
+      const hasFee     = feePct > 0 && origAmount !== netAmount
+      const feeTooltip = hasFee
+        ? `title="Phí QL ${feePct}%: ${fmt(origAmount)} × ${100 - feePct}% = ${fmt(netAmount)}"`
+        : ''
+
       return `
       <tr class="table-row ${r.payment_status === 'pending' ? 'bg-amber-50/40' : ''}">
         <td class="py-2 pr-3 text-sm font-medium">${r.project_code || '-'}</td>
@@ -7856,24 +7908,32 @@ function renderCostTable() {
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${dateCell}</td>
         <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'}">${fmt(r.amount)}</td>
+        <td class="py-2 pr-3 text-sm text-right ${hasFee ? 'text-gray-500' : (r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600')} ${hasFee ? '' : 'font-bold'}">
+          ${fmt(origAmount)}
+        </td>
+        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${feeTooltip}>
+          ${fmt(netAmount)}
+          ${hasFee ? `<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>` : ''}
+        </td>
         <td class="py-2 pr-3 text-center">
           <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
             <i class="fas fa-${r.source === 'payment_request' ? 'file-invoice' : 'sync-alt'} mr-1"></i>${r.source === 'payment_request' ? 'Hồ Sơ PL' : 'Tình trạng TT'}
           </span>
         </td>
       </tr>`
-    }).join('') || '<tr><td colspan="7" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
+    }).join('') || '<tr><td colspan="8" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
 
     // ── Tổng cộng footer ──────────────────────────────────────────
     const revTfoot = document.getElementById('revTfoot')
     if (revTfoot) {
+      const countCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).length
       revTfoot.innerHTML = `
         <tr class="border-t-2 border-green-200 bg-green-50/60">
           <td colspan="5" class="py-2 px-0 font-semibold text-green-700 text-xs">
             <i class="fas fa-check-circle mr-1 text-green-500"></i>
-            Đã thu (paid + partial) — ${displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).length} khoản
+            Đã thu (paid + partial) — ${countCollected} khoản
           </td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-500 text-sm whitespace-nowrap">${fmt(revTotalOrigCollected)}</td>
           <td class="py-2 pr-3 text-right font-bold text-green-700 text-sm whitespace-nowrap">${fmt(revTotalCollected)}</td>
           <td></td>
         </tr>
@@ -7881,6 +7941,7 @@ function renderCostTable() {
           <td colspan="5" class="py-2 px-0 font-semibold text-gray-600 text-xs">
             <i class="fas fa-sigma mr-1"></i>Tổng cộng (${displayRevenues.length} khoản)
           </td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-400 text-sm whitespace-nowrap">${fmt(revTotalOrigAll)}</td>
           <td class="py-2 pr-3 text-right font-bold text-gray-700 text-sm whitespace-nowrap">${fmt(revTotalAll)}</td>
           <td></td>
         </tr>`
@@ -8353,6 +8414,119 @@ function filterAssets() {
   const flatAssets = filtered.map(a => ({ ...a, children: [] }))
   _assetPage = 1
   renderAssetsTable(flatAssets)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Xuất Excel tài sản
+// ─────────────────────────────────────────────────────────────
+function exportAssetsExcel() {
+  if (!allAssets || allAssets.length === 0) {
+    toast('Không có dữ liệu tài sản để xuất', 'warning')
+    return
+  }
+
+  const statusLabels  = { active: 'Đang sử dụng', unused: 'Chưa sử dụng', maintenance: 'Bảo trì', repair: 'Sửa chữa', retired: 'Thanh lý', lost: 'Mất' }
+  const deprLabels    = { active: 'Đang khấu hao', none: 'Không KH', completed: 'Đã hết KH', paused: 'Tạm dừng' }
+  const locationLabels = { office: 'Văn phòng', home: 'Nhà riêng', site: 'Công trường', other: 'Khác' }
+
+  // Flatten cây cha-con, giữ thứ tự: cha → con ngay sau cha
+  const flatRows = []
+  ;(allAssets || []).forEach(a => {
+    flatRows.push({ ...a, _level: 0, _parentCode: '' })
+    ;(a.children || []).forEach(c => {
+      flatRows.push({ ...c, _level: 1, _parentCode: a.asset_code })
+    })
+  })
+
+  // Helper
+  const numFmt = n => (n || 0).toLocaleString('vi-VN')
+  const dateFmt = d => d ? d.substring(0, 10) : ''
+  const getUserName = id => id ? (allUsers.find(u => u.id === id)?.full_name || '') : ''
+
+  // Header
+  const headers = [
+    'STT', 'Mã tài sản', 'Tên tài sản', 'Tài sản cha',
+    'Loại', 'Thương hiệu', 'Model', 'Thông số kỹ thuật',
+    'Ngày mua', 'Địa điểm', 'Người sử dụng',
+    'Giá mua (VNĐ)', 'Thời gian KH (năm)', 'KH/tháng (VNĐ)',
+    'Khấu hao luỹ kế (VNĐ)', 'Giá trị còn lại (VNĐ)', '% đã KH',
+    'Bắt đầu KH', 'Kết thúc KH', 'Trạng thái KH',
+    'Trạng thái', 'Ghi chú'
+  ]
+
+  // Rows
+  const rows = flatRows.map((a, i) => {
+    const netVal   = a.net_book_value || a.current_value || 0
+    const pctDepr  = a.purchase_price > 0
+      ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100))
+      : 0
+    const deprSt   = a.depreciation_status || 'none'
+    const prefix   = a._level === 1 ? '  └ ' : ''
+    return [
+      i + 1,
+      (a._level === 1 ? '  ' : '') + (a.asset_code || ''),
+      prefix + (a.name || ''),
+      a._parentCode || '',
+      getAssetCategoryName(a.category || ''),
+      a.brand || '',
+      a.model || '',
+      a.specifications || '',
+      dateFmt(a.purchase_date),
+      locationLabels[a.location] || (a.location || ''),
+      getUserName(a.assigned_to),
+      a.purchase_price || 0,
+      a.depreciation_years || '',
+      deprSt === 'active' ? (a.monthly_depreciation || 0) : '',
+      a.accumulated_depreciation || 0,
+      netVal,
+      pctDepr + '%',
+      dateFmt(a.depreciation_start),
+      dateFmt(a.depreciation_end),
+      deprLabels[deprSt] || deprSt,
+      statusLabels[a.status] || (a.status || ''),
+      a.notes || ''
+    ]
+  })
+
+  // Tính tổng footer
+  const totalPurchase = flatRows.reduce((s, a) => s + (a.purchase_price || 0), 0)
+  const totalMonthly  = flatRows.filter(a => (a.depreciation_status || 'none') === 'active').reduce((s, a) => s + (a.monthly_depreciation || 0), 0)
+  const totalAccum    = flatRows.reduce((s, a) => s + (a.accumulated_depreciation || 0), 0)
+  const totalNet      = flatRows.reduce((s, a) => s + (a.net_book_value || a.current_value || 0), 0)
+  const footerRow     = ['', 'TỔNG CỘNG', `${flatRows.length} tài sản`, '', '', '', '', '', '', '', '',
+    totalPurchase, '', totalMonthly, totalAccum, totalNet, '', '', '', '', '', '']
+
+  // ── Build CSV (UTF-8 BOM để Excel đọc đúng tiếng Việt) ──
+  const escape = v => {
+    const s = String(v === null || v === undefined ? '' : v)
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
+    return s
+  }
+  const csvLines = [
+    '=== BÁO CÁO TÀI SẢN CÔNG TY ===',
+    `Ngày xuất: ${new Date().toLocaleDateString('vi-VN')} ${new Date().toLocaleTimeString('vi-VN')}`,
+    `Tổng số tài sản: ${allAssets.length} (${flatRows.length} bao gồm linh kiện)`,
+    '',
+    headers.map(escape).join(','),
+    ...rows.map(r => r.map(escape).join(',')),
+    '',
+    footerRow.map(escape).join(',')
+  ]
+
+  const BOM = '\uFEFF'
+  const csvContent = BOM + csvLines.join('\r\n')
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const today = new Date().toISOString().substring(0, 10).replace(/-/g, '')
+  link.href     = url
+  link.download = `BIM_TaiSan_${today}.csv`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+
+  toast(`Đã xuất ${flatRows.length} tài sản ra file Excel`, 'success')
 }
 
 async function openAssetModal(assetId = null) {
@@ -11275,10 +11449,11 @@ async function loadFinanceProject() {
     // Period label — use server-returned label for accuracy
     const periodLabel = data.period?.label || `Kỳ báo cáo`
 
-    // Revenue progress vs contract
-    const revenueProgress = project.contract_value > 0 ? Math.min(100, Math.round(summary.total_revenue / project.contract_value * 100)) : 0
+    // Revenue progress vs contract — luôn dùng GTHD (contract_value) làm cơ sở
+    const _budgetBase = project.contract_value
+    const revenueProgress = _budgetBase > 0 ? Math.min(100, Math.round(summary.total_revenue / _budgetBase * 100)) : 0
     const pendingRevenue = summary.pending_revenue || 0
-    const costProgress = project.contract_value > 0 ? Math.min(100, Math.round(summary.total_cost / project.contract_value * 100)) : 0
+    const costProgress = _budgetBase > 0 ? Math.min(100, Math.round(summary.total_cost / _budgetBase * 100)) : 0
 
     // Labor source badge
     const laborSourceBadge = summary.labor_source === 'project_labor_costs'
@@ -11340,6 +11515,7 @@ async function loadFinanceProject() {
           <div class="text-right text-xs text-gray-500">
             <div><i class="fas fa-calendar-alt mr-1 text-blue-400"></i>Kỳ báo cáo: <strong class="text-gray-700">${periodLabel}</strong></div>
             <div class="mt-1"><i class="fas fa-file-contract mr-1 text-green-500"></i>Giá trị HĐ: <strong class="text-green-700">${fmtMoney(project.contract_value)}</strong></div>
+            ${project.project_budget > 0 ? `<div class="mt-0.5"><i class="fas fa-wallet mr-1 text-emerald-500"></i>Ngân sách: <strong class="text-emerald-700">${fmtMoney(project.project_budget)}</strong>${project.management_fee_pct > 0 ? `<span class="text-gray-400 text-xs ml-1">(trừ ${project.management_fee_pct}% phí QL)</span>` : ''}</div>` : ''}
           </div>
         </div>
       </div>
@@ -11351,7 +11527,7 @@ async function loadFinanceProject() {
           ${summary.total_revenue > 0
             ? `<p class="text-xl font-bold text-green-600 mt-1">${fmtMoney(summary.total_revenue)}</p>
                <div class="mt-2">
-                 <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>Tiến độ HĐ</span><span>${revenueProgress}%</span></div>
+                 <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>${project.project_budget > 0 ? 'Tiến độ NS' : 'Tiến độ HĐ'}</span><span>${revenueProgress}%</span></div>
                  <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="bg-green-500 h-1.5 rounded-full" style="width:${revenueProgress}%"></div></div>
                </div>
                ${pendingRevenue > 0 ? `<p class="text-xs text-amber-600 mt-1">⏳ Chờ TT: ${fmtMoney(pendingRevenue)}</p>` : ''}`
@@ -11373,7 +11549,7 @@ async function loadFinanceProject() {
           <p class="text-xl font-bold text-red-600 mt-1">${fmtMoney(summary.total_cost)}</p>
           ${summary.shared_cost > 0 ? `<p class="text-xs text-yellow-600 mt-0.5"><i class="fas fa-share-alt mr-1"></i>Gồm ${fmtMoney(summary.shared_cost)} chi phí chung</p>` : ''}
           <div class="mt-2">
-            <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>% HĐ</span><span>${costProgress}%</span></div>
+            <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>${project.project_budget > 0 ? '% Ngân sách' : '% HĐ'}</span><span>${costProgress}%</span></div>
             <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="${costProgress > 100 ? 'bg-red-600' : costProgress > 80 ? 'bg-amber-500' : 'bg-red-400'} h-1.5 rounded-full" style="width:${Math.min(costProgress,100)}%"></div></div>
           </div>
         </div>
@@ -11477,7 +11653,7 @@ async function loadFinanceProject() {
       <!-- Revenue detail -->
       <div class="card mb-4">
         <h3 class="font-bold text-sm mb-3"><i class="fas fa-money-bill-wave text-green-600 mr-2"></i>Thông tin doanh thu</h3>
-        <div class="grid grid-cols-3 gap-4 text-center">
+        <div class="grid ${project.project_budget > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-4 text-center">
           <div class="${summary.total_revenue > 0 ? 'bg-green-50' : (pendingRevenue > 0 ? 'bg-amber-50' : 'bg-orange-50')} rounded-lg p-3">
             <p class="text-xs text-gray-500">Doanh thu đã TT</p>
             ${summary.total_revenue > 0
@@ -11494,10 +11670,16 @@ async function loadFinanceProject() {
             <p class="text-xs text-gray-500">Giá trị hợp đồng</p>
             <p class="font-bold text-blue-700 text-base mt-1">${fmtMoney(project.contract_value)}</p>
           </div>
-          <div class="${summary.total_revenue > 0 ? 'bg-' + (summary.total_revenue >= project.contract_value * 0.5 ? 'green' : 'amber') + '-50' : 'bg-gray-50'} rounded-lg p-3">
-            <p class="text-xs text-gray-500">Tỷ lệ thực hiện</p>
+          ${project.project_budget > 0 ? `
+          <div class="bg-emerald-50 rounded-lg p-3" style="border:1px solid #d1fae5">
+            <p class="text-xs text-gray-500"><i class="fas fa-wallet mr-1 text-emerald-500"></i>Ngân sách dự án</p>
+            <p class="font-bold text-emerald-700 text-base mt-1">${fmtMoney(project.project_budget)}</p>
+            ${project.management_fee_pct > 0 ? `<p class="text-xs text-gray-400 mt-0.5">Trừ ${project.management_fee_pct}% phí QL</p>` : ''}
+          </div>` : ''}
+          <div class="${summary.total_revenue > 0 ? 'bg-' + (summary.total_revenue >= _budgetBase * 0.5 ? 'green' : 'amber') + '-50' : 'bg-gray-50'} rounded-lg p-3">
+            <p class="text-xs text-gray-500">Tỷ lệ thực hiện / GTHĐ</p>
             ${summary.total_revenue > 0
-              ? `<p class="font-bold text-${summary.total_revenue >= project.contract_value * 0.5 ? 'green' : 'amber'}-700 text-base mt-1">${revenueProgress}%</p>`
+              ? `<p class="font-bold text-${summary.total_revenue >= _budgetBase * 0.5 ? 'green' : 'amber'}-700 text-base mt-1">${revenueProgress}%</p>`
               : `<p class="font-bold text-gray-400 text-base mt-1">—</p>`
             }
           </div>
@@ -12497,6 +12679,112 @@ document.addEventListener('DOMContentLoaded', () => {
 })
 
 // ============================================================
+// DATA MAINTENANCE TOOLS (Công cụ bảo trì dữ liệu)
+// ============================================================
+
+async function resyncAllRevenues() {
+  const btn = $('btnResyncRevenues')
+  const resultPanel = $('resyncRevenueResult')
+  const resultContent = $('resyncRevenueContent')
+
+  // Confirm trước khi chạy
+  if (!confirm('Chạy re-sync sẽ tính lại số tiền doanh thu cho TẤT CẢ đợt thanh toán đã paid/partial dựa trên % phí QL của từng dự án.\n\nTiếp tục?')) return
+
+  // Loading state
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xử lý...'
+  resultPanel.classList.add('hidden')
+
+  try {
+    const res = await api('/legal/resync-revenues-all', { method: 'POST' })
+
+    // Hiển thị kết quả
+    resultPanel.classList.remove('hidden')
+
+    if (res.errors && res.errors.length > 0) {
+      resultContent.innerHTML = `
+        <div class="flex items-center gap-2 mb-3">
+          <i class="fas fa-exclamation-triangle text-amber-500 text-lg"></i>
+          <span class="font-semibold text-amber-800">Hoàn thành với cảnh báo</span>
+        </div>
+        <div class="grid grid-cols-3 gap-3 mb-3">
+          <div class="bg-white rounded-lg p-3 border border-orange-200 text-center">
+            <div class="text-2xl font-bold text-orange-700">${res.synced}</div>
+            <div class="text-xs text-gray-500 mt-1">Đã sync thành công</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 border border-orange-200 text-center">
+            <div class="text-2xl font-bold text-red-600">${res.errors.length}</div>
+            <div class="text-xs text-gray-500 mt-1">Lỗi</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 border border-orange-200 text-center">
+            <div class="text-2xl font-bold text-gray-700">${res.total}</div>
+            <div class="text-xs text-gray-500 mt-1">Tổng đợt thanh toán</div>
+          </div>
+        </div>
+        <div class="bg-red-50 rounded p-3 text-sm text-red-700">
+          <p class="font-medium mb-1">Chi tiết lỗi:</p>
+          ${res.errors.map(e => `<div class="ml-2">• ${e}</div>`).join('')}
+        </div>
+      `
+    } else if (res.total === 0) {
+      resultContent.innerHTML = `
+        <div class="flex items-center gap-3 p-3 bg-blue-50 rounded-lg">
+          <i class="fas fa-info-circle text-blue-500 text-xl"></i>
+          <div>
+            <p class="font-semibold text-blue-800">Không có dữ liệu cần sync</p>
+            <p class="text-sm text-blue-600">Chưa có đợt thanh toán nào ở trạng thái <strong>paid</strong> hoặc <strong>partial</strong>.</p>
+          </div>
+        </div>
+      `
+    } else {
+      resultContent.innerHTML = `
+        <div class="flex items-center gap-2 mb-3">
+          <i class="fas fa-check-circle text-green-500 text-lg"></i>
+          <span class="font-semibold text-green-800">Re-sync hoàn tất thành công!</span>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-white rounded-lg p-3 border border-green-200 text-center">
+            <div class="text-3xl font-bold text-green-600">${res.synced}</div>
+            <div class="text-sm text-gray-500 mt-1">Bản ghi doanh thu đã cập nhật</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 border border-green-200 text-center">
+            <div class="text-3xl font-bold text-gray-700">${res.total}</div>
+            <div class="text-sm text-gray-500 mt-1">Tổng đợt thanh toán đã xử lý</div>
+          </div>
+        </div>
+        <p class="text-xs text-green-600 mt-3">
+          <i class="fas fa-info-circle mr-1"></i>
+          Tất cả bản ghi doanh thu đã được tính lại theo công thức:
+          <code class="bg-green-100 px-1 rounded font-mono">Doanh thu = Số tiền × (1 − % Phí QL)</code>
+        </p>
+      `
+    }
+
+    if (res.synced > 0) {
+      toast(`✅ Re-sync thành công ${res.synced}/${res.total} bản ghi doanh thu`, 'success')
+    } else if (res.total === 0) {
+      toast('ℹ️ Không có dữ liệu cần sync', 'info')
+    }
+
+  } catch(e) {
+    resultPanel.classList.remove('hidden')
+    resultContent.innerHTML = `
+      <div class="flex items-center gap-3 p-3 bg-red-50 rounded-lg">
+        <i class="fas fa-times-circle text-red-500 text-xl"></i>
+        <div>
+          <p class="font-semibold text-red-800">Lỗi khi chạy re-sync</p>
+          <p class="text-sm text-red-600">${e.message}</p>
+        </div>
+      </div>
+    `
+    toast('❌ Lỗi re-sync: ' + e.message, 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-sync-alt"></i> Chạy Re-sync'
+  }
+}
+
+// ============================================================
 // SHARED COSTS (Chi phí chung)
 // ============================================================
 
@@ -13146,10 +13434,11 @@ function switchAnalyticsTab(tab, force = false) {
 
 // ---- Helpers ----
 function fmtM(n) {
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + ' tỷ'
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' triệu'
-  if (n >= 1e3) return (n / 1e3).toFixed(0) + ' K'
-  return (n || 0).toLocaleString()
+  const v = Math.round(n || 0)
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + ' tỷ'
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + ' triệu'
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(0) + ' K'
+  return new Intl.NumberFormat('vi-VN').format(v)
 }
 function pct(a, b) { return b > 0 ? Math.round(a / b * 100) : 0 }
 function monthName(m) { return ['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12'][parseInt(m)-1] || m }
@@ -13831,6 +14120,21 @@ async function renderTeamTab(force = false) {
 // ── Task-vs-plan pagination (global) ────────────────────────────
 const TS_TASK_PAGE_SIZE = 20
 
+function progressBar(actual, planned) {
+  if (!planned || planned === 0) return '<span class="text-xs text-gray-400">—</span>'
+  const p = Math.min(Math.round(actual / planned * 100), 150)
+  const color = p > 120 ? '#ef4444' : p > 100 ? '#f97316' : p > 80 ? '#f59e0b' : '#00A651'
+  const display = Math.min(p, 100)
+  return `<div class="flex items-center gap-2 min-w-[100px]">
+    <div style="flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:visible;position:relative">
+      <div style="width:${display}%;height:100%;background:${color};border-radius:3px;position:relative">
+        ${p > 100 ? `<div style="position:absolute;right:-2px;top:-2px;width:10px;height:10px;background:${color};border-radius:50%;border:2px solid white"></div>` : ''}
+      </div>
+    </div>
+    <span style="font-size:11px;color:${color};font-weight:600;min-width:28px">${p}%</span>
+  </div>`
+}
+
 function renderTsTaskPage(page) {
   const tasks      = window._tsTaskData     || []
   const totPlan    = window._tsTaskTotalPlanned || 0
@@ -13967,21 +14271,7 @@ async function renderTimesheetAnalyticsTab(force = false) {
       return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${color}">${icon} ${pct}%</span>`
     }
 
-    // ── Progress bar inline ──
-    function progressBar(actual, planned) {
-      if (!planned || planned === 0) return `<span class="text-xs text-gray-400">—</span>`
-      const p = Math.min(Math.round(actual / planned * 100), 150)
-      const color = p > 120 ? '#ef4444' : p > 100 ? '#f97316' : p > 80 ? '#f59e0b' : '#00A651'
-      const display = Math.min(p, 100)
-      return `<div class="flex items-center gap-2 min-w-[100px]">
-        <div style="flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:visible;position:relative">
-          <div style="width:${display}%;height:100%;background:${color};border-radius:3px;position:relative">
-            ${p > 100 ? `<div style="position:absolute;right:-2px;top:-2px;width:10px;height:10px;background:${color};border-radius:50%;border:2px solid white"></div>` : ''}
-          </div>
-        </div>
-        <span style="font-size:11px;color:${color};font-weight:600;min-width:28px">${p}%</span>
-      </div>`
-    }
+    // progressBar dùng global function (định nghĩa bên ngoài renderTimesheetAnalyticsTab)
 
     el.innerHTML = `
       <!-- ═══ KPI CARDS ═══ -->
@@ -14494,65 +14784,91 @@ async function renderProjectFinancialTab(force = false) {
     const bar = (pct, color) => `<div class="w-full bg-gray-100 rounded-full h-1.5 mt-1"><div class="h-1.5 rounded-full ${color}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div>`
 
     // ── KPI summary row ─────────────────────────────────────────────
+    const hasBudget = totals.project_budget > 0
+    // Tính công nợ = GTHĐ - đã thu theo HĐ
+    const revOrig       = totals.revenue_collected_original || totals.revenue_collected
+    const hasOrigDiff   = revOrig > totals.revenue_collected + 1
+    const debtRemaining = Math.max(0, totals.contract_value - revOrig)
+    // Helper: số KPI dùng class kpi-value (clamp font-size, no-wrap)
+    const numCls = 'kpi-value'
     const kpiHtml = `
-      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         <div class="kpi-card" style="border-left-color:#6366f1">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng GTHĐ</div>
-          <div class="text-xl font-bold text-indigo-600">${fmtM(totals.contract_value)}</div>
+          <div class="${numCls} text-indigo-600">${fmtM(totals.contract_value)}</div>
           <div class="text-xs text-gray-400 mt-1">Giá trị hợp đồng</div>
         </div>
+        ${hasBudget ? `
+        <div class="kpi-card" style="border-left-color:#059669;background:linear-gradient(135deg,#f0fdf4,#ffffff)">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide"><i class="fas fa-wallet mr-1 text-emerald-500"></i>Tổng ngân sách</div>
+          <div class="${numCls} text-emerald-700">${fmtM(totals.project_budget)}</div>
+          <div class="text-xs text-gray-400 mt-1">Sau trừ % phí quản lý</div>
+        </div>` : ''}
+        <div class="kpi-card" style="border-left-color:#06b6d4">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide"><i class="fas fa-file-contract mr-1 text-cyan-500"></i>Đã thu theo HĐ</div>
+          <div class="${numCls} text-cyan-600">${fmtM(revOrig)}</div>
+          <div class="text-xs mt-1 space-y-0.5">
+            ${totals.contract_value > 0
+              ? `<div class="${debtRemaining > 0 ? 'text-red-400 font-medium' : 'text-green-500'}"><i class="fas fa-${debtRemaining > 0 ? 'exclamation-circle' : 'check-circle'} mr-0.5"></i>Công nợ: ${fmtM(debtRemaining)}</div>`
+              : '<div class="text-gray-400">Số tiền gốc khách TT</div>'}
+            ${totals.revenue_pending > 0 ? `<div class="text-amber-500"><i class="fas fa-clock mr-0.5"></i>Chờ thu: ${fmtM(totals.revenue_pending)}</div>` : ''}
+          </div>
+        </div>
         <div class="kpi-card" style="border-left-color:#10b981">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Doanh thu đã thu</div>
-          <div class="text-xl font-bold text-emerald-600">${fmtM(totals.revenue_collected)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.revenue_collected, totals.contract_value) + '% GTHĐ · ' : ''}${fmtM(totals.revenue_pending)} chờ thu</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Doanh thu theo NS</div>
+          <div class="${numCls} text-emerald-600">${fmtM(totals.revenue_collected)}</div>
+          <div class="text-xs text-gray-400 mt-1">${hasOrigDiff ? 'Sau trừ phí QL' : 'Doanh thu ghi nhận'}</div>
         </div>
         <div class="kpi-card" style="border-left-color:#ef4444">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng chi phí</div>
-          <div class="text-xl font-bold text-red-500">${fmtM(totals.total_cost)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ · ' : ''}${totals.pct_cost}% doanh thu</div>
+          <div class="${numCls} text-red-500">${fmtM(totals.total_cost)}</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ · ' : ''}${totals.pct_cost}% DT</div>
         </div>
         <div class="kpi-card" style="border-left-color:#3b82f6">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Lợi nhuận ròng</div>
-          <div class="text-xl font-bold ${profitColor(totals.profit)}">${fmtM(totals.profit)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ · ' : ''}Sau toàn bộ chi phí</div>
+          <div class="${numCls} ${profitColor(totals.profit)}">${fmtM(totals.profit)}</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ' : 'Sau toàn bộ CP'}</div>
         </div>
         <div class="kpi-card" style="border-left-color:#8b5cf6">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Biên lợi nhuận</div>
-          <div class="text-xl font-bold ${marginColor(totals.margin)}">${totals.margin}%</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.margin>=30?'✅ Tốt':totals.margin>=10?'🟡 TB':'🔴 Thấp'}</div>
+          <div class="${numCls} ${marginColor(totals.margin)}">${totals.margin}%</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.margin>=30?'✅ Tốt':totals.margin>=10?'🟡 Trung bình':'🔴 Thấp'}</div>
         </div>
         <div class="kpi-card" style="border-left-color:#f59e0b">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tiến độ GTHĐ</div>
-          <div class="text-xl font-bold text-amber-600">${totals.contract_progress}%</div>
+          <div class="${numCls} text-amber-600">${totals.contract_progress}%</div>
           <div class="text-xs text-gray-400 mt-1">Doanh thu / GTHĐ</div>
         </div>
       </div>
     `
 
     // ── Cơ cấu chi phí tổng ─────────────────────────────────────────
+    const _costBase = totals.contract_value
+    const _costBaseLabel = 'GTHĐ'
     const costBreakdownHtml = `
       <div class="card mb-6">
         <h3 class="font-semibold text-gray-700 mb-4 text-sm">
           <i class="fas fa-layer-group mr-2 text-purple-500"></i>Cơ cấu chi phí toàn công ty — ${fyLabel}
+          <span class="ml-2 text-xs font-normal bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">% so với GTHĐ</span>
         </h3>
         <div class="grid grid-cols-3 md:grid-cols-3 gap-4">
           <div class="text-center p-4 bg-blue-50 rounded-xl">
             <div class="text-2xl font-bold text-blue-600">${fmtM(totals.direct_cost)}</div>
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí trực tiếp</div>
-            <div class="text-xs text-blue-500 mt-0.5">${totals.contract_value > 0 ? pct(totals.direct_cost, totals.contract_value) : 0}% GTHĐ</div>
-            ${bar(totals.contract_value > 0 ? (totals.direct_cost / totals.contract_value * 100) : 0,'bg-blue-500')}
+            <div class="text-xs text-blue-500 mt-0.5">${_costBase > 0 ? pct(totals.direct_cost, _costBase) : 0}% ${_costBaseLabel}</div>
+            ${bar(_costBase > 0 ? (totals.direct_cost / _costBase * 100) : 0,'bg-blue-500')}
           </div>
           <div class="text-center p-4 bg-orange-50 rounded-xl">
             <div class="text-2xl font-bold text-orange-600">${fmtM(totals.labor_cost)}</div>
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí lương</div>
-            <div class="text-xs text-orange-500 mt-0.5">${totals.contract_value > 0 ? pct(totals.labor_cost, totals.contract_value) : 0}% GTHĐ</div>
-            ${bar(totals.contract_value > 0 ? (totals.labor_cost / totals.contract_value * 100) : 0,'bg-orange-500')}
+            <div class="text-xs text-orange-500 mt-0.5">${_costBase > 0 ? pct(totals.labor_cost, _costBase) : 0}% ${_costBaseLabel}</div>
+            ${bar(_costBase > 0 ? (totals.labor_cost / _costBase * 100) : 0,'bg-orange-500')}
           </div>
           <div class="text-center p-4 bg-yellow-50 rounded-xl">
             <div class="text-2xl font-bold text-yellow-600">${fmtM(totals.shared_cost)}</div>
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí chung</div>
-            <div class="text-xs text-yellow-600 mt-0.5">${totals.contract_value > 0 ? pct(totals.shared_cost, totals.contract_value) : 0}% GTHĐ</div>
-            ${bar(totals.contract_value > 0 ? (totals.shared_cost / totals.contract_value * 100) : 0,'bg-yellow-400')}
+            <div class="text-xs text-yellow-600 mt-0.5">${_costBase > 0 ? pct(totals.shared_cost, _costBase) : 0}% ${_costBaseLabel}</div>
+            ${bar(_costBase > 0 ? (totals.shared_cost / _costBase * 100) : 0,'bg-yellow-400')}
           </div>
         </div>
       </div>
@@ -14582,13 +14898,15 @@ async function renderProjectFinancialTab(force = false) {
 
     // ── Bảng chi tiết per-project ────────────────────────────────────
     // Dùng 1 table duy nhất với sticky thead/tfoot để tránh lệch cột khi tên dài
+    const hasBudgetCol = projects.some(p => p.project_budget > 0)
     const nameColW  = isLifetime ? 200 : 220   // px — cột tên dự án cố định
-    const timeColW  = isLifetime ? 100 : 0
-    const numCols   = [95, 95, 85, 85, 85, 75, 85, 85, 65, 110]  // GTHĐ, DT đã thu, DT chờ, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
-    const totalMinW = nameColW + (isLifetime ? timeColW : 0) + numCols.reduce((a,b)=>a+b,0)
+    // GTHĐ, Đã thu HĐ, Công nợ, [NS], DT đã thu, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
+    const numCols   = hasBudgetCol
+      ? [90, 90, 85, 90, 90, 80, 80, 70, 80, 80, 60, 105]
+      : [95, 95, 85, 90, 85, 85, 75, 85, 85, 65, 110]
+    const totalMinW = nameColW + numCols.reduce((a,b)=>a+b,0)
     const colgroup  = `<colgroup>
         <col style="width:${nameColW}px;min-width:${nameColW}px;max-width:${nameColW}px">
-        ${isLifetime ? `<col style="width:${timeColW}px;min-width:${timeColW}px">` : ''}
         ${numCols.map(w => `<col style="width:${w}px;min-width:${w}px">`).join('')}
       </colgroup>`
 
@@ -14615,10 +14933,11 @@ async function renderProjectFinancialTab(force = false) {
             <thead style="position:sticky;top:0;z-index:2">
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
                 <th class="text-left py-3 px-3 font-semibold border-b border-gray-200" style="overflow:hidden">Dự án</th>
-                ${isLifetime ? `<th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Thời gian</th>` : ''}
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2"><i class="fas fa-hand-holding-usd mr-1"></i>Đã thu HĐ</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#dc2626" title="Công nợ = GTHĐ − Đã thu HĐ"><i class="fas fa-exclamation-circle mr-1"></i>Công nợ</th>
+                ${hasBudgetCol ? `<th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#059669"><i class="fas fa-wallet mr-1"></i>Ngân sách</th>` : ''}
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT đã thu</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT chờ</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP trực tiếp</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP lương</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP chung</th>
@@ -14632,11 +14951,13 @@ async function renderProjectFinancialTab(force = false) {
               ${sorted.map((p, idx) => {
                 const hasData = p.revenue_total > 0 || p.total_cost > 0
                 const rowBg = !hasData ? 'bg-gray-50 opacity-60' : idx % 2 === 0 ? '' : 'bg-gray-50/50'
-                const cProg = p.contract_value > 0 ? Math.min(100, p.contract_progress) : 0
+                // Dùng budget_progress nếu có ngân sách, nếu không dùng contract_progress
+                const progVal  = p.project_budget > 0 ? p.budget_progress : p.contract_progress
+                const progBase = p.project_budget > 0 ? p.project_budget : p.contract_value
+                const cProg    = progBase > 0 ? Math.min(100, progVal) : 0
                 const progColor = cProg >= 80 ? 'bg-green-500' : cProg >= 40 ? 'bg-blue-500' : 'bg-gray-300'
-                const timespan = (isLifetime && (p.start_date || p.end_date))
-                  ? `<div class="text-xs text-gray-400 whitespace-nowrap">${(p.start_date||'?').substring(0,7)} → ${(p.end_date||'?').substring(0,7)}</div>`
-                  : ''
+                const pctLabel  = 'GTHĐ'
+                const pctBaseRow = p.contract_value
                 return `
                   <tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
                     <td class="py-2 px-3" style="overflow:hidden;max-width:${nameColW}px">
@@ -14654,33 +14975,40 @@ async function renderProjectFinancialTab(force = false) {
                         </div>
                       </div>
                     </td>
-                    ${isLifetime ? `<td class="py-2 px-3 text-center">${timespan||'<span class="text-gray-300 text-xs">—</span>'}</td>` : ''}
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-indigo-700">${p.contract_value > 0 ? fmtM(p.contract_value) : '<span class="text-gray-300">—</span>'}</span>
+                      ${p.management_fee_pct > 0 ? `<div class="text-xs text-gray-400">phí QL ${p.management_fee_pct}%</div>` : ''}
                     </td>
+                    <td class="py-2 px-3 text-right whitespace-nowrap" style="background:#f0f9ff">
+                      <span class="font-semibold text-cyan-700">${(p.revenue_collected_original || p.revenue_collected) > 0 ? fmtM(p.revenue_collected_original || p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
+                      ${(p.revenue_collected_original || p.revenue_collected) > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.revenue_collected_original || p.revenue_collected, pctBaseRow)}%</div>` : ''}
+                    </td>
+                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.revenue_collected_original || p.revenue_collected||0)); return `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:${debt>0?'#fff5f5':''}"><span class="font-semibold ${debt>0?'text-red-500':'text-gray-300'}">${debt>0?fmtM(debt):'—'}</span>${debt>0&&pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`; })()}
+                    ${hasBudgetCol ? `
+                    <td class="py-2 px-3 text-right whitespace-nowrap" style="background:${p.project_budget>0?'#f0fdf4':''}">
+                      ${p.project_budget > 0
+                        ? `<span class="font-semibold text-emerald-700">${fmtM(p.project_budget)}</span>`
+                        : '<span class="text-gray-300 text-xs">—</span>'}
+                    </td>` : ''}
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-emerald-600">${p.revenue_collected > 0 ? fmtM(p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
-                      ${p.revenue_collected > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${pct(p.revenue_collected, p.contract_value)}%</div>` : ''}
-                    </td>
-                    <td class="py-2 px-3 text-right whitespace-nowrap">
-                      <span class="${p.revenue_pending > 0 ? 'text-amber-600 font-medium' : 'text-gray-300'}">${p.revenue_pending > 0 ? fmtM(p.revenue_pending) : '—'}</span>
-                      ${p.revenue_pending > 0 && p.contract_value > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${pct(p.revenue_pending, p.contract_value)}%</div>` : ''}
+                      ${p.revenue_collected > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.revenue_collected, pctBaseRow)}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.direct_cost > 0 ? 'text-blue-600' : 'text-gray-300'}">${p.direct_cost > 0 ? fmtM(p.direct_cost) : '—'}</span>
-                      ${p.direct_cost > 0 && p.pct_direct > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_direct}%</div>` : ''}
+                      ${p.direct_cost > 0 && p.pct_direct > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${p.pct_direct}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.labor_cost > 0 ? 'text-orange-600' : 'text-gray-300'}">${p.labor_cost > 0 ? fmtM(p.labor_cost) : '—'}</span>
-                      ${p.labor_cost > 0 && p.pct_labor > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_labor}%</div>` : ''}
+                      ${p.labor_cost > 0 && p.pct_labor > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${p.pct_labor}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.shared_cost > 0 ? 'text-yellow-600' : 'text-gray-300'}">${p.shared_cost > 0 ? fmtM(p.shared_cost) : '—'}</span>
-                      ${p.shared_cost > 0 && p.pct_shared > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_shared}%</div>` : ''}
+                      ${p.shared_cost > 0 && p.pct_shared > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${p.pct_shared}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-red-500">${p.total_cost > 0 ? fmtM(p.total_cost) : '<span class="text-gray-300">—</span>'}</span>
-                      ${p.total_cost > 0 && p.pct_cost > 0 ? `<div class="text-xs text-gray-400" title="% trên GTHĐ">${p.pct_cost}%</div>` : ''}
+                      ${p.total_cost > 0 && p.pct_cost > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${p.pct_cost}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       ${(p.revenue_collected > 0 || p.total_cost > 0)
@@ -14695,13 +15023,14 @@ async function renderProjectFinancialTab(force = false) {
                       }
                     </td>
                     <td class="py-2 px-3">
-                      ${p.contract_value > 0 ? `
+                      ${progBase > 0 ? `
                         <div class="flex items-center gap-1">
                           <div class="flex-1 bg-gray-200 rounded-full h-1.5">
                             <div class="h-1.5 rounded-full ${progColor}" style="width:${cProg}%"></div>
                           </div>
-                          <span class="text-xs font-semibold text-gray-600 whitespace-nowrap">${p.contract_progress}%</span>
+                          <span class="text-xs font-semibold text-gray-600 whitespace-nowrap">${progVal}%</span>
                         </div>
+                        ${p.project_budget > 0 ? '<div class="text-xs text-gray-400 mt-0.5" style="font-size:9px">vs NS</div>' : ''}
                       ` : '<span class="text-xs text-gray-300">—</span>'}
                     </td>
                   </tr>
@@ -14711,10 +15040,11 @@ async function renderProjectFinancialTab(force = false) {
             <tfoot style="position:sticky;bottom:0;z-index:2">
               <tr class="bg-gray-100 font-bold text-sm border-t-2 border-gray-300">
                 <td class="py-3 px-3 text-gray-700 whitespace-nowrap" style="overflow:hidden;text-overflow:ellipsis;max-width:${nameColW}px"><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
-                ${isLifetime ? `<td class="py-3 px-3 text-center text-gray-400 text-xs">—</td>` : ''}
                 <td class="py-3 px-3 text-right text-indigo-700 whitespace-nowrap">${fmtM(totals.contract_value)}</td>
+                <td class="py-3 px-3 text-right text-cyan-700 whitespace-nowrap font-bold" style="background:#f0f9ff">${fmtM(totals.revenue_collected_original || totals.revenue_collected)}</td>
+                ${(() => { const tDebt = Math.max(0, (totals.contract_value||0) - (totals.revenue_collected_original||totals.revenue_collected||0)); return `<td class="py-3 px-3 text-right whitespace-nowrap font-bold ${tDebt>0?'text-red-500':'text-gray-300'}" style="background:${tDebt>0?'#fff5f5':''}"> ${tDebt>0?fmtM(tDebt):'—'}</td>`; })()}
+                ${hasBudgetCol ? `<td class="py-3 px-3 text-right text-emerald-700 whitespace-nowrap font-bold">${totals.project_budget > 0 ? fmtM(totals.project_budget) : '—'}</td>` : ''}
                 <td class="py-3 px-3 text-right text-emerald-600 whitespace-nowrap">${fmtM(totals.revenue_collected)}</td>
-                <td class="py-3 px-3 text-right text-amber-600 whitespace-nowrap">${fmtM(totals.revenue_pending)}</td>
                 <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap">${fmtM(totals.direct_cost)}</td>
                 <td class="py-3 px-3 text-right text-orange-600 whitespace-nowrap">${fmtM(totals.labor_cost)}</td>
                 <td class="py-3 px-3 text-right text-yellow-600 whitespace-nowrap">${fmtM(totals.shared_cost)}</td>
@@ -14723,7 +15053,7 @@ async function renderProjectFinancialTab(force = false) {
                 <td class="py-3 px-3 text-center">
                   <span class="inline-block px-2 py-0.5 rounded-lg text-xs font-bold ${marginBg(totals.margin)}">${totals.margin}%</span>
                 </td>
-                <td class="py-3 px-3 text-center text-gray-500 text-xs whitespace-nowrap">${totals.contract_progress}%</td>
+                <td class="py-3 px-3 text-center text-gray-500 text-xs whitespace-nowrap">${hasBudgetCol && totals.budget_progress ? totals.budget_progress : totals.contract_progress}%${hasBudgetCol ? '<div style="font-size:9px;color:#6b7280">vs NS</div>' : ''}</td>
               </tr>
             </tfoot>
           </table>
@@ -14737,13 +15067,15 @@ async function renderProjectFinancialTab(force = false) {
       <div class="card mt-4 bg-blue-50 border border-blue-100">
         <div class="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
           <span><strong>GTHĐ</strong>: Giá trị hợp đồng</span>
+          ${hasBudgetCol ? `<span><strong class="text-emerald-700">Ngân sách</strong>: GTHĐ × (1 − % phí quản lý) — ngân sách thực tế để kiểm soát chi phí</span>` : ''}
           <span><strong>DT đã thu</strong>: Doanh thu trạng thái <em>paid + partial</em></span>
-          <span><strong>DT chờ thu</strong>: Doanh thu trạng thái <em>pending</em></span>
+          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − Đã thu HĐ (số tiền khách hàng chưa thanh toán)</span>
           <span><strong>CP trực tiếp</strong>: Chi phí vật liệu, thiết bị, đi lại, văn phòng…</span>
           <span><strong>CP lương</strong>: Từ bảng project_labor_costs (tính theo timesheet)</span>
           <span><strong>CP chung</strong>: Chi phí chung phân bổ (điện, nước, văn phòng…)</span>
           <span><strong>Biên LN</strong>: Lợi nhuận / Doanh thu đã thu × 100%</span>
-          <span><strong>Tiến độ GTHĐ</strong>: Tổng doanh thu (all status) / GTHĐ × 100%</span>
+          <span><strong>Tiến độ</strong>: Tổng doanh thu (all status) / GTHĐ × 100%</span>
+          <span><strong>% chi phí</strong>: Mọi % tính trên Giá trị hợp đồng (GTHĐ)</span>
           ${isLifetime ? `<span class="text-emerald-600 font-medium"><i class="fas fa-infinity mr-1"></i>Chế độ <em>Toàn vòng đời</em>: dữ liệu không lọc theo năm, tổng hợp từ lúc bắt đầu đến khi kết thúc dự án.</span>` : ''}
         </div>
       </div>
@@ -14841,10 +15173,13 @@ function exportFinDetailExcel() {
     numFmt: '#,##0'
   }
 
+  // Kiểm tra có ngân sách không
+  const hasNganSach = (rawData.projects || []).some((p) => p.project_budget > 0)
+
   // ── Header rows ──
   const headers1 = isLifetime
-    ? ['Dự án', 'Mã', 'Trạng thái', 'Thời gian', 'GTHĐ', 'DT đã thu', '% GTHĐ', 'DT chờ thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ HĐ (%)']
-    : ['Dự án', 'Mã', 'Trạng thái', 'GTHĐ', 'DT đã thu', '% GTHĐ', 'DT chờ thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ HĐ (%)']
+    ? ['Dự án', 'Mã', 'Trạng thái', 'Thời gian', 'GTHĐ', 'Đã thu HĐ', 'Công nợ', ...(hasNganSach ? ['Ngân sách', '% phí QL'] : []), 'DT đã thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ (%)']
+    : ['Dự án', 'Mã', 'Trạng thái', 'GTHĐ', 'Đã thu HĐ', 'Công nợ', ...(hasNganSach ? ['Ngân sách', '% phí QL'] : []), 'DT đã thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ (%)']
 
   // ── Lấy dữ liệu từ _projFinData nếu có ──
   const rawData    = window._projFinRaw || {}
@@ -14869,15 +15204,19 @@ function exportFinDetailExcel() {
 
   sorted.forEach(p => {
     const cv  = p.contract_value    || 0
+    const pb  = p.project_budget    || 0
+    const fee = p.management_fee_pct || 0
     const rc  = p.revenue_collected || 0
-    const rp  = p.revenue_pending   || 0
+    const ro  = p.revenue_collected_original || rc
+    const debt = Math.max(0, cv - ro)
     const dc  = p.direct_cost       || 0
     const lc  = p.labor_cost        || 0
     const sc  = p.shared_cost       || 0
     const tc  = p.total_cost        || 0
     const pf  = p.profit            || 0
-    const base = cv > 0 ? cv : rc
+    const base = pb > 0 ? pb : (cv > 0 ? cv : rc)
     const pctOf = (v) => base > 0 ? Math.round(v / base * 1000) / 10 : ''
+    const prog  = pb > 0 ? (p.budget_progress || 0) : (p.contract_progress || 0)
     const timespan = (p.start_date || p.end_date)
       ? `${(p.start_date||'?').substring(0,7)} → ${(p.end_date||'?').substring(0,7)}`
       : ''
@@ -14885,44 +15224,50 @@ function exportFinDetailExcel() {
     if (isLifetime) {
       aoa.push([
         p.name, p.code, statusLbl[p.status]||p.status, timespan,
-        cv||'', rc||'', pctOf(rc), rp||'', pctOf(rp),
+        cv||'', ro||'', debt||'', ...(hasNganSach ? [pb||'', fee||''] : []),
+        rc||'', pctOf(rc),
         dc||'', pctOf(dc), lc||'', pctOf(lc), sc||'', pctOf(sc),
-        tc||'', pctOf(tc), pf, p.margin||'', p.contract_progress||''
+        tc||'', pctOf(tc), pf, p.margin||'', prog||''
       ])
     } else {
       aoa.push([
         p.name, p.code, statusLbl[p.status]||p.status,
-        cv||'', rc||'', pctOf(rc), rp||'', pctOf(rp),
+        cv||'', ro||'', debt||'', ...(hasNganSach ? [pb||'', fee||''] : []),
+        rc||'', pctOf(rc),
         dc||'', pctOf(dc), lc||'', pctOf(lc), sc||'', pctOf(sc),
-        tc||'', pctOf(tc), pf, p.margin||'', p.contract_progress||''
+        tc||'', pctOf(tc), pf, p.margin||'', prog||''
       ])
     }
   })
 
   // Totals row
-  const tbase = (totals.contract_value||0) > 0 ? totals.contract_value : (totals.revenue_collected||0)
+  const tbase = (totals.project_budget||0) > 0 ? totals.project_budget
+    : ((totals.contract_value||0) > 0 ? totals.contract_value : (totals.revenue_collected||0))
   const tpctOf = (v) => tbase > 0 ? Math.round((v||0) / tbase * 1000) / 10 : ''
+  const tprog  = (totals.project_budget||0) > 0 ? (totals.budget_progress||0) : (totals.contract_progress||0)
+  const tRo   = totals.revenue_collected_original || totals.revenue_collected || 0
+  const tDebt = Math.max(0, (totals.contract_value||0) - tRo)
   if (isLifetime) {
     aoa.push([
       'TỔNG CỘNG', '', '', '',
-      totals.contract_value||0, totals.revenue_collected||0, tpctOf(totals.revenue_collected),
-      totals.revenue_pending||0, tpctOf(totals.revenue_pending),
+      totals.contract_value||0, tRo, tDebt, ...(hasNganSach ? [totals.project_budget||0, ''] : []),
+      totals.revenue_collected||0, tpctOf(totals.revenue_collected),
       totals.direct_cost||0, tpctOf(totals.direct_cost),
       totals.labor_cost||0,  tpctOf(totals.labor_cost),
       totals.shared_cost||0, tpctOf(totals.shared_cost),
       totals.total_cost||0,  tpctOf(totals.total_cost),
-      totals.profit||0, totals.margin||'', totals.contract_progress||''
+      totals.profit||0, totals.margin||'', tprog
     ])
   } else {
     aoa.push([
       'TỔNG CỘNG', '', '',
-      totals.contract_value||0, totals.revenue_collected||0, tpctOf(totals.revenue_collected),
-      totals.revenue_pending||0, tpctOf(totals.revenue_pending),
+      totals.contract_value||0, tRo, tDebt, ...(hasNganSach ? [totals.project_budget||0, ''] : []),
+      totals.revenue_collected||0, tpctOf(totals.revenue_collected),
       totals.direct_cost||0, tpctOf(totals.direct_cost),
       totals.labor_cost||0,  tpctOf(totals.labor_cost),
       totals.shared_cost||0, tpctOf(totals.shared_cost),
       totals.total_cost||0,  tpctOf(totals.total_cost),
-      totals.profit||0, totals.margin||'', totals.contract_progress||''
+      totals.profit||0, totals.margin||'', tprog
     ])
   }
 
@@ -14930,8 +15275,8 @@ function exportFinDetailExcel() {
 
   // Column widths
   const colWidths = isLifetime
-    ? [40, 10, 12, 20, 14, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 10, 10]
-    : [40, 10, 12, 14, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 10, 10]
+    ? [40, 10, 12, 20, 14, ...(hasNganSach ? [14, 8] : []), 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 10, 10]
+    : [40, 10, 12, 14, ...(hasNganSach ? [14, 8] : []), 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 8, 14, 10, 10]
   ws['!cols'] = colWidths.map(w => ({ wch: w }))
 
   // Merge title across all cols
@@ -16648,6 +16993,39 @@ function renderPaymentStatus(payments) {
   container.innerHTML = html
 }
 
+// ─── Preview doanh thu sau % phí quản lý trong form thanh toán ───────────────
+function updatePaymentRevenuePreview() {
+  const proj = _legalOverviewData?.project
+  const feePct = proj?.management_fee_pct || 0
+  const previewEl = $('paymentRevenuePreview')
+  if (!previewEl) return
+
+  // Ẩn preview nếu dự án không có phí QL
+  if (!feePct || feePct <= 0) {
+    previewEl.style.display = 'none'
+    return
+  }
+
+  const amount     = parseMoneyVal('paymentAmount')     || 0
+  const paidAmount = parseMoneyVal('paymentPaidAmount') || 0
+  const factor     = (100 - feePct) / 100
+
+  const amountNet   = Math.round(amount     * factor)
+  const paidNet     = Math.round(paidAmount * factor)
+
+  const fmtVND = n => n > 0 ? n.toLocaleString('vi-VN') + ' VNĐ' : '—'
+  const fmtPct = (net, gross) => gross > 0 ? `(= ${(net/gross*100).toFixed(1)}% giá trị đề nghị)` : ''
+
+  $('paymentFeeLabel').textContent  = `(Phí QL: ${feePct}%)`
+  $('paymentFeeRate').textContent   = feePct
+  $('paymentAmountNet').textContent = fmtVND(amountNet)
+  $('paymentAmountNetPct').textContent = amount > 0 ? `${fmtVND(amount)} × ${(100-feePct)}%` : ''
+  $('paymentPaidNet').textContent   = fmtVND(paidNet)
+  $('paymentPaidNetPct').textContent = paidAmount > 0 ? `${fmtVND(paidAmount)} × ${(100-feePct)}%` : ''
+
+  previewEl.style.display = ''
+}
+
 async function openPaymentModal() {
   if (!_legalCurrentProjectId) return
   $('paymentModalTitle').innerHTML = '<i class="fas fa-money-check-alt text-emerald-600 mr-2"></i>Thêm đợt thanh toán'
@@ -16666,6 +17044,9 @@ async function openPaymentModal() {
   $('paymentNotes').value = ''
   // populate legal item select
   _populatePaymentItemSelect(null)
+  // Reset preview
+  const prevEl = $('paymentRevenuePreview')
+  if (prevEl) prevEl.style.display = 'none'
   openModal('paymentModal')
 }
 
@@ -16688,6 +17069,8 @@ async function editPayment(id) {
   $('paymentInvoiceDate').value = payment.invoice_date || ''
   $('paymentNotes').value = payment.notes || ''
   _populatePaymentItemSelect(payment.legal_item_id)
+  // Hiển thị preview doanh thu sau phí QL nếu có
+  updatePaymentRevenuePreview()
   openModal('paymentModal')
 }
 
@@ -18497,7 +18880,7 @@ async function exportCostBreakdownExcel() {
 
 const LEAVE_TYPE_CONFIG = {
   annual_leave:  { label: 'Nghỉ phép năm',        icon: '🌴', cls: 'bg-green-100 text-green-700',   hint: 'Nghỉ phép năm theo quy định — được tính vào quota phép năm của bạn.' },
-  sick_leave:    { label: 'Nghỉ ốm',              icon: '🤒', cls: 'bg-orange-100 text-orange-700',  hint: 'Nghỉ ốm — cần có xác nhận từ bác sĩ nếu nghỉ quá 2 ngày liên tiếp.' },
+  sick_leave:    { label: 'Nghỉ ốm',              icon: '🤒', cls: 'bg-orange-100 text-orange-700',  hint: 'Nghỉ ốm ≤ 3 ngày: tính vào quota phép năm. Nghỉ ốm > 3 ngày liên tiếp: được miễn trừ, không trừ phép năm.' },
   unpaid_leave:  { label: 'Nghỉ không lương',     icon: '💸', cls: 'bg-red-100 text-red-700',        hint: 'Nghỉ không hưởng lương — không tính vào quota phép năm.' },
   compensatory:  { label: 'Nghỉ bù',              icon: '🔄', cls: 'bg-amber-100 text-amber-700',    hint: 'Nghỉ bù cho những ngày làm thêm / làm ngày lễ trước đó.' },
   holiday:       { label: 'Nghỉ lễ',              icon: '🎉', cls: 'bg-purple-100 text-purple-700',  hint: 'Ngày nghỉ lễ theo quy định nhà nước.' },
@@ -18680,6 +19063,19 @@ function renderLeaveTable(data) {
     // Type tag with left border accent
     const typeTag = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${typeCfg.cls}" style="border-left:3px solid currentColor;border-radius:6px">${typeCfg.icon} ${typeCfg.label}</span>`
 
+    // Quota badge: show whether this leave counts against annual leave quota
+    let sickLeaveBadge = ''
+    if (r.leave_type === 'half_day_am' || r.leave_type === 'half_day_pm') {
+      // Nửa ngày: luôn tính 0.5 ngày vào phép năm
+      sickLeaveBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium mt-1" style="background:#ede9fe;color:#5b21b6;border:1px solid #ddd6fe;font-size:10px" title="Nghỉ nửa ngày: tính 0.5 ngày vào quota phép năm">🌗 0.5 ngày phép</span>`
+    } else if (r.leave_type === 'sick_leave') {
+      if (r.total_days <= 3) {
+        sickLeaveBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium mt-1" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-size:10px" title="Nghỉ ốm ≤ 3 ngày: tính trừ vào quota phép năm">📋 Tính phép năm</span>`
+      } else {
+        sickLeaveBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium mt-1" style="background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;font-size:10px" title="Nghỉ ốm > 3 ngày: được miễn trừ, không trừ phép năm">✅ Miễn trừ</span>`
+      }
+    }
+
     // Status tag with dot indicator
     const dotColor = r.status==='approved' ? '#22c55e' : r.status==='rejected' ? '#ef4444' : '#f59e0b'
     const statusTag = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${statusCfg.cls}">
@@ -18743,9 +19139,19 @@ function renderLeaveTable(data) {
 
     const rowClass = idx % 2 === 0 ? 'leave-row-even' : 'leave-row-odd'
 
-    // Days badge color based on count
-    const daysColor = r.total_days >= 5 ? '#ef4444' : r.total_days >= 3 ? '#f59e0b' : '#00A651'
-    const daysBg    = r.total_days >= 5 ? '#fff1f2' : r.total_days >= 3 ? '#fffbeb' : '#f0fdf4'
+    // Days badge color based on count and leave type
+    // sick_leave >3 days: green (exempt from quota)
+    // half_day: purple to distinguish 0.5 day
+    // others: normal color scale
+    let daysColor, daysBg
+    if (r.leave_type === 'sick_leave' && r.total_days > 3) {
+      daysColor = '#15803d'; daysBg = '#f0fdf4'   // green = miễn trừ
+    } else if (r.leave_type === 'half_day_am' || r.leave_type === 'half_day_pm') {
+      daysColor = '#5b21b6'; daysBg = '#ede9fe'   // purple = nửa ngày phép
+    } else {
+      daysColor = r.total_days >= 5 ? '#ef4444' : r.total_days >= 3 ? '#f59e0b' : '#00A651'
+      daysBg    = r.total_days >= 5 ? '#fff1f2' : r.total_days >= 3 ? '#fffbeb' : '#f0fdf4'
+    }
     const rowNum    = globalOffset + idx + 1
 
     return `<tr class="${rowClass}" style="border-bottom:1px solid #f0faf4">
@@ -18753,7 +19159,9 @@ function renderLeaveTable(data) {
         <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-gray-500 text-xs font-bold">${rowNum}</span>
       </td>
       ${empCell}
-      <td class="py-3.5 px-4">${typeTag}</td>
+      <td class="py-3.5 px-4">
+        <div class="flex flex-col items-start gap-0.5">${typeTag}${sickLeaveBadge}</div>
+      </td>
       <td class="py-3.5 px-4">
         <div class="text-sm font-semibold text-gray-800">${formatDateVN(r.start_date)}</div>
         <div class="text-xs font-medium" style="color:${getDowColor(r.start_date)}">${getDowLabel(r.start_date)}</div>
@@ -18935,6 +19343,21 @@ function calcLeaveDays() {
 
   if (daysText) daysText.innerHTML = `<strong>${days} ngày nghỉ</strong>${weekendNote} <span class="text-xs font-normal text-gray-500">(T2–T7, không tính CN)</span>`
   preview?.classList.remove('hidden')
+
+  // Cập nhật hint quota động theo loại nghỉ và số ngày
+  const quotaHint = $('leaveQuotaHint')
+  if (quotaHint && !quotaHint.classList.contains('hidden')) {
+    if (leaveType === 'half_day_am' || leaveType === 'half_day_pm') {
+      // nửa ngày: luôn tính 0.5 vào quota
+      quotaHint.innerHTML = `<span style="color:#6366f1">🌗 Nghỉ nửa ngày: tính <strong>0.5 ngày</strong> vào quota phép năm.</span>`
+    } else if (leaveType === 'sick_leave' && days > 0) {
+      if (days <= 3) {
+        quotaHint.innerHTML = `<span style="color:#f59e0b">🤒 Nghỉ ốm <strong>${days} ngày ≤ 3</strong>: sẽ <strong>trừ vào quota phép năm</strong>. Kiểm tra số dư trước khi gửi.</span>`
+      } else {
+        quotaHint.innerHTML = `<span style="color:#00A651">🤒 Nghỉ ốm <strong>${days} ngày > 3</strong>: được <strong>miễn trừ, không trừ phép năm</strong>. Cần xác nhận từ cơ sở y tế.</span>`
+      }
+    }
+  }
 }
 
 function onLeaveTypeChange() {
@@ -18960,13 +19383,21 @@ function onLeaveTypeChange() {
     endGroup?.classList.remove('hidden')
   }
 
-  // Khi chọn nghỉ phép năm: hiển thị quota còn lại
+  // Khi chọn loại nghỉ ảnh hưởng quota phép năm: hiển thị quota còn lại
   const quotaHint = $('leaveQuotaHint')
-  if (leaveType === 'annual_leave' && quotaHint) {
+  const isHalfDay = leaveType === 'half_day_am' || leaveType === 'half_day_pm'
+  if ((leaveType === 'annual_leave' || leaveType === 'sick_leave' || isHalfDay) && quotaHint) {
     api('/leave-balances/me').then(b => {
       if (b && b.remaining !== undefined) {
         const color = b.remaining <= 2 ? '#ef4444' : b.remaining <= 5 ? '#f59e0b' : '#00A651'
-        quotaHint.innerHTML = `<span style="color:${color}">🌴 Phép năm còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong></span>`
+        if (leaveType === 'annual_leave') {
+          quotaHint.innerHTML = `<span style="color:${color}">🌴 Phép năm còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong></span>`
+        } else if (isHalfDay) {
+          quotaHint.innerHTML = `<span style="color:${color}">🌗 Nghỉ nửa ngày tính <strong>0.5 ngày</strong> vào quota phép năm (còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong>)</span>`
+        } else {
+          // sick_leave: hint động — sẽ cập nhật lại khi calcLeaveDays() chạy
+          quotaHint.innerHTML = `<span style="color:#f59e0b">🤒 Nghỉ ốm ≤ 3 ngày sẽ trừ phép năm (còn lại: <strong>${b.remaining}/${b.total_days} ngày</strong>). > 3 ngày được miễn trừ.</span>`
+        }
         quotaHint.classList.remove('hidden')
       }
     }).catch(() => {})
@@ -19331,6 +19762,218 @@ function fmtWeekLabel(weekStart, weekEnd) {
   const mm = d => (d.getMonth()+1).toString().padStart(2,'0')
   return `${dd(ws)}/${mm(ws)} – ${dd(we)}/${mm(we)}/${we.getFullYear()}`
 }
+// ── Discipline combobox (search + dropdown) ───────────────────────────────────
+const WP_DISC_CAT_COLORS = {
+  general:      { bg:'#f3f4f6', text:'#374151', dot:'#9ca3af' },
+  architecture: { bg:'#f3e8ff', text:'#7e22ce', dot:'#a855f7' },
+  structure:    { bg:'#dbeafe', text:'#1d4ed8', dot:'#3b82f6' },
+  mep:          { bg:'#cffafe', text:'#0e7490', dot:'#06b6d4' },
+  civil:        { bg:'#ffedd5', text:'#c2410c', dot:'#f97316' },
+  landscape:    { bg:'#dcfce7', text:'#15803d', dot:'#22c55e' },
+  transport:    { bg:'#fef9c3', text:'#854d0e', dot:'#eab308' },
+}
+const WP_DISC_CAT_LABEL = { general:'Tổng hợp', architecture:'Kiến trúc', structure:'Kết cấu', mep:'MEP', civil:'Hạ tầng', landscape:'Cảnh quan', transport:'Giao thông' }
+
+// Tạo unique id cho mỗi combobox instance
+let _wpDiscCbIdx = 0
+function wpDisciplineSelect(selectedVal, cssClass) {
+  const uid = 'wpDiscCb_' + (++_wpDiscCbIdx)
+  const disciplines = window.allDisciplines || []
+  const sel = disciplines.find(d => d.code === selectedVal)
+  const displayVal = sel ? `${sel.code} – ${sel.name}` : ''
+  const cat = sel?.category || ''
+  const colors = WP_DISC_CAT_COLORS[cat] || {}
+  const badgeStyle = sel ? `background:${colors.bg};color:${colors.text};` : ''
+  const dotColor  = sel ? colors.dot || '#9ca3af' : 'transparent'
+
+  return `
+  <div class="wp-disc-combobox relative" id="${uid}" data-value="${selectedVal||''}">
+    <input type="hidden" class="wp-cat" value="${selectedVal||''}">
+    <div class="wp-disc-trigger flex items-center gap-1.5 w-full border rounded px-2 py-1 text-xs cursor-pointer bg-white hover:border-green-400 focus-within:border-green-500 focus-within:ring-1 focus-within:ring-green-200 transition-all select-none"
+         onclick="wpDiscOpen('${uid}')">
+      <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${dotColor}"></span>
+      <span class="wp-disc-label flex-1 truncate ${sel?'':'text-gray-400'}" style="${badgeStyle ? `font-weight:600;` : ''}">${displayVal || '-- Chọn bộ môn --'}</span>
+      <i class="fas fa-chevron-down text-gray-400 flex-shrink-0" style="font-size:9px"></i>
+    </div>
+  </div>`
+}
+
+function wpDiscOpen(uid) {
+  // Đóng tất cả combobox đang mở
+  document.querySelectorAll('.wp-disc-dropdown').forEach(d => d.remove())
+
+  const wrap = document.getElementById(uid)
+  if (!wrap) return
+
+  const disciplines = window.allDisciplines || []
+  if (!disciplines.length) {
+    api('/disciplines').then(list => {
+      window.allDisciplines = list
+      allDisciplines = list
+      wpDiscOpen(uid)
+    }).catch(() => {})
+    return
+  }
+
+  // Nhóm theo category
+  const grouped = {}
+  disciplines.forEach(d => {
+    const g = d.category || 'other'
+    if (!grouped[g]) grouped[g] = []
+    grouped[g].push(d)
+  })
+
+  const dropdown = document.createElement('div')
+  dropdown.className = 'wp-disc-dropdown'
+
+  let listHtml = `
+    <div style="padding:8px 8px 6px;border-bottom:1px solid #e5e7eb;background:#f9fafb;">
+      <div style="display:flex;align-items:center;gap:6px;border:1px solid #d1d5db;border-radius:8px;padding:4px 8px;background:#fff;">
+        <i class="fas fa-search" style="font-size:10px;color:#9ca3af;"></i>
+        <input type="text" placeholder="Tìm bộ môn (AA, Kiến trúc...)" id="${uid}_search"
+          style="flex:1;font-size:11px;outline:none;border:none;background:transparent;"
+          oninput="wpDiscSearch('${uid}', this.value)" autocomplete="off">
+        <span onclick="wpDiscSearch('${uid}','')" style="cursor:pointer;color:#9ca3af;font-size:11px;padding:0 2px;" title="Xóa">✕</span>
+      </div>
+    </div>
+    <div class="wp-disc-list" style="overflow-y:auto;max-height:260px;">
+      <div class="wp-disc-opt" data-code="" data-label=""
+           style="padding:6px 12px;font-size:11px;color:#9ca3af;font-style:italic;cursor:pointer;border-bottom:1px solid #f3f4f6;"
+           onmousedown="wpDiscSelect('${uid}','','')">— Không phân bộ môn —</div>`
+
+  const catOrder = ['general','architecture','structure','mep','civil','landscape','transport']
+  catOrder.forEach(cat => {
+    if (!grouped[cat]) return
+    const colors = WP_DISC_CAT_COLORS[cat] || {}
+    const catLbl = WP_DISC_CAT_LABEL[cat] || cat
+    listHtml += `<div class="wp-disc-group-header" style="padding:4px 12px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#6b7280;background:#f9fafb;border-top:1px solid #f3f4f6;border-bottom:1px solid #f3f4f6;">${catLbl}</div>`
+    grouped[cat].forEach(d => {
+      const safeLabel = (d.code + ' – ' + d.name).replace(/'/g, "\\'")
+      listHtml += `
+        <div class="wp-disc-opt" data-code="${d.code}" data-label="${d.code} ${d.name}"
+             style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:12px;"
+             onmousedown="wpDiscSelect('${uid}','${d.code}','${safeLabel}')"
+             onmouseenter="this.style.background='#f0fdf4'" onmouseleave="this.style.background=''">
+          <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${colors.dot||'#9ca3af'};"></span>
+          <span style="font-weight:700;color:${colors.text||'#374151'};min-width:28px;">${d.code}</span>
+          <span style="color:#6b7280;font-size:11px;">${d.name}</span>
+        </div>`
+    })
+  })
+
+  listHtml += `</div>`
+  dropdown.innerHTML = listHtml
+
+  // Tính toán vị trí dùng fixed + getBoundingClientRect để thoát khỏi overflow:hidden
+  const trigger = wrap.querySelector('.wp-disc-trigger')
+  const rect = (trigger || wrap).getBoundingClientRect()
+  const spaceBelow = window.innerHeight - rect.bottom
+  const spaceAbove = rect.top
+  const dropH = 340
+  const openUp = spaceBelow < dropH && spaceAbove > spaceBelow
+
+  Object.assign(dropdown.style, {
+    position: 'fixed',
+    zIndex: '99999',
+    background: '#fff',
+    border: '1px solid #d1d5db',
+    borderRadius: '12px',
+    boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+    width: '280px',
+    left: Math.min(rect.left, window.innerWidth - 290) + 'px',
+    ...(openUp
+      ? { bottom: (window.innerHeight - rect.top + 4) + 'px', top: 'auto' }
+      : { top: (rect.bottom + 4) + 'px', bottom: 'auto' }),
+  })
+
+  document.body.appendChild(dropdown)
+
+  // Focus search
+  setTimeout(() => document.getElementById(`${uid}_search`)?.focus(), 30)
+
+  // Đóng khi click ngoài (dùng mousedown để không conflict với onmousedown của option)
+  const closeHandler = (e) => {
+    if (!wrap.contains(e.target) && !dropdown.contains(e.target)) {
+      dropdown.remove()
+      document.removeEventListener('mousedown', closeHandler)
+    }
+  }
+  setTimeout(() => document.addEventListener('mousedown', closeHandler), 10)
+
+  // Cập nhật vị trí khi scroll modal
+  const scrollHandler = () => {
+    const r2 = (trigger || wrap).getBoundingClientRect()
+    dropdown.style.left = Math.min(r2.left, window.innerWidth - 290) + 'px'
+    if (openUp) dropdown.style.bottom = (window.innerHeight - r2.top + 4) + 'px'
+    else dropdown.style.top = (r2.bottom + 4) + 'px'
+  }
+  document.querySelectorAll('.overflow-y-auto').forEach(el => el.addEventListener('scroll', scrollHandler, { passive: true }))
+  dropdown._cleanup = () => {
+    document.querySelectorAll('.overflow-y-auto').forEach(el => el.removeEventListener('scroll', scrollHandler))
+    document.removeEventListener('mousedown', closeHandler)
+  }
+  // Gắn cleanup vào remove
+  const origRemove = dropdown.remove.bind(dropdown)
+  dropdown.remove = () => { dropdown._cleanup?.(); origRemove() }
+}
+
+function wpDiscSearch(uid, query) {
+  const q = (query||'').toLowerCase().trim()
+  // Dropdown được mount vào body nên tìm qua id search
+  const searchEl = document.getElementById(`${uid}_search`)
+  if (!searchEl) return
+  const dropdown = searchEl.closest('.wp-disc-dropdown')
+  if (!dropdown) return
+  // Reset ô search nếu gọi từ nút X
+  if (query === '') { searchEl.value = '' }
+  dropdown.querySelectorAll('.wp-disc-opt').forEach(opt => {
+    if (!opt.getAttribute('data-code') && opt.getAttribute('data-code') !== null && !q) { opt.style.display = ''; return }
+    const label = (opt.getAttribute('data-label') || '').toLowerCase()
+    opt.style.display = (!q || label.includes(q)) ? '' : 'none'
+  })
+  // Ẩn group header nếu tất cả option trong nhóm đều ẩn
+  dropdown.querySelectorAll('.wp-disc-group-header').forEach(header => {
+    let next = header.nextElementSibling
+    let anyVisible = false
+    while (next && !next.classList.contains('wp-disc-group-header')) {
+      if (next.classList.contains('wp-disc-opt') && next.style.display !== 'none') anyVisible = true
+      next = next.nextElementSibling
+    }
+    header.style.display = anyVisible ? '' : 'none'
+  })
+}
+
+function wpDiscSelect(uid, code, label) {
+  const wrap = document.getElementById(uid)
+  if (!wrap) return
+  // Update hidden input
+  const hidden = wrap.querySelector('.wp-cat')
+  if (hidden) hidden.value = code
+  wrap.setAttribute('data-value', code)
+  // Update trigger display
+  const triggerLabel = wrap.querySelector('.wp-disc-label')
+  if (triggerLabel) {
+    if (code) {
+      const disc = (window.allDisciplines||[]).find(d => d.code === code)
+      const cat = disc?.category || ''
+      const colors = WP_DISC_CAT_COLORS[cat] || {}
+      triggerLabel.textContent = label
+      triggerLabel.style.fontWeight = '600'
+      triggerLabel.style.color = colors.text || '#374151'
+      const dot = wrap.querySelector('.wp-disc-trigger .rounded-full')
+      if (dot) dot.style.background = colors.dot || '#9ca3af'
+    } else {
+      triggerLabel.textContent = '-- Chọn bộ môn --'
+      triggerLabel.style.fontWeight = ''
+      triggerLabel.style.color = ''
+      const dot = wrap.querySelector('.wp-disc-trigger .rounded-full')
+      if (dot) dot.style.background = 'transparent'
+    }
+  }
+  // Đóng dropdown
+  wrap.querySelector('.wp-disc-dropdown')?.remove()
+}
+
 const WP_PRIORITY_CFG = {
   low:    { label:'Thấp',    cls:'bg-gray-100 text-gray-500' },
   normal: { label:'Bình thường', cls:'bg-blue-100 text-blue-700' },
@@ -19444,13 +20087,32 @@ function showWeeklyPlanDetailModal(plan, report, projectId) {
   rptItems.filter(r => !r.is_extra).forEach(r => { if (r.plan_item_id) rptMap[r.plan_item_id] = r })
   const extraItems = rptItems.filter(r => r.is_extra)
 
-  const planRows = items.map(it => {
+  // Helper: lấy label bộ môn từ discipline code
+  const discLabel = (code) => {
+    if (!code) return '—'
+    const d = (window.allDisciplines||[]).find(x => x.code === code)
+    return d ? `${d.code} – ${d.name}` : code
+  }
+  const discHeaderCls = (code) => {
+    const d = (window.allDisciplines||[]).find(x => x.code === code)
+    const m = { general:'bg-gray-100 text-gray-700', architecture:'bg-purple-100 text-purple-700', structure:'bg-blue-100 text-blue-700', mep:'bg-cyan-100 text-cyan-700', civil:'bg-orange-100 text-orange-700', landscape:'bg-green-100 text-green-700', transport:'bg-yellow-100 text-yellow-700' }
+    return m[d?.category||''] || 'bg-gray-50 text-gray-600'
+  }
+
+  // Nhóm items theo bộ môn
+  const detailSeenDisc = []; const detailGroups = {}
+  items.forEach(it => {
+    const k = it.category || ''
+    if (!detailGroups[k]) { detailGroups[k] = []; detailSeenDisc.push(k) }
+    detailGroups[k].push(it)
+  })
+
+  const renderDetailRow = (it) => {
     const ri = rptMap[it.id]
     const pCfg = WP_PRIORITY_CFG[it.priority] || WP_PRIORITY_CFG.normal
     const sCfg = ri ? (WRI_STATUS_CFG[ri.status] || WRI_STATUS_CFG.in_progress) : null
     return `
       <tr class="border-b hover:bg-gray-50 text-xs">
-        <td class="py-2 px-3">${it.category || '—'}</td>
         <td class="py-2 px-3 max-w-xs">${it.description}</td>
         <td class="py-2 px-3 whitespace-nowrap">${it.assignee_names || '—'}</td>
         <td class="py-2 px-3 whitespace-nowrap">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
@@ -19458,7 +20120,7 @@ function showWeeklyPlanDetailModal(plan, report, projectId) {
         <td class="py-2 px-3">${ri ? `
           <div class="flex items-center gap-2">
             <span class="badge text-xs ${sCfg.cls}"><i class="fas ${sCfg.icon} mr-1"></i>${sCfg.label}</span>
-            <div class="flex-1 min-w-16">
+            <div class="flex-1 min-w-[60px]">
               <div class="w-full bg-gray-200 rounded-full h-1.5">
                 <div class="h-1.5 rounded-full ${ri.completion_pct>=100?'bg-green-500':ri.completion_pct>=50?'bg-blue-500':'bg-yellow-400'}" style="width:${ri.completion_pct}%"></div>
               </div>
@@ -19467,16 +20129,29 @@ function showWeeklyPlanDetailModal(plan, report, projectId) {
           </div>` : '<span class="text-gray-300 text-xs">Chưa báo cáo</span>'}</td>
         <td class="py-2 px-3 max-w-xs text-gray-500">${ri?.result || '—'}</td>
       </tr>`
-  }).join('')
+  }
+
+  // Build grouped plan rows (theo bộ môn)
+  let planRows = ''
+  if (!items.length) {
+    planRows = '<tr><td colspan="6" class="py-8 text-center text-gray-400">Chưa có hạng mục nào</td></tr>'
+  } else {
+    detailSeenDisc.forEach(k => {
+      const cls = discHeaderCls(k)
+      planRows += `<tr><td colspan="6" class="py-1.5 px-3 border-b border-t"><span class="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-0.5 rounded-full ${cls}"><i class="fas fa-layer-group text-[10px]"></i>${discLabel(k)}</span></td></tr>`
+      detailGroups[k].forEach(it => { planRows += renderDetailRow(it) })
+    })
+  }
 
   const extraRows = extraItems.map(it => {
     const sCfg = WRI_STATUS_CFG[it.status] || WRI_STATUS_CFG.in_progress
+    const eCls = discHeaderCls(it.category)
     return `
       <tr class="border-b hover:bg-amber-50 text-xs bg-amber-50/50">
-        <td class="py-2 px-3">${it.category || '—'}</td>
         <td class="py-2 px-3 max-w-xs">${it.description} <span class="ml-1 text-xs text-amber-600">(Ngoài KH)</span></td>
         <td class="py-2 px-3">${it.assignee_names || '—'}</td>
-        <td colspan="2" class="py-2 px-3"></td>
+        <td class="py-2 px-3"><span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${eCls}">${discLabel(it.category)}</span></td>
+        <td class="py-2 px-3"></td>
         <td class="py-2 px-3">
           <div class="flex items-center gap-2">
             <span class="badge text-xs ${sCfg.cls}"><i class="fas ${sCfg.icon} mr-1"></i>${sCfg.label}</span>
@@ -19520,17 +20195,16 @@ function showWeeklyPlanDetailModal(plan, report, projectId) {
           <table class="w-full text-xs border rounded-xl overflow-hidden">
             <thead>
               <tr class="bg-gray-50 text-gray-500 border-b text-left">
-                <th class="py-2 px-3 whitespace-nowrap">Nhóm</th>
                 <th class="py-2 px-3">Nội dung</th>
                 <th class="py-2 px-3 whitespace-nowrap">Phụ trách</th>
                 <th class="py-2 px-3 whitespace-nowrap">Dự kiến</th>
                 <th class="py-2 px-3 whitespace-nowrap">Ưu tiên</th>
-                <th class="py-2 px-3 whitespace-nowrap">Kết quả</th>
-                <th class="py-2 px-3">Ghi chú</th>
+                <th class="py-2 px-3 whitespace-nowrap">Kết quả báo cáo</th>
+                <th class="py-2 px-3">Kết quả thực tế</th>
               </tr>
             </thead>
             <tbody>
-              ${planRows || '<tr><td colspan="7" class="py-8 text-center text-gray-400">Chưa có hạng mục nào</td></tr>'}
+              ${planRows}
               ${extraRows}
             </tbody>
           </table>
@@ -19602,7 +20276,7 @@ async function openWeeklyPlanModal(planId, projectId) {
 
   const renderItemRow = (it, idx) => `
     <tr class="item-row border-b" data-idx="${idx}">
-      <td class="py-1 px-2"><input type="text" value="${(it.category||'').replace(/"/g,'&quot;')}" placeholder="Nhóm" class="w-full border rounded px-2 py-1 text-xs wp-cat"></td>
+      <td class="py-1 px-2">${wpDisciplineSelect(it.category||'')}</td>
       <td class="py-1 px-2"><input type="text" value="${(it.description||'').replace(/"/g,'&quot;')}" placeholder="Nội dung *" class="w-full border rounded px-2 py-1 text-xs wp-desc" required></td>
       <td class="py-1 px-2">${renderAssigneeCell(it)}</td>
       <td class="py-1 px-2"><input type="date" value="${it.target_date||''}" class="w-full border rounded px-2 py-1 text-xs wp-target"></td>
@@ -19656,7 +20330,7 @@ async function openWeeklyPlanModal(planId, projectId) {
           <div class="overflow-x-auto rounded-xl border">
             <table class="w-full text-xs">
               <thead><tr class="bg-gray-50 border-b text-gray-500 text-left">
-                <th class="py-2 px-2 w-24">Nhóm</th>
+                <th class="py-2 px-2 w-44">Bộ môn</th>
                 <th class="py-2 px-2">Nội dung công việc *</th>
                 <th class="py-2 px-2 w-36">Phụ trách</th>
                 <th class="py-2 px-2 w-28">Ngày dự kiến</th>
@@ -19890,8 +20564,7 @@ function showWeeklyReportModal(plan, report, projectId) {
     const ri = rptMap[it.id] || {}
     const pCfg = WP_PRIORITY_CFG[it.priority] || WP_PRIORITY_CFG.normal
     return `
-      <tr class="border-b rpt-plan-row" data-plan-item-id="${it.id}">
-        <td class="py-2 px-2 text-xs text-gray-500">${it.category||'—'}</td>
+      <tr class="border-b rpt-plan-row" data-plan-item-id="${it.id}" data-discipline="${it.category||''}">
         <td class="py-2 px-2 text-xs">
           <div class="font-medium text-gray-700 rpt-item-desc" data-desc="${(it.description||'').replace(/"/g,'&quot;')}">${it.description}</div>
           <div class="text-gray-400 text-xs mt-0.5">${it.assignee_names||''} ${it.target_date ? '· DK: '+fmtDate(it.target_date) : ''}</div>
@@ -19912,6 +20585,46 @@ function showWeeklyReportModal(plan, report, projectId) {
       </tr>`
   }
 
+  // Render header phân cách theo bộ môn
+  const renderDisciplineHeader = (code) => {
+    const disciplines = window.allDisciplines || []
+    const disc = disciplines.find(d => d.code === code)
+    const label = disc ? `${disc.code} – ${disc.name}` : (code || 'Chưa phân bộ môn')
+    const catColors = {
+      general:'bg-gray-100 text-gray-700 border-gray-300',
+      architecture:'bg-purple-100 text-purple-700 border-purple-300',
+      structure:'bg-blue-100 text-blue-700 border-blue-300',
+      mep:'bg-cyan-100 text-cyan-700 border-cyan-300',
+      civil:'bg-orange-100 text-orange-700 border-orange-300',
+      landscape:'bg-green-100 text-green-700 border-green-300',
+      transport:'bg-yellow-100 text-yellow-700 border-yellow-300',
+    }
+    const cls = catColors[disc?.category||''] || 'bg-gray-50 text-gray-600 border-gray-200'
+    return `<tr class="discipline-header-row"><td colspan="5" class="py-1.5 px-3 border-b border-t">
+      <span class="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-0.5 rounded-full border ${cls}">
+        <i class="fas fa-layer-group text-[10px]"></i>${label}
+      </span>
+    </td></tr>`
+  }
+
+  // Nhóm planItems theo bộ môn (category) - giữ thứ tự bộ môn xuất hiện đầu tiên
+  const buildGroupedPlanRows = () => {
+    if (!planItems.length) return '<tr><td colspan="5" class="py-6 text-center text-gray-400">Kế hoạch tuần chưa có hạng mục</td></tr>'
+    const seen = []
+    const groups = {}
+    planItems.forEach(it => {
+      const key = it.category || ''
+      if (!groups[key]) { groups[key] = []; seen.push(key) }
+      groups[key].push(it)
+    })
+    let html = ''
+    seen.forEach(key => {
+      html += renderDisciplineHeader(key)
+      groups[key].forEach(it => { html += renderPlanRow(it) })
+    })
+    return html
+  }
+
   const renderExtraRow = (it, idx) => {
     // Reuse assignee picker helpers from weekly plan module
     const members = window._wpMembers || []
@@ -19930,7 +20643,7 @@ function showWeeklyReportModal(plan, report, projectId) {
     const assigneeHtml = `<div class="wp-assignee-cell flex flex-wrap items-center gap-1 mt-1 min-w-[90px]">${tagsHtml}${addBtn}</div>`
     return `
     <tr class="border-b rpt-extra-row bg-amber-50/30" data-extra-idx="${idx}">
-      <td class="py-2 px-2"><input type="text" value="${(it.category||'').replace(/"/g,'&quot;')}" class="w-full border rounded px-2 py-1 text-xs extra-cat" placeholder="Nhóm"></td>
+      <td class="py-2 px-2">${wpDisciplineSelect(it.category||'')}</td>
       <td class="py-2 px-2">
         <input type="text" value="${(it.description||'').replace(/"/g,'&quot;')}" class="w-full border rounded px-2 py-1 text-xs extra-desc" placeholder="Nội dung *">
         ${assigneeHtml}
@@ -20005,7 +20718,6 @@ function showWeeklyReportModal(plan, report, projectId) {
           <div class="overflow-x-auto rounded-xl border mb-5">
             <table class="w-full text-xs">
               <thead><tr class="bg-gray-50 border-b text-gray-500 text-left">
-                <th class="py-2 px-2 w-20">Nhóm</th>
                 <th class="py-2 px-2">Nội dung kế hoạch</th>
                 <th class="py-2 px-2 w-32">Trạng thái</th>
                 <th class="py-2 px-2 w-32">Tiến độ</th>
@@ -20013,7 +20725,7 @@ function showWeeklyReportModal(plan, report, projectId) {
                 <th class="py-2 px-2 w-28">Ghi chú</th>
               </tr></thead>
               <tbody id="rptPlanItemsTbody">
-                ${planItems.length ? planItems.map(renderPlanRow).join('') : '<tr><td colspan="6" class="py-6 text-center text-gray-400">Kế hoạch tuần chưa có hạng mục</td></tr>'}
+                ${buildGroupedPlanRows()}
               </tbody>
             </table>
           </div>
@@ -20028,7 +20740,7 @@ function showWeeklyReportModal(plan, report, projectId) {
           <div class="overflow-x-auto rounded-xl border mb-5">
             <table class="w-full text-xs">
               <thead><tr class="bg-amber-50 border-b text-gray-500 text-left">
-                <th class="py-2 px-2 w-20">Nhóm</th>
+                <th class="py-2 px-2 w-40">Bộ môn</th>
                 <th class="py-2 px-2">Nội dung phát sinh / bổ sung</th>
                 <th class="py-2 px-2 w-32">Trạng thái</th>
                 <th class="py-2 px-2 w-32">Tiến độ</th>
@@ -20083,11 +20795,13 @@ async function submitWeeklyReport(e, planId, projectId) {
   const items = []
   document.querySelectorAll('#rptPlanItemsTbody .rpt-plan-row').forEach(row => {
     const planItemId = parseInt(row.getAttribute('data-plan-item-id'))
+    const discipline  = row.getAttribute('data-discipline') || ''
     // Get description from data-desc attribute or text content
     const descEl = row.querySelector('.rpt-item-desc')
     const description = descEl ? (descEl.getAttribute('data-desc') || descEl.textContent?.trim() || '—') : '—'
     items.push({
       plan_item_id:   planItemId,
+      category:       discipline,
       description:    description,
       status:         row.querySelector('.rpt-status')?.value || 'in_progress',
       completion_pct: parseInt(row.querySelector('.rpt-pct')?.value || '0'),
@@ -20105,7 +20819,7 @@ async function submitWeeklyReport(e, planId, projectId) {
     const assigneeNames = [...tags].map(t => t.getAttribute('data-name')).filter(Boolean).join(', ')
     items.push({
       plan_item_id:   null,
-      category:       row.querySelector('.extra-cat')?.value?.trim() || '',
+      category:       row.querySelector('.wp-cat')?.value?.trim() || row.querySelector('.extra-cat')?.value?.trim() || '',
       description:    desc,
       assignee_names: assigneeNames,
       status:         row.querySelector('.extra-status')?.value || 'in_progress',

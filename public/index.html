@@ -88,7 +88,9 @@
        CARDS & KPI CARDS — fixed padding in px
     ================================================================ */
     .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 20px; }
-    .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--primary); min-height: 88px; }
+    .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--primary); min-height: 88px; overflow: hidden; }
+    /* Số liệu trong KPI card: tự co lại khi quá dài, không wrap */
+    .kpi-card .kpi-value { font-size: clamp(0.95rem, 1.6vw, 1.25rem); font-weight: 700; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     /* ================================================================
        CHART CONTAINERS — fixed height, zoom-immune
@@ -1693,9 +1695,14 @@
             <h1 class="text-2xl font-bold text-gray-800">Quản lý Tài sản</h1>
             <p class="text-gray-500 text-sm">Theo dõi thiết bị và tài sản công ty</p>
           </div>
-          <button onclick="openAssetModal()" class="btn-primary flex items-center gap-2">
-            <i class="fas fa-plus"></i>Thêm tài sản
-          </button>
+          <div class="flex items-center gap-2">
+            <button onclick="exportAssetsExcel()" class="btn-secondary flex items-center gap-2 text-green-700 border-green-300 hover:bg-green-50" title="Xuất toàn bộ tài sản ra Excel">
+              <i class="fas fa-file-excel text-green-600"></i>Xuất Excel
+            </button>
+            <button onclick="openAssetModal()" class="btn-primary flex items-center gap-2">
+              <i class="fas fa-plus"></i>Thêm tài sản
+            </button>
+          </div>
         </div>
 
         <!-- Stats -->
@@ -3570,7 +3577,7 @@
         </div>
 
         <!-- Config History / Notes -->
-        <div class="card">
+        <div class="card mb-6">
           <h3 class="font-semibold text-gray-800 mb-3">
             <i class="fas fa-history mr-2 text-gray-500"></i>Lưu ý khi thay đổi cấu hình
           </h3>
@@ -3592,6 +3599,50 @@
               <span>Cấu hình được lưu trong database và có hiệu lực ngay lập tức với mọi yêu cầu tính toán mới.</span>
             </div>
           </div>
+        </div>
+
+        <!-- Data Maintenance Tools -->
+        <div class="card border-2 border-orange-200">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-lg bg-orange-100 flex items-center justify-center">
+              <i class="fas fa-tools text-orange-600 text-lg"></i>
+            </div>
+            <div>
+              <h2 class="font-semibold text-gray-800">Công cụ bảo trì dữ liệu</h2>
+              <p class="text-sm text-gray-500">Dùng khi cần sửa dữ liệu cũ sau khi thay đổi logic tính toán</p>
+            </div>
+          </div>
+
+          <!-- Resync revenues -->
+          <div class="bg-orange-50 border border-orange-200 rounded-xl p-5 mb-4">
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+              <div class="flex-1 min-w-0">
+                <h3 class="font-semibold text-orange-900 flex items-center gap-2 mb-1">
+                  <i class="fas fa-sync-alt text-orange-600"></i>
+                  Re-sync Doanh thu theo % Phí Quản lý
+                </h3>
+                <p class="text-sm text-orange-700 mb-2">
+                  Tính lại <strong>tất cả bản ghi doanh thu</strong> được tạo từ Hồ Sơ Pháp Lý (đợt thanh toán đã <span class="font-semibold">paid / partial</span>),
+                  áp dụng công thức: <code class="bg-orange-100 px-1 rounded text-xs font-mono">Doanh thu = Số tiền × (1 − % Phí QL)</code>
+                </p>
+                <p class="text-xs text-orange-600">
+                  <i class="fas fa-exclamation-circle mr-1"></i>
+                  Dùng khi: lần đầu cập nhật % phí QL cho dự án, hoặc sau khi thay đổi % phí QL và muốn cập nhật lại dữ liệu cũ.
+                </p>
+              </div>
+              <button onclick="resyncAllRevenues()" id="btnResyncRevenues"
+                class="btn-primary flex items-center gap-2 whitespace-nowrap bg-orange-600 hover:bg-orange-700 border-orange-600">
+                <i class="fas fa-sync-alt"></i>
+                Chạy Re-sync
+              </button>
+            </div>
+
+            <!-- Result panel -->
+            <div id="resyncRevenueResult" class="hidden mt-4 pt-4 border-t border-orange-200">
+              <div id="resyncRevenueContent"></div>
+            </div>
+          </div>
+
         </div>
       </div><!-- End system-config page -->
 
@@ -4234,11 +4285,42 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Số tiền đề nghị (VND)</label>
-          <input type="text" id="paymentAmount" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
+          <input type="text" id="paymentAmount" class="input-field" placeholder="0" inputmode="numeric"
+            oninput="moneyInputFmt(this); updatePaymentRevenuePreview()">
         </div>
         <div>
           <label class="label">Số tiền đã thanh toán (VND)</label>
-          <input type="text" id="paymentPaidAmount" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
+          <input type="text" id="paymentPaidAmount" class="input-field" placeholder="0" inputmode="numeric"
+            oninput="moneyInputFmt(this); updatePaymentRevenuePreview()">
+        </div>
+      </div>
+      <!-- Preview doanh thu sau phí QL -->
+      <div id="paymentRevenuePreview" style="display:none"
+        class="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
+        <div class="flex items-start gap-3">
+          <i class="fas fa-wallet text-emerald-500 mt-0.5"></i>
+          <div class="flex-1">
+            <p class="text-xs font-semibold text-gray-600 mb-2">
+              Doanh thu sau phí quản lý
+              <span id="paymentFeeLabel" class="ml-1 text-xs font-normal text-gray-400"></span>
+            </p>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="bg-white rounded-lg p-2 border border-emerald-100">
+                <p class="text-xs text-gray-400">Đề nghị → Doanh thu</p>
+                <p id="paymentAmountNet" class="font-bold text-emerald-700 text-sm mt-0.5">—</p>
+                <p id="paymentAmountNetPct" class="text-xs text-gray-400 mt-0.5"></p>
+              </div>
+              <div class="bg-white rounded-lg p-2 border border-emerald-100">
+                <p class="text-xs text-gray-400">Đã thu → Doanh thu</p>
+                <p id="paymentPaidNet" class="font-bold text-blue-700 text-sm mt-0.5">—</p>
+                <p id="paymentPaidNetPct" class="text-xs text-gray-400 mt-0.5"></p>
+              </div>
+            </div>
+            <p class="text-xs text-gray-400 mt-2">
+              <i class="fas fa-info-circle mr-1"></i>
+              Doanh thu = Số tiền × (1 − <span id="paymentFeeRate">0</span>% phí QL)
+            </p>
+          </div>
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
@@ -4493,7 +4575,7 @@
       <div class="grid grid-cols-2 gap-4">
         <div id="contractValueRow">
           <label class="label">Giá trị hợp đồng (VNĐ)</label>
-          <input type="text" id="projectContractValue" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
+          <input type="text" id="projectContractValue" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this); updateProjectBudgetPreview()">
         </div>
         <div>
           <label class="label">Trạng thái</label>
@@ -4503,6 +4585,25 @@
             <option value="on_hold">Tạm dừng</option>
             <option value="completed">Hoàn thành</option>
           </select>
+        </div>
+      </div>
+      <!-- Management fee % + Budget preview — chỉ hiện với system_admin -->
+      <div id="managementFeeRow" style="display:none">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="label">% Chi phí quản lý</label>
+            <div class="flex items-center gap-2">
+              <input type="number" id="projectMgmtFeePct" class="input-field" placeholder="0" min="0" max="100" step="0.1"
+                oninput="updateProjectBudgetPreview()">
+              <span class="text-gray-500 text-sm font-medium">%</span>
+            </div>
+            <p class="text-xs text-gray-400 mt-1">Phí quản lý trên giá trị hợp đồng</p>
+          </div>
+          <div id="projectBudgetPreviewRow" class="bg-green-50 border border-green-200 rounded-lg p-3 flex flex-col justify-center">
+            <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Ngân sách dự án</label>
+            <p id="projectBudgetPreview" class="font-bold text-green-700 text-base mt-1">—</p>
+            <p class="text-xs text-gray-400 mt-0.5">= Giá trị HĐ × (1 - % phí QL)</p>
+          </div>
         </div>
       </div>
       <div>

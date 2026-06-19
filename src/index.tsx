@@ -1302,13 +1302,19 @@ app.get('/api/projects/:id', authMiddleware, async (c) => {
       overdue_tasks: taskStats?.overdue_tasks  || 0
     }
 
+    // Tính project_budget = contract_value * (1 - management_fee_pct/100)
+    const p = project as any
+    const feePct2 = p.management_fee_pct || 0
+    const projectBudget = p.contract_value > 0 ? Math.round(p.contract_value * (1 - feePct2 / 100)) : 0
+    const projectWithBudget = { ...p, project_budget: projectBudget }
+
     // Hide financial data from non-system_admin
     const user = c.get('user') as any
     if (user.role !== 'system_admin') {
-      const { contract_value, budget, ...safeProject } = project as any
+      const { contract_value, budget, management_fee_pct, project_budget, ...safeProject } = projectWithBudget
       return c.json({ ...safeProject, members: members.results, task_stats: taskStatsObj })
     }
-    return c.json({ ...project, members: members.results, task_stats: taskStatsObj })
+    return c.json({ ...projectWithBudget, members: members.results, task_stats: taskStatsObj })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1324,15 +1330,16 @@ app.post('/api/projects', authMiddleware, async (c) => {
     }
 
     const data = await c.req.json()
-    const { code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, location, admin_id, leader_id, project_code_letter } = data
+    const { code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter } = data
 
     if (!code || !name) return c.json({ error: 'Code and name required' }, 400)
 
+    const feePct = Math.min(100, Math.max(0, parseFloat(management_fee_pct) || 0))
     const result = await db.prepare(
-      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, location, admin_id, leader_id, project_code_letter, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(code, name, description || null, client || null, project_type || 'building', status || 'planning',
-      start_date || null, end_date || null, budget || 0, contract_value || 0, location || null,
+      start_date || null, end_date || null, budget || 0, contract_value || 0, feePct, location || null,
       admin_id || user.id, leader_id || null, project_code_letter || code, user.id).run()
 
     const projectId = result.meta.last_row_id
@@ -1405,7 +1412,7 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     if (user.role !== 'system_admin' && proj.admin_id !== user.id)
       return c.json({ error: 'Không có quyền chỉnh sửa dự án này' }, 403)
     const allowedFields = user.role === 'system_admin'
-      ? ['code','name','description','client','project_type','status','start_date','end_date','budget','contract_value','location','admin_id','leader_id','progress','project_code_letter']
+      ? ['code','name','description','client','project_type','status','start_date','end_date','budget','contract_value','management_fee_pct','location','admin_id','leader_id','progress','project_code_letter']
       : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress','project_code_letter']
     const updates = allowedFields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = allowedFields.filter(f => data[f] !== undefined).map(f => data[f])
@@ -3933,6 +3940,7 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
     const dateFilter   = year ? `AND pr.revenue_date >= '${fyStart}' AND pr.revenue_date <= '${fyEnd}'` : ''
 
     // ── Phần 1: project_revenues (paid / partial) đã có revenue_date ──────────
+    // LEFT JOIN payment_requests để lấy paid_amount gốc (trước khi trừ phí QL)
     const paidQuery = `
       SELECT
         pr.id            AS id,
@@ -3947,9 +3955,13 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         pr.invoice_number,
         pr.payment_status,
         pr.notes,
-        'revenue'        AS source
+        'revenue'        AS source,
+        -- Lấy paid_amount gốc từ payment_requests nếu có liên kết
+        COALESCE(pq.paid_amount, pr.amount) AS paid_amount_original,
+        p.management_fee_pct       AS fee_pct
       FROM project_revenues pr
       JOIN projects p ON p.id = pr.project_id
+      LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status IN ('paid','partial')
         ${projFilter}
         ${dateFilter}
@@ -3971,7 +3983,9 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         pq.invoice_number,
         'pending'        AS payment_status,
         pq.notes,
-        'payment_request' AS source
+        'payment_request' AS source,
+        pq.amount        AS paid_amount_original,
+        p.management_fee_pct AS fee_pct
       FROM payment_requests pq
       JOIN projects p ON p.id = pq.project_id
       WHERE pq.status = 'pending'
@@ -10654,7 +10668,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
 
     // ── 1. Tất cả dự án (kể cả chưa có doanh thu/chi phí)
     const projects = await db.prepare(`
-      SELECT id, code, name, status, project_type, contract_value, start_date, end_date, progress
+      SELECT id, code, name, status, project_type, contract_value, management_fee_pct, start_date, end_date, progress
       FROM projects WHERE status != 'cancelled'
       ORDER BY name ASC
     `).all()
@@ -10678,6 +10692,19 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       FROM payment_requests WHERE status = 'pending'
       GROUP BY project_id
     `).all()
+
+    // ── Doanh thu gốc (theo HĐ) trước khi trừ % phí QL — COALESCE(paid_amount, amount)
+    const revOrigRows = await db.prepare(`
+      SELECT pr.project_id,
+        SUM(COALESCE(pq.paid_amount, pr.amount)) as revenue_collected_original
+      FROM project_revenues pr
+      LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
+      WHERE pr.payment_status IN ('paid','partial')
+        AND pr.revenue_date >= ? AND pr.revenue_date <= ?
+      GROUP BY pr.project_id
+    `).bind(fyStart, fyEnd).all()
+    const revOrigMap: Record<number, number> = {}
+    ;(revOrigRows.results as any[]).forEach((r: any) => { revOrigMap[r.project_id] = r.revenue_collected_original || 0 })
 
     // ── 3. Chi phí trực tiếp theo dự án (non-salary, trong NTC)
     const directCostRows = await db.prepare(`
@@ -10731,7 +10758,10 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       const shared = sharedMap[p.id] || {}
 
       const contractValue    = p.contract_value || 0
+      const feePct           = p.management_fee_pct || 0
+      const projectBudget    = contractValue > 0 ? Math.round(contractValue * (1 - feePct / 100)) : 0
       const revenueCollected = rev.revenue_collected || 0
+      const revenueCollectedOriginal = revOrigMap[p.id] || revenueCollected  // gross trước phí QL
       const revenuePaid      = rev.revenue_paid || 0
       const revenuePartial   = rev.revenue_partial || 0
       const revenuePending   = rev.revenue_pending || 0
@@ -10745,7 +10775,9 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
       // Tỷ lệ doanh thu đã thu / GTHĐ
       const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
-      // Tỷ lệ % từng khoản trên GTHĐ (khi có); nếu không có GTHĐ thì trên doanh thu đã thu
+      // Tiến độ so với ngân sách (nếu có)
+      const budgetProgress   = projectBudget > 0 ? Math.round((revenueTotal / projectBudget) * 100 * 10) / 10 : contractProgress
+      // Tỷ lệ % từng khoản luôn tính trên GTHĐ (hợp đồng), hoặc DT đã thu nếu chưa có GTHĐ
       const pctBase   = contractValue > 0 ? contractValue : revenueCollected
       const pctDirect = pctBase > 0 ? Math.round((directCost / pctBase) * 100 * 10) / 10 : 0
       const pctLabor  = pctBase > 0 ? Math.round((laborCost  / pctBase) * 100 * 10) / 10 : 0
@@ -10760,7 +10792,10 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         project_type: p.project_type,
         progress: p.progress || 0,
         contract_value: contractValue,
+        management_fee_pct: feePct,
+        project_budget: projectBudget,
         revenue_collected: revenueCollected,
+        revenue_collected_original: revenueCollectedOriginal,
         revenue_paid: revenuePaid,
         revenue_partial: revenuePartial,
         revenue_pending: revenuePending,
@@ -10773,6 +10808,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         profit,
         margin,
         contract_progress: contractProgress,
+        budget_progress: budgetProgress,
         pct_direct: pctDirect,
         pct_labor: pctLabor,
         pct_shared: pctShared,
@@ -10787,24 +10823,29 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
 
     // ── 8. KPI tổng
     const totals = projectData.reduce((acc: any, p: any) => {
-      acc.contract_value    += p.contract_value
-      acc.revenue_collected += p.revenue_collected
-      acc.revenue_pending   += p.revenue_pending
-      acc.revenue_total     += p.revenue_total
-      acc.direct_cost       += p.direct_cost
-      acc.labor_cost        += p.labor_cost
-      acc.shared_cost       += p.shared_cost
-      acc.total_cost        += p.total_cost
-      acc.profit            += p.profit
+      acc.contract_value             += (p.contract_value             || 0)
+      acc.project_budget             += (p.project_budget             || 0)
+      acc.revenue_collected          += (p.revenue_collected          || 0)
+      acc.revenue_collected_original += (p.revenue_collected_original || 0)
+      acc.revenue_pending            += (p.revenue_pending            || 0)
+      acc.revenue_total              += (p.revenue_total              || 0)
+      acc.direct_cost                += (p.direct_cost                || 0)
+      acc.labor_cost                 += (p.labor_cost                 || 0)
+      acc.shared_cost                += (p.shared_cost                || 0)
+      acc.total_cost                 += (p.total_cost                 || 0)
+      acc.profit                     += (p.profit                     || 0)
       return acc
-    }, { contract_value:0, revenue_collected:0, revenue_pending:0, revenue_total:0,
+    }, { contract_value:0, project_budget:0, revenue_collected:0, revenue_collected_original:0,
+         revenue_pending:0, revenue_total:0,
          direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
 
     totals.margin = totals.revenue_collected > 0
       ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
     totals.contract_progress = totals.contract_value > 0
       ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
-    // % tổng tính trên tổng GTHĐ; nếu không có thì trên tổng DT đã thu
+    totals.budget_progress = totals.project_budget > 0
+      ? Math.round((totals.revenue_total / totals.project_budget) * 100 * 10) / 10 : totals.contract_progress
+    // % tổng luôn tính trên tổng GTHĐ (hợp đồng); nếu không có thì trên tổng DT đã thu
     const totalsPctBase = totals.contract_value > 0 ? totals.contract_value : totals.revenue_collected
     totals.pct_cost   = totalsPctBase > 0 ? Math.round((totals.total_cost   / totalsPctBase) * 100 * 10) / 10 : 0
     totals.pct_direct = totalsPctBase > 0 ? Math.round((totals.direct_cost  / totalsPctBase) * 100 * 10) / 10 : 0
@@ -10832,7 +10873,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
 
     // ── 1. Tất cả dự án (kể cả chưa có doanh thu/chi phí)
     const projects = await db.prepare(`
-      SELECT id, code, name, status, project_type, contract_value, start_date, end_date, progress
+      SELECT id, code, name, status, project_type, contract_value, management_fee_pct, start_date, end_date, progress
       FROM projects WHERE status != 'cancelled'
       ORDER BY name ASC
     `).all()
@@ -10856,6 +10897,18 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       FROM payment_requests WHERE status = 'pending'
       GROUP BY project_id
     `).all()
+
+    // ── Doanh thu gốc (theo HĐ) toàn vòng đời – COALESCE(paid_amount, amount)
+    const revOrigRowsLT = await db.prepare(`
+      SELECT pr.project_id,
+        SUM(COALESCE(pq.paid_amount, pr.amount)) as revenue_collected_original
+      FROM project_revenues pr
+      LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
+      WHERE pr.payment_status IN ('paid','partial')
+      GROUP BY pr.project_id
+    `).all()
+    const revOrigMapLT: Record<number, number> = {}
+    ;(revOrigRowsLT.results as any[]).forEach((r: any) => { revOrigMapLT[r.project_id] = r.revenue_collected_original || 0 })
 
     // ── 3. Chi phí trực tiếp theo dự án (TOÀN BỘ – không lọc ngày)
     const directCostRows = await db.prepare(`
@@ -10908,7 +10961,10 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       const shared = sharedMap[p.id] || {}
 
       const contractValue    = p.contract_value || 0
+      const feePctLT         = p.management_fee_pct || 0
+      const projectBudgetLT  = contractValue > 0 ? Math.round(contractValue * (1 - feePctLT / 100)) : 0
       const revenueCollected = rev.revenue_collected || 0
+      const revenueCollectedOriginal = revOrigMapLT[p.id] || revenueCollected  // gross trước phí QL
       const revenuePaid      = rev.revenue_paid      || 0
       const revenuePartial   = rev.revenue_partial   || 0
       const revenuePending   = rev.revenue_pending   || 0
@@ -10921,7 +10977,8 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       const profit           = revenueCollected - totalCost
       const margin           = revenueCollected > 0 ? Math.round((profit / revenueCollected) * 100 * 10) / 10 : 0
       const contractProgress = contractValue > 0 ? Math.round((revenueTotal / contractValue) * 100 * 10) / 10 : 0
-      // Tỷ lệ % từng khoản trên GTHĐ (khi có); nếu không có GTHĐ thì trên doanh thu đã thu
+      const budgetProgressLT = projectBudgetLT > 0 ? Math.round((revenueTotal / projectBudgetLT) * 100 * 10) / 10 : contractProgress
+      // Tỷ lệ % từng khoản luôn tính trên GTHĐ (hợp đồng); nếu không có thì trên doanh thu đã thu
       const pctBaseLT = contractValue > 0 ? contractValue : revenueCollected
       const pctDirect = pctBaseLT > 0 ? Math.round((directCost / pctBaseLT) * 100 * 10) / 10 : 0
       const pctLabor  = pctBaseLT > 0 ? Math.round((laborCost  / pctBaseLT) * 100 * 10) / 10 : 0
@@ -10942,7 +10999,10 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         start_date: startDate,
         end_date: endDate,
         contract_value: contractValue,
+        management_fee_pct: feePctLT,
+        project_budget: projectBudgetLT,
         revenue_collected: revenueCollected,
+        revenue_collected_original: revenueCollectedOriginal,
         revenue_paid: revenuePaid,
         revenue_partial: revenuePartial,
         revenue_pending: revenuePending,
@@ -10955,6 +11015,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         profit,
         margin,
         contract_progress: contractProgress,
+        budget_progress: budgetProgressLT,
         pct_direct: pctDirect,
         pct_labor:  pctLabor,
         pct_shared: pctShared,
@@ -10969,24 +11030,29 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
 
     // ── 8. KPI tổng
     const totals = projectData.reduce((acc: any, p: any) => {
-      acc.contract_value    += p.contract_value
-      acc.revenue_collected += p.revenue_collected
-      acc.revenue_pending   += p.revenue_pending
-      acc.revenue_total     += p.revenue_total
-      acc.direct_cost       += p.direct_cost
-      acc.labor_cost        += p.labor_cost
-      acc.shared_cost       += p.shared_cost
-      acc.total_cost        += p.total_cost
-      acc.profit            += p.profit
+      acc.contract_value             += (p.contract_value             || 0)
+      acc.project_budget             += (p.project_budget             || 0)
+      acc.revenue_collected          += (p.revenue_collected          || 0)
+      acc.revenue_collected_original += (p.revenue_collected_original || 0)
+      acc.revenue_pending            += (p.revenue_pending            || 0)
+      acc.revenue_total              += (p.revenue_total              || 0)
+      acc.direct_cost                += (p.direct_cost                || 0)
+      acc.labor_cost                 += (p.labor_cost                 || 0)
+      acc.shared_cost                += (p.shared_cost                || 0)
+      acc.total_cost                 += (p.total_cost                 || 0)
+      acc.profit                     += (p.profit                     || 0)
       return acc
-    }, { contract_value:0, revenue_collected:0, revenue_pending:0, revenue_total:0,
+    }, { contract_value:0, project_budget:0, revenue_collected:0, revenue_collected_original:0,
+         revenue_pending:0, revenue_total:0,
          direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
 
     totals.margin = totals.revenue_collected > 0
       ? Math.round((totals.profit / totals.revenue_collected) * 100 * 10) / 10 : 0
     totals.contract_progress = totals.contract_value > 0
       ? Math.round((totals.revenue_total / totals.contract_value) * 100 * 10) / 10 : 0
-    // % tổng tính trên tổng GTHĐ; nếu không có thì trên tổng DT đã thu
+    totals.budget_progress = totals.project_budget > 0
+      ? Math.round((totals.revenue_total / totals.project_budget) * 100 * 10) / 10 : totals.contract_progress
+    // % tổng luôn tính trên tổng GTHĐ (hợp đồng); nếu không có thì trên tổng DT đã thu
     const totalsPctBaseLT = totals.contract_value > 0 ? totals.contract_value : totals.revenue_collected
     totals.pct_cost   = totalsPctBaseLT > 0 ? Math.round((totals.total_cost   / totalsPctBaseLT) * 100 * 10) / 10 : 0
     totals.pct_direct = totalsPctBaseLT > 0 ? Math.round((totals.direct_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
@@ -11853,6 +11919,15 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
        WHERE mm.project_id = ? ORDER BY mm.meeting_date DESC, mm.created_at DESC`
     ).bind(projectId).all()
 
+    // Project info (để tính % phí quản lý trong form thanh toán)
+    const projectInfo = await db.prepare(
+      `SELECT id, name, code, contract_value, management_fee_pct,
+              CASE WHEN management_fee_pct > 0
+                   THEN contract_value * (1.0 - management_fee_pct / 100.0)
+                   ELSE contract_value END as project_budget
+       FROM projects WHERE id = ?`
+    ).bind(projectId).first()
+
     return c.json({
       packages: packagesWithStages,
       stages: allStagesFlat,  // backward-compat
@@ -11860,7 +11935,8 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
       documents: docs.results,
       config,
       payments: payments.results,
-      minutes: minutes.results
+      minutes: minutes.results,
+      project: projectInfo   // thêm project info để frontend tính % phí QL
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -12303,10 +12379,20 @@ async function syncPaymentToRevenue(
   userId: number
 ): Promise<number | null> {
   const shouldSync = payment.status === 'paid' || payment.status === 'partial'
-  const syncAmount = payment.paid_amount || 0
+
+  // Lấy % phí quản lý của dự án để tính doanh thu thực
+  const projRow = await db.prepare(
+    'SELECT management_fee_pct FROM projects WHERE id = ?'
+  ).bind(payment.project_id).first() as any
+  const feePct = (projRow?.management_fee_pct || 0) as number
+  const rawAmount = payment.paid_amount || 0
+  // Doanh thu thực = số tiền × (1 − % phí QL)
+  const syncAmount = feePct > 0
+    ? Math.round(rawAmount * (1 - feePct / 100))
+    : rawAmount
 
   // Nếu không cần sync → xóa revenue cũ nếu có
-  if (!shouldSync || syncAmount <= 0) {
+  if (!shouldSync || rawAmount <= 0) {
     if (payment.revenue_id) {
       await db.prepare('DELETE FROM project_revenues WHERE id = ?').bind(payment.revenue_id).run()
       await db.prepare('UPDATE payment_requests SET revenue_id = NULL WHERE id = ?').bind(payment.id).run()
@@ -12318,7 +12404,11 @@ async function syncPaymentToRevenue(
     ? `[${payment.payment_phase}] ${payment.description}`
     : payment.description
   const revenueStatus = paymentStatusToRevenue(payment.status)
-  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Tình trạng thanh toán]${payment.notes ? '\n' + payment.notes : ''}`
+  // Ghi chú: bổ sung thông tin phí QL nếu có
+  const feeNote = feePct > 0
+    ? `\n[Phí QL ${feePct}%: ${rawAmount.toLocaleString('vi-VN')} × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ]`
+    : ''
+  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Tình trạng thanh toán]${feeNote}${payment.notes ? '\n' + payment.notes : ''}`
 
   if (payment.revenue_id) {
     // Cập nhật revenue đã có
@@ -12564,6 +12654,65 @@ app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
     }
 
     return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/legal/:projectId/resync-revenues — re-sync toàn bộ payment đã paid/partial
+// Dùng để cập nhật lại doanh thu sau khi thay đổi % phí quản lý
+app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  try {
+    const payments = await c.env.DB.prepare(
+      `SELECT * FROM payment_requests WHERE project_id = ? AND status IN ('paid','partial') AND paid_amount > 0`
+    ).bind(projectId).all()
+
+    let synced = 0
+    for (const p of payments.results as any[]) {
+      await syncPaymentToRevenue(c.env.DB, {
+        id: p.id, project_id: p.project_id,
+        description: p.description, paid_amount: p.paid_amount || 0,
+        currency: p.currency || 'VND', paid_date: p.paid_date || null,
+        invoice_number: p.invoice_number || null,
+        payment_phase: p.payment_phase || null, status: p.status,
+        revenue_id: p.revenue_id || null, notes: p.notes || null
+      }, user.id)
+      synced++
+    }
+    return c.json({ success: true, synced })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/legal/resync-revenues-all — re-sync TẤT CẢ payment đã paid/partial trên mọi dự án
+app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) => {
+  const user = c.get('user') as any
+  try {
+    const payments = await c.env.DB.prepare(
+      `SELECT * FROM payment_requests WHERE status IN ('paid','partial') AND paid_amount > 0`
+    ).all()
+
+    let synced = 0
+    const errors: string[] = []
+    for (const p of payments.results as any[]) {
+      try {
+        await syncPaymentToRevenue(c.env.DB, {
+          id: p.id, project_id: p.project_id,
+          description: p.description, paid_amount: p.paid_amount || 0,
+          currency: p.currency || 'VND', paid_date: p.paid_date || null,
+          invoice_number: p.invoice_number || null,
+          payment_phase: p.payment_phase || null, status: p.status,
+          revenue_id: p.revenue_id || null, notes: p.notes || null
+        }, user.id)
+        synced++
+      } catch (e: any) {
+        errors.push(`payment_id=${p.id}: ${e.message}`)
+      }
+    }
+    return c.json({ success: true, synced, total: payments.results.length, errors })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -13686,10 +13835,21 @@ async function ensureLeaveBalance(db: D1Database, userId: number, year: number, 
 }
 
 async function recalcUsedDays(db: D1Database, userId: number, year: number) {
+  // Tính ngày đã dùng phép năm:
+  //   annual_leave          → luôn tính
+  //   half_day_am/pm        → luôn tính (0.5 ngày)
+  //   sick_leave ≤ 3 ngày   → tính
+  //   sick_leave > 3 ngày   → miễn trừ
   const row = await db.prepare(`
     SELECT COALESCE(SUM(total_days), 0) AS used
     FROM leave_requests
-    WHERE user_id = ? AND leave_type = 'annual_leave'
+    WHERE user_id = ?
+      AND (
+        leave_type = 'annual_leave'
+        OR leave_type = 'half_day_am'
+        OR leave_type = 'half_day_pm'
+        OR (leave_type = 'sick_leave' AND total_days <= 3)
+      )
       AND status = 'approved'
       AND strftime('%Y', start_date) = ?
   `).bind(userId, String(year)).first() as any
@@ -13720,8 +13880,15 @@ app.post('/api/leave-requests', authMiddleware, async (c) => {
       return c.json({ error: 'Khoảng thời gian nghỉ không hợp lệ (0 ngày làm việc)' }, 400)
     }
 
-    // ── Kiểm tra quota nếu là nghỉ phép năm ──────────────────────────────────
-    if (leave_type === 'annual_leave') {
+    // ── Kiểm tra quota nếu loại nghỉ ảnh hưởng phép năm ────────────────────
+    // Quy tắc:
+    //   annual_leave          → luôn tính vào quota
+    //   half_day_am/pm        → tính 0.5 ngày vào quota
+    //   sick_leave ≤ 3 ngày   → tính vào quota
+    //   sick_leave > 3 ngày   → miễn trừ, không trừ quota
+    const isHalfDay = leave_type === 'half_day_am' || leave_type === 'half_day_pm'
+    const isSickLeaveShort = leave_type === 'sick_leave' && totalDays <= 3
+    if (leave_type === 'annual_leave' || isHalfDay || isSickLeaveShort) {
       const year = new Date(start_date).getFullYear()
       const cfg  = await db.prepare(
         `SELECT value FROM system_config WHERE key = 'annual_leave_default_days'`
@@ -13738,8 +13905,11 @@ app.post('/api/leave-requests', authMiddleware, async (c) => {
       if (balance) {
         const remaining = parseFloat((balance.total_days - balance.used_days).toFixed(1))
         if (totalDays > remaining) {
+          const typeLabel = leave_type === 'sick_leave' ? 'Nghỉ ốm ngắn (≤3 ngày)'
+            : (leave_type === 'half_day_am' || leave_type === 'half_day_pm') ? 'Nghỉ nửa ngày'
+            : 'Nghỉ phép năm'
           return c.json({
-            error: `Không đủ ngày phép năm. Còn lại: ${remaining} ngày, bạn đang yêu cầu: ${totalDays} ngày`,
+            error: `Không đủ ngày phép năm. ${typeLabel} tính vào quota. Còn lại: ${remaining} ngày, bạn đang yêu cầu: ${totalDays} ngày`,
             remaining,
             requested: totalDays,
           }, 422)
@@ -13883,9 +14053,16 @@ app.post('/api/leave-requests/:id/review', authMiddleware, adminOnly, async (c) 
 
     // Nếu approved → tự động tạo timesheet cho từng ngày nghỉ
     let autoCreatedDates: string[] = []
+    // Loại đơn ảnh hưởng quota phép năm:
+    //   annual_leave, half_day_am/pm, sick_leave ≤ 3 ngày
+    const affectsQuota = leave.leave_type === 'annual_leave' ||
+      leave.leave_type === 'half_day_am' ||
+      leave.leave_type === 'half_day_pm' ||
+      (leave.leave_type === 'sick_leave' && leave.total_days <= 3)
+
     if (status === 'approved') {
-      // Cập nhật used_days trong leave_balances nếu là nghỉ phép năm
-      if (leave.leave_type === 'annual_leave') {
+      // Cập nhật used_days khi duyệt
+      if (affectsQuota) {
         const year = new Date(leave.start_date).getFullYear()
         await ensureLeaveBalance(db, leave.user_id, year)
         await recalcUsedDays(db, leave.user_id, year)
@@ -13936,6 +14113,13 @@ app.post('/api/leave-requests/:id/review', authMiddleware, adminOnly, async (c) 
           autoCreatedDates.push(dateStr)
         }
       }
+    }
+
+    // Nếu rejected → recalc để hoàn trả quota (phòng trường hợp đã tính trước)
+    if (status === 'rejected' && affectsQuota) {
+      const year = new Date(leave.start_date).getFullYear()
+      await ensureLeaveBalance(db, leave.user_id, year)
+      await recalcUsedDays(db, leave.user_id, year)
     }
 
     // Gửi email kết quả cho nhân viên
