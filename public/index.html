@@ -88,7 +88,9 @@
        CARDS & KPI CARDS — fixed padding in px
     ================================================================ */
     .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 20px; }
-    .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--primary); min-height: 88px; }
+    .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--primary); min-height: 88px; overflow: hidden; }
+    /* Số liệu trong KPI card: tự co lại khi quá dài, không wrap */
+    .kpi-card .kpi-value { font-size: clamp(0.95rem, 1.6vw, 1.25rem); font-weight: 700; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     /* ================================================================
        CHART CONTAINERS — fixed height, zoom-immune
@@ -765,6 +767,27 @@
             </div>
           </div>
 
+        </div>
+
+        <!-- Birthday Widget — Sinh nhật tháng này -->
+        <div class="card mb-4" id="dashBirthdayWidget" style="border-left:4px solid #ec4899;background:linear-gradient(135deg,#fff,#fdf2f8);">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <span class="text-2xl">🎂</span>
+              <div>
+                <h3 class="font-bold text-gray-800 text-sm">Sinh nhật tháng này</h3>
+                <p class="text-xs text-gray-400" id="birthdaySubtitle">Đang tải...</p>
+              </div>
+            </div>
+            <button id="btnSendBirthdayEmails" onclick="sendBirthdayEmailsToday()"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-pink-500 hover:bg-pink-600 text-white text-xs font-medium rounded-lg transition-colors shadow-sm"
+              title="Gửi email chúc mừng sinh nhật cho nhân sự có sinh nhật hôm nay">
+              <i class="fas fa-envelope-open-text"></i> Gửi lời chúc hôm nay
+            </button>
+          </div>
+          <div id="birthdayList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+            <div class="text-xs text-gray-400 text-center py-3 col-span-full">Đang tải...</div>
+          </div>
         </div>
 
         <!-- Charts Row 1 -->
@@ -3575,7 +3598,7 @@
         </div>
 
         <!-- Config History / Notes -->
-        <div class="card">
+        <div class="card mb-6">
           <h3 class="font-semibold text-gray-800 mb-3">
             <i class="fas fa-history mr-2 text-gray-500"></i>Lưu ý khi thay đổi cấu hình
           </h3>
@@ -3597,6 +3620,50 @@
               <span>Cấu hình được lưu trong database và có hiệu lực ngay lập tức với mọi yêu cầu tính toán mới.</span>
             </div>
           </div>
+        </div>
+
+        <!-- Data Maintenance Tools -->
+        <div class="card border-2 border-orange-200">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-lg bg-orange-100 flex items-center justify-center">
+              <i class="fas fa-tools text-orange-600 text-lg"></i>
+            </div>
+            <div>
+              <h2 class="font-semibold text-gray-800">Công cụ bảo trì dữ liệu</h2>
+              <p class="text-sm text-gray-500">Dùng khi cần sửa dữ liệu cũ sau khi thay đổi logic tính toán</p>
+            </div>
+          </div>
+
+          <!-- Resync revenues -->
+          <div class="bg-orange-50 border border-orange-200 rounded-xl p-5 mb-4">
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+              <div class="flex-1 min-w-0">
+                <h3 class="font-semibold text-orange-900 flex items-center gap-2 mb-1">
+                  <i class="fas fa-sync-alt text-orange-600"></i>
+                  Re-sync Doanh thu theo % Phí Quản lý
+                </h3>
+                <p class="text-sm text-orange-700 mb-2">
+                  Tính lại <strong>tất cả bản ghi doanh thu</strong> được tạo từ Hồ Sơ Pháp Lý (đợt thanh toán đã <span class="font-semibold">paid / partial</span>),
+                  áp dụng công thức: <code class="bg-orange-100 px-1 rounded text-xs font-mono">Doanh thu = Số tiền × (1 − % Phí QL)</code>
+                </p>
+                <p class="text-xs text-orange-600">
+                  <i class="fas fa-exclamation-circle mr-1"></i>
+                  Dùng khi: lần đầu cập nhật % phí QL cho dự án, hoặc sau khi thay đổi % phí QL và muốn cập nhật lại dữ liệu cũ.
+                </p>
+              </div>
+              <button onclick="resyncAllRevenues()" id="btnResyncRevenues"
+                class="btn-primary flex items-center gap-2 whitespace-nowrap bg-orange-600 hover:bg-orange-700 border-orange-600">
+                <i class="fas fa-sync-alt"></i>
+                Chạy Re-sync
+              </button>
+            </div>
+
+            <!-- Result panel -->
+            <div id="resyncRevenueResult" class="hidden mt-4 pt-4 border-t border-orange-200">
+              <div id="resyncRevenueContent"></div>
+            </div>
+          </div>
+
         </div>
       </div><!-- End system-config page -->
 
@@ -4239,11 +4306,42 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Số tiền đề nghị (VND)</label>
-          <input type="text" id="paymentAmount" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
+          <input type="text" id="paymentAmount" class="input-field" placeholder="0" inputmode="numeric"
+            oninput="moneyInputFmt(this); updatePaymentRevenuePreview()">
         </div>
         <div>
           <label class="label">Số tiền đã thanh toán (VND)</label>
-          <input type="text" id="paymentPaidAmount" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this)">
+          <input type="text" id="paymentPaidAmount" class="input-field" placeholder="0" inputmode="numeric"
+            oninput="moneyInputFmt(this); updatePaymentRevenuePreview()">
+        </div>
+      </div>
+      <!-- Preview doanh thu sau phí QL -->
+      <div id="paymentRevenuePreview" style="display:none"
+        class="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
+        <div class="flex items-start gap-3">
+          <i class="fas fa-wallet text-emerald-500 mt-0.5"></i>
+          <div class="flex-1">
+            <p class="text-xs font-semibold text-gray-600 mb-2">
+              Doanh thu sau phí quản lý
+              <span id="paymentFeeLabel" class="ml-1 text-xs font-normal text-gray-400"></span>
+            </p>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="bg-white rounded-lg p-2 border border-emerald-100">
+                <p class="text-xs text-gray-400">Đề nghị → Doanh thu</p>
+                <p id="paymentAmountNet" class="font-bold text-emerald-700 text-sm mt-0.5">—</p>
+                <p id="paymentAmountNetPct" class="text-xs text-gray-400 mt-0.5"></p>
+              </div>
+              <div class="bg-white rounded-lg p-2 border border-emerald-100">
+                <p class="text-xs text-gray-400">Đã thu → Doanh thu</p>
+                <p id="paymentPaidNet" class="font-bold text-blue-700 text-sm mt-0.5">—</p>
+                <p id="paymentPaidNetPct" class="text-xs text-gray-400 mt-0.5"></p>
+              </div>
+            </div>
+            <p class="text-xs text-gray-400 mt-2">
+              <i class="fas fa-info-circle mr-1"></i>
+              Doanh thu = Số tiền × (1 − <span id="paymentFeeRate">0</span>% phí QL)
+            </p>
+          </div>
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
@@ -4560,87 +4658,146 @@
     </div>
     <form id="taskForm" class="space-y-4">
       <input type="hidden" id="taskId">
-      <div>
-        <label class="label">Tên công việc *</label>
-        <input type="text" id="taskTitle" class="input-field" placeholder="Mô tả ngắn về công việc" required>
+
+      <!-- ── PHẦN THÔNG TIN CHUNG (admin tạo/sửa, member chỉ đọc) ── -->
+      <div id="taskAdminSection">
+        <div>
+          <label class="label">Tên công việc *</label>
+          <input type="text" id="taskTitle" class="input-field" placeholder="Mô tả ngắn về công việc" required>
+        </div>
+        <div class="mt-3">
+          <label class="label">Mô tả chi tiết</label>
+          <textarea id="taskDesc" class="input-field" rows="2" placeholder="Yêu cầu, tiêu chí nghiệm thu..."></textarea>
+        </div>
+        <div class="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <label class="label"><i class="fas fa-tag text-indigo-400 mr-1"></i>Loại task</label>
+            <select id="taskType" class="select-field" onchange="updateTaskTypeUI()">
+              <option value="model">🏗️ Mô hình (đưa vào Tổng hợp)</option>
+              <option value="check_hs">🔍 Kiểm tra hồ sơ</option>
+              <option value="other">📋 Khác</option>
+            </select>
+          </div>
+          <div id="taskFilenameGroup">
+            <label class="label"><i class="fas fa-file-code text-blue-400 mr-1"></i>Filename model</label>
+            <div id="taskFilenameCombobox" style="width:100%"></div>
+            <input type="hidden" id="taskFilename">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <label class="label">Dự án *</label>
+            <input type="hidden" id="taskProject">
+            <div id="taskProjectComboboxModal" style="width:100%"></div>
+          </div>
+          <div>
+            <label class="label">Hạng mục</label>
+            <input type="hidden" id="taskCategory">
+            <div id="taskCategoryComboboxModal" style="width:100%"></div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <label class="label">Bộ môn</label>
+            <div id="taskDisciplineCombobox" style="position:relative"></div>
+            <input type="hidden" id="taskDiscipline">
+          </div>
+          <div>
+            <label class="label">Giai đoạn</label>
+            <select id="taskPhase" class="select-field">
+              <option value="basic_design">Thiết kế cơ sở</option>
+              <option value="technical_design">Thiết kế kỹ thuật</option>
+              <option value="construction_design">Thiết kế thi công</option>
+              <option value="as_built">Hoàn công</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <label class="label">Ưu tiên</label>
+            <select id="taskPriority" class="select-field">
+              <option value="low">Thấp</option>
+              <option value="medium" selected>Trung bình</option>
+              <option value="high">Cao</option>
+              <option value="urgent">Khẩn cấp</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">Phụ trách</label>
+            <select id="taskAssignee" class="select-field"></select>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <label class="label">Ngày bắt đầu</label>
+            <input type="date" id="taskStartDate" class="input-field">
+          </div>
+          <div>
+            <label class="label">Ngày hết hạn</label>
+            <input type="date" id="taskDueDate" class="input-field">
+          </div>
+        </div>
       </div>
-      <div>
-        <label class="label">Mô tả chi tiết</label>
-        <textarea id="taskDesc" class="input-field" rows="2" placeholder="Yêu cầu, tiêu chí nghiệm thu..."></textarea>
-      </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="label">Dự án *</label>
-          <!-- hidden keeps backward compat for any legacy reads -->
-          <input type="hidden" id="taskProject">
-          <div id="taskProjectComboboxModal" style="width:100%"></div>
+
+      <!-- ── DIVIDER + PHẦN MEMBER CẬP NHẬT ── -->
+      <div id="taskMemberSection"
+        style="border:2px solid #6366f1;border-radius:12px;padding:14px 16px 12px;background:linear-gradient(135deg,#f5f3ff 0%,#eff6ff 100%);position:relative;margin-top:4px">
+        <div style="position:absolute;top:-11px;left:16px;background:#6366f1;color:#fff;font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;letter-spacing:.4px">
+          <i class="fas fa-pencil-alt mr-1"></i>Thông tin cập nhật
         </div>
-        <div>
-          <label class="label">Hạng mục</label>
-          <input type="hidden" id="taskCategory">
-          <div id="taskCategoryComboboxModal" style="width:100%"></div>
+
+        <!-- Trạng thái + Giờ dự kiến -->
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="label">Trạng thái</label>
+            <select id="taskStatus" class="select-field">
+              <option value="todo">Chờ thực hiện</option>
+              <option value="in_progress">Đang thực hiện</option>
+              <option value="review">Đang duyệt</option>
+              <option value="completed">Hoàn thành</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">Giờ dự kiến</label>
+            <input type="number" id="taskEstHours" class="input-field" placeholder="0">
+          </div>
         </div>
-      </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="label">Bộ môn</label>
-          <div id="taskDisciplineCombobox" style="position:relative"></div>
-          <input type="hidden" id="taskDiscipline">
+
+        <!-- % Hoàn thành -->
+        <div class="mt-3">
+          <label class="label">% Hoàn thành: <span id="taskProgressLabel">0</span>%</label>
+          <input type="range" id="taskProgress" min="0" max="100" value="0" class="w-full"
+            oninput="document.getElementById('taskProgressLabel').textContent=this.value">
         </div>
-        <div>
-          <label class="label">Giai đoạn</label>
-          <select id="taskPhase" class="select-field">
-            <option value="basic_design">Thiết kế cơ sở</option>
-            <option value="technical_design">Thiết kế kỹ thuật</option>
-            <option value="construction_design">Thiết kế thi công</option>
-            <option value="as_built">Hoàn công</option>
-          </select>
+
+        <!-- Theo HSTK -->
+        <div id="taskHstkGroup" class="mt-3">
+          <label class="label"><i class="fas fa-file-alt text-indigo-400 mr-1"></i>Theo HSTK nào
+            <span class="text-gray-400 font-normal">(hồ sơ thiết kế)</span></label>
+          <input type="text" id="taskHstkDate" class="input-field"
+            placeholder="VD: Theo HSTK ngày 01/01/2025, Bản vẽ số 05...">
         </div>
-      </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="label">Ưu tiên</label>
-          <select id="taskPriority" class="select-field">
-            <option value="low">Thấp</option>
-            <option value="medium" selected>Trung bình</option>
-            <option value="high">Cao</option>
-            <option value="urgent">Khẩn cấp</option>
-          </select>
-        </div>
-        <div>
-          <label class="label">Trạng thái</label>
-          <select id="taskStatus" class="select-field">
-            <option value="todo">Chờ thực hiện</option>
-            <option value="in_progress">Đang thực hiện</option>
-            <option value="review">Đang duyệt</option>
-            <option value="completed">Hoàn thành</option>
-          </select>
-        </div>
-      </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="label">Phụ trách</label>
-          <select id="taskAssignee" class="select-field"></select>
-        </div>
-        <div>
-          <label class="label">Giờ dự kiến</label>
-          <input type="number" id="taskEstHours" class="input-field" placeholder="0">
+
+        <!-- Ghi chú + CDE -->
+        <div class="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <label class="label">Ghi chú</label>
+            <textarea id="taskWorkNotes" class="input-field" rows="2"
+              placeholder="Ghi chú thêm về công việc..."></textarea>
+          </div>
+          <div class="flex flex-col justify-center">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" id="taskCdeReport" class="w-4 h-4 accent-green-500">
+              <span class="text-sm font-medium text-gray-700">Đã tạo Báo cáo CDE</span>
+            </label>
+            <p class="text-xs text-gray-400 mt-1 ml-6">Tick khi đã tạo issue báo cáo trên hệ thống CDE</p>
+          </div>
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="label">Ngày bắt đầu</label>
-          <input type="date" id="taskStartDate" class="input-field">
-        </div>
-        <div>
-          <label class="label">Ngày hết hạn</label>
-          <input type="date" id="taskDueDate" class="input-field">
-        </div>
-      </div>
-      <div>
-        <label class="label">% Hoàn thành: <span id="taskProgressLabel">0</span>%</label>
-        <input type="range" id="taskProgress" min="0" max="100" value="0" class="w-full" oninput="document.getElementById('taskProgressLabel').textContent=this.value">
-      </div>
+
+      <!-- Banner thông báo member -->
+      <div id="taskMemberBanner" style="display:none"></div>
+
       <div class="flex justify-end gap-3 pt-2">
         <button type="button" onclick="closeModal('taskModal')" class="btn-secondary">Hủy</button>
         <button type="submit" class="btn-primary">Lưu công việc</button>

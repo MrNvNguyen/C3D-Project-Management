@@ -108,7 +108,21 @@ GET  /api/depreciation/monthly-unallocated        - Các tháng chưa phân bổ
 GET  /api/assets/:id/depreciation?year=YYYY       - Lịch khấu hao từng tài sản (Admin)
 POST /api/assets/:id/depreciation/setup           - Cài đặt/cập nhật khấu hao tài sản (Admin)
 POST /api/depreciation/allocate-to-shared-cost    - Phân bổ KH tháng vào chi phí chung (Admin)
+
+# Hồ Sơ Pháp Lý - Đồng bộ doanh thu
+GET  /api/legal/:id/overview                      - Tổng quan hồ sơ (bao gồm project.management_fee_pct)
+POST /api/legal/:id/payments                      - Tạo đợt thanh toán (auto-sync revenue với fee)
+PUT  /api/legal/:id/payments/:pid                 - Cập nhật thanh toán (re-sync revenue amount)
+POST /api/legal/:id/resync-revenues               - Re-sync doanh thu cho từng dự án (Admin)
+POST /api/legal/resync-revenues-all               - Re-sync doanh thu cho TẤT CẢ dự án (Admin)
 ```
+
+### Lưu ý tính toán Doanh thu (management_fee_pct)
+Khi đợt thanh toán chuyển sang `paid` hoặc `partial`, hệ thống tự động tạo bản ghi `project_revenues`:
+- **Doanh thu thực = paid_amount × (1 - management_fee_pct/100)**
+- Ví dụ: fee=30%, paid=1,000,000,000 → revenue=700,000,000 (= 70%)
+- Ghi chú tự động: "[Phí QL 30%: 1.000.000.000 × 70% = 700.000.000 VNĐ]"
+- Để fix dữ liệu cũ: gọi `POST /api/legal/resync-revenues-all`
 
 ---
 

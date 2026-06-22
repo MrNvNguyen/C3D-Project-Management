@@ -72,7 +72,7 @@ let _lastAnalysisKey = ''              // cache key: projId+periodType+month+yea
 // UTILITY FUNCTIONS
 // ================================================================
 const $ = id => document.getElementById(id)
-const fmt = (n) => new Intl.NumberFormat('vi-VN').format(n || 0)
+const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(n || 0))
 const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0)
 
 // ── Money Input Helpers ──────────────────────────────────────────────────────
@@ -820,7 +820,7 @@ async function loadDashboard() {
   try {
     const data = await api('/dashboard/stats')
     const { stats, monthly_hours, project_progress, discipline_breakdown, member_productivity,
-            task_status_breakdown, projects_near_deadline } = data
+            task_status_breakdown, projects_near_deadline, birthdays_this_month } = data
 
     // KPI row – tất cả role hiển thị giống nhau (layout member)
     $('kpiProjects').textContent = stats.total_projects
@@ -883,8 +883,110 @@ async function loadDashboard() {
     renderHoursChart(monthly_hours)
     renderProjectProgressList(project_progress)
     renderRecentTasksTable(project_progress)
+    renderBirthdayWidget(birthdays_this_month || [])
   } catch (e) {
     console.error('Dashboard error:', e)
+  }
+}
+
+// ── Birthday widget ───────────────────────────────────────────────────────────
+function renderBirthdayWidget(birthdays) {
+  const listEl     = $('birthdayList')
+  const subtitleEl = $('birthdaySubtitle')
+  if (!listEl) return
+
+  const today = new Date()
+  const todayMM = String(today.getMonth() + 1).padStart(2, '0')
+  const todayDD = String(today.getDate()).padStart(2, '0')
+  const monthNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6',
+                      'Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
+  const monthName = monthNames[today.getMonth()]
+
+  if (!birthdays || birthdays.length === 0) {
+    if (subtitleEl) subtitleEl.textContent = `${monthName} — Không có sinh nhật`
+    listEl.innerHTML = `<div class="text-xs text-gray-400 text-center py-4 col-span-full">
+      <i class="fas fa-calendar-times mr-1"></i>Không có nhân sự nào có sinh nhật trong ${monthName}
+    </div>`
+    return
+  }
+
+  const todayBirths = birthdays.filter(u => {
+    if (!u.birthday) return false
+    const mm = u.birthday.substring(5, 7)
+    const dd = u.birthday.substring(8, 10)
+    return mm === todayMM && dd === todayDD
+  })
+
+  if (subtitleEl) {
+    subtitleEl.textContent = `${monthName} — ${birthdays.length} người${todayBirths.length > 0 ? ` · 🎉 ${todayBirths.length} người sinh nhật hôm nay!` : ''}`
+  }
+
+  listEl.innerHTML = birthdays.map(u => {
+    if (!u.birthday) return ''
+    const mm = u.birthday.substring(5, 7)
+    const dd = u.birthday.substring(8, 10)
+    const yyyy = u.birthday.substring(0, 4)
+    const isToday = mm === todayMM && dd === todayDD
+    const age = parseInt(yyyy) > 1900 ? today.getFullYear() - parseInt(yyyy) : null
+
+    // Avatar initials
+    const initials = (u.full_name || '?').split(' ').slice(-2).map(w => w[0]).join('').toUpperCase()
+    const avatarBg = isToday
+      ? 'background:linear-gradient(135deg,#ec4899,#f43f5e)'
+      : 'background:linear-gradient(135deg,#8b5cf6,#6366f1)'
+
+    return `
+      <div class="flex items-center gap-2 p-2.5 rounded-xl border transition-all ${isToday
+        ? 'border-pink-200 bg-pink-50 shadow-sm ring-2 ring-pink-300 ring-offset-1'
+        : 'border-gray-100 bg-white hover:border-pink-100 hover:bg-pink-50/30'
+      }">
+        <div class="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+          style="${avatarBg}">
+          ${u.avatar
+            ? `<img src="${u.avatar}" class="w-9 h-9 rounded-full object-cover" alt="${u.full_name}">`
+            : initials}
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-1">
+            <p class="text-xs font-semibold text-gray-800 truncate">${u.full_name}</p>
+            ${isToday ? '<span class="text-base flex-shrink-0">🎉</span>' : ''}
+          </div>
+          <p class="text-xs text-gray-400 truncate">${u.department || u.job_title || ''}</p>
+          <p class="text-xs font-medium ${isToday ? 'text-pink-600' : 'text-purple-600'}">
+            ${isToday ? '🎂 Sinh nhật hôm nay' : `${dd}/${mm}`}${age ? ` · ${age} tuổi` : ''}
+          </p>
+        </div>
+      </div>`
+  }).filter(Boolean).join('')
+}
+
+async function sendBirthdayEmailsToday() {
+  const btn = $('btnSendBirthdayEmails')
+  if (!btn) return
+  const today = new Date()
+  const dd = String(today.getDate()).padStart(2, '0')
+  const mm = String(today.getMonth() + 1).padStart(2, '0')
+
+  if (!confirm(`Gửi email chúc mừng sinh nhật cho tất cả nhân sự có sinh nhật hôm nay (${dd}/${mm})?`)) return
+
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang gửi...'
+  try {
+    const res = await api('/dashboard/send-birthday-emails', { method: 'POST' })
+    if (res.total === 0) {
+      showToast('Không có nhân sự nào có sinh nhật hôm nay', 'info')
+    } else {
+      showToast(`✅ Đã gửi email chúc mừng cho ${res.sent}/${res.total} nhân sự!`, 'success')
+    }
+    // Log detail
+    if (res.results && res.results.length > 0) {
+      console.table(res.results)
+    }
+  } catch (e) {
+    showToast('Lỗi khi gửi email: ' + (e.message || e), 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-envelope-open-text mr-1"></i> Gửi lời chúc hôm nay'
   }
 }
 
@@ -1726,6 +1828,8 @@ async function openProjectDetail(id, openChatTab = false) {
     const project = await api(`/projects/${id}`)
     const categories = await api(`/projects/${id}/categories`)
     const tasks = await api(`/tasks?project_id=${id}`)
+    let projectModels = []
+    try { projectModels = await api(`/projects/${id}/models`) } catch(_) {}
 
     $('projectDetailName').textContent = project.name
     $('projectDetailCode').textContent = `${project.code} • ${getProjectTypeName(project.project_type)}`
@@ -1753,6 +1857,7 @@ async function openProjectDetail(id, openChatTab = false) {
     const canDelete = currentUser.role === 'system_admin'
     const canManageMembers = ['system_admin', 'project_admin'].includes(currentUser.role) ||
       ['project_admin', 'project_leader'].includes(myProjectRole)
+    const canManageModels = canManageMembers
 
     // Show edit/delete in project detail header
     let projActions = document.getElementById('projDetailActions')
@@ -1816,7 +1921,7 @@ async function openProjectDetail(id, openChatTab = false) {
         </div>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
         <!-- Team Members -->
         <div class="card">
           <div class="flex justify-between items-center mb-4">
@@ -1871,6 +1976,28 @@ async function openProjectDetail(id, openChatTab = false) {
             `).join('') || '<p class="text-gray-400 text-sm text-center">Chưa có hạng mục</p>'}
           </div>
         </div>
+
+        <!-- Danh sách Model -->
+        <div class="card" id="modelListCard_${project.id}" style="border-left:3px solid #8b5cf6">
+          <div class="flex justify-between items-center mb-3">
+            <h3 class="font-bold text-gray-800"><i class="fas fa-cube text-purple-500 mr-2"></i>Danh sách model (${projectModels.length})</h3>
+            ${canManageModels ? `
+              <div class="flex gap-1">
+                <button onclick="openBulkPasteModelModal(${project.id})" class="text-xs px-2 py-1 rounded border border-purple-300 text-purple-600 hover:bg-purple-50" title="Paste nhiều tên"><i class="fas fa-paste mr-1"></i>Bulk</button>
+                <button onclick="openAddModelInline(${project.id})" class="btn-primary text-xs px-2 py-1.5" title="Thêm 1 model"><i class="fas fa-plus mr-1"></i>Thêm</button>
+              </div>
+            ` : ''}
+          </div>
+          <!-- Inline add form (hidden by default) -->
+          <div id="modelAddInline_${project.id}" style="display:none" class="mb-2 flex gap-1">
+            <input id="modelAddInput_${project.id}" type="text" class="input-field text-xs flex-1" placeholder="Tên file model..." onkeydown="if(event.key==='Enter')saveModelInline(${project.id}); if(event.key==='Escape')closeAddModelInline(${project.id})">
+            <button onclick="saveModelInline(${project.id})" class="btn-primary text-xs px-2 py-1"><i class="fas fa-check"></i></button>
+            <button onclick="closeAddModelInline(${project.id})" class="btn-secondary text-xs px-2 py-1"><i class="fas fa-times"></i></button>
+          </div>
+          <div id="modelListBody_${project.id}" class="space-y-1 max-h-52 overflow-y-auto">
+            ${renderModelListRows(project.id, projectModels, canManageModels)}
+          </div>
+        </div>
       </div>
 
       <!-- Project Tabs: Tasks / Weekly Plan / Chat -->
@@ -1886,8 +2013,12 @@ async function openProjectDetail(id, openChatTab = false) {
             <i class="fas fa-calendar-week mr-1"></i>Kế hoạch tuần
           </button>
           <button id="projTab-chat" onclick="switchProjectTab('chat',${project.id})"
-            class="tab-btn text-xs py-2 px-4 whitespace-nowrap">
+            class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-comments mr-1"></i>Chat nhóm
+          </button>
+          <button id="projTab-summary" onclick="switchProjectTab('summary',${project.id})"
+            class="tab-btn text-xs py-2 px-4 whitespace-nowrap">
+            <i class="fas fa-table mr-1"></i>Tổng hợp CV
           </button>
         </div>
 
@@ -1922,6 +2053,11 @@ async function openProjectDetail(id, openChatTab = false) {
         <!-- Chat panel (lazy-loaded) -->
         <div id="projPanel-chat" class="hidden" style="height:520px">
           <div id="projectChatPanel_${project.id}" style="height:100%"></div>
+        </div>
+
+        <!-- Work Summary panel (lazy-loaded) -->
+        <div id="projPanel-summary" class="hidden p-4" style="min-height:400px">
+          <div id="workSummaryContainer_${project.id}"></div>
         </div>
       </div>
     `
@@ -2135,6 +2271,185 @@ function getProjectRoleBadge(role) {
     member: '<span class="badge text-xs" style="background:#f3f4f6;color:#6b7280">Thành viên</span>'
   }
   return badges[role] || badges.member
+}
+
+// ============================================================
+// DANH SÁCH MODEL — quản lý danh sách tên file model của dự án
+// ============================================================
+
+function renderModelListRows(projectId, models, canManage) {
+  if (!models || models.length === 0) return '<p class="text-gray-400 text-xs text-center py-2">Chưa có model nào</p>'
+  return models.map(m => {
+    const total = m.task_count || 0
+    const done  = m.done_count || 0
+    const nameSafe = (m.name || '').replace(/'/g, "\\'").replace(/"/g, '&quot;')
+    return `
+      <div class="flex items-center justify-between px-2 py-1 hover:bg-gray-50 rounded-lg group" id="modelRow_${m.id}">
+        <div class="flex-1 min-w-0 mr-2">
+          <span id="modelRowName_${m.id}" class="text-xs font-medium text-gray-800 break-words">${m.name}</span>
+          <input id="modelRowEdit_${m.id}" type="text" value="${nameSafe}"
+            class="input-field text-xs w-full hidden"
+            onkeydown="if(event.key==='Enter')saveModelRename(${projectId},${m.id}); if(event.key==='Escape')cancelModelRename(${m.id})">
+        </div>
+        <div class="flex items-center gap-1 flex-shrink-0">
+          <span class="text-xs text-gray-400 min-w-[36px] text-right">${done}/${total}</span>
+          ${canManage ? `
+            <button onclick="startModelRename(${m.id})" id="modelBtnEdit_${m.id}" class="text-blue-400 hover:text-blue-600 text-xs px-1 opacity-0 group-hover:opacity-100 transition-opacity" title="Đổi tên"><i class="fas fa-edit"></i></button>
+            <button onclick="saveModelRename(${projectId},${m.id})" id="modelBtnSave_${m.id}" class="text-green-500 hover:text-green-700 text-xs px-1 hidden" title="Lưu"><i class="fas fa-check"></i></button>
+            <button onclick="cancelModelRename(${m.id})" id="modelBtnCancel_${m.id}" class="text-gray-400 hover:text-gray-600 text-xs px-1 hidden" title="Hủy"><i class="fas fa-times"></i></button>
+            <button onclick="confirmDeleteModel(${projectId},${m.id},'${nameSafe}')" class="text-red-400 hover:text-red-600 text-xs px-1 opacity-0 group-hover:opacity-100 transition-opacity" title="Xóa"><i class="fas fa-trash"></i></button>
+          ` : ''}
+        </div>
+      </div>`
+  }).join('')
+}
+
+async function reloadModelCard(projectId) {
+  try {
+    // Invalidate filename cache so task modal reloads fresh list
+    delete _taskFilenameCache[projectId]
+    const models = await api(`/projects/${projectId}/models`)
+    const canManage = !!document.getElementById(`modelAddInline_${projectId}`)
+    const body = document.getElementById(`modelListBody_${projectId}`)
+    if (body) body.innerHTML = renderModelListRows(projectId, models, canManage)
+    // Update count in header
+    const card = document.getElementById(`modelListCard_${projectId}`)
+    if (card) {
+      const h3 = card.querySelector('h3')
+      if (h3) h3.innerHTML = `<i class="fas fa-cube text-purple-500 mr-2"></i>Danh sách model (${models.length})`
+    }
+    // Also refresh combobox if task modal is open
+    if (!document.getElementById('taskModal')?.classList.contains('hidden')) {
+      _reloadTaskFilenameCombobox(projectId, models)
+    }
+  } catch(e) { console.error('reloadModelCard', e) }
+}
+
+// Inline add one model
+function openAddModelInline(projectId) {
+  const wrap = document.getElementById(`modelAddInline_${projectId}`)
+  if (!wrap) return
+  wrap.style.display = 'flex'
+  const inp = document.getElementById(`modelAddInput_${projectId}`)
+  if (inp) { inp.value = ''; inp.focus() }
+}
+function closeAddModelInline(projectId) {
+  const wrap = document.getElementById(`modelAddInline_${projectId}`)
+  if (wrap) wrap.style.display = 'none'
+}
+async function saveModelInline(projectId) {
+  const inp = document.getElementById(`modelAddInput_${projectId}`)
+  if (!inp) return
+  const name = inp.value.trim()
+  if (!name) { toast('Vui lòng nhập tên model', 'warning'); return }
+  try {
+    await api(`/projects/${projectId}/models`, { method: 'post', data: { name } })
+    closeAddModelInline(projectId)
+    await reloadModelCard(projectId)
+    toast('Đã thêm model')
+  } catch(e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+// Rename inline
+function startModelRename(mid) {
+  const nameEl = document.getElementById(`modelRowName_${mid}`)
+  const editEl = document.getElementById(`modelRowEdit_${mid}`)
+  const btnEdit = document.getElementById(`modelBtnEdit_${mid}`)
+  const btnSave = document.getElementById(`modelBtnSave_${mid}`)
+  const btnCancel = document.getElementById(`modelBtnCancel_${mid}`)
+  if (nameEl) nameEl.classList.add('hidden')
+  if (editEl) { editEl.classList.remove('hidden'); editEl.focus(); editEl.select() }
+  if (btnEdit) btnEdit.classList.add('hidden')
+  if (btnSave) btnSave.classList.remove('hidden')
+  if (btnCancel) btnCancel.classList.remove('hidden')
+}
+function cancelModelRename(mid) {
+  const nameEl = document.getElementById(`modelRowName_${mid}`)
+  const editEl = document.getElementById(`modelRowEdit_${mid}`)
+  const btnEdit = document.getElementById(`modelBtnEdit_${mid}`)
+  const btnSave = document.getElementById(`modelBtnSave_${mid}`)
+  const btnCancel = document.getElementById(`modelBtnCancel_${mid}`)
+  if (nameEl) nameEl.classList.remove('hidden')
+  if (editEl) { editEl.classList.add('hidden'); editEl.value = nameEl?.textContent || '' }
+  if (btnEdit) btnEdit.classList.remove('hidden')
+  if (btnSave) btnSave.classList.add('hidden')
+  if (btnCancel) btnCancel.classList.add('hidden')
+}
+async function saveModelRename(projectId, mid) {
+  const editEl = document.getElementById(`modelRowEdit_${mid}`)
+  if (!editEl) return
+  const name = editEl.value.trim()
+  if (!name) { toast('Tên không được để trống', 'warning'); return }
+  try {
+    await api(`/projects/${projectId}/models/${mid}`, { method: 'put', data: { name } })
+    await reloadModelCard(projectId)
+    toast('Đã đổi tên model')
+  } catch(e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+// Delete model
+function confirmDeleteModel(projectId, mid, name) {
+  showConfirmDelete('Xóa Model', `Xóa model "<strong>${name}</strong>"? Các task dùng tên này sẽ không bị xóa.`,
+    async () => {
+      await api(`/projects/${projectId}/models/${mid}`, { method: 'delete' })
+      await reloadModelCard(projectId)
+      toast('Đã xóa model')
+    }
+  )
+}
+
+// ── Bulk paste dialog ──────────────────────────────────────
+function openBulkPasteModelModal(projectId) {
+  // Create modal dynamically
+  const existing = document.getElementById('bulkPasteModelModal')
+  if (existing) existing.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'bulkPasteModelModal'
+  modal.className = 'modal-overlay'
+  modal.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000;align-items:center;justify-content:center'
+  modal.innerHTML = `
+    <div class="card" style="width:480px;max-width:95vw;max-height:85vh;overflow-y:auto">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="font-bold text-gray-800"><i class="fas fa-paste text-purple-500 mr-2"></i>Thêm nhiều model</h3>
+        <button onclick="document.getElementById('bulkPasteModelModal').remove()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+      </div>
+      <p class="text-xs text-gray-500 mb-2">Dán danh sách tên model (mỗi tên một dòng). Tên trùng sẽ được bỏ qua.</p>
+      <textarea id="bulkModelPasteArea" rows="10"
+        class="input-field w-full text-xs font-mono"
+        placeholder="TKCS-Model Kiến trúc Hầm&#10;TKCS-Model Kết cấu Hầm&#10;TKCS-Model MEP Hầm&#10;..."></textarea>
+      <div id="bulkModelPreview" class="mt-2 text-xs text-gray-500"></div>
+      <div class="flex justify-end gap-2 mt-4">
+        <button onclick="document.getElementById('bulkPasteModelModal').remove()" class="btn-secondary text-xs px-4 py-2">Hủy</button>
+        <button onclick="submitBulkPasteModels(${projectId})" class="btn-primary text-xs px-4 py-2"><i class="fas fa-check mr-1"></i>Tạo model</button>
+      </div>
+    </div>`
+  document.body.appendChild(modal)
+  // Live preview count
+  const ta = document.getElementById('bulkModelPasteArea')
+  const preview = document.getElementById('bulkModelPreview')
+  ta.addEventListener('input', () => {
+    const lines = ta.value.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+    preview.textContent = lines.length > 0 ? `${lines.length} tên sẽ được tạo` : ''
+  })
+  ta.focus()
+  // Close on backdrop click
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove() })
+}
+
+async function submitBulkPasteModels(projectId) {
+  const ta = document.getElementById('bulkModelPasteArea')
+  if (!ta) return
+  const names = ta.value.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+  if (names.length === 0) { toast('Chưa nhập tên model nào', 'warning'); return }
+  try {
+    const res = await api(`/projects/${projectId}/models`, { method: 'post', data: { names } })
+    document.getElementById('bulkPasteModelModal')?.remove()
+    await reloadModelCard(projectId)
+    const created = res.created?.length || 0
+    const skipped = res.skipped || 0
+    toast(`Đã tạo ${created} model${skipped > 0 ? `, bỏ qua ${skipped} trùng lặp` : ''}`)
+  } catch(e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 }
 
 // Categories
@@ -3455,6 +3770,72 @@ async function updateTaskAssigneeByProject(projectId = null, preserveValue = nul
   }
 }
 
+// Show/hide Filename + HSTK fields based on task_type selection
+function updateTaskTypeUI() {
+  const type = $('taskType') ? $('taskType').value : 'model'
+  const isModel = type === 'model'
+  const filenameGrp = $('taskFilenameGroup')
+  const hstkGrp     = $('taskHstkGroup')
+  if (filenameGrp) filenameGrp.style.display = isModel ? '' : 'none'
+  if (hstkGrp)     hstkGrp.style.display     = isModel ? '' : 'none'
+}
+
+// ── Task Filename Combobox helpers ──────────────────────────
+// Cache: projectId → [{value, label}]
+const _taskFilenameCache = {}
+
+async function _loadAndInitTaskFilenameCombobox(projectId, selectedValue) {
+  let items = []
+  if (projectId) {
+    if (!_taskFilenameCache[projectId]) {
+      try {
+        const models = await api(`/projects/${projectId}/models`)
+        _taskFilenameCache[projectId] = models.map(m => ({ value: m.name, label: m.name }))
+      } catch(_) { _taskFilenameCache[projectId] = [] }
+    }
+    items = _taskFilenameCache[projectId] || []
+  }
+  _initTaskFilenameCombobox(items, selectedValue)
+}
+
+function _initTaskFilenameCombobox(items, selectedValue) {
+  const container = $('taskFilenameCombobox')
+  if (!container) return
+  if (_cbState['taskFilenameCombobox']) delete _cbState['taskFilenameCombobox']
+  // Nếu selectedValue không có trong items (vd: model đã xóa khỏi danh sách
+  // nhưng task vẫn giữ tên cũ), tự thêm vào để label hiển thị đúng thay vì placeholder
+  const displayItems = (selectedValue && !items.find(i => i.value === selectedValue))
+    ? [{ value: selectedValue, label: selectedValue }, ...items]
+    : items
+  createCombobox('taskFilenameCombobox', {
+    placeholder: '-- Chọn hoặc gõ tìm model --',
+    items: displayItems,
+    value: selectedValue || '',
+    fullWidth: true,
+    teleport: true,
+    dropdownMaxHeight: '240px',
+    onchange: (val) => {
+      if ($('taskFilename')) $('taskFilename').value = val || ''
+    }
+  })
+  // Sync hidden input
+  if ($('taskFilename')) $('taskFilename').value = selectedValue || ''
+  // Lock if member mode
+  if (window._taskFilenameNeedsLock) {
+    _applyComboboxLock('taskFilenameCombobox')
+  }
+}
+
+function _reloadTaskFilenameCombobox(projectId, models) {
+  // Update cache
+  if (projectId && models) {
+    _taskFilenameCache[projectId] = models.map(m => ({ value: m.name, label: m.name }))
+  }
+  const currentVal = _cbGetValue('taskFilenameCombobox') || ''
+  const items = (projectId && _taskFilenameCache[projectId]) || []
+  _initTaskFilenameCombobox(items, currentVal)
+}
+
 async function openTaskModal(taskId = null, projectId = null) {
   if (!allProjects.length) { allProjects = await api('/projects'); refreshProjectRoleCache() }
   if (!allUsers.length) allUsers = await api('/users')
@@ -3498,9 +3879,25 @@ async function openTaskModal(taskId = null, projectId = null) {
   // Khởi tạo combobox Hạng mục (rỗng, load sau khi chọn dự án)
   _initTaskCategoryCombobox([], false, null)
 
+  // Unlock comboboxes từ lần mở trước (phòng trường hợp lần trước là member-locked)
+  ;['taskProjectComboboxModal','taskDisciplineCombobox','taskFilenameCombobox'].forEach(cbId => {
+    const el = document.getElementById(cbId)
+    if (!el) return
+    const trigger = el.querySelector('[data-cb-trigger]') || el.firstElementChild
+    if (trigger) { trigger.style.pointerEvents = ''; trigger.style.opacity = ''; trigger.style.background = ''; trigger.style.cursor = '' }
+  })
+
+  // Reset UI admin section về trạng thái mặc định trước khi kiểm tra role
+  const adminSection = $('taskAdminSection')
+  const memberSection = $('taskMemberSection')
+  if (adminSection) { adminSection.style.opacity = ''; adminSection.style.pointerEvents = ''; adminSection.style.filter = '' }
+  if (memberSection) { memberSection.style.borderColor = '#6366f1'; memberSection.style.background = 'linear-gradient(135deg,#f5f3ff 0%,#eff6ff 100%)' }
+
   // Tất cả fields đều được chỉnh sửa mặc định - sẽ điều chỉnh sau khi biết task
-  const allFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours']
-  allFields.forEach(id => { const el = $(id); if(el) { el.disabled = false; el.style.opacity = '' } })
+  const allFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours','taskWorkNotes','taskCdeReport','taskHstkDate','taskType','taskFilename']
+  allFields.forEach(id => { const el = $(id); if(el) { el.disabled = false; el.style.opacity = ''; el.style.pointerEvents = ''; el.style.borderColor = '' } })
+  // Reset filename lock flag mỗi lần mở modal
+  window._taskFilenameNeedsLock = false
   // Ẩn banner nếu còn tồn tại từ trước
   const memberBanner = $('taskMemberBanner')
   if (memberBanner) memberBanner.style.display = 'none'
@@ -3520,6 +3917,12 @@ async function openTaskModal(taskId = null, projectId = null) {
       $('taskEstHours').value = task.estimated_hours || 0
       $('taskProgress').value = task.progress || 0
       $('taskProgressLabel').textContent = task.progress || 0
+      if ($('taskWorkNotes')) $('taskWorkNotes').value = task.work_notes || ''
+      if ($('taskCdeReport')) $('taskCdeReport').checked = !!task.cde_report
+      if ($('taskHstkDate')) $('taskHstkDate').value = task.hstk_date || ''
+      if ($('taskType')) { $('taskType').value = task.task_type || 'model'; updateTaskTypeUI() }
+      // Filename combobox will be initialized after project is loaded (below)
+      if ($('taskFilename')) $('taskFilename').value = task.model_filename || ''
 
       // Kiểm tra quyền chỉnh sửa full hay chỉ status/progress
       // - Admin/project admin/leader: full quyền
@@ -3529,38 +3932,55 @@ async function openTaskModal(taskId = null, projectId = null) {
       const isLimitedEdit = isMember && !isOwnTask
 
       if (isLimitedEdit) {
-        // Disable các fields admin-only; giữ taskEstHours để member tự lên kế hoạch giờ
+        // ── Dim toàn bộ admin section (greyed out, không thể click) ──
+        if (adminSection) {
+          adminSection.style.opacity = '0.45'
+          adminSection.style.pointerEvents = 'none'
+          adminSection.style.filter = 'grayscale(0.3)'
+        }
+        // Disable từng field phòng khi submit form
         const limitedFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate']
-        limitedFields.forEach(fid => { const el = $(fid); if(el) { el.disabled = true; el.style.opacity = '0.5' } })
-        // Disable project combobox
-        const projInput = document.getElementById('taskProjectComboboxModalInput')
-        if (projInput) { projInput.disabled = true; projInput.style.opacity = '0.5' }
-        // Hiển thị trường giờ dự kiến với style nổi bật để member biết có thể chỉnh
+        limitedFields.forEach(fid => { const el = $(fid); if(el) { el.disabled = true } })
+        _applyComboboxLock('taskProjectComboboxModal')
+        _applyComboboxLock('taskDisciplineCombobox')
+        const ttEl = $('taskType')
+        if (ttEl) { ttEl.disabled = true; ttEl.style.pointerEvents = 'none' }
+        window._taskFilenameNeedsLock = true
+        // ── Highlight member section nổi bật hơn ──
+        if (memberSection) {
+          memberSection.style.borderColor = '#6366f1'
+          memberSection.style.background = 'linear-gradient(135deg,#f0f9ff 0%,#faf5ff 100%)'
+          memberSection.style.boxShadow = '0 0 0 3px rgba(99,102,241,0.12)'
+        }
+        // Highlight Giờ dự kiến
         const estEl = $('taskEstHours')
         if (estEl) { estEl.disabled = false; estEl.style.opacity = ''; estEl.style.borderColor = '#059669' }
-        // Hiện banner thông báo cập nhật
+        // Banner thông báo
         if (memberBanner) {
           memberBanner.style.display = ''
-          memberBanner.className = 'mb-4 p-3 rounded-lg text-sm bg-blue-50 border border-blue-200 text-blue-800'
-          memberBanner.innerHTML = '<i class="fas fa-info-circle mr-2 text-blue-500"></i>Task này do quản lý tạo. Bạn có thể cập nhật <strong>Trạng thái</strong>, <strong>% tiến độ</strong> và <strong>Giờ dự kiến</strong>.'
+          memberBanner.className = 'px-3 py-2 rounded-lg text-xs bg-indigo-50 border border-indigo-200 text-indigo-800 flex items-start gap-2'
+          memberBanner.innerHTML = '<i class="fas fa-lock mt-0.5 text-indigo-400 flex-shrink-0"></i><span>Phần thông tin phía trên do quản lý thiết lập, bạn chỉ cập nhật trong khung <strong>Thông tin cập nhật</strong> bên dưới.</span>'
         }
         $('taskModalTitle').textContent = 'Cập nhật tiến độ Task'
+      } else {
+        window._taskFilenameNeedsLock = false
       }
 
       // Set dự án trên combobox - set flag trước để onchange giữ nguyên assignee
       if (task.project_id) {
         const proj = allProjects.find(p => p.id === task.project_id)
-        _taskModalPreserveAssignee = task.assigned_to || null  // set flag trước khi trigger onchange
+        _taskModalPreserveAssignee = task.assigned_to || null  // giữ assignee
+        _taskModalInitializing    = true                         // chặn onchange project
         if (proj) _cbSelect('taskProjectComboboxModal', String(proj.id), `${proj.code} - ${proj.name}`)
         $('taskProject').value = task.project_id
       }
 
-      // Load hạng mục và assignee sau khi set project
-      // Không dùng Promise.all vì _cbSelect đã trigger onchange async
-      // Gọi trực tiếp để đảm bảo await đầy đủ
+      // Load hạng mục, assignee, filename sau khi set project
       await _loadAndInitTaskCategoryCombobox(task.project_id, task.category_id, isLimitedEdit)
       await updateTaskAssigneeByProject(task.project_id, task.assigned_to)
+      await _loadAndInitTaskFilenameCombobox(task.project_id, task.model_filename || '')
       _taskModalPreserveAssignee = null  // Xóa flag sau khi đã load xong
+      _taskModalInitializing    = false  // Mở lại onchange
     } catch (e) { toast('Lỗi tải task', 'error'); return }
   } else {
     $('taskTitle').value = ''
@@ -3576,6 +3996,13 @@ async function openTaskModal(taskId = null, projectId = null) {
     $('taskEstHours').value = ''
     $('taskProgress').value = 0
     $('taskProgressLabel').textContent = 0
+    if ($('taskWorkNotes')) $('taskWorkNotes').value = ''
+    if ($('taskCdeReport')) $('taskCdeReport').checked = false
+    if ($('taskHstkDate')) $('taskHstkDate').value = ''
+    if ($('taskType')) { $('taskType').value = 'model'; updateTaskTypeUI() }
+    if ($('taskFilename')) $('taskFilename').value = ''
+    // Init filename combobox empty (will populate on project select)
+    _initTaskFilenameCombobox([], '')
 
     if (projectId) {
       const proj = allProjects.find(p => p.id === projectId)
@@ -3583,7 +4010,8 @@ async function openTaskModal(taskId = null, projectId = null) {
       $('taskProject').value = projectId
       await Promise.all([
         _loadAndInitTaskCategoryCombobox(projectId, null, isMember),
-        updateTaskAssigneeByProject(projectId)
+        updateTaskAssigneeByProject(projectId),
+        _loadAndInitTaskFilenameCombobox(projectId, '')
       ])
     }
   }
@@ -3593,6 +4021,7 @@ async function openTaskModal(taskId = null, projectId = null) {
 
 // ── Helpers cho combobox Dự án trong Task Modal ──────────────────
 let _taskModalPreserveAssignee = null  // Giữ assigned_to khi đang load edit mode
+let _taskModalInitializing    = false  // True khi openTaskModal đang init → chặn onchange project
 
 function _initTaskProjectCombobox(items, locked) {
   createCombobox('taskProjectComboboxModal', {
@@ -3602,7 +4031,7 @@ function _initTaskProjectCombobox(items, locked) {
     onchange: async (val) => {
       $('taskProject').value = val || ''
       // Nếu flag đang được set (đang init edit mode) → bỏ qua onchange, để openTaskModal tự handle
-      if (_taskModalPreserveAssignee !== null) return
+      if (_taskModalInitializing) return
       // Reset category combobox với loading spinner
       const catDiv = document.getElementById('taskCategoryComboboxModal')
       if (catDiv) catDiv.innerHTML = `<div style="padding:6px 10px;font-size:12px;color:#9ca3af"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</div>`
@@ -3610,8 +4039,10 @@ function _initTaskProjectCombobox(items, locked) {
       if (val) {
         await _loadAndInitTaskCategoryCombobox(parseInt(val), null, locked)
         await updateTaskAssigneeByProject(parseInt(val))
+        await _loadAndInitTaskFilenameCombobox(parseInt(val), '')
       } else {
         _initTaskCategoryCombobox([], locked, null)
+        _initTaskFilenameCombobox([], '')
       }
     }
   })
@@ -3685,7 +4116,12 @@ $('taskForm').addEventListener('submit', async (e) => {
     start_date:       $('taskStartDate').value || null,
     due_date:         $('taskDueDate').value || null,
     estimated_hours:  parseFloat($('taskEstHours').value) || 0,
-    progress:         parseInt($('taskProgress').value) || 0
+    progress:         parseInt($('taskProgress').value) || 0,
+    work_notes:       ($('taskWorkNotes') ? $('taskWorkNotes').value.trim() : null) || null,
+    cde_report:       ($('taskCdeReport') && $('taskCdeReport').checked) ? 1 : 0,
+    hstk_date:        ($('taskHstkDate') ? $('taskHstkDate').value.trim() : null) || null,
+    task_type:        $('taskType') ? $('taskType').value : 'model',
+    model_filename:   (_cbGetValue('taskFilenameCombobox') || ($('taskFilename') ? $('taskFilename').value.trim() : null)) || null
   }
   try {
     if (id) await api(`/tasks/${id}`, { method: 'put', data })
@@ -4403,18 +4839,23 @@ function openImageViewer(src, name) {
 function switchProjectTab(tab, projectId) {
   const pid = projectId || window._currentProjectDetailId
   // Show/hide panels
-  const taskPanel   = $('projPanel-tasks')
-  const weeklyPanel = $('projPanel-weekly')
-  const chatPanel   = $('projPanel-chat')
-  if (taskPanel)   taskPanel.style.display   = tab === 'tasks'  ? 'block' : 'none'
-  if (weeklyPanel) weeklyPanel.style.display = tab === 'weekly' ? 'block' : 'none'
+  const taskPanel    = $('projPanel-tasks')
+  const weeklyPanel  = $('projPanel-weekly')
+  const chatPanel    = $('projPanel-chat')
+  const summaryPanel = $('projPanel-summary')
+  if (taskPanel)    taskPanel.style.display    = tab === 'tasks'   ? 'block' : 'none'
+  if (weeklyPanel)  weeklyPanel.style.display  = tab === 'weekly'  ? 'block' : 'none'
   if (chatPanel) {
     chatPanel.classList.remove('hidden')
     chatPanel.style.display = tab === 'chat' ? 'block' : 'none'
   }
+  if (summaryPanel) {
+    summaryPanel.classList.remove('hidden')
+    summaryPanel.style.display = tab === 'summary' ? 'block' : 'none'
+  }
 
   // Update tab buttons
-  ;['tasks','weekly','chat'].forEach(key => {
+  ;['tasks','weekly','chat','summary'].forEach(key => {
     const btn = $(`projTab-${key}`)
     if (btn) btn.className = `tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap${key === tab ? ' active' : ''}`
   })
@@ -4439,6 +4880,529 @@ function switchProjectTab(tab, projectId) {
     // Mark project chat notifications as read & clear badge
     markChatNotifsRead('project', pid)
     updateProjectChatTabBadge(pid)
+  }
+
+  if (tab === 'summary') {
+    const container = $(`workSummaryContainer_${pid}`)
+    if (container && !container._initialized) {
+      container._initialized = true
+      renderWorkSummaryTab(container, pid)
+    }
+  }
+}
+
+// ── Work Summary Tab (Tổng hợp công việc) ─────────────────────────────────
+
+const PHASE_ORDER = ['basic_design','technical_design','construction_design','as_built']
+
+function getPhaseLabelFull(p) {
+  const m = {
+    basic_design:        'TKCS — Thiết kế cơ sở',
+    technical_design:    'TKKT — Thiết kế kỹ thuật',
+    construction_design: 'TKTC — Thiết kế thi công',
+    as_built:            'Hoàn công'
+  }
+  return m[p] || p
+}
+
+function getStatusBadgeSummary(s) {
+  const cfg = {
+    todo:        { cls: 'bg-gray-100 text-gray-500',   label: 'Chờ TH' },
+    in_progress: { cls: 'bg-blue-100 text-blue-700',   label: 'Đang TH' },
+    review:      { cls: 'bg-yellow-100 text-yellow-700',label: 'Duyệt' },
+    completed:   { cls: 'bg-green-100 text-green-700', label: 'Hoàn thành' }
+  }
+  const c = cfg[s] || { cls: 'bg-gray-100 text-gray-500', label: s }
+  return `<span class="px-1.5 py-0.5 rounded text-xs font-medium ${c.cls}">${c.label}</span>`
+}
+
+async function renderWorkSummaryTab(container, projectId) {
+  container.innerHTML = `<div class="flex items-center justify-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</div>`
+  try {
+    const tasks = await api(`/projects/${projectId}/work-summary`)
+    if (!tasks || tasks.length === 0) {
+      container.innerHTML = `<div class="flex flex-col items-center justify-center py-16 text-gray-400">
+        <i class="fas fa-inbox text-4xl mb-3"></i>
+        <p class="text-sm font-medium">Chưa có file model nào</p>
+        <p class="text-xs mt-1">Tổng hợp chỉ hiển thị task loại <strong class="text-blue-500">Mô hình</strong> có điền Filename</p>
+      </div>`
+      return
+    }
+
+    // ── New grouping: Phase → Category → Filename → (disc + assignee) → tasks[]
+    // phaseMap: phase → catMap
+    // catMap:   catKey → { name, fileMap }
+    // fileMap:  fname  → discMap
+    // discMap:  disc   → assigneeMap
+    // assigneeMap: akey → { disc, aid, aname, tasks[] }
+    const phaseMap = new Map()
+    for (const t of tasks) {
+      const phase   = t.phase || 'basic_design'
+      const catKey  = t.category_id ? String(t.category_id) : '__no_cat__'
+      const catName = t.category_name || '(Chưa phân hạng mục)'
+      const disc    = t.discipline_code || '—'
+      const aid     = t.assigned_to || 0
+      const aname   = t.assigned_to_name || '(Chưa phân công)'
+      const fname   = (t.model_filename || '').trim()
+      if (!fname) continue   // bỏ qua task chưa gán filename — không hiện trong tổng hợp
+      const akey    = `${disc}||${aid}`
+
+      if (!phaseMap.has(phase)) phaseMap.set(phase, new Map())
+      const catMap = phaseMap.get(phase)
+      if (!catMap.has(catKey)) catMap.set(catKey, { name: catName, fileMap: new Map() })
+      const fileMap = catMap.get(catKey).fileMap
+      if (!fileMap.has(fname)) fileMap.set(fname, new Map())
+      const discMap = fileMap.get(fname)
+      if (!discMap.has(akey)) discMap.set(akey, { disc, aid, aname, tasks: [] })
+      discMap.get(akey).tasks.push(t)
+    }
+
+    const sortedPhases = [...phaseMap.keys()].sort((a, b) => {
+      const ia = PHASE_ORDER.indexOf(a), ib = PHASE_ORDER.indexOf(b)
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+    })
+
+    const STATUS_RANK = { todo: 0, in_progress: 1, review: 2, completed: 3 }
+
+    // Aggregate tasks within one assignee slot
+    function aggregateSlot(taskList) {
+      let worstStatus = 'completed', totalPct = 0, hstk = '', notes = '', cde = 0
+      for (const t of taskList) {
+        if ((STATUS_RANK[t.status] ?? 0) < (STATUS_RANK[worstStatus] ?? 0)) worstStatus = t.status
+        totalPct += (t.progress || 0)
+        if (t.hstk_date && !hstk) hstk = t.hstk_date
+        if (t.work_notes && !notes) notes = t.work_notes
+        if (t.cde_report) cde = 1
+      }
+      return { status: worstStatus, progress: Math.round(totalPct / taskList.length), hstk, notes, cde, repId: taskList[0].id, tasks: taskList }
+    }
+
+    // Aggregate across all assignee slots for a filename
+    function aggregateFile(discMap) {
+      const allTasks = []
+      discMap.forEach(slot => allTasks.push(...slot.tasks))
+      return aggregateSlot(allTasks)
+    }
+
+    // Count helpers
+    let totalFiles = 0
+    phaseMap.forEach(cm => cm.forEach(cat => totalFiles += cat.fileMap.size))
+
+    // ── Unique group ID for collapse/expand
+    let _gid = 0
+    const gid = () => `wsg${_gid++}`
+
+    let html = `
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm text-gray-500">
+          <i class="fas fa-file-code mr-1 text-blue-400"></i>
+          <strong>${totalFiles}</strong> file model · <span class="text-gray-400">${tasks.length} task liên quan</span>
+        </span>
+        <div class="flex items-center gap-3">
+          <button onclick="wsSummaryExpandAll()" class="text-xs text-gray-500 hover:text-blue-600"><i class="fas fa-expand-alt mr-1"></i>Mở hết</button>
+          <button onclick="wsSummaryCollapseAll()" class="text-xs text-gray-500 hover:text-blue-600"><i class="fas fa-compress-alt mr-1"></i>Thu hết</button>
+          <button onclick="renderWorkSummaryTab($('workSummaryContainer_${projectId}'), ${projectId})"
+            class="text-xs text-blue-500 hover:text-blue-700"><i class="fas fa-sync-alt mr-1"></i>Làm mới</button>
+        </div>
+      </div>
+      <div class="overflow-x-auto" id="wsSummaryTable_${projectId}">
+      <table class="w-full text-xs border-collapse" style="min-width:980px">
+        <thead>
+          <tr class="bg-gray-100 text-gray-500 text-left">
+            <th class="py-2 px-3 font-semibold border border-gray-200" style="min-width:280px">Filename / Bộ môn / Người phụ trách</th>
+            <th class="py-2 px-3 font-semibold border border-gray-200 text-center" style="width:95px">Trạng thái</th>
+            <th class="py-2 px-3 font-semibold border border-gray-200 text-center" style="width:65px">% HT</th>
+            <th class="py-2 px-3 font-semibold border border-gray-200" style="min-width:155px">Theo HSTK nào</th>
+            <th class="py-2 px-3 font-semibold border border-gray-200 text-center" style="width:85px">BC CDE</th>
+            <th class="py-2 px-3 font-semibold border border-gray-200" style="min-width:160px">Ghi chú</th>
+          </tr>
+        </thead>
+        <tbody>`
+
+    for (const phase of sortedPhases) {
+      const catMap = phaseMap.get(phase)
+      let phaseFiles = 0
+      catMap.forEach(cat => phaseFiles += cat.fileMap.size)
+      const phaseGid = gid()
+
+      // ── PHASE ROW (collapsible) ──────────────────────────────────
+      html += `
+        <tr class="ws-phase-hdr" data-gid="${phaseGid}" style="background:#1e3a5f;cursor:pointer"
+            onclick="wsToggleGroup('${phaseGid}')">
+          <td colspan="6" class="py-2 px-3 font-bold text-white text-sm select-none">
+            <i id="ws-ico-${phaseGid}" class="fas fa-chevron-down mr-2 opacity-70" style="font-size:10px;transition:transform .2s"></i>
+            <i class="fas fa-layer-group mr-1.5 opacity-70"></i>${getPhaseLabelFull(phase)}
+            <span class="ml-2 text-xs font-normal opacity-60">(${phaseFiles} file)</span>
+          </td>
+        </tr>`
+
+      for (const [, catData] of catMap) {
+        const catFiles = catData.fileMap.size
+        const catGid = gid()
+
+        // ── CATEGORY ROW (collapsible, child of phase) ───────────
+        html += `
+          <tr class="ws-group-row ws-child-${phaseGid}" data-gid="${catGid}" style="background:#dbeafe;cursor:pointer"
+              onclick="wsToggleGroup('${catGid}')">
+            <td colspan="6" class="py-1.5 px-4 font-semibold text-blue-800 text-xs select-none">
+              <i id="ws-ico-${catGid}" class="fas fa-chevron-down mr-1.5 text-blue-400" style="font-size:9px;transition:transform .2s"></i>
+              <i class="fas fa-folder-open mr-1.5 text-blue-500"></i>${catData.name}
+              <span class="ml-2 font-normal text-blue-500">(${catFiles} file)</span>
+            </td>
+          </tr>`
+
+        let fileIdx = 0
+        for (const [fname, discMap] of catData.fileMap) {
+          fileIdx++
+          const fileAgg = aggregateFile(discMap)
+          const fileGid = gid()
+          const assigneeCount = discMap.size
+          const rowBg = fileIdx % 2 === 0 ? '#ffffff' : '#fafafa'
+
+          const pctColor = fileAgg.status === 'completed' ? '#10b981'
+            : fileAgg.status === 'review' ? '#f59e0b'
+            : fileAgg.status === 'in_progress' ? '#3b82f6' : '#d1d5db'
+
+          const hstkDisplay = fileAgg.hstk
+            ? `<div class="hstk-display cursor-pointer hover:bg-yellow-50 rounded px-1 py-0.5 text-gray-700 leading-snug"
+                 onclick="editHstkDate(this, ${fileAgg.repId}, ${projectId})" title="Click để sửa">${fileAgg.hstk}</div>`
+            : `<button class="text-gray-300 hover:text-blue-500 italic"
+                 onclick="editHstkDate(this.parentElement, ${fileAgg.repId}, ${projectId})">+ Theo HSTK...</button>`
+
+          const notesDisplay = fileAgg.notes
+            ? `<div class="text-gray-700 leading-relaxed work-notes-display cursor-pointer hover:bg-yellow-50 rounded px-1 py-0.5"
+                 onclick="editWorkNotes(this, ${fileAgg.repId}, ${projectId})" title="Click để sửa">${fileAgg.notes}</div>`
+            : `<button class="text-gray-300 hover:text-blue-500 italic"
+                 onclick="editWorkNotes(this.parentElement, ${fileAgg.repId}, ${projectId})">+ Ghi chú...</button>`
+
+          // ── FILENAME ROW (collapsible → shows disc/assignee breakdown) ──
+          html += `
+            <tr class="ws-group-row ws-child-${catGid}" data-gid="${fileGid}"
+                style="background:${rowBg};border-bottom:1px solid #e5e7eb;cursor:pointer"
+                onclick="wsToggleGroup('${fileGid}')">
+              <td class="py-2 px-3 border-l border-r border-gray-100" style="padding-left:2rem">
+                <div class="flex items-center gap-1.5">
+                  <i id="ws-ico-${fileGid}" class="fas fa-chevron-right text-gray-400" style="font-size:9px;transition:transform .2s;flex-shrink:0"></i>
+                  <i class="fas fa-file-alt text-indigo-400 flex-shrink-0" style="font-size:11px"></i>
+                  <span class="font-semibold text-gray-800 leading-snug break-all" style="font-size:11px">${fname}</span>
+                  <span class="ml-1 text-gray-400 font-normal flex-shrink-0"
+                    style="font-size:9px;background:#f3f4f6;border-radius:8px;padding:1px 6px">${assigneeCount} BM</span>
+                </div>
+              </td>
+              <td class="py-2 px-2 border-r border-gray-100 text-center" onclick="event.stopPropagation()">
+                ${getStatusBadgeSummary(fileAgg.status)}
+              </td>
+              <td class="py-2 px-2 border-r border-gray-100 text-center" onclick="event.stopPropagation()">
+                <div class="flex flex-col items-center gap-0.5">
+                  <div class="w-full bg-gray-200 rounded-full" style="height:4px;min-width:36px">
+                    <div class="rounded-full" style="height:4px;width:${fileAgg.progress}%;background:${pctColor}"></div>
+                  </div>
+                  <span class="font-semibold text-gray-600" style="font-size:10px">${fileAgg.progress}%</span>
+                </div>
+              </td>
+              <td class="py-2 px-2 border-r border-gray-100" onclick="event.stopPropagation()">
+                <div class="hstk-cell" data-task-id="${fileAgg.repId}">${hstkDisplay}</div>
+              </td>
+              <td class="py-2 px-2 border-r border-gray-100 text-center" style="${fileAgg.cde ? 'background:#f0fdf4' : ''}" onclick="event.stopPropagation()">
+                <label class="inline-flex flex-col items-center cursor-pointer gap-0.5" title="Báo cáo CDE">
+                  <input type="checkbox" class="cde-toggle w-3.5 h-3.5 accent-green-500 cursor-pointer"
+                    data-task-id="${fileAgg.repId}" ${fileAgg.cde ? 'checked' : ''}
+                    onchange="toggleCdeReport(this, ${fileAgg.repId}, ${projectId})">
+                  <span class="${fileAgg.cde ? 'text-green-600 font-medium' : 'text-gray-400'}" style="font-size:9px">${fileAgg.cde ? 'Đã tạo' : 'Chưa'}</span>
+                </label>
+              </td>
+              <td class="py-2 px-2 border-r border-gray-100" onclick="event.stopPropagation()">
+                <div class="work-notes-cell" data-task-id="${fileAgg.repId}" data-project-id="${projectId}">${notesDisplay}</div>
+              </td>
+            </tr>`
+
+          // ── ASSIGNEE ROWS (children of filename, collapsed by default) ──
+          // Group by disc first, then assignees under each disc
+          const discGrouped = new Map() // disc → [{ akey, slot }]
+          for (const [akey, slot] of discMap) {
+            if (!discGrouped.has(slot.disc)) discGrouped.set(slot.disc, [])
+            discGrouped.get(slot.disc).push({ akey, slot })
+          }
+
+          for (const [disc, slots] of discGrouped) {
+            const discGid = gid()
+
+            // ── DISCIPLINE SUB-ROW ────────────────────────────────
+            html += `
+              <tr class="ws-group-row ws-child-${fileGid}" data-gid="${discGid}"
+                  style="display:none;background:#f0fdf4;cursor:pointer"
+                  onclick="wsToggleGroup('${discGid}')">
+                <td colspan="6" class="py-1.5 border-r border-gray-100" style="padding-left:3.5rem">
+                  <span class="flex items-center gap-1.5 text-green-800 font-semibold">
+                    <i id="ws-ico-${discGid}" class="fas fa-chevron-down text-green-500" style="font-size:8px;transition:transform .2s"></i>
+                    <i class="fas fa-drafting-compass text-green-500" style="font-size:10px"></i>
+                    <span style="font-size:11px">${disc}</span>
+                    <span class="text-green-500 font-normal" style="font-size:9px">(${slots.length} người)</span>
+                  </span>
+                </td>
+              </tr>`
+
+            // ── ASSIGNEE ROWS ─────────────────────────────────────
+            for (const { slot } of slots) {
+              const slotAgg = aggregateSlot(slot.tasks)
+              const slotPctColor = slotAgg.status === 'completed' ? '#10b981'
+                : slotAgg.status === 'review' ? '#f59e0b'
+                : slotAgg.status === 'in_progress' ? '#3b82f6' : '#d1d5db'
+
+              const slotHstk = slotAgg.hstk
+                ? `<div class="hstk-display cursor-pointer hover:bg-yellow-50 rounded px-1 py-0.5 text-gray-700 leading-snug"
+                     onclick="editHstkDate(this, ${slotAgg.repId}, ${projectId})" title="Click để sửa">${slotAgg.hstk}</div>`
+                : `<button class="text-gray-300 hover:text-blue-500 italic"
+                     onclick="editHstkDate(this.parentElement, ${slotAgg.repId}, ${projectId})">+ Theo HSTK...</button>`
+
+              const slotNotes = slotAgg.notes
+                ? `<div class="text-gray-700 leading-relaxed work-notes-display cursor-pointer hover:bg-yellow-50 rounded px-1 py-0.5"
+                     onclick="editWorkNotes(this, ${slotAgg.repId}, ${projectId})" title="Click để sửa">${slotAgg.notes}</div>`
+                : `<button class="text-gray-300 hover:text-blue-500 italic"
+                     onclick="editWorkNotes(this.parentElement, ${slotAgg.repId}, ${projectId})">+ Ghi chú...</button>`
+
+              // task sub-list if >1 task
+              const taskBadge = slot.tasks.length > 1
+                ? `<span class="ml-1 bg-blue-100 text-blue-600 px-1 py-0.5 rounded cursor-pointer"
+                     style="font-size:9px" title="${slot.tasks.map(t => t.title).join('&#10;')}"
+                     onclick="event.stopPropagation();toggleFileTasks(this)">
+                     ${slot.tasks.length} task <i class="fas fa-chevron-down" style="font-size:7px"></i>
+                   </span>` : ''
+
+              const subTasksHtml = slot.tasks.length > 1
+                ? `<div class="file-subtasks hidden mt-1 pl-2 border-l-2 border-blue-200 space-y-0.5">
+                    ${slot.tasks.map((t, i) => `
+                      <div class="flex items-center gap-1.5 py-0.5">
+                        <span class="text-gray-300 font-mono" style="font-size:9px;min-width:12px">${i+1}.</span>
+                        <span class="text-gray-500 leading-snug" style="font-size:10px">${t.title}</span>
+                        ${getStatusBadgeSummary(t.status)}
+                      </div>`).join('')}
+                  </div>` : ''
+
+              html += `
+                <tr class="ws-group-row ws-child-${discGid}" data-rep-id="${slotAgg.repId}"
+                    style="display:none;background:#fff;border-bottom:1px solid #f1f5f9"
+                    onclick="event.stopPropagation()">
+                  <td class="py-2 px-3 border-l border-r border-gray-100" style="padding-left:5rem">
+                    <div class="flex items-start gap-1.5">
+                      <i class="fas fa-user text-gray-300 mt-0.5 flex-shrink-0" style="font-size:10px"></i>
+                      <div class="flex-1 min-w-0">
+                        <div class="flex items-center flex-wrap gap-1">
+                          <span class="text-gray-700 font-medium" style="font-size:11px">${slot.aname}</span>
+                          ${taskBadge}
+                        </div>
+                        ${subTasksHtml}
+                      </div>
+                    </div>
+                  </td>
+                  <td class="py-2 px-2 border-r border-gray-100 text-center">${getStatusBadgeSummary(slotAgg.status)}</td>
+                  <td class="py-2 px-2 border-r border-gray-100 text-center">
+                    <div class="flex flex-col items-center gap-0.5">
+                      <div class="w-full bg-gray-200 rounded-full" style="height:4px;min-width:36px">
+                        <div class="rounded-full" style="height:4px;width:${slotAgg.progress}%;background:${slotPctColor}"></div>
+                      </div>
+                      <span class="font-semibold text-gray-600" style="font-size:10px">${slotAgg.progress}%</span>
+                    </div>
+                  </td>
+                  <td class="py-2 px-2 border-r border-gray-100">
+                    <div class="hstk-cell" data-task-id="${slotAgg.repId}">${slotHstk}</div>
+                  </td>
+                  <td class="py-2 px-2 border-r border-gray-100 text-center" style="${slotAgg.cde ? 'background:#f0fdf4' : ''}">
+                    <label class="inline-flex flex-col items-center cursor-pointer gap-0.5">
+                      <input type="checkbox" class="cde-toggle w-3.5 h-3.5 accent-green-500 cursor-pointer"
+                        data-task-id="${slotAgg.repId}" ${slotAgg.cde ? 'checked' : ''}
+                        onchange="toggleCdeReport(this, ${slotAgg.repId}, ${projectId})">
+                      <span class="${slotAgg.cde ? 'text-green-600 font-medium' : 'text-gray-400'}" style="font-size:9px">${slotAgg.cde ? 'Đã tạo' : 'Chưa'}</span>
+                    </label>
+                  </td>
+                  <td class="py-2 px-2 border-r border-gray-100">
+                    <div class="work-notes-cell" data-task-id="${slotAgg.repId}" data-project-id="${projectId}">${slotNotes}</div>
+                  </td>
+                </tr>`
+            }
+          }
+        }
+      }
+    }
+
+    html += `</tbody></table></div>`
+    container.innerHTML = html
+  } catch (e) {
+    container.innerHTML = `<div class="text-red-500 text-sm p-4"><i class="fas fa-exclamation-triangle mr-2"></i>Lỗi tải dữ liệu: ${e.message}</div>`
+  }
+}
+
+// ── Group collapse/expand ─────────────────────────────────────────────────────
+function wsToggleGroup(gid) {
+  // Toggle children rows
+  const children = document.querySelectorAll(`.ws-child-${gid}`)
+  if (!children.length) return
+  // Detect current state from first child
+  const isHidden = children[0].style.display === 'none'
+  children.forEach(row => {
+    row.style.display = isHidden ? '' : 'none'
+    // Collapse grandchildren when hiding
+    if (!isHidden) {
+      const childGid = row.getAttribute('data-gid')
+      if (childGid) {
+        const grandchildren = document.querySelectorAll(`.ws-child-${childGid}`)
+        grandchildren.forEach(gr => { gr.style.display = 'none' })
+        const gico = document.getElementById(`ws-ico-${childGid}`)
+        if (gico) { gico.style.transform = ''; gico.className = gico.className.replace('fa-chevron-down','fa-chevron-right').replace('fa-chevron-up','fa-chevron-right') }
+      }
+    }
+  })
+  // Rotate icon
+  const ico = document.getElementById(`ws-ico-${gid}`)
+  if (ico) {
+    const isNowVisible = isHidden
+    if (isNowVisible) {
+      ico.style.transform = 'rotate(0deg)'
+      ico.className = ico.className.replace('fa-chevron-right','fa-chevron-down')
+    } else {
+      ico.style.transform = 'rotate(-90deg)'
+      ico.className = ico.className.replace('fa-chevron-down','fa-chevron-right')
+    }
+  }
+}
+
+function wsSummaryExpandAll() {
+  document.querySelectorAll('.ws-group-row').forEach(row => { row.style.display = '' })
+  document.querySelectorAll('[id^="ws-ico-"]').forEach(ico => {
+    ico.style.transform = 'rotate(0deg)'
+    ico.className = ico.className.replace('fa-chevron-right','fa-chevron-down')
+  })
+}
+
+function wsSummaryCollapseAll() {
+  document.querySelectorAll('.ws-group-row').forEach(row => { row.style.display = 'none' })
+  document.querySelectorAll('[id^="ws-ico-"]').forEach(ico => {
+    ico.style.transform = 'rotate(-90deg)'
+    ico.className = ico.className.replace('fa-chevron-down','fa-chevron-right')
+  })
+}
+
+// Toggle sub-task list expand/collapse under an assignee row
+function toggleFileTasks(btn) {
+  const row = btn.closest('tr')
+  const subDiv = row && row.querySelector('.file-subtasks')
+  if (!subDiv) return
+  const isHidden = subDiv.classList.contains('hidden')
+  subDiv.classList.toggle('hidden', !isHidden)
+  const icon = btn.querySelector('i')
+  if (icon) { icon.className = isHidden ? 'fas fa-chevron-up' : 'fas fa-chevron-down'; icon.style.fontSize = '7px' }
+}
+
+
+async function toggleCdeReport(checkbox, taskId, projectId) {
+  const val = checkbox.checked ? 1 : 0
+  try {
+    await api(`/tasks/${taskId}`, { method: 'put', data: { cde_report: val } })
+    // Update label span next to checkbox
+    const cell = checkbox.closest('td')
+    const label = cell.querySelector('span[style*="font-size:9px"]') || cell.querySelector('span')
+    if (label) {
+      if (val) {
+        label.textContent = 'Đã tạo'
+        label.className = 'text-green-600 font-medium'
+      } else {
+        label.textContent = 'Chưa'
+        label.className = 'text-gray-400'
+      }
+      label.style.fontSize = '9px'
+    }
+    cell.style.background = val ? '#f0fdf4' : ''
+    toast(val ? 'Đã đánh dấu Báo cáo CDE' : 'Đã bỏ đánh dấu CDE', 'success')
+  } catch (e) {
+    checkbox.checked = !checkbox.checked // revert
+    toast('Lỗi cập nhật: ' + e.message, 'error')
+  }
+}
+
+// ── HSTK Date inline editing ──────────────────────────────────────────────
+function editHstkDate(cell, taskId, projectId) {
+  // cell may be the .hstk-display div or the .hstk-cell wrapper
+  const wrapper = cell.classList.contains('hstk-cell') ? cell : cell.closest('.hstk-cell') || cell.parentElement
+  const current = wrapper.querySelector('.hstk-display')?.textContent?.trim() || ''
+  wrapper.innerHTML = `
+    <input type="text" class="w-full border border-blue-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+      style="font-size:11px" placeholder="VD: Theo HSTK ngày 01/01/2025" value="${current}">
+    <div class="flex gap-1 mt-1">
+      <button class="bg-blue-500 text-white px-2 py-0.5 rounded hover:bg-blue-600" style="font-size:10px"
+        onclick="saveHstkDate(this.closest('.hstk-cell'), ${taskId}, ${projectId})">Lưu</button>
+      <button class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded hover:bg-gray-200" style="font-size:10px"
+        onclick="cancelHstkDate(this.closest('.hstk-cell'), ${taskId}, '${current.replace(/'/g,"\\'")}')">Hủy</button>
+    </div>`
+  wrapper.querySelector('input').focus()
+}
+
+async function saveHstkDate(wrapper, taskId, projectId) {
+  const input = wrapper.querySelector('input')
+  const val = input ? input.value.trim() : ''
+  try {
+    await api(`/tasks/${taskId}`, { method: 'put', data: { hstk_date: val } })
+    if (val) {
+      wrapper.innerHTML = `<div class="hstk-display cursor-pointer hover:bg-yellow-50 rounded px-1 py-0.5 text-gray-700"
+        onclick="editHstkDate(this, ${taskId}, ${projectId})" title="Click để sửa">${val}</div>`
+    } else {
+      wrapper.innerHTML = `<button class="text-gray-300 hover:text-blue-500 italic"
+        onclick="editHstkDate(this.parentElement, ${taskId}, ${projectId})">+ Theo HSTK...</button>`
+    }
+    toast('Đã lưu HSTK', 'success')
+  } catch (e) {
+    toast('Lỗi lưu HSTK: ' + e.message, 'error')
+  }
+}
+
+function cancelHstkDate(wrapper, taskId, currentVal) {
+  if (currentVal) {
+    wrapper.innerHTML = `<div class="hstk-display cursor-pointer hover:bg-yellow-50 rounded px-1 py-0.5 text-gray-700"
+      onclick="editHstkDate(this, ${taskId}, window._currentProjectDetailId)" title="Click để sửa">${currentVal}</div>`
+  } else {
+    wrapper.innerHTML = `<button class="text-gray-300 hover:text-blue-500 italic"
+      onclick="editHstkDate(this.parentElement, ${taskId}, window._currentProjectDetailId)">+ Theo HSTK...</button>`
+  }
+}
+
+function editWorkNotes(cell, taskId, projectId) {
+  const current = cell.querySelector('.work-notes-display')?.textContent?.trim() || ''
+  cell.innerHTML = `
+    <textarea class="w-full text-xs border border-blue-300 rounded px-2 py-1 resize-none focus:outline-none focus:ring-1 focus:ring-blue-400"
+      rows="3" style="min-width:140px">${current}</textarea>
+    <div class="flex gap-1 mt-1">
+      <button class="text-xs bg-blue-500 text-white px-2 py-0.5 rounded hover:bg-blue-600"
+        onclick="saveWorkNotes(this.closest('.work-notes-cell'), ${taskId}, ${projectId})">Lưu</button>
+      <button class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded hover:bg-gray-200"
+        onclick="cancelWorkNotes(this.closest('.work-notes-cell'), ${taskId}, '${current.replace(/'/g,"\\'")}')">Hủy</button>
+    </div>`
+  cell.querySelector('textarea').focus()
+}
+
+async function saveWorkNotes(cell, taskId, projectId) {
+  const textarea = cell.querySelector('textarea')
+  const notes = textarea ? textarea.value.trim() : ''
+  try {
+    await api(`/tasks/${taskId}`, { method: 'put', data: { work_notes: notes } })
+    if (notes) {
+      cell.innerHTML = `<div class="text-gray-700 text-xs leading-relaxed work-notes-display cursor-pointer hover:bg-yellow-50 rounded px-1 py-0.5"
+        onclick="editWorkNotes(this.parentElement, ${taskId}, ${projectId})" title="Click để sửa">${notes}</div>`
+    } else {
+      cell.innerHTML = `<button class="text-xs text-gray-300 hover:text-blue-500 italic"
+        onclick="editWorkNotes(this.parentElement, ${taskId}, ${projectId})">+ Ghi chú...</button>`
+    }
+    toast('Đã lưu ghi chú', 'success')
+  } catch (e) {
+    toast('Lỗi lưu ghi chú: ' + e.message, 'error')
+  }
+}
+
+function cancelWorkNotes(cell, taskId, currentNotes) {
+  if (currentNotes) {
+    cell.innerHTML = `<div class="text-gray-700 text-xs leading-relaxed work-notes-display cursor-pointer hover:bg-yellow-50 rounded px-1 py-0.5"
+      onclick="editWorkNotes(this.parentElement, ${taskId}, window._currentProjectDetailId)" title="Click để sửa">${currentNotes}</div>`
+  } else {
+    cell.innerHTML = `<button class="text-xs text-gray-300 hover:text-blue-500 italic"
+      onclick="editWorkNotes(this.parentElement, ${taskId}, window._currentProjectDetailId)">+ Ghi chú...</button>`
   }
 }
 
@@ -7857,7 +8821,12 @@ function renderCostTable() {
       <th class="pb-3 pr-3">Số HĐ</th>
       <th class="pb-3 pr-3">Ngày</th>
       <th class="pb-3 pr-3">Trạng thái</th>
-      <th class="pb-3 pr-3 text-right">Số tiền</th>
+      <th class="pb-3 pr-3 text-right">
+        <span title="Số tiền theo Hợp Đồng — số tiền gốc khách hàng thanh toán, chưa trừ phí quản lý">Theo HĐ <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
+      </th>
+      <th class="pb-3 pr-3 text-right">
+        <span title="Số tiền theo Ngân Sách — doanh thu thực ghi nhận sau khi trừ % phí quản lý. Công thức: Theo HĐ × (1 − % phí QL)">Theo NS <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
+      </th>
       <th class="pb-3 pr-3 text-center">Nguồn</th>
     </tr>`
     const payColors  = { pending: 'badge-todo', processing: 'badge-in_progress', partial: 'badge-in_progress', paid: 'badge-completed', rejected: 'badge-canceled' }
@@ -7867,10 +8836,11 @@ function renderCostTable() {
     const displayRevenues = allRevenues.filter(r => r.payment_status !== 'pending')
 
     // Tính tổng theo trạng thái
-    const revTotalPaid    = displayRevenues.filter(r => r.payment_status === 'paid').reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalPartial = displayRevenues.filter(r => r.payment_status === 'partial').reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalAll     = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalCollected = revTotalPaid + revTotalPartial
+    const revTotalCollected    = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.amount || 0), 0)
+    const revTotalAll          = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
+    // Tổng "theo HĐ" = paid_amount_original (trước phí QL)
+    const revTotalOrigCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
+    const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
 
     tbody.innerHTML = displayRevenues.map(r => {
       // Hiển thị ngày thông minh:
@@ -7884,6 +8854,17 @@ function renderCostTable() {
       } else {
         dateCell = fmtDate(r.revenue_date)
       }
+
+      // Tính cột "Theo HĐ" và "Theo NS"
+      const origAmount = r.paid_amount_original || r.amount || 0
+      const netAmount  = r.amount || 0
+      const feePct     = r.fee_pct || 0
+      // Chỉ hiện cột phí khi có fee > 0 và 2 số khác nhau
+      const hasFee     = feePct > 0 && origAmount !== netAmount
+      const feeTooltip = hasFee
+        ? `title="Phí QL ${feePct}%: ${fmt(origAmount)} × ${100 - feePct}% = ${fmt(netAmount)}"`
+        : ''
+
       return `
       <tr class="table-row ${r.payment_status === 'pending' ? 'bg-amber-50/40' : ''}">
         <td class="py-2 pr-3 text-sm font-medium">${r.project_code || '-'}</td>
@@ -7891,24 +8872,32 @@ function renderCostTable() {
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${dateCell}</td>
         <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'}">${fmt(r.amount)}</td>
+        <td class="py-2 pr-3 text-sm text-right ${hasFee ? 'text-gray-500' : (r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600')} ${hasFee ? '' : 'font-bold'}">
+          ${fmt(origAmount)}
+        </td>
+        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${feeTooltip}>
+          ${fmt(netAmount)}
+          ${hasFee ? `<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>` : ''}
+        </td>
         <td class="py-2 pr-3 text-center">
           <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
             <i class="fas fa-${r.source === 'payment_request' ? 'file-invoice' : 'sync-alt'} mr-1"></i>${r.source === 'payment_request' ? 'Hồ Sơ PL' : 'Tình trạng TT'}
           </span>
         </td>
       </tr>`
-    }).join('') || '<tr><td colspan="7" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
+    }).join('') || '<tr><td colspan="8" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
 
     // ── Tổng cộng footer ──────────────────────────────────────────
     const revTfoot = document.getElementById('revTfoot')
     if (revTfoot) {
+      const countCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).length
       revTfoot.innerHTML = `
         <tr class="border-t-2 border-green-200 bg-green-50/60">
           <td colspan="5" class="py-2 px-0 font-semibold text-green-700 text-xs">
             <i class="fas fa-check-circle mr-1 text-green-500"></i>
-            Đã thu (paid + partial) — ${displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).length} khoản
+            Đã thu (paid + partial) — ${countCollected} khoản
           </td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-500 text-sm whitespace-nowrap">${fmt(revTotalOrigCollected)}</td>
           <td class="py-2 pr-3 text-right font-bold text-green-700 text-sm whitespace-nowrap">${fmt(revTotalCollected)}</td>
           <td></td>
         </tr>
@@ -7916,6 +8905,7 @@ function renderCostTable() {
           <td colspan="5" class="py-2 px-0 font-semibold text-gray-600 text-xs">
             <i class="fas fa-sigma mr-1"></i>Tổng cộng (${displayRevenues.length} khoản)
           </td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-400 text-sm whitespace-nowrap">${fmt(revTotalOrigAll)}</td>
           <td class="py-2 pr-3 text-right font-bold text-gray-700 text-sm whitespace-nowrap">${fmt(revTotalAll)}</td>
           <td></td>
         </tr>`
@@ -12653,6 +13643,112 @@ document.addEventListener('DOMContentLoaded', () => {
 })
 
 // ============================================================
+// DATA MAINTENANCE TOOLS (Công cụ bảo trì dữ liệu)
+// ============================================================
+
+async function resyncAllRevenues() {
+  const btn = $('btnResyncRevenues')
+  const resultPanel = $('resyncRevenueResult')
+  const resultContent = $('resyncRevenueContent')
+
+  // Confirm trước khi chạy
+  if (!confirm('Chạy re-sync sẽ tính lại số tiền doanh thu cho TẤT CẢ đợt thanh toán đã paid/partial dựa trên % phí QL của từng dự án.\n\nTiếp tục?')) return
+
+  // Loading state
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xử lý...'
+  resultPanel.classList.add('hidden')
+
+  try {
+    const res = await api('/legal/resync-revenues-all', { method: 'POST' })
+
+    // Hiển thị kết quả
+    resultPanel.classList.remove('hidden')
+
+    if (res.errors && res.errors.length > 0) {
+      resultContent.innerHTML = `
+        <div class="flex items-center gap-2 mb-3">
+          <i class="fas fa-exclamation-triangle text-amber-500 text-lg"></i>
+          <span class="font-semibold text-amber-800">Hoàn thành với cảnh báo</span>
+        </div>
+        <div class="grid grid-cols-3 gap-3 mb-3">
+          <div class="bg-white rounded-lg p-3 border border-orange-200 text-center">
+            <div class="text-2xl font-bold text-orange-700">${res.synced}</div>
+            <div class="text-xs text-gray-500 mt-1">Đã sync thành công</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 border border-orange-200 text-center">
+            <div class="text-2xl font-bold text-red-600">${res.errors.length}</div>
+            <div class="text-xs text-gray-500 mt-1">Lỗi</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 border border-orange-200 text-center">
+            <div class="text-2xl font-bold text-gray-700">${res.total}</div>
+            <div class="text-xs text-gray-500 mt-1">Tổng đợt thanh toán</div>
+          </div>
+        </div>
+        <div class="bg-red-50 rounded p-3 text-sm text-red-700">
+          <p class="font-medium mb-1">Chi tiết lỗi:</p>
+          ${res.errors.map(e => `<div class="ml-2">• ${e}</div>`).join('')}
+        </div>
+      `
+    } else if (res.total === 0) {
+      resultContent.innerHTML = `
+        <div class="flex items-center gap-3 p-3 bg-blue-50 rounded-lg">
+          <i class="fas fa-info-circle text-blue-500 text-xl"></i>
+          <div>
+            <p class="font-semibold text-blue-800">Không có dữ liệu cần sync</p>
+            <p class="text-sm text-blue-600">Chưa có đợt thanh toán nào ở trạng thái <strong>paid</strong> hoặc <strong>partial</strong>.</p>
+          </div>
+        </div>
+      `
+    } else {
+      resultContent.innerHTML = `
+        <div class="flex items-center gap-2 mb-3">
+          <i class="fas fa-check-circle text-green-500 text-lg"></i>
+          <span class="font-semibold text-green-800">Re-sync hoàn tất thành công!</span>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-white rounded-lg p-3 border border-green-200 text-center">
+            <div class="text-3xl font-bold text-green-600">${res.synced}</div>
+            <div class="text-sm text-gray-500 mt-1">Bản ghi doanh thu đã cập nhật</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 border border-green-200 text-center">
+            <div class="text-3xl font-bold text-gray-700">${res.total}</div>
+            <div class="text-sm text-gray-500 mt-1">Tổng đợt thanh toán đã xử lý</div>
+          </div>
+        </div>
+        <p class="text-xs text-green-600 mt-3">
+          <i class="fas fa-info-circle mr-1"></i>
+          Tất cả bản ghi doanh thu đã được tính lại theo công thức:
+          <code class="bg-green-100 px-1 rounded font-mono">Doanh thu = Số tiền × (1 − % Phí QL)</code>
+        </p>
+      `
+    }
+
+    if (res.synced > 0) {
+      toast(`✅ Re-sync thành công ${res.synced}/${res.total} bản ghi doanh thu`, 'success')
+    } else if (res.total === 0) {
+      toast('ℹ️ Không có dữ liệu cần sync', 'info')
+    }
+
+  } catch(e) {
+    resultPanel.classList.remove('hidden')
+    resultContent.innerHTML = `
+      <div class="flex items-center gap-3 p-3 bg-red-50 rounded-lg">
+        <i class="fas fa-times-circle text-red-500 text-xl"></i>
+        <div>
+          <p class="font-semibold text-red-800">Lỗi khi chạy re-sync</p>
+          <p class="text-sm text-red-600">${e.message}</p>
+        </div>
+      </div>
+    `
+    toast('❌ Lỗi re-sync: ' + e.message, 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-sync-alt"></i> Chạy Re-sync'
+  }
+}
+
+// ============================================================
 // SHARED COSTS (Chi phí chung)
 // ============================================================
 
@@ -13302,10 +14398,11 @@ function switchAnalyticsTab(tab, force = false) {
 
 // ---- Helpers ----
 function fmtM(n) {
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + ' tỷ'
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' triệu'
-  if (n >= 1e3) return (n / 1e3).toFixed(0) + ' K'
-  return (n || 0).toLocaleString()
+  const v = Math.round(n || 0)
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + ' tỷ'
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + ' triệu'
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(0) + ' K'
+  return new Intl.NumberFormat('vi-VN').format(v)
 }
 function pct(a, b) { return b > 0 ? Math.round(a / b * 100) : 0 }
 function monthName(m) { return ['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12'][parseInt(m)-1] || m }
@@ -14652,42 +15749,58 @@ async function renderProjectFinancialTab(force = false) {
 
     // ── KPI summary row ─────────────────────────────────────────────
     const hasBudget = totals.project_budget > 0
+    // Tính công nợ = GTHĐ - đã thu theo HĐ
+    const revOrig       = totals.revenue_collected_original || totals.revenue_collected
+    const hasOrigDiff   = revOrig > totals.revenue_collected + 1
+    const debtRemaining = Math.max(0, totals.contract_value - revOrig)
+    // Helper: số KPI dùng class kpi-value (clamp font-size, no-wrap)
+    const numCls = 'kpi-value'
     const kpiHtml = `
-      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-${hasBudget ? '7' : '6'} gap-3 mb-6">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         <div class="kpi-card" style="border-left-color:#6366f1">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng GTHĐ</div>
-          <div class="text-xl font-bold text-indigo-600">${fmtM(totals.contract_value)}</div>
+          <div class="${numCls} text-indigo-600">${fmtM(totals.contract_value)}</div>
           <div class="text-xs text-gray-400 mt-1">Giá trị hợp đồng</div>
         </div>
         ${hasBudget ? `
         <div class="kpi-card" style="border-left-color:#059669;background:linear-gradient(135deg,#f0fdf4,#ffffff)">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide"><i class="fas fa-wallet mr-1 text-emerald-500"></i>Tổng ngân sách</div>
-          <div class="text-xl font-bold text-emerald-700">${fmtM(totals.project_budget)}</div>
+          <div class="${numCls} text-emerald-700">${fmtM(totals.project_budget)}</div>
           <div class="text-xs text-gray-400 mt-1">Sau trừ % phí quản lý</div>
         </div>` : ''}
+        <div class="kpi-card" style="border-left-color:#06b6d4">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide"><i class="fas fa-file-contract mr-1 text-cyan-500"></i>Đã thu theo HĐ</div>
+          <div class="${numCls} text-cyan-600">${fmtM(revOrig)}</div>
+          <div class="text-xs mt-1 space-y-0.5">
+            ${totals.contract_value > 0
+              ? `<div class="${debtRemaining > 0 ? 'text-red-400 font-medium' : 'text-green-500'}"><i class="fas fa-${debtRemaining > 0 ? 'exclamation-circle' : 'check-circle'} mr-0.5"></i>Công nợ: ${fmtM(debtRemaining)}</div>`
+              : '<div class="text-gray-400">Số tiền gốc khách TT</div>'}
+            ${totals.revenue_pending > 0 ? `<div class="text-amber-500"><i class="fas fa-clock mr-0.5"></i>Chờ thu: ${fmtM(totals.revenue_pending)}</div>` : ''}
+          </div>
+        </div>
         <div class="kpi-card" style="border-left-color:#10b981">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Doanh thu đã thu</div>
-          <div class="text-xl font-bold text-emerald-600">${fmtM(totals.revenue_collected)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.revenue_collected, totals.contract_value) + '% GTHĐ · ' : ''}${fmtM(totals.revenue_pending)} chờ thu</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Doanh thu theo NS</div>
+          <div class="${numCls} text-emerald-600">${fmtM(totals.revenue_collected)}</div>
+          <div class="text-xs text-gray-400 mt-1">${hasOrigDiff ? 'Sau trừ phí QL' : 'Doanh thu ghi nhận'}</div>
         </div>
         <div class="kpi-card" style="border-left-color:#ef4444">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng chi phí</div>
-          <div class="text-xl font-bold text-red-500">${fmtM(totals.total_cost)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ · ' : ''}${totals.pct_cost}% doanh thu</div>
+          <div class="${numCls} text-red-500">${fmtM(totals.total_cost)}</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ · ' : ''}${totals.pct_cost}% DT</div>
         </div>
         <div class="kpi-card" style="border-left-color:#3b82f6">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Lợi nhuận ròng</div>
-          <div class="text-xl font-bold ${profitColor(totals.profit)}">${fmtM(totals.profit)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ · ' : ''}Sau toàn bộ chi phí</div>
+          <div class="${numCls} ${profitColor(totals.profit)}">${fmtM(totals.profit)}</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ' : 'Sau toàn bộ CP'}</div>
         </div>
         <div class="kpi-card" style="border-left-color:#8b5cf6">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Biên lợi nhuận</div>
-          <div class="text-xl font-bold ${marginColor(totals.margin)}">${totals.margin}%</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.margin>=30?'✅ Tốt':totals.margin>=10?'🟡 TB':'🔴 Thấp'}</div>
+          <div class="${numCls} ${marginColor(totals.margin)}">${totals.margin}%</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.margin>=30?'✅ Tốt':totals.margin>=10?'🟡 Trung bình':'🔴 Thấp'}</div>
         </div>
         <div class="kpi-card" style="border-left-color:#f59e0b">
           <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tiến độ GTHĐ</div>
-          <div class="text-xl font-bold text-amber-600">${totals.contract_progress}%</div>
+          <div class="${numCls} text-amber-600">${totals.contract_progress}%</div>
           <div class="text-xs text-gray-400 mt-1">Doanh thu / GTHĐ</div>
         </div>
       </div>
@@ -14751,15 +15864,13 @@ async function renderProjectFinancialTab(force = false) {
     // Dùng 1 table duy nhất với sticky thead/tfoot để tránh lệch cột khi tên dài
     const hasBudgetCol = projects.some(p => p.project_budget > 0)
     const nameColW  = isLifetime ? 200 : 220   // px — cột tên dự án cố định
-    const timeColW  = isLifetime ? 100 : 0
-    // GTHĐ, [NS], DT đã thu, DT chờ, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
+    // GTHĐ, Đã thu HĐ, Công nợ, [NS], DT đã thu, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
     const numCols   = hasBudgetCol
-      ? [90, 90, 90, 80, 80, 80, 70, 80, 80, 60, 105]
-      : [95, 95, 85, 85, 85, 75, 85, 85, 65, 110]
-    const totalMinW = nameColW + (isLifetime ? timeColW : 0) + numCols.reduce((a,b)=>a+b,0)
+      ? [90, 90, 85, 90, 90, 80, 80, 70, 80, 80, 60, 105]
+      : [95, 95, 85, 90, 85, 85, 75, 85, 85, 65, 110]
+    const totalMinW = nameColW + numCols.reduce((a,b)=>a+b,0)
     const colgroup  = `<colgroup>
         <col style="width:${nameColW}px;min-width:${nameColW}px;max-width:${nameColW}px">
-        ${isLifetime ? `<col style="width:${timeColW}px;min-width:${timeColW}px">` : ''}
         ${numCols.map(w => `<col style="width:${w}px;min-width:${w}px">`).join('')}
       </colgroup>`
 
@@ -14786,11 +15897,11 @@ async function renderProjectFinancialTab(force = false) {
             <thead style="position:sticky;top:0;z-index:2">
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
                 <th class="text-left py-3 px-3 font-semibold border-b border-gray-200" style="overflow:hidden">Dự án</th>
-                ${isLifetime ? `<th class="text-center py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">Thời gian</th>` : ''}
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2"><i class="fas fa-hand-holding-usd mr-1"></i>Đã thu HĐ</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#dc2626" title="Công nợ = GTHĐ − Đã thu HĐ"><i class="fas fa-exclamation-circle mr-1"></i>Công nợ</th>
                 ${hasBudgetCol ? `<th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#059669"><i class="fas fa-wallet mr-1"></i>Ngân sách</th>` : ''}
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT đã thu</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT chờ</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP trực tiếp</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP lương</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP chung</th>
@@ -14811,9 +15922,6 @@ async function renderProjectFinancialTab(force = false) {
                 const progColor = cProg >= 80 ? 'bg-green-500' : cProg >= 40 ? 'bg-blue-500' : 'bg-gray-300'
                 const pctLabel  = 'GTHĐ'
                 const pctBaseRow = p.contract_value
-                const timespan = (isLifetime && (p.start_date || p.end_date))
-                  ? `<div class="text-xs text-gray-400 whitespace-nowrap">${(p.start_date||'?').substring(0,7)} → ${(p.end_date||'?').substring(0,7)}</div>`
-                  : ''
                 return `
                   <tr class="border-b border-gray-100 hover:bg-green-50/30 transition-colors ${rowBg}">
                     <td class="py-2 px-3" style="overflow:hidden;max-width:${nameColW}px">
@@ -14831,11 +15939,15 @@ async function renderProjectFinancialTab(force = false) {
                         </div>
                       </div>
                     </td>
-                    ${isLifetime ? `<td class="py-2 px-3 text-center">${timespan||'<span class="text-gray-300 text-xs">—</span>'}</td>` : ''}
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-indigo-700">${p.contract_value > 0 ? fmtM(p.contract_value) : '<span class="text-gray-300">—</span>'}</span>
                       ${p.management_fee_pct > 0 ? `<div class="text-xs text-gray-400">phí QL ${p.management_fee_pct}%</div>` : ''}
                     </td>
+                    <td class="py-2 px-3 text-right whitespace-nowrap" style="background:#f0f9ff">
+                      <span class="font-semibold text-cyan-700">${(p.revenue_collected_original || p.revenue_collected) > 0 ? fmtM(p.revenue_collected_original || p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
+                      ${(p.revenue_collected_original || p.revenue_collected) > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.revenue_collected_original || p.revenue_collected, pctBaseRow)}%</div>` : ''}
+                    </td>
+                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.revenue_collected_original || p.revenue_collected||0)); return `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:${debt>0?'#fff5f5':''}"><span class="font-semibold ${debt>0?'text-red-500':'text-gray-300'}">${debt>0?fmtM(debt):'—'}</span>${debt>0&&pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`; })()}
                     ${hasBudgetCol ? `
                     <td class="py-2 px-3 text-right whitespace-nowrap" style="background:${p.project_budget>0?'#f0fdf4':''}">
                       ${p.project_budget > 0
@@ -14845,10 +15957,6 @@ async function renderProjectFinancialTab(force = false) {
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="font-semibold text-emerald-600">${p.revenue_collected > 0 ? fmtM(p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
                       ${p.revenue_collected > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.revenue_collected, pctBaseRow)}%</div>` : ''}
-                    </td>
-                    <td class="py-2 px-3 text-right whitespace-nowrap">
-                      <span class="${p.revenue_pending > 0 ? 'text-amber-600 font-medium' : 'text-gray-300'}">${p.revenue_pending > 0 ? fmtM(p.revenue_pending) : '—'}</span>
-                      ${p.revenue_pending > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.revenue_pending, pctBaseRow)}%</div>` : ''}
                     </td>
                     <td class="py-2 px-3 text-right whitespace-nowrap">
                       <span class="${p.direct_cost > 0 ? 'text-blue-600' : 'text-gray-300'}">${p.direct_cost > 0 ? fmtM(p.direct_cost) : '—'}</span>
@@ -14896,11 +16004,11 @@ async function renderProjectFinancialTab(force = false) {
             <tfoot style="position:sticky;bottom:0;z-index:2">
               <tr class="bg-gray-100 font-bold text-sm border-t-2 border-gray-300">
                 <td class="py-3 px-3 text-gray-700 whitespace-nowrap" style="overflow:hidden;text-overflow:ellipsis;max-width:${nameColW}px"><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
-                ${isLifetime ? `<td class="py-3 px-3 text-center text-gray-400 text-xs">—</td>` : ''}
                 <td class="py-3 px-3 text-right text-indigo-700 whitespace-nowrap">${fmtM(totals.contract_value)}</td>
+                <td class="py-3 px-3 text-right text-cyan-700 whitespace-nowrap font-bold" style="background:#f0f9ff">${fmtM(totals.revenue_collected_original || totals.revenue_collected)}</td>
+                ${(() => { const tDebt = Math.max(0, (totals.contract_value||0) - (totals.revenue_collected_original||totals.revenue_collected||0)); return `<td class="py-3 px-3 text-right whitespace-nowrap font-bold ${tDebt>0?'text-red-500':'text-gray-300'}" style="background:${tDebt>0?'#fff5f5':''}"> ${tDebt>0?fmtM(tDebt):'—'}</td>`; })()}
                 ${hasBudgetCol ? `<td class="py-3 px-3 text-right text-emerald-700 whitespace-nowrap font-bold">${totals.project_budget > 0 ? fmtM(totals.project_budget) : '—'}</td>` : ''}
                 <td class="py-3 px-3 text-right text-emerald-600 whitespace-nowrap">${fmtM(totals.revenue_collected)}</td>
-                <td class="py-3 px-3 text-right text-amber-600 whitespace-nowrap">${fmtM(totals.revenue_pending)}</td>
                 <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap">${fmtM(totals.direct_cost)}</td>
                 <td class="py-3 px-3 text-right text-orange-600 whitespace-nowrap">${fmtM(totals.labor_cost)}</td>
                 <td class="py-3 px-3 text-right text-yellow-600 whitespace-nowrap">${fmtM(totals.shared_cost)}</td>
@@ -14925,7 +16033,7 @@ async function renderProjectFinancialTab(force = false) {
           <span><strong>GTHĐ</strong>: Giá trị hợp đồng</span>
           ${hasBudgetCol ? `<span><strong class="text-emerald-700">Ngân sách</strong>: GTHĐ × (1 − % phí quản lý) — ngân sách thực tế để kiểm soát chi phí</span>` : ''}
           <span><strong>DT đã thu</strong>: Doanh thu trạng thái <em>paid + partial</em></span>
-          <span><strong>DT chờ thu</strong>: Doanh thu trạng thái <em>pending</em></span>
+          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − Đã thu HĐ (số tiền khách hàng chưa thanh toán)</span>
           <span><strong>CP trực tiếp</strong>: Chi phí vật liệu, thiết bị, đi lại, văn phòng…</span>
           <span><strong>CP lương</strong>: Từ bảng project_labor_costs (tính theo timesheet)</span>
           <span><strong>CP chung</strong>: Chi phí chung phân bổ (điện, nước, văn phòng…)</span>
@@ -15034,8 +16142,8 @@ function exportFinDetailExcel() {
 
   // ── Header rows ──
   const headers1 = isLifetime
-    ? ['Dự án', 'Mã', 'Trạng thái', 'Thời gian', 'GTHĐ', ...(hasNganSach ? ['Ngân sách', '% phí QL'] : []), 'DT đã thu', '% GTHĐ', 'DT chờ thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ (%)']
-    : ['Dự án', 'Mã', 'Trạng thái', 'GTHĐ', ...(hasNganSach ? ['Ngân sách', '% phí QL'] : []), 'DT đã thu', '% GTHĐ', 'DT chờ thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ (%)']
+    ? ['Dự án', 'Mã', 'Trạng thái', 'Thời gian', 'GTHĐ', 'Đã thu HĐ', 'Công nợ', ...(hasNganSach ? ['Ngân sách', '% phí QL'] : []), 'DT đã thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ (%)']
+    : ['Dự án', 'Mã', 'Trạng thái', 'GTHĐ', 'Đã thu HĐ', 'Công nợ', ...(hasNganSach ? ['Ngân sách', '% phí QL'] : []), 'DT đã thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ (%)']
 
   // ── Lấy dữ liệu từ _projFinData nếu có ──
   const rawData    = window._projFinRaw || {}
@@ -15063,7 +16171,8 @@ function exportFinDetailExcel() {
     const pb  = p.project_budget    || 0
     const fee = p.management_fee_pct || 0
     const rc  = p.revenue_collected || 0
-    const rp  = p.revenue_pending   || 0
+    const ro  = p.revenue_collected_original || rc
+    const debt = Math.max(0, cv - ro)
     const dc  = p.direct_cost       || 0
     const lc  = p.labor_cost        || 0
     const sc  = p.shared_cost       || 0
@@ -15079,16 +16188,16 @@ function exportFinDetailExcel() {
     if (isLifetime) {
       aoa.push([
         p.name, p.code, statusLbl[p.status]||p.status, timespan,
-        cv||'', ...(hasNganSach ? [pb||'', fee||''] : []),
-        rc||'', pctOf(rc), rp||'', pctOf(rp),
+        cv||'', ro||'', debt||'', ...(hasNganSach ? [pb||'', fee||''] : []),
+        rc||'', pctOf(rc),
         dc||'', pctOf(dc), lc||'', pctOf(lc), sc||'', pctOf(sc),
         tc||'', pctOf(tc), pf, p.margin||'', prog||''
       ])
     } else {
       aoa.push([
         p.name, p.code, statusLbl[p.status]||p.status,
-        cv||'', ...(hasNganSach ? [pb||'', fee||''] : []),
-        rc||'', pctOf(rc), rp||'', pctOf(rp),
+        cv||'', ro||'', debt||'', ...(hasNganSach ? [pb||'', fee||''] : []),
+        rc||'', pctOf(rc),
         dc||'', pctOf(dc), lc||'', pctOf(lc), sc||'', pctOf(sc),
         tc||'', pctOf(tc), pf, p.margin||'', prog||''
       ])
@@ -15100,12 +16209,13 @@ function exportFinDetailExcel() {
     : ((totals.contract_value||0) > 0 ? totals.contract_value : (totals.revenue_collected||0))
   const tpctOf = (v) => tbase > 0 ? Math.round((v||0) / tbase * 1000) / 10 : ''
   const tprog  = (totals.project_budget||0) > 0 ? (totals.budget_progress||0) : (totals.contract_progress||0)
+  const tRo   = totals.revenue_collected_original || totals.revenue_collected || 0
+  const tDebt = Math.max(0, (totals.contract_value||0) - tRo)
   if (isLifetime) {
     aoa.push([
       'TỔNG CỘNG', '', '', '',
-      totals.contract_value||0, ...(hasNganSach ? [totals.project_budget||0, ''] : []),
+      totals.contract_value||0, tRo, tDebt, ...(hasNganSach ? [totals.project_budget||0, ''] : []),
       totals.revenue_collected||0, tpctOf(totals.revenue_collected),
-      totals.revenue_pending||0, tpctOf(totals.revenue_pending),
       totals.direct_cost||0, tpctOf(totals.direct_cost),
       totals.labor_cost||0,  tpctOf(totals.labor_cost),
       totals.shared_cost||0, tpctOf(totals.shared_cost),
@@ -15115,9 +16225,8 @@ function exportFinDetailExcel() {
   } else {
     aoa.push([
       'TỔNG CỘNG', '', '',
-      totals.contract_value||0, ...(hasNganSach ? [totals.project_budget||0, ''] : []),
+      totals.contract_value||0, tRo, tDebt, ...(hasNganSach ? [totals.project_budget||0, ''] : []),
       totals.revenue_collected||0, tpctOf(totals.revenue_collected),
-      totals.revenue_pending||0, tpctOf(totals.revenue_pending),
       totals.direct_cost||0, tpctOf(totals.direct_cost),
       totals.labor_cost||0,  tpctOf(totals.labor_cost),
       totals.shared_cost||0, tpctOf(totals.shared_cost),
@@ -16848,6 +17957,39 @@ function renderPaymentStatus(payments) {
   container.innerHTML = html
 }
 
+// ─── Preview doanh thu sau % phí quản lý trong form thanh toán ───────────────
+function updatePaymentRevenuePreview() {
+  const proj = _legalOverviewData?.project
+  const feePct = proj?.management_fee_pct || 0
+  const previewEl = $('paymentRevenuePreview')
+  if (!previewEl) return
+
+  // Ẩn preview nếu dự án không có phí QL
+  if (!feePct || feePct <= 0) {
+    previewEl.style.display = 'none'
+    return
+  }
+
+  const amount     = parseMoneyVal('paymentAmount')     || 0
+  const paidAmount = parseMoneyVal('paymentPaidAmount') || 0
+  const factor     = (100 - feePct) / 100
+
+  const amountNet   = Math.round(amount     * factor)
+  const paidNet     = Math.round(paidAmount * factor)
+
+  const fmtVND = n => n > 0 ? n.toLocaleString('vi-VN') + ' VNĐ' : '—'
+  const fmtPct = (net, gross) => gross > 0 ? `(= ${(net/gross*100).toFixed(1)}% giá trị đề nghị)` : ''
+
+  $('paymentFeeLabel').textContent  = `(Phí QL: ${feePct}%)`
+  $('paymentFeeRate').textContent   = feePct
+  $('paymentAmountNet').textContent = fmtVND(amountNet)
+  $('paymentAmountNetPct').textContent = amount > 0 ? `${fmtVND(amount)} × ${(100-feePct)}%` : ''
+  $('paymentPaidNet').textContent   = fmtVND(paidNet)
+  $('paymentPaidNetPct').textContent = paidAmount > 0 ? `${fmtVND(paidAmount)} × ${(100-feePct)}%` : ''
+
+  previewEl.style.display = ''
+}
+
 async function openPaymentModal() {
   if (!_legalCurrentProjectId) return
   $('paymentModalTitle').innerHTML = '<i class="fas fa-money-check-alt text-emerald-600 mr-2"></i>Thêm đợt thanh toán'
@@ -16866,6 +18008,9 @@ async function openPaymentModal() {
   $('paymentNotes').value = ''
   // populate legal item select
   _populatePaymentItemSelect(null)
+  // Reset preview
+  const prevEl = $('paymentRevenuePreview')
+  if (prevEl) prevEl.style.display = 'none'
   openModal('paymentModal')
 }
 
@@ -16888,6 +18033,8 @@ async function editPayment(id) {
   $('paymentInvoiceDate').value = payment.invoice_date || ''
   $('paymentNotes').value = payment.notes || ''
   _populatePaymentItemSelect(payment.legal_item_id)
+  // Hiển thị preview doanh thu sau phí QL nếu có
+  updatePaymentRevenuePreview()
   openModal('paymentModal')
 }
 
