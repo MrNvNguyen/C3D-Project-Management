@@ -2233,6 +2233,85 @@ app.post('/api/tasks', authMiddleware, async (c) => {
   }
 })
 
+// POST /api/tasks/bulk — tạo nhiều task cùng lúc (admin/leader)
+app.post('/api/tasks/bulk', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { tasks } = await c.req.json()
+
+    if (!Array.isArray(tasks) || tasks.length === 0)
+      return c.json({ error: 'tasks array is required' }, 400)
+    if (tasks.length > 200)
+      return c.json({ error: 'Tối đa 200 task mỗi lần' }, 400)
+
+    const isAdmin = user.role === 'system_admin'
+    const results: any[] = []
+    const errors: any[] = []
+
+    for (let i = 0; i < tasks.length; i++) {
+      const t = tasks[i]
+      const { project_id, category_id, title, description, discipline_code, phase, priority,
+        status, assigned_to, start_date, due_date, estimated_hours, task_type,
+        model_filename, cde_report, work_notes, hstk_date } = t
+
+      if (!project_id || !title) {
+        errors.push({ index: i, error: 'project_id và title là bắt buộc' })
+        continue
+      }
+
+      // Kiểm tra quyền
+      if (!isAdmin) {
+        const isProjAdminOrLeader = await isProjectLeaderOrAdmin(db, user, project_id)
+        if (!isProjAdminOrLeader) {
+          errors.push({ index: i, error: `Không có quyền tạo task cho dự án ${project_id}` })
+          continue
+        }
+      }
+
+      try {
+        const result = await db.prepare(
+          `INSERT INTO tasks (project_id, category_id, title, description, discipline_code, phase,
+            priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours,
+            task_type, model_filename, cde_report, work_notes, hstk_date)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(
+          project_id, category_id || null, title, description || null,
+          discipline_code || null, phase || 'basic_design', priority || 'medium',
+          status || 'todo', assigned_to || null, user.id,
+          start_date || null, due_date || null, estimated_hours || 0,
+          task_type || 'model', model_filename || null,
+          cde_report ? 1 : 0, work_notes || null, hstk_date || null
+        ).run()
+
+        const taskId = result.meta.last_row_id
+        await db.prepare(
+          'INSERT INTO task_history (task_id, user_id, field_changed, new_value) VALUES (?, ?, ?, ?)'
+        ).bind(taskId, user.id, 'created', 'Task created via bulk').run()
+
+        if (assigned_to) {
+          await db.prepare(
+            'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
+          ).bind(assigned_to, 'Task mới được giao', `Bạn được giao task: ${title}`, 'info', 'task', taskId).run()
+        }
+        results.push({ index: i, id: taskId, title })
+      } catch (rowErr: any) {
+        errors.push({ index: i, title, error: rowErr.message })
+      }
+    }
+
+    return c.json({
+      success: true,
+      created: results.length,
+      failed: errors.length,
+      results,
+      errors
+    }, 201)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 app.put('/api/tasks/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB

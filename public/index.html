@@ -4798,9 +4798,20 @@
       <!-- Banner thông báo member -->
       <div id="taskMemberBanner" style="display:none"></div>
 
-      <div class="flex justify-end gap-3 pt-2">
-        <button type="button" onclick="closeModal('taskModal')" class="btn-secondary">Hủy</button>
-        <button type="submit" class="btn-primary">Lưu công việc</button>
+      <div class="flex justify-between items-center pt-2">
+        <!-- Nút chỉ hiện với admin/leader khi tạo mới -->
+        <div id="taskAdminActions" class="flex gap-2" style="display:none!important">
+          <button type="button" onclick="openMultiTaskModal()" class="btn-secondary text-sm">
+            <i class="fas fa-layer-group mr-1.5"></i>Tạo nhiều task
+          </button>
+          <button type="button" onclick="openImportTaskModal()" class="btn-secondary text-sm">
+            <i class="fas fa-file-excel mr-1.5 text-green-600"></i>Import Excel
+          </button>
+        </div>
+        <div class="flex gap-3 ml-auto">
+          <button type="button" onclick="closeModal('taskModal')" class="btn-secondary">Hủy</button>
+          <button type="submit" class="btn-primary">Lưu công việc</button>
+        </div>
       </div>
     </form>
   </div>
@@ -6869,5 +6880,236 @@ document.addEventListener('keydown', function(e) {
     </div>
   </div>
 </div>
+
+<!-- ══════════════════════════════════════════════════
+     MODAL TẠO NHIỀU TASK
+══════════════════════════════════════════════════ -->
+<div id="multiTaskModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:1100px;width:98vw;max-height:92vh;overflow:hidden;display:flex;flex-direction:column">
+    <div class="flex justify-between items-center mb-4 flex-shrink-0">
+      <div>
+        <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-layer-group text-indigo-500 mr-2"></i>Tạo nhiều Task cùng lúc</h3>
+        <p class="text-xs text-gray-500 mt-0.5">Điền thông tin chung bên dưới, sau đó thêm từng task vào bảng</p>
+      </div>
+      <button onclick="closeModal('multiTaskModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+
+    <!-- Thông tin chung (shared fields) -->
+    <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4 flex-shrink-0">
+      <div class="text-xs font-semibold text-blue-700 mb-3 uppercase tracking-wide"><i class="fas fa-link mr-1"></i>Thông tin dùng chung cho tất cả task</div>
+      <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div>
+          <label class="label text-xs">Dự án *</label>
+          <input type="hidden" id="mtProject">
+          <div id="mtProjectCombobox" style="width:100%"></div>
+        </div>
+        <div>
+          <label class="label text-xs">Hạng mục</label>
+          <input type="hidden" id="mtCategory">
+          <div id="mtCategoryCombobox" style="width:100%"></div>
+        </div>
+        <div>
+          <label class="label text-xs">Giai đoạn</label>
+          <select id="mtPhase" class="select-field text-sm">
+            <option value="basic_design">Thiết kế cơ sở</option>
+            <option value="technical_design">Thiết kế kỹ thuật</option>
+            <option value="construction_design">Thiết kế thi công</option>
+            <option value="as_built">Hoàn công</option>
+          </select>
+        </div>
+        <div>
+          <label class="label text-xs">Loại task</label>
+          <select id="mtTaskType" class="select-field text-sm">
+            <option value="model">🏗️ Mô hình</option>
+            <option value="check_hs">🔍 Kiểm tra hồ sơ</option>
+            <option value="other">📋 Khác</option>
+          </select>
+        </div>
+        <div>
+          <label class="label text-xs">Ngày bắt đầu</label>
+          <input type="date" id="mtStartDate" class="input-field text-sm">
+        </div>
+        <div>
+          <label class="label text-xs">Ngày hết hạn</label>
+          <input type="date" id="mtDueDate" class="input-field text-sm">
+        </div>
+        <div>
+          <label class="label text-xs">Ưu tiên mặc định</label>
+          <select id="mtPriority" class="select-field text-sm">
+            <option value="low">Thấp</option>
+            <option value="medium" selected>Trung bình</option>
+            <option value="high">Cao</option>
+            <option value="urgent">Khẩn cấp</option>
+          </select>
+        </div>
+        <div>
+          <label class="label text-xs">Phụ trách mặc định</label>
+          <select id="mtAssignee" class="select-field text-sm">
+            <option value="">-- Không chọn --</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bảng task -->
+    <div class="flex-1 overflow-auto min-h-0">
+      <div class="flex justify-between items-center mb-2">
+        <span class="text-sm font-semibold text-gray-700">Danh sách task <span id="mtTaskCount" class="badge-blue ml-1">0</span></span>
+        <button onclick="mtAddRow()" class="btn-primary text-xs px-3 py-1.5">
+          <i class="fas fa-plus mr-1"></i>Thêm dòng
+        </button>
+      </div>
+      <div class="overflow-x-auto rounded-lg border border-gray-200">
+        <table class="w-full text-sm border-collapse" id="mtTable">
+          <thead class="bg-gray-50 sticky top-0 z-10">
+            <tr>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600 w-8">#</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600" style="min-width:220px">Tên công việc *</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600" style="min-width:100px">Bộ môn</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600" style="min-width:120px">Filename model</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600" style="min-width:90px">Phụ trách</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600" style="min-width:70px">Ưu tiên</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600" style="min-width:100px">Hết hạn</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600" style="min-width:55px">Giờ DK</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-gray-600" style="min-width:140px">Ghi chú</th>
+              <th class="px-2 py-2 text-center text-xs font-semibold text-gray-600 w-10">Xóa</th>
+            </tr>
+          </thead>
+          <tbody id="mtTableBody">
+            <!-- rows injected by JS -->
+          </tbody>
+        </table>
+      </div>
+      <p class="text-xs text-gray-400 mt-2"><i class="fas fa-info-circle mr-1"></i>Các cột bỏ trống sẽ kế thừa từ thông tin dùng chung ở trên.</p>
+    </div>
+
+    <!-- Footer -->
+    <div class="flex justify-between items-center pt-3 mt-2 border-t border-gray-100 flex-shrink-0">
+      <div id="mtSummary" class="text-sm text-gray-500"></div>
+      <div class="flex gap-3">
+        <button type="button" onclick="closeModal('multiTaskModal')" class="btn-secondary">Hủy</button>
+        <button type="button" onclick="submitMultiTask()" class="btn-primary" id="mtSubmitBtn">
+          <i class="fas fa-save mr-1.5"></i>Tạo tất cả task
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     MODAL IMPORT EXCEL
+══════════════════════════════════════════════════ -->
+<div id="importTaskModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:780px;width:98vw">
+    <div class="flex justify-between items-center mb-4">
+      <div>
+        <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-file-excel text-green-600 mr-2"></i>Import Task từ Excel</h3>
+        <p class="text-xs text-gray-500 mt-0.5">Tải file mẫu, điền dữ liệu rồi upload để tạo task hàng loạt</p>
+      </div>
+      <button onclick="closeModal('importTaskModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+
+    <!-- Bước 1: Cài đặt chung -->
+    <div class="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-4">
+      <div class="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-3">
+        <span class="bg-indigo-500 text-white rounded-full w-5 h-5 inline-flex items-center justify-center text-xs mr-2">1</span>
+        Thông tin chung
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="label text-xs">Dự án *</label>
+          <input type="hidden" id="impProject">
+          <div id="impProjectCombobox" style="width:100%"></div>
+        </div>
+        <div>
+          <label class="label text-xs">Hạng mục</label>
+          <input type="hidden" id="impCategory">
+          <div id="impCategoryCombobox" style="width:100%"></div>
+        </div>
+        <div>
+          <label class="label text-xs">Giai đoạn</label>
+          <select id="impPhase" class="select-field text-sm">
+            <option value="basic_design">Thiết kế cơ sở</option>
+            <option value="technical_design">Thiết kế kỹ thuật</option>
+            <option value="construction_design">Thiết kế thi công</option>
+            <option value="as_built">Hoàn công</option>
+          </select>
+        </div>
+        <div>
+          <label class="label text-xs">Loại task mặc định</label>
+          <select id="impTaskType" class="select-field text-sm">
+            <option value="model">🏗️ Mô hình</option>
+            <option value="check_hs">🔍 Kiểm tra hồ sơ</option>
+            <option value="other">📋 Khác</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bước 2: Tải mẫu -->
+    <div class="bg-green-50 border border-green-200 rounded-xl p-4 mb-4">
+      <div class="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
+        <span class="bg-green-500 text-white rounded-full w-5 h-5 inline-flex items-center justify-center text-xs mr-2">2</span>
+        Tải file mẫu Excel
+      </div>
+      <div class="flex items-center gap-3">
+        <button onclick="downloadTaskTemplate()" class="btn-secondary text-sm">
+          <i class="fas fa-download mr-1.5 text-green-600"></i>Tải file mẫu (.csv)
+        </button>
+        <span class="text-xs text-gray-500">File mẫu gồm các cột: Tên công việc, Mô tả, Bộ môn, Filename, Phụ trách, Ưu tiên, Ngày bắt đầu, Ngày hết hạn, Giờ dự kiến, Ghi chú, HSTK</span>
+      </div>
+    </div>
+
+    <!-- Bước 3: Upload file -->
+    <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4">
+      <div class="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
+        <span class="bg-blue-500 text-white rounded-full w-5 h-5 inline-flex items-center justify-center text-xs mr-2">3</span>
+        Upload file (CSV hoặc Excel .xlsx)
+      </div>
+      <div id="impDropZone"
+        class="border-2 border-dashed border-blue-300 rounded-lg p-6 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-100 transition-colors"
+        onclick="document.getElementById('impFileInput').click()"
+        ondragover="event.preventDefault();this.classList.add('border-blue-500','bg-blue-100')"
+        ondragleave="this.classList.remove('border-blue-500','bg-blue-100')"
+        ondrop="handleImpFileDrop(event)">
+        <i class="fas fa-cloud-upload-alt text-3xl text-blue-400 mb-2"></i>
+        <p class="text-sm text-gray-600">Kéo thả file vào đây hoặc <span class="text-blue-600 font-medium">click để chọn</span></p>
+        <p class="text-xs text-gray-400 mt-1">Hỗ trợ .csv và .xlsx (tối đa 5MB)</p>
+      </div>
+      <input type="file" id="impFileInput" accept=".csv,.xlsx,.xls" class="hidden" onchange="handleImpFileSelect(this)">
+    </div>
+
+    <!-- Preview dữ liệu -->
+    <div id="impPreviewSection" style="display:none">
+      <div class="flex justify-between items-center mb-2">
+        <span class="text-sm font-semibold text-gray-700">
+          <i class="fas fa-table text-indigo-400 mr-1"></i>
+          Xem trước dữ liệu:
+          <span id="impPreviewCount" class="badge-blue ml-1">0 dòng</span>
+        </span>
+        <button onclick="clearImpPreview()" class="text-xs text-red-400 hover:text-red-600">
+          <i class="fas fa-trash mr-1"></i>Xóa
+        </button>
+      </div>
+      <div class="overflow-x-auto rounded-lg border border-gray-200 max-h-52">
+        <table class="w-full text-xs" id="impPreviewTable">
+          <thead class="bg-gray-50 sticky top-0">
+            <tr id="impPreviewHead"></tr>
+          </thead>
+          <tbody id="impPreviewBody"></tbody>
+        </table>
+      </div>
+      <div id="impValidationMsg" class="mt-2 text-xs"></div>
+    </div>
+
+    <div class="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-4">
+      <button type="button" onclick="closeModal('importTaskModal')" class="btn-secondary">Hủy</button>
+      <button type="button" onclick="submitImportTask()" id="impSubmitBtn" class="btn-primary" style="display:none">
+        <i class="fas fa-file-import mr-1.5"></i>Import <span id="impSubmitCount"></span> task
+      </button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
