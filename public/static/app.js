@@ -2017,8 +2017,12 @@ async function openProjectDetail(id, openChatTab = false) {
             <i class="fas fa-comments mr-1"></i>Chat nhóm
           </button>
           <button id="projTab-summary" onclick="switchProjectTab('summary',${project.id})"
-            class="tab-btn text-xs py-2 px-4 whitespace-nowrap">
+            class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-table mr-1"></i>Tổng hợp CV
+          </button>
+          <button id="projTab-hstk" onclick="switchProjectTab('hstk',${project.id})"
+            class="tab-btn text-xs py-2 px-4 whitespace-nowrap" style="border:2px solid #ef4444;color:#ef4444">
+            <i class="fas fa-clipboard-check mr-1"></i>Checklist HSTK
           </button>
         </div>
 
@@ -2058,6 +2062,10 @@ async function openProjectDetail(id, openChatTab = false) {
         <!-- Work Summary panel (lazy-loaded) -->
         <div id="projPanel-summary" class="hidden p-4" style="min-height:400px">
           <div id="workSummaryContainer_${project.id}"></div>
+        </div>
+        <!-- Checklist HSTK Panel -->
+        <div id="projPanel-hstk" class="hidden p-4" style="min-height:400px">
+          <div id="hstkContainer_${project.id}"></div>
         </div>
       </div>
     `
@@ -4843,6 +4851,7 @@ function switchProjectTab(tab, projectId) {
   const weeklyPanel  = $('projPanel-weekly')
   const chatPanel    = $('projPanel-chat')
   const summaryPanel = $('projPanel-summary')
+  const hstkPanel    = $('projPanel-hstk')
   if (taskPanel)    taskPanel.style.display    = tab === 'tasks'   ? 'block' : 'none'
   if (weeklyPanel)  weeklyPanel.style.display  = tab === 'weekly'  ? 'block' : 'none'
   if (chatPanel) {
@@ -4853,12 +4862,29 @@ function switchProjectTab(tab, projectId) {
     summaryPanel.classList.remove('hidden')
     summaryPanel.style.display = tab === 'summary' ? 'block' : 'none'
   }
+  if (hstkPanel) {
+    hstkPanel.classList.remove('hidden')
+    hstkPanel.style.display = tab === 'hstk' ? 'block' : 'none'
+  }
 
   // Update tab buttons
   ;['tasks','weekly','chat','summary'].forEach(key => {
     const btn = $(`projTab-${key}`)
     if (btn) btn.className = `tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap${key === tab ? ' active' : ''}`
   })
+  // HSTK tab has special style when not active
+  const hstkBtn = $('projTab-hstk')
+  if (hstkBtn) {
+    if (tab === 'hstk') {
+      hstkBtn.className = 'tab-btn active text-xs py-2 px-4 whitespace-nowrap'
+      hstkBtn.style.border = ''
+      hstkBtn.style.color = ''
+    } else {
+      hstkBtn.className = 'tab-btn text-xs py-2 px-4 whitespace-nowrap'
+      hstkBtn.style.border = '2px solid #ef4444'
+      hstkBtn.style.color = '#ef4444'
+    }
+  }
 
   if (tab === 'weekly') {
     const container = $(`weeklyPlanContainer_${pid}`)
@@ -4887,6 +4913,14 @@ function switchProjectTab(tab, projectId) {
     if (container && !container._initialized) {
       container._initialized = true
       renderWorkSummaryTab(container, pid)
+    }
+  }
+
+  if (tab === 'hstk') {
+    const container = $(`hstkContainer_${pid}`)
+    if (container && !container._initialized) {
+      container._initialized = true
+      initHstkTab(container, pid)
     }
   }
 }
@@ -9202,8 +9236,9 @@ function renderAssetsTable(assets) {
 
   // Render 1 hàng tài sản (dùng chung cho cha và con)
   function renderRow(a, isChild = false) {
-    const assignedUser = a.assigned_to ? (allUsers.find(u => u.id === a.assigned_to) || null) : null
-    const assignedName = assignedUser ? assignedUser.full_name : null
+    // Ưu tiên dùng assigned_to_name từ API (JOIN sẵn), fallback sang allUsers
+    const assignedName = a.assigned_to_name ||
+      (a.assigned_to ? (allUsers.find(u => u.id == a.assigned_to)?.full_name || null) : null)
     const deprSt = a.depreciation_status || 'none'
     const netVal = a.net_book_value || a.current_value || 0
     const pctDepr = a.purchase_price > 0 ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100)) : 0
@@ -22546,3 +22581,804 @@ async function submitImportTask() {
 }
 
 // ═══ END MULTI-TASK & IMPORT MODULE ═══════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
+// CHECKLIST HỒ SƠ THIẾT KẾ (HSTK) MODULE
+// ═══════════════════════════════════════════════════════════════════
+
+// ── State ──────────────────────────────────────────────────────────
+let _hstkProjectId = null
+let _hstkSubmissions = []
+let _hstkCurrentSub = null   // submission đang xem
+let _hstkDocTypes = {}       // cache: stage → [{...}]
+let _hstkPendingChanges = {} // itemId → {has_doc, file_ref, notes}
+
+// ── Init tab ───────────────────────────────────────────────────────
+async function initHstkTab(container, projectId) {
+  _hstkProjectId = projectId
+  container.innerHTML = `<div class="flex items-center justify-center py-12 text-gray-400">
+    <i class="fas fa-spinner fa-spin mr-2"></i>Đang tải...</div>`
+  try {
+    await _hstkLoadSubmissions(projectId)
+    _hstkRenderMain(container, projectId)
+  } catch (e) {
+    container.innerHTML = `<div class="text-red-500 p-4">Lỗi: ${e.message}</div>`
+  }
+}
+
+async function _hstkLoadSubmissions(projectId) {
+  _hstkSubmissions = await api(`/projects/${projectId}/checklist/submissions`)
+}
+
+// ── Render tổng quan: danh sách submissions ────────────────────────
+function _hstkRenderMain(container, projectId) {
+  const hasSubs = _hstkSubmissions.length > 0
+
+  container.innerHTML = `
+    <!-- Header + Add button -->
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h4 class="font-bold text-gray-800 text-sm"><i class="fas fa-clipboard-check text-red-500 mr-2"></i>Checklist Hồ Sơ Thiết Kế</h4>
+        <p class="text-xs text-gray-400 mt-0.5">Kiểm soát thành phần HSTK phát hành theo từng giai đoạn</p>
+      </div>
+      <button onclick="openHstkCreateModal(${projectId})"
+        class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Thêm đợt hồ sơ</button>
+    </div>
+
+    ${hasSubs ? _hstkRenderSubmissionCards() : `
+      <div class="text-center py-16 text-gray-400">
+        <i class="fas fa-folder-open text-5xl mb-3 block opacity-40"></i>
+        <p class="font-medium">Chưa có đợt hồ sơ nào</p>
+        <p class="text-xs mt-1">Nhấn "Thêm đợt hồ sơ" để bắt đầu theo dõi HSTK</p>
+      </div>
+    `}
+  `
+}
+
+function _hstkRenderSubmissionCards() {
+  return `<div class="space-y-3">
+    ${_hstkSubmissions.map(s => {
+      const total = s.total_items || 0
+      const done  = s.done_items  || 0
+      const na    = s.na_items    || 0
+      const applicable = total - na
+      const pct = applicable > 0 ? Math.round(done / applicable * 100) : 0
+      const statusCfg = {
+        pending:    { cls: 'bg-yellow-100 text-yellow-700', label: 'Đang chờ' },
+        reviewing:  { cls: 'bg-blue-100 text-blue-700',    label: 'Đang xử lý' },
+        completed:  { cls: 'bg-green-100 text-green-700',  label: 'Hoàn thành' }
+      }
+      const st = statusCfg[s.status] || statusCfg.pending
+      const stageBg = s.stage === 'TKCS' ? 'bg-blue-600' : s.stage === 'BVTC' ? 'bg-purple-600' : 'bg-gray-600'
+      return `
+        <div class="border border-gray-200 rounded-xl hover:shadow-md transition-shadow cursor-pointer bg-white"
+             onclick="openHstkDetail(${s.id})">
+          <div class="flex items-center p-4 gap-4">
+            <!-- Stage badge -->
+            <div class="w-14 h-14 rounded-xl ${stageBg} text-white flex flex-col items-center justify-center flex-shrink-0">
+              <span class="text-xs font-bold">${s.stage}</span>
+              <span class="text-xs opacity-80">${s.version || 'V1'}</span>
+            </div>
+            <!-- Info -->
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-semibold text-gray-800 text-sm">Đợt ${s.stage} ${s.version || 'V1'}</span>
+                <span class="px-2 py-0.5 rounded-full text-xs font-medium ${st.cls}">${st.label}</span>
+              </div>
+              <div class="text-xs text-gray-400 mt-1 flex flex-wrap gap-3">
+                ${s.sender ? `<span><i class="fas fa-paper-plane mr-1 text-gray-300"></i>${s.sender}</span>` : ''}
+                ${s.received_date ? `<span><i class="fas fa-calendar-alt mr-1 text-gray-300"></i>Nhận: ${fmtDate(s.received_date)}</span>` : ''}
+                ${s.feedback_date ? `<span><i class="fas fa-reply mr-1 text-gray-300"></i>Phản hồi: ${fmtDate(s.feedback_date)}</span>` : ''}
+              </div>
+              <!-- Progress bar -->
+              <div class="mt-2">
+                <div class="flex justify-between text-xs text-gray-400 mb-1">
+                  <span>${done}/${applicable} hồ sơ có${na > 0 ? ` (${na} N/A)` : ''}</span>
+                  <span class="font-semibold ${pct >= 100 ? 'text-green-600' : pct >= 60 ? 'text-blue-600' : 'text-orange-500'}">${pct}%</span>
+                </div>
+                <div class="w-full bg-gray-100 rounded-full h-2">
+                  <div class="h-2 rounded-full transition-all ${pct >= 100 ? 'bg-green-500' : pct >= 60 ? 'bg-blue-500' : 'bg-orange-400'}"
+                       style="width:${pct}%"></div>
+                </div>
+              </div>
+            </div>
+            <!-- Actions -->
+            <div class="flex gap-2 flex-shrink-0" onclick="event.stopPropagation()">
+              <button onclick="openHstkDetail(${s.id})" class="btn-secondary text-xs px-2 py-1" title="Xem chi tiết">
+                <i class="fas fa-eye mr-1"></i>Chi tiết
+              </button>
+              <button onclick="confirmDeleteHstk(${s.id})" class="text-red-400 hover:text-red-600 px-1.5 text-sm" title="Xóa">
+                <i class="fas fa-trash"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      `
+    }).join('')}
+  </div>`
+}
+
+// ── Modal tạo đợt HS mới ───────────────────────────────────────────
+function openHstkCreateModal(projectId) {
+  // Lấy bộ môn unique từ project categories + hardcode defaults
+  const disciplines_tkcs = ['HTKT','KIẾN TRÚC','KẾT CẤU','PCCC','HVAC','ĐIỆN NẶNG','ĐIỆN NHẸ','CẤP THOÁT NƯỚC']
+  const disciplines_bvtc = [...disciplines_tkcs, 'CẢNH QUAN','NỘI THẤT']
+
+  const today_val = today()
+  const modal = document.createElement('div')
+  modal.id = 'hstkCreateModal'
+  modal.className = 'modal-overlay'
+  modal.style.cssText = 'display:flex;z-index:10000'
+  modal.innerHTML = `
+    <div class="modal p-6" style="max-width:560px;width:100%">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-plus-circle text-red-500 mr-2"></i>Thêm đợt Hồ Sơ Thiết Kế</h3>
+        <button onclick="this.closest('#hstkCreateModal').remove()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+      </div>
+      <div class="space-y-4">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Giai đoạn *</label>
+            <select id="hc_stage" class="select-field" onchange="_hstkOnStageChange()">
+              <option value="TKCS">TKCS — Thiết kế cơ sở</option>
+              <option value="BVTC">BVTC — Bản vẽ thi công</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">Phiên bản</label>
+            <input type="text" id="hc_version" class="input-field" value="V1" placeholder="V1, V2...">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Người gửi (TVTK)</label>
+            <input type="text" id="hc_sender" class="input-field" placeholder="Tên công ty / người gửi">
+          </div>
+          <div>
+            <label class="label">Người nhận</label>
+            <input type="text" id="hc_receiver" class="input-field" placeholder="Người nhận hồ sơ">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label">Ngày nhận</label>
+            <input type="date" id="hc_received_date" class="input-field" value="${today_val}">
+          </div>
+          <div>
+            <label class="label">Hạn phản hồi</label>
+            <input type="date" id="hc_feedback_date" class="input-field">
+          </div>
+        </div>
+        <!-- Chọn bộ môn -->
+        <div>
+          <label class="label">Bộ môn áp dụng <span class="text-xs text-gray-400">(bỏ tick nếu không có)</span></label>
+          <div id="hc_disciplines" class="flex flex-wrap gap-2 mt-1"></div>
+        </div>
+        <div>
+          <label class="label">Ghi chú</label>
+          <textarea id="hc_notes" class="input-field" rows="2" placeholder="Ghi chú về đợt hồ sơ này..."></textarea>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 mt-5">
+        <button onclick="this.closest('#hstkCreateModal').remove()" class="btn-secondary">Hủy</button>
+        <button onclick="submitHstkCreate(${projectId})" class="btn-primary"><i class="fas fa-save mr-1"></i>Tạo checklist</button>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+  _hstkOnStageChange()
+}
+
+function _hstkOnStageChange() {
+  const stage = $('hc_stage')?.value
+  const disciplines_tkcs = ['HTKT','KIẾN TRÚC','KẾT CẤU','PCCC','HVAC','ĐIỆN NẶNG','ĐIỆN NHẸ','CẤP THOÁT NƯỚC']
+  const disciplines_bvtc = [...disciplines_tkcs, 'CẢNH QUAN','NỘI THẤT']
+  const list = stage === 'BVTC' ? disciplines_bvtc : disciplines_tkcs
+  const container = $('hc_disciplines')
+  if (!container) return
+  container.innerHTML = list.map(d => `
+    <label class="flex items-center gap-1.5 cursor-pointer px-2.5 py-1 rounded-lg border border-gray-200 hover:bg-blue-50 hover:border-blue-300 transition-colors text-xs">
+      <input type="checkbox" value="${d}" checked class="accent-primary">
+      <span class="font-medium text-gray-700">${d}</span>
+    </label>
+  `).join('')
+}
+
+async function submitHstkCreate(projectId) {
+  const stage = $('hc_stage')?.value
+  const version = $('hc_version')?.value || 'V1'
+  const sender = $('hc_sender')?.value || ''
+  const receiver = $('hc_receiver')?.value || ''
+  const received_date = $('hc_received_date')?.value || null
+  const feedback_date = $('hc_feedback_date')?.value || null
+  const notes = $('hc_notes')?.value || ''
+  const checkedBoxes = [...($('hc_disciplines')?.querySelectorAll('input[type=checkbox]:checked') || [])]
+  const disciplines = checkedBoxes.map(cb => cb.value)
+
+  if (!stage) return toast('Vui lòng chọn giai đoạn', 'error')
+  if (!disciplines.length) return toast('Vui lòng chọn ít nhất 1 bộ môn', 'error')
+
+  try {
+    const res = await api(`/projects/${projectId}/checklist/submissions`, {
+      method: 'post',
+      data: { stage, version, sender, receiver, received_date, feedback_date, notes, disciplines }
+    })
+    document.getElementById('hstkCreateModal')?.remove()
+    toast(`Đã tạo checklist ${stage} ${version} với ${res.items_created} hồ sơ`)
+    // Reload tab
+    await _hstkLoadSubmissions(projectId)
+    const container = $(`hstkContainer_${projectId}`)
+    if (container) _hstkRenderMain(container, projectId)
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+// ── Xem chi tiết 1 submission ──────────────────────────────────────
+async function openHstkDetail(submissionId) {
+  _hstkCurrentSub = null
+  _hstkPendingChanges = {}
+  // Hiển thị loading trong projPanel-hstk
+  const container = $(`hstkContainer_${_hstkProjectId}`)
+  if (!container) return
+  container.innerHTML = `<div class="flex items-center justify-center py-12 text-gray-400">
+    <i class="fas fa-spinner fa-spin mr-2"></i>Đang tải chi tiết...</div>`
+  try {
+    const sub = await api(`/checklist/submissions/${submissionId}`)
+    _hstkCurrentSub = sub
+    _hstkRenderDetail(container, sub)
+  } catch (e) {
+    container.innerHTML = `<div class="text-red-500 p-4">Lỗi: ${e.message}</div>`
+  }
+}
+
+function _hstkRenderDetail(container, sub) {
+  const items = sub.items || []
+  // Group by discipline
+  const byDisc = {}
+  items.forEach(it => {
+    if (!byDisc[it.discipline]) byDisc[it.discipline] = []
+    byDisc[it.discipline].push(it)
+  })
+  const disciplines = Object.keys(byDisc).sort()
+
+  // Stats
+  const total = items.length
+  const done  = items.filter(i => i.has_doc === 1).length
+  const na    = items.filter(i => i.has_doc === 2).length
+  const applicable = total - na
+  const pct = applicable > 0 ? Math.round(done / applicable * 100) : 0
+  const stageBg = sub.stage === 'TKCS' ? '#2563eb' : sub.stage === 'BVTC' ? '#7c3aed' : '#374151'
+
+  container.innerHTML = `
+    <!-- Back button + Export -->
+    <div class="flex items-center gap-3 mb-4">
+      <button onclick="_hstkBackToList()" class="text-gray-400 hover:text-gray-600 flex items-center gap-1 text-sm">
+        <i class="fas fa-arrow-left"></i><span>Danh sách</span>
+      </button>
+      <span class="text-gray-300">/</span>
+      <span class="text-sm font-semibold text-gray-700">${sub.stage} ${sub.version || 'V1'}</span>
+      <button onclick="exportHstkExcel(${sub.id})" class="ml-auto flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-green-500 text-green-600 hover:bg-green-50 transition-colors font-medium">
+        <i class="fas fa-file-excel"></i>Xuất Excel
+      </button>
+    </div>
+
+    <!-- Summary header -->
+    <div class="bg-white border border-gray-200 rounded-xl p-4 mb-4">
+      <div class="flex items-center gap-4 flex-wrap">
+        <div class="w-12 h-12 rounded-xl text-white flex flex-col items-center justify-center flex-shrink-0 text-xs font-bold"
+             style="background:${stageBg}">
+          <span>${sub.stage}</span><span class="opacity-80">${sub.version||'V1'}</span>
+        </div>
+        <div class="flex-1">
+          <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+            ${sub.sender ? `<span><i class="fas fa-paper-plane mr-1 text-gray-300"></i>${sub.sender}</span>` : ''}
+            ${sub.receiver ? `<span><i class="fas fa-user mr-1 text-gray-300"></i>${sub.receiver}</span>` : ''}
+            ${sub.received_date ? `<span><i class="fas fa-calendar-alt mr-1 text-gray-300"></i>Nhận: ${fmtDate(sub.received_date)}</span>` : ''}
+            ${sub.feedback_date ? `<span><i class="fas fa-reply mr-1 text-gray-300"></i>Hạn PH: ${fmtDate(sub.feedback_date)}</span>` : ''}
+          </div>
+          <!-- Overall progress -->
+          <div class="mt-2 flex items-center gap-3">
+            <div class="flex-1 bg-gray-100 rounded-full h-2.5">
+              <div class="h-2.5 rounded-full transition-all ${pct>=100?'bg-green-500':pct>=60?'bg-blue-500':'bg-orange-400'}"
+                   style="width:${pct}%"></div>
+            </div>
+            <span class="text-sm font-bold ${pct>=100?'text-green-600':pct>=60?'text-blue-600':'text-orange-500'}">${pct}%</span>
+            <span class="text-xs text-gray-400">${done}/${applicable} hồ sơ</span>
+          </div>
+        </div>
+        <!-- Per-discipline stats mini -->
+        <div class="flex flex-wrap gap-2">
+          ${disciplines.map(d => {
+            const dis = byDisc[d]
+            const dp = dis.filter(i=>i.has_doc===1).length
+            const dna = dis.filter(i=>i.has_doc===2).length
+            const dapp = dis.length - dna
+            const dpct = dapp>0 ? Math.round(dp/dapp*100) : 0
+            const clr = dpct>=100?'#10b981':dpct>=60?'#3b82f6':'#f97316'
+            return `<div class="text-center px-2 py-1 rounded-lg bg-gray-50 border min-w-[56px]" title="${d}">
+              <div class="text-xs font-bold" style="color:${clr}">${dpct}%</div>
+              <div class="text-xs text-gray-400 truncate" style="max-width:60px">${d.length>6?d.slice(0,6)+'…':d}</div>
+            </div>`
+          }).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter + Save button -->
+    <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <span class="text-xs text-gray-500 font-medium whitespace-nowrap">Bộ môn:</span>
+      <select id="hstkFilterDisc" onchange="_hstkOnDiscFilterChange()" class="select-field text-xs py-1 h-8 flex-1" style="min-width:120px;max-width:180px">
+        <option value="">Tất cả</option>
+        ${disciplines.map(d=>`<option value="${d}">${d}</option>`).join('')}
+      </select>
+      <span class="text-xs text-gray-500 font-medium whitespace-nowrap">Hạng mục:</span>
+      <select id="hstkFilterItem" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8 flex-1" style="min-width:160px;max-width:260px">
+        <option value="">Tất cả</option>
+        ${_hstkBuildItemOptions(items, '')}
+      </select>
+      <span class="text-xs text-gray-500 font-medium whitespace-nowrap">Trạng thái:</span>
+      <select id="hstkFilterStatus" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8" style="min-width:110px;max-width:140px">
+        <option value="">Tất cả</option>
+        <option value="0">Chưa có</option>
+        <option value="1">Đã có</option>
+        <option value="2">N/A</option>
+      </select>
+      <button id="hstkSaveBtn" onclick="_hstkSavePending()" class="btn-primary text-xs px-3 py-1.5 hidden ml-auto whitespace-nowrap">
+        <i class="fas fa-save mr-1"></i>Lưu thay đổi (<span id="hstkPendingCount">0</span>)
+      </button>
+    </div>
+
+    <!-- Checklist table -->
+    <div id="hstkTableWrap" class="overflow-x-auto">
+      ${_hstkBuildTable(byDisc, disciplines)}
+    </div>
+  `
+}
+
+// Build <option> list for hạng mục filter, scoped to a discipline if given
+function _hstkBuildItemOptions(items, discFilter) {
+  const seen = new Set()
+  const opts = []
+  items.forEach(it => {
+    if (discFilter && it.discipline !== discFilter) return
+    if (!it.item_code) return
+    const key = it.item_code
+    if (!seen.has(key)) {
+      seen.add(key)
+      const label = it.item_name ? `${it.item_code} – ${it.item_name}` : it.item_code
+      opts.push(`<option value="${it.item_code}">${label}</option>`)
+    }
+  })
+  return opts.join('')
+}
+
+// Khi đổi Bộ môn → rebuild danh sách Hạng mục tương ứng rồi apply filter
+function _hstkOnDiscFilterChange() {
+  if (!_hstkCurrentSub) return
+  const disc = $('hstkFilterDisc')?.value || ''
+  const itemSel = $('hstkFilterItem')
+  if (itemSel) {
+    itemSel.innerHTML = '<option value="">Tất cả</option>' +
+      _hstkBuildItemOptions(_hstkCurrentSub.items || [], disc)
+  }
+  _hstkApplyFilter()
+}
+
+function _hstkBuildTable(byDisc, disciplines) {
+  const filterDisc   = $('hstkFilterDisc')?.value   || ''
+  const filterItem   = $('hstkFilterItem')?.value   || ''
+  const filterStatus = $('hstkFilterStatus')?.value
+  const filteredDiscs = filterDisc ? [filterDisc] : disciplines
+
+  const docStatusOpts = `
+    <option value="0">Chưa có</option>
+    <option value="1">✅ Đã có</option>
+    <option value="2">N/A</option>
+  `
+
+  let html = `<table class="w-full text-xs border-collapse">
+    <thead>
+      <tr class="bg-gray-50 text-left text-gray-500 uppercase text-xs">
+        <th class="py-2 px-3 font-semibold border border-gray-200 w-8">#</th>
+        <th class="py-2 px-3 font-semibold border border-gray-200">Bộ môn</th>
+        <th class="py-2 px-3 font-semibold border border-gray-200">Hạng mục</th>
+        <th class="py-2 px-3 font-semibold border border-gray-200 min-w-[200px]">Loại Hồ Sơ</th>
+        <th class="py-2 px-3 font-semibold border border-gray-200 w-28">Trạng thái</th>
+        <th class="py-2 px-3 font-semibold border border-gray-200 min-w-[120px]">Số bản vẽ / File</th>
+        <th class="py-2 px-3 font-semibold border border-gray-200 min-w-[120px]">Ghi chú</th>
+      </tr>
+    </thead>
+    <tbody>`
+
+  let rowIdx = 0
+  filteredDiscs.forEach(disc => {
+    const rows = byDisc[disc] || []
+    let filtered = rows
+    if (filterItem) filtered = filtered.filter(it => it.item_code === filterItem)
+    if (filterStatus !== '' && filterStatus !== undefined) filtered = filtered.filter(it => String(it.has_doc) === String(filterStatus))
+    if (!filtered.length) return
+
+    // Group by item_code, preserve insertion order (DB order = category creation order)
+    const byCode = {}
+    const codeOrder = []
+    filtered.forEach(it => {
+      const key = it.item_code || '__none__'
+      if (!byCode[key]) { byCode[key] = []; codeOrder.push(key) }
+      byCode[key].push(it)
+    })
+
+    let firstRowInDisc = true
+    let discRowCount = filtered.length
+    codeOrder.forEach(code => {
+      const codeRows = byCode[code]
+      let firstInCode = true
+      codeRows.forEach((it, ci) => {
+        rowIdx++
+        const pending = _hstkPendingChanges[it.id] || {}
+        const curHasDoc  = pending.has_doc  !== undefined ? pending.has_doc  : (it.has_doc  || 0)
+        const curFileRef = pending.file_ref !== undefined ? pending.file_ref : (it.file_ref || '')
+        const curNotes   = pending.notes    !== undefined ? pending.notes    : (it.notes    || '')
+        const hasPending = _hstkPendingChanges[it.id] !== undefined
+        const rowBg = curHasDoc === 1 ? 'bg-green-50' : curHasDoc === 2 ? 'bg-gray-50' : hasPending ? 'bg-yellow-50' : ''
+
+        html += `<tr class="border-b border-gray-100 ${rowBg}" id="hstk-row-${it.id}">`
+        html += `<td class="py-1.5 px-3 border border-gray-100 text-gray-400">${rowIdx}</td>`
+
+        // Bộ môn (rowspan for first row in discipline)
+        if (firstRowInDisc) {
+          const discColor = _hstkDiscColor(disc)
+          html += `<td class="py-1.5 px-3 border border-gray-200 font-bold text-xs text-center align-middle"
+                      rowspan="${discRowCount}" style="background:${discColor.bg};color:${discColor.fg};vertical-align:middle">
+            <div class="writing-mode-vert">${disc}</div>
+          </td>`
+          firstRowInDisc = false
+        }
+
+        // Hạng mục (rowspan for first in code group)
+        if (firstInCode) {
+          const codeLabel = code !== '__none__'
+            ? `<span class="font-mono text-blue-600 font-bold">${code}</span>${codeRows[0].item_name ? `<br><span class="text-gray-600 font-normal text-xs">${codeRows[0].item_name}</span>` : ''}`
+            : '<span class="text-gray-300">—</span>'
+          html += `<td class="py-1.5 px-3 border border-gray-200 text-gray-600 align-middle font-medium"
+                      rowspan="${codeRows.length}">${codeLabel}</td>`
+          firstInCode = false
+        }
+
+        // Tên hồ sơ
+        html += `<td class="py-1.5 px-3 border border-gray-100 text-gray-700">${it.doc_name}
+          ${curHasDoc === 1 ? '<i class="fas fa-check-circle text-green-500 ml-1"></i>' : ''}
+          ${curHasDoc === 2 ? '<span class="text-gray-300 ml-1 text-xs">N/A</span>' : ''}
+        </td>`
+
+        // Trạng thái select
+        html += `<td class="py-1 px-2 border border-gray-100">
+          <select class="select-field text-xs py-0.5 h-7 ${curHasDoc===1?'bg-green-50 text-green-700':curHasDoc===2?'bg-gray-100 text-gray-400':''}"
+                  onchange="_hstkChange(${it.id},'has_doc',parseInt(this.value));_hstkUpdateRowBg(${it.id},parseInt(this.value))">
+            ${['0','1','2'].map(v => `<option value="${v}" ${String(curHasDoc)===v?'selected':''}>${v==='0'?'Chưa có':v==='1'?'✅ Đã có':'N/A'}</option>`).join('')}
+          </select>
+        </td>`
+
+        // File ref
+        html += `<td class="py-1 px-2 border border-gray-100">
+          <input type="text" class="input-field text-xs py-0.5 h-7" placeholder="BV-001..."
+                 value="${curFileRef}" oninput="_hstkChange(${it.id},'file_ref',this.value)">
+        </td>`
+
+        // Notes
+        html += `<td class="py-1 px-2 border border-gray-100">
+          <input type="text" class="input-field text-xs py-0.5 h-7" placeholder="Ghi chú..."
+                 value="${curNotes}" oninput="_hstkChange(${it.id},'notes',this.value)">
+        </td>`
+
+        html += `</tr>`
+      })
+    })
+  })
+
+  html += `</tbody></table>`
+  return html
+}
+
+function _hstkDiscColor(disc) {
+  const map = {
+    'KIẾN TRÚC':    { bg:'#eff6ff', fg:'#1d4ed8' },
+    'KẾT CẤU':     { bg:'#faf5ff', fg:'#6d28d9' },
+    'HTKT':         { bg:'#f0fdf4', fg:'#15803d' },
+    'CƠ ĐIỆN':     { bg:'#fff7ed', fg:'#c2410c' },
+    'PCCC':         { bg:'#fef2f2', fg:'#b91c1c' },
+    'HVAC':         { bg:'#ecfeff', fg:'#0e7490' },
+    'ĐIỆN NẶNG':   { bg:'#fefce8', fg:'#a16207' },
+    'ĐIỆN NHẸ':    { bg:'#fffbeb', fg:'#b45309' },
+    'CẤP THOÁT NƯỚC': { bg:'#f0f9ff', fg:'#0369a1' },
+    'CẢNH QUAN':   { bg:'#f0fdf4', fg:'#166534' },
+    'NỘI THẤT':    { bg:'#fdf4ff', fg:'#86198f' },
+  }
+  return map[disc] || { bg:'#f9fafb', fg:'#374151' }
+}
+
+function _hstkApplyFilter() {
+  if (!_hstkCurrentSub) return
+  const items = _hstkCurrentSub.items || []
+  const byDisc = {}
+  items.forEach(it => {
+    if (!byDisc[it.discipline]) byDisc[it.discipline] = []
+    byDisc[it.discipline].push(it)
+  })
+  const disciplines = Object.keys(byDisc).sort()
+  const wrap = $('hstkTableWrap')
+  if (wrap) wrap.innerHTML = _hstkBuildTable(byDisc, disciplines)
+  // rowspan recalc is done inside _hstkBuildTable with filtered counts — no extra action needed
+}
+
+function _hstkChange(itemId, field, value) {
+  if (!_hstkPendingChanges[itemId]) {
+    // Copy current values
+    const sub = _hstkCurrentSub
+    const it = (sub?.items || []).find(i => i.id === itemId) || {}
+    _hstkPendingChanges[itemId] = {
+      has_doc:  it.has_doc  || 0,
+      file_ref: it.file_ref || '',
+      notes:    it.notes    || ''
+    }
+  }
+  _hstkPendingChanges[itemId][field] = value
+
+  // Update save button
+  const cnt = Object.keys(_hstkPendingChanges).length
+  const btn = $('hstkSaveBtn')
+  const cntEl = $('hstkPendingCount')
+  if (btn) { btn.classList.toggle('hidden', cnt === 0) }
+  if (cntEl) cntEl.textContent = cnt
+}
+
+function _hstkUpdateRowBg(itemId, hasDoc) {
+  const row = $(`hstk-row-${itemId}`)
+  if (!row) return
+  row.className = row.className.replace(/bg-\w+-\d+/g, '').trim()
+  if (hasDoc === 1) row.classList.add('bg-green-50')
+  else if (hasDoc === 2) row.classList.add('bg-gray-50')
+  else if (_hstkPendingChanges[itemId]) row.classList.add('bg-yellow-50')
+}
+
+async function _hstkSavePending() {
+  const changes = Object.entries(_hstkPendingChanges).map(([id, v]) => ({ id: parseInt(id), ...v }))
+  if (!changes.length) return
+  try {
+    await api('/checklist/items/batch', { method: 'post', data: { items: changes } })
+    // Update local state
+    changes.forEach(c => {
+      const it = (_hstkCurrentSub?.items || []).find(i => i.id === c.id)
+      if (it) { it.has_doc = c.has_doc; it.file_ref = c.file_ref; it.notes = c.notes }
+    })
+    _hstkPendingChanges = {}
+    const btn = $('hstkSaveBtn')
+    if (btn) btn.classList.add('hidden')
+    toast(`Đã lưu ${changes.length} hồ sơ`)
+    // Reload submissions list để cập nhật %
+    await _hstkLoadSubmissions(_hstkProjectId)
+  } catch (e) { toast('Lỗi lưu: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+function _hstkBackToList() {
+  _hstkCurrentSub = null
+  _hstkPendingChanges = {}
+  const container = $(`hstkContainer_${_hstkProjectId}`)
+  if (container) _hstkRenderMain(container, _hstkProjectId)
+}
+
+async function confirmDeleteHstk(submissionId) {
+  if (!confirm('Xóa đợt hồ sơ này? Toàn bộ checklist sẽ bị xóa.')) return
+  try {
+    await api(`/checklist/submissions/${submissionId}`, { method: 'delete' })
+    toast('Đã xóa đợt hồ sơ')
+    await _hstkLoadSubmissions(_hstkProjectId)
+    const container = $(`hstkContainer_${_hstkProjectId}`)
+    if (container) _hstkRenderMain(container, _hstkProjectId)
+  } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+// ── Export HSTK to Excel ──────────────────────────────────────────────
+function exportHstkExcel(submissionId) {
+  // Dùng XLSXStyle (xlsx-js-style) để hỗ trợ cell styling
+  const XS = window.XLSXStyle || window.XLSX
+  if (!XS) { toast('Thư viện Excel chưa tải xong, thử lại sau', 'warning'); return }
+  const sub = _hstkCurrentSub
+  if (!sub || sub.id !== submissionId) { toast('Không tìm thấy dữ liệu checklist', 'error'); return }
+
+  const items = sub.items || []
+  if (!items.length) { toast('Không có dữ liệu để xuất', 'warning'); return }
+
+  // ── Helpers ──
+  const cell = (v, s) => ({ v, t: typeof v === 'number' ? 'n' : 's', s })
+  const BORDER = { top:{style:'thin',color:{rgb:'D1D5DB'}}, bottom:{style:'thin',color:{rgb:'D1D5DB'}},
+                   left:{style:'thin',color:{rgb:'D1D5DB'}}, right:{style:'thin',color:{rgb:'D1D5DB'}} }
+  const BORDER_DARK = { top:{style:'medium',color:{rgb:'374151'}}, bottom:{style:'medium',color:{rgb:'374151'}},
+                        left:{style:'medium',color:{rgb:'374151'}}, right:{style:'medium',color:{rgb:'374151'}} }
+
+  const DISC_COLORS = {
+    'KIẾN TRÚC':'DBEAFE','KẾT CẤU':'EDE9FE','HTKT':'DCFCE7',
+    'PCCC':'FEE2E2','HVAC':'CFFAFE','ĐIỆN NẶNG':'FEF9C3',
+    'ĐIỆN NHẸ':'FFF7ED','CẤP THOÁT NƯỚC':'E0F2FE',
+    'CẢNH QUAN':'F0FDF4','NỘI THẤT':'FDF4FF'
+  }
+  const DISC_ORDER = ['HTKT','KIẾN TRÚC','KẾT CẤU','PCCC','HVAC','ĐIỆN NẶNG','ĐIỆN NHẸ','CẤP THOÁT NƯỚC','CẢNH QUAN','NỘI THẤT']
+
+  const wb = XS.utils.book_new()
+
+  // ══ SHEET 1: Thông tin chung + tổng quan ══════════════════════════════
+  const sTitle  = { font:{bold:true,sz:14,color:{rgb:'111827'}}, alignment:{horizontal:'center',vertical:'center'} }
+  const sLabel  = { font:{bold:true,sz:10,color:{rgb:'374151'}}, fill:{fgColor:{rgb:'F3F4F6'}}, border:BORDER }
+  const sValue  = { font:{sz:10,color:{rgb:'111827'}}, border:BORDER }
+  const sSub    = { font:{bold:true,sz:11,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'1D4ED8'}},
+                    alignment:{horizontal:'center',vertical:'center'} }
+  const sThead  = { font:{bold:true,sz:9,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'374151'}},
+                    alignment:{horizontal:'center',vertical:'center'}, border:BORDER_DARK }
+  const sTot    = { font:{bold:true,sz:10,color:{rgb:'111827'}}, fill:{fgColor:{rgb:'FEF9C3'}}, border:BORDER }
+
+  // Lấy tên dự án
+  const projectName = (typeof _currentProject !== 'undefined' && _currentProject?.name) ||
+    document.querySelector('[data-project-name]')?.textContent?.trim() || 'Dự án'
+
+  const infoRows = []
+  // Row 0: title (merge A1:F1)
+  infoRows.push([cell('BIÊN BẢN KIỂM TRA HỒ SƠ THIẾT KẾ', sTitle),'','','','',''])
+  infoRows.push(['','','','','',''])
+  // Metadata
+  const meta = [
+    ['Dự án:', projectName],
+    ['Giai đoạn:', sub.stage === 'TKCS' ? 'TKCS — Thiết kế cơ sở' : 'BVTC — Bản vẽ thi công'],
+    ['Phiên bản:', sub.version || 'V1'],
+    ['Người gửi (TVTK):', sub.sender || '—'],
+    ['Người nhận:', sub.receiver || '—'],
+    ['Ngày nhận:', sub.received_date ? sub.received_date.slice(0,10) : '—'],
+    ['Hạn phản hồi:', sub.feedback_date ? sub.feedback_date.slice(0,10) : '—'],
+    ['Ghi chú:', sub.notes || ''],
+  ]
+  meta.forEach(([lbl, val]) => {
+    infoRows.push([cell(lbl, sLabel), cell(val, sValue),'','','',''])
+  })
+  infoRows.push(['','','','','',''])
+  infoRows.push([cell('TỔNG QUAN TIẾN ĐỘ THEO BỘ MÔN', sSub),'','','','',''])
+
+  // Stats
+  const byDiscStat = {}
+  items.forEach(it => {
+    if (!byDiscStat[it.discipline]) byDiscStat[it.discipline] = {total:0,done:0,na:0}
+    byDiscStat[it.discipline].total++
+    if (it.has_doc===1) byDiscStat[it.discipline].done++
+    if (it.has_doc===2) byDiscStat[it.discipline].na++
+  })
+  infoRows.push(['Bộ môn','Tổng HS','Đã có','N/A','Chưa có','Tiến độ (%)'].map(h => cell(h, sThead)))
+  let gT=0,gD=0,gN=0
+  const disciplinesInStat = [...new Set(items.map(i=>i.discipline))]
+    .sort((a,b)=>{const ia=DISC_ORDER.indexOf(a),ib=DISC_ORDER.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)})
+  disciplinesInStat.forEach(disc => {
+    const s = byDiscStat[disc]
+    const applicable = s.total - s.na
+    const pct = applicable > 0 ? Math.round(s.done/applicable*100) : 0
+    const bg = DISC_COLORS[disc] || 'FFFFFF'
+    const sDisc = { font:{sz:10,color:{rgb:'111827'}}, fill:{fgColor:{rgb:bg}}, border:BORDER, alignment:{horizontal:'left'} }
+    const sNum  = { font:{sz:10}, fill:{fgColor:{rgb:'FFFFFF'}}, border:BORDER, alignment:{horizontal:'center'} }
+    const sPct  = { font:{bold:true,sz:10,color:{rgb: pct>=100?'059669':pct>=60?'2563EB':'EA580C'}},
+                    fill:{fgColor:{rgb:'FFFFFF'}}, border:BORDER, alignment:{horizontal:'center'} }
+    infoRows.push([cell(disc,sDisc), cell(s.total,sNum), cell(s.done,sNum), cell(s.na,sNum),
+                   cell(s.total-s.done-s.na,sNum), cell(pct+'%',sPct)])
+    gT+=s.total; gD+=s.done; gN+=s.na
+  })
+  const gApp=gT-gN, gPct=gApp>0?Math.round(gD/gApp*100):0
+  infoRows.push([cell('TỔNG CỘNG',sTot), cell(gT,sTot), cell(gD,sTot), cell(gN,sTot),
+                 cell(gT-gD-gN,sTot), cell(gPct+'%',sTot)])
+
+  const wsInfo = XS.utils.aoa_to_sheet(infoRows)
+  wsInfo['!cols'] = [{wch:22},{wch:38},{wch:10},{wch:10},{wch:12},{wch:14}]
+  wsInfo['!rows'] = [{hpt:30}] // title row height
+  wsInfo['!merges'] = [
+    {s:{r:0,c:0},e:{r:0,c:5}},       // Title
+    {s:{r:infoRows.length-disciplinesInStat.length-3,c:0},
+     e:{r:infoRows.length-disciplinesInStat.length-3,c:5}},  // Subtitle TỔNG QUAN
+  ]
+  // Merge metadata value cells
+  for (let i=2; i<2+meta.length; i++) {
+    wsInfo['!merges'].push({s:{r:i,c:1},e:{r:i,c:5}})
+  }
+  XS.utils.book_append_sheet(wb, wsInfo, 'Thông tin')
+
+  // ══ SHEET 2: Checklist chi tiết ══════════════════════════════════════
+  const sHead = { font:{bold:true,sz:10,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'1F2937'}},
+                  alignment:{horizontal:'center',vertical:'center',wrapText:true}, border:BORDER_DARK }
+  const sDiscCell = (bg) => ({
+    font:{bold:true,sz:10,color:{rgb:'1E3A5F'}},
+    fill:{fgColor:{rgb:bg}},
+    alignment:{horizontal:'center',vertical:'center',wrapText:true},
+    border:BORDER
+  })
+  const sCodeCell = (bg) => ({
+    font:{bold:true,sz:9,color:{rgb:'1D4ED8'}},
+    fill:{fgColor:{rgb:bg}},
+    alignment:{horizontal:'center',vertical:'center'},
+    border:BORDER
+  })
+  const sNameCell = (bg) => ({
+    font:{sz:9,color:{rgb:'374151'}},
+    fill:{fgColor:{rgb:bg}},
+    alignment:{horizontal:'left',vertical:'center',wrapText:true},
+    border:BORDER
+  })
+  const sDocCell = { font:{sz:9,color:{rgb:'111827'}}, fill:{fgColor:{rgb:'FFFFFF'}},
+                     alignment:{horizontal:'left',vertical:'center',wrapText:true}, border:BORDER }
+  const sStatusDone = { font:{bold:true,sz:9,color:{rgb:'065F46'}}, fill:{fgColor:{rgb:'D1FAE5'}},
+                        alignment:{horizontal:'center',vertical:'center'}, border:BORDER }
+  const sStatusNA   = { font:{sz:9,color:{rgb:'6B7280'}}, fill:{fgColor:{rgb:'F3F4F6'}},
+                        alignment:{horizontal:'center',vertical:'center'}, border:BORDER }
+  const sStatusNone = { font:{sz:9,color:{rgb:'B45309'}}, fill:{fgColor:{rgb:'FFF7ED'}},
+                        alignment:{horizontal:'center',vertical:'center'}, border:BORDER }
+  const sFileCell   = { font:{sz:9,color:{rgb:'374151'}}, fill:{fgColor:{rgb:'FAFAFA'}},
+                        alignment:{horizontal:'left',vertical:'center'}, border:BORDER }
+  const sNoteCell   = { font:{sz:9,color:{rgb:'6B7280'}}, fill:{fgColor:{rgb:'FAFAFA'}},
+                        alignment:{horizontal:'left',vertical:'center',wrapText:true}, border:BORDER }
+  const sSttCell    = { font:{sz:9,color:{rgb:'9CA3AF'}}, fill:{fgColor:{rgb:'FFFFFF'}},
+                        alignment:{horizontal:'center',vertical:'center'}, border:BORDER }
+
+  const headers = ['#','Bộ môn','Hạng mục (Mã)','Hạng mục (Tên)','Loại Hồ Sơ','Trạng thái','Số BV / File','Ghi chú']
+  const detailRows = [headers.map(h => cell(h, sHead))]
+  const merges = []
+  let rowNum = 1, stt = 0
+
+  const disciplines = [...new Set(items.map(i=>i.discipline))]
+    .sort((a,b)=>{const ia=DISC_ORDER.indexOf(a),ib=DISC_ORDER.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)})
+
+  disciplines.forEach(disc => {
+    const bg = DISC_COLORS[disc] || 'F9FAFB'
+    const discItems = items.filter(it=>it.discipline===disc)
+    const byCode={}, codeOrder=[]
+    discItems.forEach(it=>{
+      const key=it.item_code||'__none__'
+      if(!byCode[key]){byCode[key]=[];codeOrder.push(key)}
+      byCode[key].push(it)
+    })
+    const discStart = rowNum
+
+    codeOrder.forEach(code => {
+      const codeRows = byCode[code]
+      const codeStart = rowNum
+      codeRows.forEach(it => {
+        stt++
+        const statusLabel = it.has_doc===1?'Đã có':it.has_doc===2?'N/A':'Chưa có'
+        const sStatus = it.has_doc===1?sStatusDone:it.has_doc===2?sStatusNA:sStatusNone
+        detailRows.push([
+          cell(stt, sSttCell),
+          cell(disc, sDiscCell(bg)),
+          cell(it.item_code||'', sCodeCell(bg)),
+          cell(it.item_name||'', sNameCell(bg)),
+          cell(it.doc_name, sDocCell),
+          cell(statusLabel, sStatus),
+          cell(it.file_ref||'', sFileCell),
+          cell(it.notes||'', sNoteCell),
+        ])
+        rowNum++
+      })
+      if (codeRows.length > 1) {
+        merges.push({s:{r:codeStart,c:2},e:{r:rowNum-1,c:2}})
+        merges.push({s:{r:codeStart,c:3},e:{r:rowNum-1,c:3}})
+      }
+    })
+    if (discItems.length > 1) {
+      merges.push({s:{r:discStart,c:1},e:{r:discStart+discItems.length-1,c:1}})
+    }
+  })
+
+  const wsDetail = XS.utils.aoa_to_sheet(detailRows)
+  wsDetail['!cols'] = [{wch:5},{wch:14},{wch:12},{wch:22},{wch:46},{wch:11},{wch:20},{wch:24}]
+  wsDetail['!merges'] = merges
+  wsDetail['!freeze'] = {xSplit:0, ySplit:1}  // freeze header row
+  XS.utils.book_append_sheet(wb, wsDetail, 'Checklist chi tiết')
+
+  // ── Xuất file ──
+  const stageName = sub.stage || 'HSTK'
+  const ver = sub.version || 'V1'
+  const dateStr = new Date().toISOString().slice(0,10)
+  const fileName = `Checklist_HSTK_${stageName}_${ver}_${dateStr}.xlsx`
+  XS.writeFile(wb, fileName)
+  toast(`✅ Đã xuất: ${fileName}`)
+}
+
+// ═══ END CHECKLIST HSTK MODULE ═══════════════════════════════════════

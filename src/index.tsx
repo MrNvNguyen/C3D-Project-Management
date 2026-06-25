@@ -6732,6 +6732,20 @@ app.put('/api/assets/:id', authMiddleware, adminOnly, async (c) => {
       'purchase_date', 'purchase_price', 'current_value', 'warranty_expiry',
       'status', 'location', 'department', 'assigned_to', 'notes',
       'depreciation_years', 'depreciation_start_date', 'depreciation_status', 'parent_asset_id']
+
+    // Nếu người dùng set assigned_to nhưng KHÔNG thay đổi status → tự động đổi status sang 'active'
+    // Nếu xóa người dùng (assigned_to = null) và không set status → tự động đổi về 'unused'
+    if (data.assigned_to !== undefined && data.status === undefined) {
+      const currentAsset = await db.prepare(`SELECT status FROM assets WHERE id = ?`).bind(id).first() as any
+      if (data.assigned_to) {
+        // Có người dùng mới → active (chỉ khi đang unused)
+        if (currentAsset?.status === 'unused') data.status = 'active'
+      } else {
+        // Xóa người dùng → unused (chỉ khi đang active)
+        if (currentAsset?.status === 'active') data.status = 'unused'
+      }
+    }
+
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
     updates.push('updated_at = CURRENT_TIMESTAMP')
@@ -14900,6 +14914,269 @@ app.post('/api/projects/:projectId/weekly-plans/:planId/report', authMiddleware,
 
 // ===================================================
 // END WEEKLY PLANS & REPORTS API
+// ===================================================
+
+// ===================================================
+// CHECKLIST HỒ SƠ THIẾT KẾ (HSTK) API
+// ===================================================
+
+// GET /api/checklist/doc-types?stage=TKCS  — Lấy danh mục loại HS theo giai đoạn
+app.get('/api/checklist/doc-types', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const { stage } = c.req.query()
+    let query = `SELECT * FROM checklist_doc_types WHERE is_active = 1`
+    const params: any[] = []
+    if (stage) { query += ` AND stage = ?`; params.push(stage) }
+    query += ` ORDER BY stage, sort_order`
+    const result = await db.prepare(query).bind(...params).all()
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/checklist/submissions  — Danh sách lần nộp HS của dự án
+app.get('/api/projects/:id/checklist/submissions', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const result = await db.prepare(`
+      SELECT s.*, u.full_name as created_by_name,
+        (SELECT COUNT(*) FROM checklist_submission_items WHERE submission_id = s.id) as total_items,
+        (SELECT COUNT(*) FROM checklist_submission_items WHERE submission_id = s.id AND has_doc = 1) as done_items,
+        (SELECT COUNT(*) FROM checklist_submission_items WHERE submission_id = s.id AND has_doc = 2) as na_items
+      FROM checklist_submissions s
+      LEFT JOIN users u ON s.created_by = u.id
+      WHERE s.project_id = ?
+      ORDER BY s.created_at DESC
+    `).bind(projectId).all()
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/projects/:id/checklist/submissions  — Tạo lần nộp mới, tự động tạo items từ template × categories dự án
+app.post('/api/projects/:id/checklist/submissions', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const projectId = parseInt(c.req.param('id'))
+    const { stage, version, sender, receiver, received_date, feedback_date, status, notes, disciplines } = await c.req.json()
+    if (!stage) return c.json({ error: 'stage is required' }, 400)
+
+    // Tạo submission
+    const sr = await db.prepare(`
+      INSERT INTO checklist_submissions (project_id, stage, version, sender, receiver, received_date, feedback_date, status, notes, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(projectId, stage, version || 'V1', sender || null, receiver || null,
+      received_date || null, feedback_date || null, status || 'pending', notes || null, user.id).run()
+
+    const submissionId = sr.meta.last_row_id as number
+
+    // Lấy danh sách hạng mục thực tế của dự án
+    const catResult = await db.prepare(`SELECT id, code, name FROM categories WHERE project_id = ? ORDER BY created_at ASC`).bind(projectId).all()
+    const categories = catResult.results as any[]
+
+    // Disciplines dùng item_code cố định từ template (không nhân bản theo categories)
+    // HTKT: 8 hệ thống hạ tầng (CL/CT/CD...) — mỗi row là 1 item độc lập
+    // CẢNH QUAN: 1 hạng mục cố định 'LA-Cảnh quan' với 11 loại hồ sơ
+    // NỘI THẤT: 1 hạng mục cố định 'ID-Nội thất' với 8 loại hồ sơ
+    const FIXED_ITEM_CODE_DISCIPLINES = ['HTKT', 'CẢNH QUAN', 'NỘI THẤT']
+
+    const discFilter = disciplines && disciplines.length > 0
+      ? `AND discipline IN (${disciplines.map(() => '?').join(',')})` : ''
+    const discParams = disciplines && disciplines.length > 0 ? [...disciplines] : []
+
+    // === Phần 1: HTKT và các discipline có item_code cố định → lấy trực tiếp từ template ===
+    const fixedDiscs = disciplines
+      ? disciplines.filter((d: string) => FIXED_ITEM_CODE_DISCIPLINES.includes(d))
+      : FIXED_ITEM_CODE_DISCIPLINES
+
+    let fixedDocTypes: any[] = []
+    if (fixedDiscs.length > 0) {
+      const fixedResult = await db.prepare(`
+        SELECT id, discipline, item_code, item_name, doc_name, sort_order
+        FROM checklist_doc_types
+        WHERE stage = ? AND is_active = 1
+          AND discipline IN (${fixedDiscs.map(() => '?').join(',')})
+        ORDER BY discipline, sort_order
+      `).bind(stage, ...fixedDiscs).all()
+      fixedDocTypes = fixedResult.results as any[]
+    }
+
+    // === Phần 2: Các disciplines khác → lấy patterns (item_code IS NULL) rồi nhân bản theo categories ===
+    let dtQuery = `SELECT id, discipline, doc_name, sort_order
+      FROM checklist_doc_types
+      WHERE stage = ? AND is_active = 1 AND item_code IS NULL
+        AND discipline NOT IN (${FIXED_ITEM_CODE_DISCIPLINES.map(() => '?').join(',')})`
+    const dtParams: any[] = [stage, ...FIXED_ITEM_CODE_DISCIPLINES]
+    if (disciplines && disciplines.length > 0) {
+      dtQuery += ` AND discipline IN (${disciplines.map(() => '?').join(',')})`
+      dtParams.push(...disciplines)
+    }
+    dtQuery += ` ORDER BY discipline, sort_order`
+    const dtResult = await db.prepare(dtQuery).bind(...dtParams).all()
+    const allDocTypes = dtResult.results as any[]
+
+    // De-duplicate: mỗi (discipline, doc_name) chỉ lấy 1 lần (template cũ có 2 blocks A1/A2 giống nhau)
+    const seen = new Set<string>()
+    const docPatterns: any[] = []
+    for (const dt of allDocTypes) {
+      const key = `${dt.discipline}|||${dt.doc_name}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        docPatterns.push(dt)
+      }
+    }
+
+    // Sinh items
+    const insertRows: { docTypeId: number; discipline: string; itemCode: string | null; itemName: string | null; docName: string }[] = []
+
+    // Phần 1: HTKT — dùng item_code/doc_name trực tiếp từ template (item_code = mã hệ thống, doc_name = tên)
+    for (const dt of fixedDocTypes) {
+      insertRows.push({
+        docTypeId: dt.id,
+        discipline: dt.discipline,
+        itemCode: dt.item_code || null,
+        itemName: dt.item_name || null,
+        docName: dt.doc_name,
+      })
+    }
+
+    // Phần 2: disciplines còn lại → discipline × category × doc_pattern
+    const disciplinesInTemplate = [...new Set(docPatterns.map((d: any) => d.discipline))]
+    for (const disc of disciplinesInTemplate) {
+      const patterns = docPatterns.filter((d: any) => d.discipline === disc)
+      const catsForDisc = categories.length > 0 ? categories : [{ code: null, name: null }]
+      for (const cat of catsForDisc) {
+        for (const pat of patterns) {
+          insertRows.push({
+            docTypeId: pat.id,
+            discipline: disc,
+            itemCode: cat.code || null,
+            itemName: cat.name || null,
+            docName: pat.doc_name,
+          })
+        }
+      }
+    }
+
+    // Batch insert
+    if (insertRows.length > 0) {
+      const stmts = insertRows.map(row =>
+        db.prepare(`INSERT INTO checklist_submission_items (submission_id, doc_type_id, discipline, item_code, item_name, doc_name, has_doc)
+                    VALUES (?, ?, ?, ?, ?, ?, 0)`)
+          .bind(submissionId, row.docTypeId, row.discipline, row.itemCode, row.itemName, row.docName)
+      )
+      for (let i = 0; i < stmts.length; i += 50) {
+        await db.batch(stmts.slice(i, i + 50))
+      }
+    }
+
+    return c.json({ success: true, id: submissionId, items_created: insertRows.length }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/checklist/submissions/:id  — Chi tiết 1 lần nộp + toàn bộ items
+app.get('/api/checklist/submissions/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const sub = await db.prepare(`
+      SELECT s.*, u.full_name as created_by_name
+      FROM checklist_submissions s LEFT JOIN users u ON s.created_by = u.id
+      WHERE s.id = ?
+    `).bind(id).first() as any
+    if (!sub) return c.json({ error: 'Not found' }, 404)
+
+    const items = await db.prepare(`
+      SELECT * FROM checklist_submission_items WHERE submission_id = ? ORDER BY discipline, rowid
+    `).bind(id).all()
+
+    return c.json({ ...sub, items: items.results })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PUT /api/checklist/submissions/:id  — Cập nhật thông tin lần nộp (metadata)
+app.put('/api/checklist/submissions/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const data = await c.req.json()
+    const fields = ['stage', 'version', 'sender', 'receiver', 'received_date', 'feedback_date', 'status', 'notes']
+    const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
+    const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
+    if (updates.length === 0) return c.json({ error: 'No fields to update' }, 400)
+    updates.push('updated_at = CURRENT_TIMESTAMP')
+    values.push(id)
+    await db.prepare(`UPDATE checklist_submissions SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/checklist/submissions/:id
+app.delete('/api/checklist/submissions/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    await db.prepare(`DELETE FROM checklist_submission_items WHERE submission_id = ?`).bind(id).run()
+    await db.prepare(`DELETE FROM checklist_submissions WHERE id = ?`).bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PATCH /api/checklist/items/:id  — Cập nhật trạng thái 1 item (has_doc, file_ref, notes)
+app.patch('/api/checklist/items/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const id = parseInt(c.req.param('id'))
+    const { has_doc, file_ref, notes } = await c.req.json()
+    await db.prepare(`
+      UPDATE checklist_submission_items
+      SET has_doc = ?, file_ref = ?, notes = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(has_doc ?? 0, file_ref ?? null, notes ?? null, user.id, id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/checklist/items/batch  — Cập nhật nhiều items cùng lúc
+app.post('/api/checklist/items/batch', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { items } = await c.req.json()
+    if (!Array.isArray(items) || items.length === 0) return c.json({ error: 'items array required' }, 400)
+    const stmts = items.map((it: any) =>
+      db.prepare(`UPDATE checklist_submission_items SET has_doc = ?, file_ref = ?, notes = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(it.has_doc ?? 0, it.file_ref ?? null, it.notes ?? null, user.id, it.id)
+    )
+    for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50))
+    return c.json({ success: true, updated: items.length })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/checklist/summary  — Tổng hợp % hoàn thành theo giai đoạn + bộ môn
+app.get('/api/projects/:id/checklist/summary', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const result = await db.prepare(`
+      SELECT s.stage, s.version, i.discipline,
+        COUNT(*) as total,
+        SUM(CASE WHEN i.has_doc = 1 THEN 1 ELSE 0 END) as done,
+        SUM(CASE WHEN i.has_doc = 2 THEN 1 ELSE 0 END) as na
+      FROM checklist_submissions s
+      JOIN checklist_submission_items i ON i.submission_id = s.id
+      WHERE s.project_id = ?
+      GROUP BY s.id, s.stage, s.version, i.discipline
+      ORDER BY s.created_at DESC, i.discipline
+    `).bind(projectId).all()
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// END CHECKLIST HSTK API
 // ===================================================
 
 export default app
