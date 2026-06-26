@@ -22985,6 +22985,7 @@ function _hstkBuildTable(byDisc, disciplines) {
         <th class="py-2 px-3 font-semibold border border-gray-200 w-28">Trạng thái</th>
         <th class="py-2 px-3 font-semibold border border-gray-200 min-w-[120px]">Số bản vẽ / File</th>
         <th class="py-2 px-3 font-semibold border border-gray-200 min-w-[120px]">Ghi chú</th>
+        <th class="py-2 px-2 font-semibold border border-gray-200 w-8"></th>
       </tr>
     </thead>
     <tbody>`
@@ -23007,9 +23008,14 @@ function _hstkBuildTable(byDisc, disciplines) {
     })
 
     let firstRowInDisc = true
-    let discRowCount = filtered.length
+    // discRowCount phải tính cả dòng "Bổ sung hồ sơ" (1 dòng / nhóm item_code)
+    // để rowspan của cột "Bộ môn" bao phủ đúng số dòng thực tế trong bảng
+    const addBtnRows = (!filterItem && !filterStatus) ? codeOrder.length : 0
+    let discRowCount = filtered.length + addBtnRows
     codeOrder.forEach(code => {
       const codeRows = byCode[code]
+      // codeRowspan = số item trong nhóm + 1 dòng "Bổ sung hồ sơ" (nếu hiện)
+      const codeRowspan = codeRows.length + ((!filterItem && !filterStatus) ? 1 : 0)
       let firstInCode = true
       codeRows.forEach((it, ci) => {
         rowIdx++
@@ -23033,13 +23039,26 @@ function _hstkBuildTable(byDisc, disciplines) {
           firstRowInDisc = false
         }
 
-        // Hạng mục (rowspan for first in code group)
+        // Hạng mục (rowspan = số item trong nhóm + 1 dòng "Bổ sung hồ sơ")
         if (firstInCode) {
+          const subId = _hstkCurrentSub?.id
+          const codeEsc = code !== '__none__' ? code.replace(/'/g,"&apos;") : ''
+          const discEsc = disc.replace(/'/g,"&apos;")
           const codeLabel = code !== '__none__'
             ? `<span class="font-mono text-blue-600 font-bold">${code}</span>${codeRows[0].item_name ? `<br><span class="text-gray-600 font-normal text-xs">${codeRows[0].item_name}</span>` : ''}`
-            : '<span class="text-gray-300">—</span>'
-          html += `<td class="py-1.5 px-3 border border-gray-200 text-gray-600 align-middle font-medium"
-                      rowspan="${codeRows.length}">${codeLabel}</td>`
+            : '<span class="text-gray-300 text-xs italic">Không có</span>'
+          html += `<td class="py-1.5 px-2 border border-gray-200 text-gray-600 align-middle font-medium"
+                      rowspan="${codeRowspan}">
+            <div class="flex flex-col items-center gap-1.5">
+              <div class="text-center">${codeLabel}</div>
+              <button onclick="_hstkDeleteItemGroup(${subId},'${discEsc}','${codeEsc}')"
+                title="Xoá toàn bộ hạng mục này"
+                class="text-red-300 hover:text-red-500 transition-colors leading-none mt-0.5"
+                style="font-size:13px">
+                <i class="fas fa-trash-alt"></i>
+              </button>
+            </div>
+          </td>`
           firstInCode = false
         }
 
@@ -23069,13 +23088,200 @@ function _hstkBuildTable(byDisc, disciplines) {
                  value="${curNotes}" oninput="_hstkChange(${it.id},'notes',this.value)">
         </td>`
 
+        // Nút xoá — hiện cho tất cả dòng, mờ khi hover mới nổi lên
+        html += `<td class="py-1 px-2 border border-gray-100 text-center">
+          <button onclick="_hstkDeleteCustomItem(${it.id})" title="Xoá dòng hồ sơ này"
+            class="text-red-300 hover:text-red-500 transition-colors opacity-40 hover:opacity-100">
+            <i class="fas fa-times"></i>
+          </button>
+        </td>`
+
         html += `</tr>`
       })
+
+      // Nút "+ Bổ sung hồ sơ" cuối mỗi nhóm hạng mục
+      // Dòng này nằm trong vùng rowspan của "Bộ môn" (discRowCount đã tính) và "Hạng mục" (codeRowspan đã tính)
+      // → chỉ cần render 6 cột còn lại (#, doc_name, status, file_ref, notes, action)
+      if (!filterItem && !filterStatus) {
+        const subId = _hstkCurrentSub?.id
+        const discVal = disc
+        const codeVal = code !== '__none__' ? code : ''
+        const nameVal = code !== '__none__' ? (codeRows[0]?.item_name || '') : ''
+        html += `<tr class="bg-blue-50/40 border-b border-blue-100">
+          <td class="border border-gray-100 text-gray-300 text-center text-xs py-1">+</td>
+          <td colspan="6" class="py-1 px-3 border border-blue-100/50">
+            <button onclick="_hstkShowAddItemModal(${subId},'${discVal.replace(/'/g,"&apos;")}','${codeVal.replace(/'/g,"&apos;")}','${nameVal.replace(/'/g,"&apos;")}')"
+              class="flex items-center gap-1 text-blue-500 hover:text-blue-700 text-xs font-medium transition-colors">
+              <i class="fas fa-plus-circle text-blue-400"></i> Bổ sung hồ sơ
+            </button>
+          </td>
+        </tr>`
+      }
     })
   })
 
   html += `</tbody></table>`
   return html
+}
+
+// ── Modal: Bổ sung hồ sơ ─────────────────────────────────────────────
+function _hstkShowAddItemModal(submissionId, disc, itemCode, itemName) {
+  // Remove old modal if exists
+  const old = document.getElementById('hstkAddItemModal')
+  if (old) old.remove()
+
+  const labelHangMuc = itemCode ? `${itemCode}${itemName ? ' – ' + itemName : ''}` : '(Không có hạng mục)'
+
+  const modal = document.createElement('div')
+  modal.id = 'hstkAddItemModal'
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/40'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-bold text-gray-800 text-base flex items-center gap-2">
+          <i class="fas fa-plus-circle text-blue-500"></i>
+          Bổ sung loại hồ sơ
+        </h3>
+        <button onclick="document.getElementById('hstkAddItemModal').remove()" class="text-gray-400 hover:text-gray-600">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="space-y-3 text-sm">
+        <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+          <span class="text-gray-400 text-xs w-20 flex-shrink-0">Bộ môn:</span>
+          <span class="font-semibold text-gray-700">${disc}</span>
+        </div>
+        <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+          <span class="text-gray-400 text-xs w-20 flex-shrink-0">Hạng mục:</span>
+          <span class="font-medium text-blue-600">${labelHangMuc}</span>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Tên loại hồ sơ <span class="text-red-500">*</span></label>
+          <input id="hstkAddItemDocName" type="text" autofocus
+            class="input-field text-sm w-full"
+            placeholder="Vd: Chi tiết kỹ thuật đặc biệt..."
+            onkeydown="if(event.key==='Enter') _hstkConfirmAddItem(${submissionId},'${disc.replace(/'/g,"&apos;")}','${itemCode.replace(/'/g,"&apos;")}','${itemName.replace(/'/g,"&apos;")}')"
+          />
+        </div>
+      </div>
+      <div class="flex gap-2 mt-5 justify-end">
+        <button onclick="document.getElementById('hstkAddItemModal').remove()"
+          class="px-4 py-2 text-sm rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">
+          Huỷ
+        </button>
+        <button onclick="_hstkConfirmAddItem(${submissionId},'${disc.replace(/'/g,"&apos;")}','${itemCode.replace(/'/g,"&apos;")}','${itemName.replace(/'/g,"&apos;")}')"
+          class="btn-primary px-4 py-2 text-sm">
+          <i class="fas fa-plus mr-1"></i>Thêm hồ sơ
+        </button>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+  setTimeout(() => document.getElementById('hstkAddItemDocName')?.focus(), 50)
+}
+
+async function _hstkConfirmAddItem(submissionId, disc, itemCode, itemName) {
+  const input = document.getElementById('hstkAddItemDocName')
+  const docName = input?.value?.trim()
+  if (!docName) { input?.focus(); return }
+
+  const modal = document.getElementById('hstkAddItemModal')
+  if (modal) modal.remove()
+
+  try {
+    const token = localStorage.getItem('bim_token')
+    const res = await fetch('/api/checklist/items', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ submission_id: submissionId, discipline: disc, item_code: itemCode || null, item_name: itemName || null, doc_name: docName })
+    })
+    const data = await res.json()
+    if (!res.ok) { toast(`❌ ${data.error || 'Lỗi thêm hồ sơ'}`, 'error'); return }
+
+    // Reload submission data rồi re-render
+    await _hstkReloadSubmission(submissionId)
+    toast('✅ Đã bổ sung hồ sơ')
+  } catch (e) {
+    toast('❌ Lỗi kết nối', 'error')
+  }
+}
+
+async function _hstkDeleteCustomItem(itemId) {
+  // Tìm tên hồ sơ để hiện trong confirm
+  const it = (_hstkCurrentSub?.items || []).find(i => i.id === itemId)
+  const docName = it?.doc_name || 'hồ sơ này'
+  if (!confirm(`Xoá dòng hồ sơ:\n"${docName}"?\n\nHành động này không thể hoàn tác.`)) return
+  try {
+    const token = localStorage.getItem('bim_token')
+    const res = await fetch(`/api/checklist/items/${itemId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+    const data = await res.json()
+    if (!res.ok) { toast(`❌ ${data.error || 'Lỗi xoá'}`, 'error'); return }
+    // Remove pending changes for this item
+    delete _hstkPendingChanges[itemId]
+    if (_hstkCurrentSub) {
+      _hstkCurrentSub.items = (_hstkCurrentSub.items || []).filter(i => i.id !== itemId)
+      _hstkApplyFilter()
+    }
+    toast(`🗑️ Đã xoá: ${docName}`)
+  } catch (e) {
+    toast('❌ Lỗi kết nối', 'error')
+  }
+}
+
+async function _hstkReloadSubmission(submissionId) {
+  try {
+    const token = localStorage.getItem('bim_token')
+    const res = await fetch(`/api/checklist/submissions/${submissionId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+    const data = await res.json()
+    if (res.ok) {
+      _hstkCurrentSub = data
+      _hstkPendingChanges = {}
+      _hstkRenderDetail(data)
+    }
+  } catch (e) { console.error('Reload error', e) }
+}
+
+// Xoá toàn bộ nhóm hạng mục (disc + item_code)
+async function _hstkDeleteItemGroup(submissionId, disc, itemCode) {
+  const label = itemCode ? `hạng mục "${itemCode}"` : 'nhóm không có hạng mục'
+  const count = (_hstkCurrentSub?.items || []).filter(i =>
+    i.discipline === disc && (itemCode ? i.item_code === itemCode : !i.item_code)
+  ).length
+  if (!confirm(`Xoá toàn bộ ${label} (${count} loại hồ sơ) trong bộ môn ${disc}?\n\nHành động này không thể hoàn tác.`)) return
+
+  try {
+    const token = localStorage.getItem('bim_token')
+    const res = await fetch(`/api/checklist/submissions/${submissionId}/items/group`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ discipline: disc, item_code: itemCode || null })
+    })
+    const data = await res.json()
+    if (!res.ok) { toast(`❌ ${data.error || 'Lỗi xoá hạng mục'}`, 'error'); return }
+
+    // Cập nhật local state & re-render (không cần reload từ server)
+    if (_hstkCurrentSub) {
+      _hstkCurrentSub.items = (_hstkCurrentSub.items || []).filter(i => {
+        if (i.discipline !== disc) return true
+        if (itemCode) return i.item_code !== itemCode
+        return !!(i.item_code)
+      })
+      // Xoá pending changes của các items đã bị xoá
+      Object.keys(_hstkPendingChanges).forEach(id => {
+        const it = (_hstkCurrentSub.items || []).find(i => i.id === parseInt(id))
+        if (!it) delete _hstkPendingChanges[id]
+      })
+      _hstkRenderDetail(_hstkCurrentSub)
+    }
+    toast(`🗑️ Đã xoá ${data.deleted} hồ sơ của ${label}`)
+  } catch (e) {
+    toast('❌ Lỗi kết nối', 'error')
+  }
 }
 
 function _hstkDiscColor(disc) {
