@@ -3851,6 +3851,9 @@ async function openTaskModal(taskId = null, projectId = null) {
   $('taskModalTitle').textContent = taskId ? 'Chỉnh sửa Task' : 'Tạo Task mới'
   $('taskId').value = taskId || ''
 
+  // Đảm bảo role cache đã được cập nhật (quan trọng với QLDA/Leader)
+  refreshProjectRoleCache()
+
   const effRoleForModal = projectId
     ? getEffectiveRoleForProject(projectId)
     : (taskId ? getEffectiveRoleForProject(null) : getEffectiveGlobalRole())
@@ -4048,6 +4051,46 @@ function _initTaskProjectCombobox(items, locked) {
         await _loadAndInitTaskCategoryCombobox(parseInt(val), null, locked)
         await updateTaskAssigneeByProject(parseInt(val))
         await _loadAndInitTaskFilenameCombobox(parseInt(val), '')
+
+        // Re-evaluate role sau khi chọn project — quan trọng với QLDA/Leader
+        const newRole = getEffectiveRoleForProject(parseInt(val))
+        const isNowMember = !['system_admin','project_admin','project_leader'].includes(newRole)
+
+        const adminSection = $('taskAdminSection')
+        const memberBanner = $('taskMemberBanner')
+        const allEditableFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours','taskWorkNotes','taskCdeReport','taskHstkDate','taskType','taskFilename']
+
+        // Cập nhật taskAdminActions (nút "Tạo nhiều task" + "Import Excel")
+        // Chỉ hiện khi đang ở chế độ tạo mới (taskId rỗng) và là QLDA/Leader của project
+        const adminActions = $('taskAdminActions')
+        const currentTaskId = $('taskId')?.value
+        if (adminActions) {
+          if (!isNowMember && !currentTaskId) {
+            adminActions.style.setProperty('display', 'flex', 'important')
+          } else {
+            adminActions.style.setProperty('display', 'none', 'important')
+          }
+        }
+
+        if (!isNowMember) {
+          // QLDA / Leader / Admin → unlock tất cả fields
+          if (adminSection) { adminSection.style.opacity = ''; adminSection.style.pointerEvents = ''; adminSection.style.filter = '' }
+          allEditableFields.forEach(fid => { const el = $(fid); if (el) { el.disabled = false; el.style.opacity = ''; el.style.pointerEvents = '' } })
+          ;['taskProjectComboboxModal','taskDisciplineCombobox','taskFilenameCombobox'].forEach(cbId => {
+            const el = document.getElementById(cbId); if (!el) return
+            const trigger = el.querySelector('[data-cb-trigger]') || el.firstElementChild
+            if (trigger) { trigger.style.pointerEvents = ''; trigger.style.opacity = ''; trigger.style.background = ''; trigger.style.cursor = '' }
+          })
+          if (memberBanner) memberBanner.style.display = 'none'
+          window._taskFilenameNeedsLock = false
+          // Cho phép chọn bất kỳ người phụ trách nào
+          $('taskAssignee').innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
+            (allUsers || []).filter(u => u.is_active !== 0).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+        } else {
+          // Member thông thường → chỉ chọn chính mình
+          const me = currentUser
+          $('taskAssignee').innerHTML = `<option value="${me.id}" selected>${me.full_name}</option>`
+        }
       } else {
         _initTaskCategoryCombobox([], locked, null)
         _initTaskFilenameCombobox([], '')
@@ -21858,14 +21901,24 @@ async function submitWeeklyReport(e, planId, projectId) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Hiển thị nút admin trong taskModal khi tạo mới ──────────────────────────
+// Helper: kiểm tra xem user có phải admin/leader cho 1 project không (dùng effective role)
+function _isAdminOrLeaderForProject(projectId) {
+  if (!projectId) {
+    // Không có project cụ thể → dùng global role
+    return ['system_admin','project_admin','project_leader'].includes(currentUser?.role)
+  }
+  const effRole = getEffectiveRoleForProject(parseInt(projectId))
+  return ['system_admin','project_admin','project_leader'].includes(effRole)
+}
+
 ;(function patchTaskModalForAdmin() {
   const origOpen = window.openTaskModal
   window.openTaskModal = async function(taskId = null, projectId = null) {
     await origOpen(taskId, projectId)
     const adminActions = $('taskAdminActions')
     if (!adminActions) return
-    const role = currentUser?.role
-    const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(role)
+    // Kiểm tra: global role HOẶC project-specific role (quan trọng với QLDA được bổ nhiệm)
+    const isAdminOrLeader = _isAdminOrLeaderForProject(projectId)
     // Chỉ hiện khi tạo mới (không phải edit) và là admin/leader
     if (!taskId && isAdminOrLeader) {
       adminActions.style.setProperty('display', 'flex', 'important')
@@ -23241,7 +23294,9 @@ async function _hstkReloadSubmission(submissionId) {
     if (res.ok) {
       _hstkCurrentSub = data
       _hstkPendingChanges = {}
-      _hstkRenderDetail(data)
+      // Lấy đúng container DOM — _hstkRenderDetail nhận (container, sub)
+      const container = $(`hstkContainer_${_hstkProjectId}`)
+      if (container) _hstkRenderDetail(container, data)
     }
   } catch (e) { console.error('Reload error', e) }
 }
