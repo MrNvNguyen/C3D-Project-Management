@@ -651,12 +651,12 @@ async function sendEmail(env: Bindings, opts: {
   userId?: number
   relatedType?: string
   relatedId?: number
-}): Promise<void> {
+}): Promise<'sent' | 'failed' | 'skipped'> {
   // ── Bỏ qua email liên quan đến thanh toán và timesheet ──────────────────
   const SKIP_PAYMENT_EVENTS = new Set(['payment_request_new', 'payment_status_changed', 'timesheet_reviewed', 'timesheet_bulk_approved'])
   if (SKIP_PAYMENT_EVENTS.has(opts.eventType)) {
     console.log(`[sendEmail] SKIPPED event — eventType=${opts.eventType} to=${opts.to}`)
-    return
+    return 'skipped'
   }
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -673,7 +673,7 @@ async function sendEmail(env: Bindings, opts: {
 
   if (!apiKey) {
     console.log(`[sendEmail] ABORT — no RESEND_API_KEY`)
-    return
+    return 'skipped'
   }
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
@@ -702,7 +702,7 @@ async function sendEmail(env: Bindings, opts: {
 
   const { subject, html } = emailTemplates(opts.eventType, { ...opts.data, recipientName: opts.toName })
 
-  let status = 'sent'
+  let status: 'sent' | 'failed' = 'sent'
   let errorMsg: string | null = null
 
   try {
@@ -761,6 +761,8 @@ async function sendEmail(env: Bindings, opts: {
       relatedId:   opts.relatedId   || null,
     }).catch(() => { /* silent */ })
   }
+
+  return status
 }
 
 // ---- Helper: get user email info ----
@@ -7812,7 +7814,12 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
 })
 
 // POST /api/dashboard/send-birthday-emails — Gửi email chúc mừng sinh nhật hôm nay
-app.post('/api/dashboard/send-birthday-emails', authMiddleware, adminOnly, async (c) => {
+// Cho phép: system_admin, project_admin (không cần system_admin mới dùng được)
+app.post('/api/dashboard/send-birthday-emails', authMiddleware, async (c) => {
+  const caller = c.get('user') as any
+  if (!['system_admin', 'project_admin'].includes(caller?.role)) {
+    return c.json({ error: 'Chỉ Admin mới có thể gửi email chúc sinh nhật.' }, 403)
+  }
   try {
     const db = c.env.DB
     const today = new Date()
@@ -7835,20 +7842,28 @@ app.post('/api/dashboard/send-birthday-emails', authMiddleware, adminOnly, async
       const birthYear = u.birthday ? parseInt(u.birthday.substring(0, 4)) : null
       const age = birthYear ? today.getFullYear() - birthYear : null
       try {
-        await sendEmail({
-          db, env: c.env,
+        // QUAN TRỌNG: dùng đúng signature sendEmail(env, opts) — không phải sendEmail({ env, ... })
+        const result = await sendEmail(c.env, {
+          db,
           to: u.email, toName: u.full_name,
           userId: u.id,
           eventType: 'birthday_wish',
           data: { recipientName: u.full_name, age, department: u.department },
           relatedType: 'user', relatedId: u.id,
         })
-        results.push({ name: u.full_name, email: u.email, status: 'sent', age })
+        results.push({ name: u.full_name, email: u.email, status: result, age })
       } catch (err: any) {
         results.push({ name: u.full_name, email: u.email, status: 'error', error: err.message })
       }
     }
-    return c.json({ sent: results.filter(r => r.status === 'sent').length, total: results.length, results })
+    return c.json({
+      sent:    results.filter(r => r.status === 'sent').length,
+      failed:  results.filter(r => r.status === 'failed').length,
+      skipped: results.filter(r => r.status === 'skipped').length,
+      no_email: results.filter(r => r.status === 'no_email').length,
+      total:   results.length,
+      results
+    })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

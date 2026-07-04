@@ -921,6 +921,14 @@ function renderBirthdayWidget(birthdays) {
     subtitleEl.textContent = `${monthName} — ${birthdays.length} người${todayBirths.length > 0 ? ` · 🎉 ${todayBirths.length} người sinh nhật hôm nay!` : ''}`
   }
 
+  // Hiện/ẩn nút "Gửi lời chúc" dựa trên role — chỉ admin mới có quyền gọi API
+  const sendBtn = $('btnSendBirthdayEmails')
+  if (sendBtn) {
+    const role = currentUser?.role
+    const canSend = ['system_admin', 'project_admin'].includes(role)
+    sendBtn.style.display = canSend ? '' : 'none'
+  }
+
   listEl.innerHTML = birthdays.map(u => {
     if (!u.birthday) return ''
     const mm = u.birthday.substring(5, 7)
@@ -973,17 +981,37 @@ async function sendBirthdayEmailsToday() {
   btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang gửi...'
   try {
     const res = await api('/dashboard/send-birthday-emails', { method: 'POST' })
-    if (res.total === 0) {
+    if (res.error) {
+      showToast(res.error, 'error')
+    } else if (res.total === 0) {
       showToast('Không có nhân sự nào có sinh nhật hôm nay', 'info')
+    } else if (res.sent > 0) {
+      const extra = res.failed > 0 ? ` (${res.failed} lỗi)` : ''
+      const noMail = res.no_email > 0 ? `, ${res.no_email} người chưa có email` : ''
+      showToast(`✅ Đã gửi email chúc mừng cho ${res.sent}/${res.total} nhân sự${extra}${noMail}!`, 'success')
+    } else if (res.skipped > 0 && res.sent === 0) {
+      // Gửi bị skip — thường do chưa cấu hình RESEND API Key
+      showToast(`⚠️ Email chưa được gửi — vào Admin → Cài đặt Email để cấu hình RESEND API Key`, 'warning')
+    } else if (res.failed > 0) {
+      showToast(`❌ Gửi thất bại cho ${res.failed}/${res.total} nhân sự — kiểm tra log hoặc RESEND API Key`, 'error')
+    } else if (res.no_email > 0 && res.sent === 0) {
+      showToast(`${res.no_email} nhân sự có sinh nhật hôm nay nhưng chưa có địa chỉ email trong hồ sơ`, 'warning')
     } else {
-      showToast(`✅ Đã gửi email chúc mừng cho ${res.sent}/${res.total} nhân sự!`, 'success')
+      showToast(`⚠️ Không gửi được email nào (${res.total} người) — kiểm tra RESEND API Key`, 'warning')
     }
-    // Log detail
+    // Log detail ra console
     if (res.results && res.results.length > 0) {
       console.table(res.results)
     }
   } catch (e) {
-    showToast('Lỗi khi gửi email: ' + (e.message || e), 'error')
+    const msg = e.message || String(e)
+    if (msg.includes('403') || msg.toLowerCase().includes('access denied') || msg.toLowerCase().includes('admin')) {
+      showToast('Chỉ Admin mới có thể gửi email chúc sinh nhật', 'warning')
+    } else if (msg.toLowerCase().includes('resend') || msg.toLowerCase().includes('api key') || msg.toLowerCase().includes('email')) {
+      showToast('Lỗi cấu hình email — vào Admin → Cài đặt Email để kiểm tra RESEND API Key', 'error')
+    } else {
+      showToast('Lỗi khi gửi email: ' + msg, 'error')
+    }
   } finally {
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-envelope-open-text mr-1"></i> Gửi lời chúc hôm nay'
@@ -13941,7 +13969,8 @@ function renderSharedCostTable() {
   const globalOffset = start
 
   const basisLabel = { contract_value: '% GTHĐ', equal: 'Chia đều', manual: 'Thủ công' }
-  const costTypeLabel = {
+  // Fallback labels cho các loại built-in (dùng khi allCostTypes chưa load)
+  const costTypeLabelFallback = {
     office: 'Chi phí văn phòng', equipment: 'Chi phí thiết bị', material: 'Chi phí vật liệu',
     travel: 'Chi phí đi lại', transport: 'Chi phí vận chuyển', salary: 'Chi phí lương',
     depreciation: 'Chi phí khấu hao', other: 'Chi phí khác', manmonth: 'Chi phí tháng',
@@ -13960,12 +13989,20 @@ function renderSharedCostTable() {
     other:        'background:#f3f4f6;color:#374151',
   }
 
-  // Helper lấy màu từ allCostTypes (DB) cho loại tuỳ chỉnh
+  // Helper lấy màu từ allCostTypes (DB) cho loại tuỳ chỉnh — DB name/color có ưu tiên cao nhất
   const _getSharedTypeStyle = (code) => {
-    if (costTypeStyle[code]) return costTypeStyle[code]
+    // 1. Ưu tiên: màu từ DB (allCostTypes)
     const ct = allCostTypes.find(c => c.code === code)
     if (ct && ct.color) return `background:${ct.color}22;color:${ct.color}`
+    // 2. Fallback: hardcoded style
+    if (costTypeStyle[code]) return costTypeStyle[code]
     return 'background:#fef3c7;color:#92400e'
+  }
+  // Helper lấy tên loại chi phí — ưu tiên DB name
+  const _getSharedTypeLabel = (code) => {
+    const ct = allCostTypes.find(c => c.code === code)
+    if (ct && ct.name) return ct.name
+    return costTypeLabelFallback[code] || code
   }
 
   tbody.innerHTML = pageData.map((sc, idx) => {
@@ -13974,7 +14011,7 @@ function renderSharedCostTable() {
     ).join('')
     const period    = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `NTC${sc.year}` : '-')
     const typeStyle = _getSharedTypeStyle(sc.cost_type)
-    const typeLabel = costTypeLabel[sc.cost_type] || getCostTypeNameDynamic(sc.cost_type)
+    const typeLabel = _getSharedTypeLabel(sc.cost_type)
     const isDepr    = sc.cost_type === 'depreciation'
     const rowNum    = globalOffset + idx + 1
     return `<tr class="hover:bg-gray-50${isDepr ? ' bg-purple-50' : ''}">
