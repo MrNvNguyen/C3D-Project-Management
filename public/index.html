@@ -1187,6 +1187,10 @@
             </div>
             <!-- Right: controls -->
             <div class="flex flex-wrap items-center gap-2">
+              <!-- Filter nhân sự (admin only) -->
+              <div id="leaveFilterEmployeeWrap" class="relative hidden">
+                <div id="leaveEmployeeCombobox" class="min-w-[200px]"></div>
+              </div>
               <div class="relative">
                 <select id="leaveFilterStatus" onchange="loadLeaveRequests()"
                   class="appearance-none pl-9 pr-8 py-2 text-sm rounded-xl cursor-pointer focus:outline-none focus:ring-2 transition-all"
@@ -1277,6 +1281,51 @@
 
         <!-- ── Personal Summary Cards ── -->
         <div id="leaveSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6"></div>
+
+        <!-- ── Employee Stats Panel (admin only, hiện khi chọn nhân sự) ── -->
+        <div id="leaveEmployeeStatsPanel" class="hidden mb-6">
+          <!-- Header card: thông tin nhân sự + quota bar -->
+          <div class="rounded-2xl bg-white border border-indigo-100 overflow-hidden mb-3" style="box-shadow:0 4px 20px rgba(99,102,241,0.08)">
+            <div class="px-5 py-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+              <!-- Avatar + info -->
+              <div class="flex items-center gap-3 flex-1 min-w-0">
+                <div id="leaveEmpAvatar" class="w-12 h-12 rounded-2xl flex items-center justify-center text-white text-lg font-bold flex-shrink-0"
+                  style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">?</div>
+                <div class="min-w-0">
+                  <p id="leaveEmpName" class="font-bold text-gray-800 text-base truncate">—</p>
+                  <p id="leaveEmpMeta" class="text-xs text-gray-400 truncate">—</p>
+                </div>
+              </div>
+              <!-- Quota summary -->
+              <div class="flex items-center gap-6 flex-shrink-0">
+                <div class="text-center">
+                  <p class="text-2xl font-black" id="leaveEmpTotalDays" style="color:#6366f1">—</p>
+                  <p class="text-xs text-gray-400">Tổng quota</p>
+                </div>
+                <div class="text-center">
+                  <p class="text-2xl font-black text-red-500" id="leaveEmpUsedDays">—</p>
+                  <p class="text-xs text-gray-400">Đã dùng</p>
+                </div>
+                <div class="text-center">
+                  <p class="text-2xl font-black text-emerald-600" id="leaveEmpRemaining">—</p>
+                  <p class="text-xs text-gray-400">Còn lại</p>
+                </div>
+              </div>
+            </div>
+            <!-- Quota progress bar -->
+            <div id="leaveEmpQuotaBarWrap" class="px-5 pb-4 hidden">
+              <div class="flex justify-between text-xs text-gray-400 mb-1">
+                <span>Đã dùng <strong id="leaveEmpUsedPct">0</strong>% quota phép năm</span>
+                <span id="leaveEmpQuotaNote" class="text-amber-500 font-medium hidden"></span>
+              </div>
+              <div class="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                <div id="leaveEmpQuotaBar" class="h-2.5 rounded-full transition-all duration-700" style="width:0%;background:#6366f1"></div>
+              </div>
+            </div>
+          </div>
+          <!-- Leave type breakdown cards -->
+          <div id="leaveEmpBreakdown" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2"></div>
+        </div>
 
         <!-- ── Table Card ── -->
         <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden" style="box-shadow:0 4px 24px rgba(0,0,0,0.07),0 1px 4px rgba(0,0,0,0.04)">

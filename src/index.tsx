@@ -14686,6 +14686,67 @@ app.put('/api/leave-balances-default', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+// GET /api/leave-balances/:userId — admin xem quota + summary của 1 nhân viên
+app.get('/api/leave-balances/:userId', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db     = c.env.DB
+    const userId = parseInt(c.req.param('userId'))
+    const year   = parseInt(c.req.query('year') || String(new Date().getFullYear()))
+
+    const cfg = await db.prepare(
+      `SELECT value FROM system_config WHERE key = 'annual_leave_default_days'`
+    ).first() as any
+    const defaultDays = cfg ? parseFloat(cfg.value) || 12 : 12
+
+    await ensureLeaveBalance(db, userId, year, defaultDays)
+    await recalcUsedDays(db, userId, year)
+
+    const balance = await db.prepare(`
+      SELECT lb.*, u.full_name, u.username, u.avatar, u.department, u.job_title
+      FROM leave_balances lb
+      JOIN users u ON u.id = lb.user_id
+      WHERE lb.user_id = ? AND lb.year = ?
+    `).bind(userId, year).first() as any
+
+    if (!balance) return c.json({ error: 'Không tìm thấy nhân viên' }, 404)
+
+    // Thống kê theo loại nghỉ (đã duyệt)
+    const summary = await db.prepare(`
+      SELECT leave_type, SUM(total_days) as total_days, COUNT(*) as count
+      FROM leave_requests
+      WHERE user_id = ? AND status = 'approved'
+        AND strftime('%Y', start_date) = ?
+      GROUP BY leave_type
+    `).bind(userId, String(year)).all()
+
+    // Đếm đơn theo trạng thái
+    const statusCount = await db.prepare(`
+      SELECT status, COUNT(*) as count
+      FROM leave_requests
+      WHERE user_id = ? AND strftime('%Y', start_date) = ?
+      GROUP BY status
+    `).bind(userId, String(year)).all()
+
+    return c.json({
+      user_id:     balance.user_id,
+      full_name:   balance.full_name,
+      username:    balance.username,
+      avatar:      balance.avatar,
+      department:  balance.department,
+      job_title:   balance.job_title,
+      year,
+      total_days:  balance.total_days,
+      used_days:   balance.used_days,
+      remaining:   parseFloat((balance.total_days - balance.used_days).toFixed(1)),
+      note:        balance.note,
+      leave_summary: summary.results,
+      status_count:  statusCount.results,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // PUT /api/leave-balances/:userId — admin đặt quota cho 1 nhân viên
 app.put('/api/leave-balances/:userId', authMiddleware, adminOnly, async (c) => {
   try {

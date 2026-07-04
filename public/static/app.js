@@ -19976,6 +19976,160 @@ const LEAVE_STATUS_CONFIG = {
 let _leaveData        = []
 let _leaveCurrentPage = 1
 const _leavePageSize  = 10
+let _leaveFilterUserId = null   // null = tất cả nhân sự; số = filter theo user cụ thể
+
+// ── Khởi tạo employee combobox filter (admin only) ───────────────────────────
+async function _initLeaveEmployeeFilter() {
+  const wrap = $('leaveFilterEmployeeWrap')
+  if (!wrap) return
+  if (!allUsers.length) {
+    try { allUsers = await api('/users') } catch(e) {}
+  }
+  const activeUsers = (allUsers || []).filter(u => u.is_active !== 0)
+  // Không thêm placeholder vào items — _cbRenderOptions tự prepend placeholder từ options.placeholder
+  const items = activeUsers.map(u => ({ value: String(u.id), label: u.full_name }))
+
+  if (_cbState['leaveEmployeeCombobox']) delete _cbState['leaveEmployeeCombobox']
+  createCombobox('leaveEmployeeCombobox', {
+    placeholder: '👥 Tất cả nhân sự',
+    items,
+    fullWidth: true,
+    teleport: true,          // teleport panel ra body để thoát overflow:hidden của header card
+    panelMaxWidth: '280px',
+    dropdownMaxHeight: '260px',
+    onchange: async (val) => {
+      _leaveFilterUserId = val ? parseInt(val) : null
+      await loadLeaveRequests()
+    }
+  })
+  // Style trigger button cho header (nền trong suốt, chữ trắng)
+  const triggerBtn = document.querySelector('#leaveEmployeeCombobox_wrap > div')
+  if (triggerBtn) {
+    triggerBtn.style.background     = 'rgba(255,255,255,0.15)'
+    triggerBtn.style.backdropFilter = 'blur(4px)'
+    triggerBtn.style.border         = '1px solid rgba(255,255,255,0.25)'
+    triggerBtn.style.color          = '#fff'
+    triggerBtn.style.borderRadius   = '0.75rem'
+    triggerBtn.style.minWidth       = '200px'
+    // Chỉnh màu label và arrow về trắng
+    const lbl = $('leaveEmployeeCombobox_label')
+    if (lbl) lbl.style.color = 'rgba(255,255,255,0.9)'
+    const arrow = $('leaveEmployeeCombobox_arrow')
+    if (arrow) arrow.style.color = 'rgba(255,255,255,0.7)'
+  }
+}
+
+// ── Hiển thị panel thống kê nhân sự được chọn ───────────────────────────────
+async function _renderLeaveEmployeeStats(userId) {
+  const panel     = $('leaveEmployeeStatsPanel')
+  const summaryCards = $('leaveSummaryCards')
+  if (!panel) return
+  if (!userId) {
+    panel.classList.add('hidden')
+    if (summaryCards) summaryCards.classList.remove('hidden')
+    return
+  }
+  // Ẩn summary cards cá nhân khi xem nhân sự cụ thể
+  if (summaryCards) summaryCards.classList.add('hidden')
+
+  try {
+    const year = new Date().getFullYear()
+    const data = await api(`/leave-balances/${userId}?year=${year}`)
+
+    // -- Header: avatar, tên, thông tin --
+    const initials = (data.full_name || '?').split(' ').slice(-2).map(w => w[0]).join('').toUpperCase()
+    const avatarEl = $('leaveEmpAvatar')
+    if (avatarEl) {
+      if (data.avatar) {
+        avatarEl.innerHTML = `<img src="${data.avatar}" class="w-12 h-12 rounded-2xl object-cover" alt="${data.full_name}">`
+        avatarEl.style.background = 'transparent'
+      } else {
+        avatarEl.textContent = initials
+        avatarEl.style.background = 'linear-gradient(135deg,#6366f1,#8b5cf6)'
+      }
+    }
+    const nameParts = [data.full_name]
+    if ($('leaveEmpName')) $('leaveEmpName').textContent = data.full_name || '—'
+    const metaParts = [data.department, data.job_title].filter(Boolean)
+    if ($('leaveEmpMeta')) $('leaveEmpMeta').textContent = metaParts.join(' · ') || '—'
+
+    // -- Quota numbers --
+    if ($('leaveEmpTotalDays')) $('leaveEmpTotalDays').textContent = data.total_days ?? '—'
+    if ($('leaveEmpUsedDays'))  $('leaveEmpUsedDays').textContent  = data.used_days  ?? '—'
+    if ($('leaveEmpRemaining')) {
+      const rem = data.remaining ?? (data.total_days - data.used_days)
+      $('leaveEmpRemaining').textContent = parseFloat(rem).toFixed(1)
+      $('leaveEmpRemaining').style.color = rem <= 0 ? '#ef4444' : rem <= 2 ? '#f59e0b' : '#059669'
+    }
+
+    // -- Quota bar --
+    const barWrap = $('leaveEmpQuotaBarWrap')
+    if (barWrap && data.total_days > 0) {
+      barWrap.classList.remove('hidden')
+      const pct = Math.min(100, Math.round((data.used_days / data.total_days) * 100))
+      const barColor = pct >= 100 ? '#ef4444' : pct >= 80 ? '#f59e0b' : '#6366f1'
+      const bar = $('leaveEmpQuotaBar')
+      const pctEl = $('leaveEmpUsedPct')
+      const noteEl = $('leaveEmpQuotaNote')
+      if (bar) { bar.style.width = `${pct}%`; bar.style.background = barColor }
+      if (pctEl) pctEl.textContent = pct
+      if (noteEl) {
+        if (data.remaining <= 0) { noteEl.textContent = '🚨 Hết phép năm!'; noteEl.classList.remove('hidden'); noteEl.style.color = '#ef4444' }
+        else if (data.remaining <= 2) { noteEl.textContent = `⚠️ Còn ${data.remaining} ngày`; noteEl.classList.remove('hidden'); noteEl.style.color = '#f59e0b' }
+        else noteEl.classList.add('hidden')
+      }
+    } else if (barWrap) barWrap.classList.add('hidden')
+
+    // -- Leave type breakdown cards --
+    const breakdown = $('leaveEmpBreakdown')
+    if (breakdown) {
+      const summary = data.leave_summary || []
+      const statusCounts = {}
+      ;(data.status_count || []).forEach(s => { statusCounts[s.status] = s.count })
+      const totalApproved = summary.reduce((s, r) => s + (r.total_days || 0), 0)
+
+      // Thẻ tổng ngày nghỉ đã duyệt
+      let cards = `
+        <div class="rounded-xl p-3 bg-white border border-gray-100 flex flex-col items-center text-center" style="box-shadow:0 2px 8px rgba(0,0,0,0.05)">
+          <div class="text-2xl mb-1">📋</div>
+          <p class="text-xl font-black text-gray-800">${parseFloat(totalApproved.toFixed(1))}</p>
+          <p class="text-xs text-gray-400 leading-tight">Tổng ngày nghỉ</p>
+          <p class="text-xs text-gray-300">(đã duyệt)</p>
+        </div>`
+
+      // Thẻ từng loại nghỉ
+      summary.forEach(r => {
+        const cfg = LEAVE_TYPE_CONFIG[r.leave_type] || { label: r.leave_type, icon: '📋', cls: 'bg-gray-100 text-gray-700' }
+        cards += `
+          <div class="rounded-xl p-3 bg-white border border-gray-100 flex flex-col items-center text-center ${cfg.cls.replace('bg-','border-').replace(/-\d+/,'')}" style="box-shadow:0 2px 8px rgba(0,0,0,0.05)">
+            <div class="text-2xl mb-1">${cfg.icon}</div>
+            <p class="text-xl font-black text-gray-800">${parseFloat((r.total_days||0).toFixed(1))}</p>
+            <p class="text-xs font-medium text-gray-600 leading-tight">${cfg.label}</p>
+            <p class="text-xs text-gray-400">${r.count} đơn</p>
+          </div>`
+      })
+
+      // Thẻ trạng thái đơn: chờ duyệt
+      if (statusCounts.pending > 0) {
+        cards += `
+          <div class="rounded-xl p-3 bg-amber-50 border border-amber-100 flex flex-col items-center text-center" style="box-shadow:0 2px 8px rgba(0,0,0,0.05)">
+            <div class="text-2xl mb-1">⏳</div>
+            <p class="text-xl font-black text-amber-600">${statusCounts.pending}</p>
+            <p class="text-xs font-medium text-amber-700 leading-tight">Chờ duyệt</p>
+            <p class="text-xs text-amber-400">đơn</p>
+          </div>`
+      }
+
+      breakdown.innerHTML = cards || '<p class="text-xs text-gray-400 col-span-full text-center py-4">Chưa có đơn nghỉ nào được duyệt</p>'
+    }
+
+    panel.classList.remove('hidden')
+  } catch (e) {
+    panel.classList.add('hidden')
+    if (summaryCards) summaryCards.classList.remove('hidden')
+    console.error('_renderLeaveEmployeeStats error', e)
+  }
+}
 
 // ── Load & Render ─────────────────────────────────────────────────────────────
 async function loadLeaveRequests() {
@@ -19986,28 +20140,41 @@ async function loadLeaveRequests() {
   const kpiRow = $('leaveKpiRow')
   const colEmp = $('leaveColEmployee')
   const filterStatus = $('leaveFilterStatus')
+  const empFilterWrap = $('leaveFilterEmployeeWrap')
 
   if (isAdmin) {
     kpiRow?.classList.remove('hidden')
     colEmp?.classList.remove('hidden')
     document.getElementById('btnManageLeaveQuota')?.classList.remove('hidden')
+    // Hiển thị bộ lọc nhân sự + khởi tạo combobox 1 lần duy nhất
+    if (empFilterWrap) {
+      empFilterWrap.classList.remove('hidden')
+      if (!empFilterWrap._initialized) {
+        empFilterWrap._initialized = true
+        await _initLeaveEmployeeFilter()
+      }
+    }
   } else {
     kpiRow?.classList.add('hidden')
     colEmp?.classList.add('hidden')
     document.getElementById('btnManageLeaveQuota')?.classList.add('hidden')
+    if (empFilterWrap) empFilterWrap.classList.add('hidden')
+    // Reset filter khi không phải admin
+    _leaveFilterUserId = null
   }
 
   const statusFilter = filterStatus?.value || ''
   let url = '/leave-requests'
   const params = []
   if (statusFilter) params.push(`status=${statusFilter}`)
+  if (_leaveFilterUserId) params.push(`user_id=${_leaveFilterUserId}`)  // filter theo nhân sự
   if (params.length) url += '?' + params.join('&')
 
   try {
     const res = await api(url)
     _leaveData = res.data || []
 
-    // KPI
+    // KPI — cập nhật tổng theo dữ liệu đang filter
     if (isAdmin) {
       $('leaveKpiTotal').textContent    = _leaveData.length
       $('leaveKpiPending').textContent  = _leaveData.filter(r => r.status === 'pending').length
@@ -20015,8 +20182,20 @@ async function loadLeaveRequests() {
       $('leaveKpiRejected').textContent = _leaveData.filter(r => r.status === 'rejected').length
     }
 
-    // Summary cá nhân + quota bar
-    await renderLeaveSummary()
+    // Nếu admin đang xem 1 nhân sự cụ thể → hiện panel stats, ẩn summary cá nhân
+    // Ngược lại → ẩn panel stats, hiện summary cá nhân
+    if (isAdmin) {
+      await _renderLeaveEmployeeStats(_leaveFilterUserId)
+      // Khi không chọn nhân sự cụ thể → load lại summary card (quota cá nhân admin)
+      if (!_leaveFilterUserId) await renderLeaveSummary()
+    } else {
+      // Người dùng thường: luôn hiện summary cá nhân
+      const panel = $('leaveEmployeeStatsPanel')
+      if (panel) panel.classList.add('hidden')
+      const summaryCards = $('leaveSummaryCards')
+      if (summaryCards) summaryCards.classList.remove('hidden')
+      await renderLeaveSummary()
+    }
 
     _leaveCurrentPage = 1
     renderLeaveTable(_leaveData)
