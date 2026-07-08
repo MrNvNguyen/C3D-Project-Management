@@ -1529,7 +1529,15 @@
               <button onclick="clearSharedFilters()" class="btn-secondary text-xs px-3 py-1.5">
                 <i class="fas fa-times mr-1"></i>Xóa lọc
               </button>
-              <span id="sharedFilterInfo" class="text-xs text-gray-400 ml-auto"></span>
+              <!-- Tổng tiền theo filter -->
+              <div id="sharedFilterSummaryBar" class="ml-auto flex items-center gap-3 flex-wrap justify-end">
+                <span id="sharedFilterInfo" class="text-xs text-gray-400"></span>
+                <div id="sharedFilterTotalWrap" class="flex items-center gap-2 px-3 py-1.5 rounded-xl border" style="background:#fffbeb;border-color:#fde68a">
+                  <i class="fas fa-sigma text-xs" style="color:#92400e"></i>
+                  <span class="text-xs text-amber-700 font-medium">Tổng tiền:</span>
+                  <span id="sharedFilterTotal" class="text-sm font-black" style="color:#92400e">0 đ</span>
+                </div>
+              </div>
             </div>
 
             <!-- Danh sách chi phí chung -->

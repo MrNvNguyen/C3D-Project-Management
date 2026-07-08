@@ -13945,13 +13945,35 @@ function renderSharedCostTable() {
   const totalPages = Math.max(1, Math.ceil(totalItems / SHARED_PAGE_SIZE))
   if (_sharedCostPage > totalPages) _sharedCostPage = totalPages
 
-  // Update filter info
+  // ── Tổng tiền theo filter (luôn hiển thị, đổi màu khi đang lọc) ──
+  const filteredTotal = filtered.reduce((sum, sc) => sum + (sc.amount || 0), 0)
+  const hasFilter = !!(typeFilter || descSearch)
+  const totalEl = $('sharedFilterTotal')
+  const totalWrap = $('sharedFilterTotalWrap')
   const infoEl = $('sharedFilterInfo')
+
+  if (totalEl) totalEl.textContent = fmtMoney(filteredTotal)
   if (infoEl) {
-    const hasFilter = typeFilter || descSearch
     infoEl.textContent = hasFilter
       ? `Đã lọc: ${totalItems} / ${_sharedCosts.length} khoản`
       : `${_sharedCosts.length} khoản`
+  }
+  if (totalWrap) {
+    if (hasFilter) {
+      // Màu xanh khi đang filter — nhấn mạnh đây là tổng của filter
+      totalWrap.style.background   = '#eff6ff'
+      totalWrap.style.borderColor  = '#93c5fd'
+      totalWrap.querySelector('i').style.color   = '#1d4ed8'
+      totalWrap.querySelector('span').style.color = '#1d4ed8'  // label "Tổng tiền:"
+      if (totalEl) totalEl.style.color = '#1e40af'
+    } else {
+      // Màu vàng mặc định — tổng tất cả
+      totalWrap.style.background   = '#fffbeb'
+      totalWrap.style.borderColor  = '#fde68a'
+      totalWrap.querySelector('i').style.color   = '#92400e'
+      totalWrap.querySelector('span').style.color = '#b45309'
+      if (totalEl) totalEl.style.color = '#92400e'
+    }
   }
 
   if (totalItems === 0) {
