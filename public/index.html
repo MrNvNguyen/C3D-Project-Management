@@ -3893,6 +3893,7 @@
           <button class="tab-btn" id="ltab-minutes" onclick="switchLegalTab('minutes')"><i class="fas fa-clipboard-list mr-1"></i>Biên bản họp</button>
           <button class="tab-btn" id="ltab-docs" onclick="switchLegalTab('docs')"><i class="fas fa-paperclip mr-1"></i>Tài liệu đính kèm</button>
           <button class="tab-btn" id="ltab-payments" onclick="switchLegalTab('payments')"><i class="fas fa-money-check-alt mr-1"></i>Tình trạng thanh toán</button>
+          <button class="tab-btn" id="ltab-completed" onclick="switchLegalTab('completed')" style="border-color:#10b981;color:#065f46;background:#f0fdf4"><i class="fas fa-calendar-check mr-1 text-green-600"></i>Theo dõi hoàn thành</button>
         </div>
 
         <!-- Tab: Stages / Items -->
@@ -3958,8 +3959,14 @@
             </div>
           </div>
         </div>
-      </div>
-      <!-- ========== END HỒ SƠ PHÁP LÝ PAGE ========== -->
+
+        <!-- Tab: Theo dõi hoàn thành -->
+        <div id="legalTabCompleted" style="display:none">
+          <div id="legalCompletedContainer">
+            <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
+          </div>
+        </div>
+      </div>= -->
 
       </div><!-- End Pages -->
       </div><!-- End max-width wrapper -->
@@ -4017,6 +4024,14 @@
             <option value="na">Không áp dụng</option>
           </select>
         </div>
+      </div>
+      <div>
+        <label class="label">
+          <i class="fas fa-calendar-check text-green-500 mr-1"></i>
+          Ngày hoàn thành thực tế
+          <span class="text-xs text-gray-400 ml-1">(ngày ký HĐ, ngày nghiệm thu...)</span>
+        </label>
+        <input type="date" id="legalItemActualDate" class="input-field">
       </div>
       <div>
         <label class="label">Ghi chú</label>
@@ -4373,14 +4388,35 @@
             oninput="moneyInputFmt(this); updatePaymentRevenuePreview()">
         </div>
       </div>
-      <!-- Preview doanh thu sau phí QL -->
+      <!-- VAT -->
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">
+            VAT (%)
+            <span class="ml-1 text-xs font-normal text-gray-400">thuế GTGT trong số tiền TT</span>
+          </label>
+          <div class="relative">
+            <input type="number" id="paymentVatPct" class="input-field pr-8" placeholder="0" min="0" max="100" step="0.1"
+              value="0" oninput="updatePaymentRevenuePreview()">
+            <span class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium text-sm">%</span>
+          </div>
+        </div>
+        <div class="flex items-end pb-1">
+          <div class="text-xs text-gray-500 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed">
+            <i class="fas fa-info-circle text-amber-500 mr-1"></i>
+            <strong>Doanh thu = Số tiền TT ÷ (1 + VAT%)</strong><br>
+            Ví dụ: 110 tr ÷ 1.1 = <strong>100 tr</strong> trước VAT
+          </div>
+        </div>
+      </div>
+      <!-- Preview doanh thu sau VAT + phí QL -->
       <div id="paymentRevenuePreview" style="display:none"
         class="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
         <div class="flex items-start gap-3">
           <i class="fas fa-wallet text-emerald-500 mt-0.5"></i>
           <div class="flex-1">
             <p class="text-xs font-semibold text-gray-600 mb-2">
-              Doanh thu sau phí quản lý
+              Doanh thu vào sổ
               <span id="paymentFeeLabel" class="ml-1 text-xs font-normal text-gray-400"></span>
             </p>
             <div class="grid grid-cols-2 gap-3">
@@ -4395,9 +4431,9 @@
                 <p id="paymentPaidNetPct" class="text-xs text-gray-400 mt-0.5"></p>
               </div>
             </div>
-            <p class="text-xs text-gray-400 mt-2">
+            <p class="text-xs text-gray-400 mt-2" id="paymentRevenueFormula">
               <i class="fas fa-info-circle mr-1"></i>
-              Doanh thu = Số tiền × (1 − <span id="paymentFeeRate">0</span>% phí QL)
+              Doanh thu = Số tiền ÷ (1 + <span id="paymentVatRate">0</span>% VAT)
             </p>
           </div>
         </div>

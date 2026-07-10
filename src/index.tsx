@@ -4252,7 +4252,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         'revenue'        AS source,
         -- Lấy paid_amount gốc từ payment_requests nếu có liên kết
         COALESCE(pq.paid_amount, pr.amount) AS paid_amount_original,
-        p.management_fee_pct       AS fee_pct
+        p.management_fee_pct       AS fee_pct,
+        COALESCE(pq.vat_pct, 0)    AS vat_pct
       FROM project_revenues pr
       JOIN projects p ON p.id = pr.project_id
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
@@ -4279,7 +4280,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         pq.notes,
         'payment_request' AS source,
         pq.amount        AS paid_amount_original,
-        p.management_fee_pct AS fee_pct
+        p.management_fee_pct AS fee_pct,
+        COALESCE(pq.vat_pct, 0) AS vat_pct
       FROM payment_requests pq
       JOIN projects p ON p.id = pq.project_id
       WHERE pq.status = 'pending'
@@ -12369,12 +12371,13 @@ app.post('/api/legal/:projectId/items', authMiddleware, async (c) => {
     }
 
     const result = await c.env.DB.prepare(
-      `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(
       projectId, stageId, parentId,
       autoStt, body.title, body.item_type || 'task',
-      body.due_date || null, body.status || 'pending',
+      body.due_date || null, body.actual_completion_date || null,
+      body.status || 'pending',
       body.notes || null, sortOrder, user.id
     ).run()
     return c.json({ id: result.meta.last_row_id, stt: autoStt, success: true })
@@ -12389,8 +12392,8 @@ app.put('/api/legal/items/:id', authMiddleware, async (c) => {
   try {
     // stt do hệ thống quản lý tự động, chỉ cập nhật các field nội dung
     await c.env.DB.prepare(
-      `UPDATE legal_items SET title=?, item_type=?, due_date=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
-    ).bind(body.title, body.item_type, body.due_date || null, body.status, body.notes || null, id).run()
+      `UPDATE legal_items SET title=?, item_type=?, due_date=?, actual_completion_date=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(body.title, body.item_type, body.due_date || null, body.actual_completion_date || null, body.status, body.notes || null, id).run()
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -12767,7 +12770,8 @@ async function syncPaymentToRevenue(
     paid_amount: number, currency: string,
     paid_date: string | null, invoice_number: string | null,
     payment_phase: string | null, status: string,
-    revenue_id: number | null, notes: string | null
+    revenue_id: number | null, notes: string | null,
+    vat_pct?: number | null
   },
   userId: number
 ): Promise<number | null> {
@@ -12779,10 +12783,18 @@ async function syncPaymentToRevenue(
   ).bind(payment.project_id).first() as any
   const feePct = (projRow?.management_fee_pct || 0) as number
   const rawAmount = payment.paid_amount || 0
-  // Doanh thu thực = số tiền × (1 − % phí QL)
-  const syncAmount = feePct > 0
-    ? Math.round(rawAmount * (1 - feePct / 100))
+  const vatPct = (payment.vat_pct != null ? payment.vat_pct : 0) as number
+
+  // BƯỚC 1: Tính doanh thu trước VAT = paid_amount / (1 + vat_pct/100)
+  // Ví dụ: paid=1,100,000, VAT=10% → trước VAT = 1,100,000 / 1.10 = 1,000,000
+  const amountBeforeVat = vatPct > 0
+    ? Math.round(rawAmount / (1 + vatPct / 100))
     : rawAmount
+
+  // BƯỚC 2: Trừ phí quản lý (nếu có) = doanh_thu_trước_vat × (1 − feePct/100)
+  const syncAmount = feePct > 0
+    ? Math.round(amountBeforeVat * (1 - feePct / 100))
+    : amountBeforeVat
 
   // Nếu không cần sync → xóa revenue cũ nếu có
   if (!shouldSync || rawAmount <= 0) {
@@ -12797,11 +12809,17 @@ async function syncPaymentToRevenue(
     ? `[${payment.payment_phase}] ${payment.description}`
     : payment.description
   const revenueStatus = paymentStatusToRevenue(payment.status)
-  // Ghi chú: bổ sung thông tin phí QL nếu có
-  const feeNote = feePct > 0
-    ? `\n[Phí QL ${feePct}%: ${rawAmount.toLocaleString('vi-VN')} × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ]`
-    : ''
-  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Tình trạng thanh toán]${feeNote}${payment.notes ? '\n' + payment.notes : ''}`
+
+  // Ghi chú: bổ sung thông tin VAT + phí QL nếu có
+  let calcNote = ''
+  if (vatPct > 0 && feePct > 0) {
+    calcNote = `\n[VAT ${vatPct}%: ${rawAmount.toLocaleString('vi-VN')} ÷ ${(100+vatPct)}% = ${amountBeforeVat.toLocaleString('vi-VN')} VNĐ trước thuế → Phí QL ${feePct}%: × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ doanh thu]`
+  } else if (vatPct > 0) {
+    calcNote = `\n[VAT ${vatPct}%: ${rawAmount.toLocaleString('vi-VN')} ÷ ${(100+vatPct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ trước thuế]`
+  } else if (feePct > 0) {
+    calcNote = `\n[Phí QL ${feePct}%: ${rawAmount.toLocaleString('vi-VN')} × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ]`
+  }
+  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Tình trạng thanh toán]${calcNote}${payment.notes ? '\n' + payment.notes : ''}`
 
   if (payment.revenue_id) {
     // Cập nhật revenue đã có
@@ -12863,21 +12881,22 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
     const data = await c.req.json()
     const { description, request_number, request_date, amount, currency, status,
             paid_amount, paid_date, invoice_number, invoice_date, payment_phase,
-            legal_item_id, notes } = data
+            legal_item_id, notes, vat_pct } = data
     if (!description) return c.json({ error: 'description required' }, 400)
+    const vatPctVal = Math.min(100, Math.max(0, parseFloat(vat_pct) || 0))
 
     // Insert payment request
     const result = await c.env.DB.prepare(`
       INSERT INTO payment_requests
         (project_id, legal_item_id, request_number, description, request_date, amount, currency,
-         status, paid_amount, paid_date, invoice_number, invoice_date, payment_phase, notes, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         status, paid_amount, paid_date, invoice_number, invoice_date, payment_phase, notes, vat_pct, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(
       projectId, legal_item_id || null, request_number || null, description,
       request_date || null, amount || 0, currency || 'VND',
       status || 'pending', paid_amount || 0, paid_date || null,
       invoice_number || null, invoice_date || null, payment_phase || null,
-      notes || null, user.id
+      notes || null, vatPctVal, user.id
     ).run()
     const paymentId = result.meta.last_row_id as number
 
@@ -12887,7 +12906,7 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
       paid_amount: paid_amount || 0, currency: currency || 'VND',
       paid_date: paid_date || null, invoice_number: invoice_number || null,
       payment_phase: payment_phase || null, status: status || 'pending',
-      revenue_id: null, notes: notes || null
+      revenue_id: null, notes: notes || null, vat_pct: vatPctVal
     }, user.id)
 
     // Lưu revenue_id vào payment nếu có
@@ -12931,7 +12950,7 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
 
     const fields = ['description', 'request_number', 'request_date', 'amount', 'currency',
                     'status', 'paid_amount', 'paid_date', 'invoice_number', 'invoice_date',
-                    'payment_phase', 'legal_item_id', 'notes']
+                    'payment_phase', 'legal_item_id', 'notes', 'vat_pct']
     const updates: string[] = []
     const values: any[] = []
     fields.forEach(f => {
@@ -12959,7 +12978,8 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
       payment_phase: merged.payment_phase || null,
       status: merged.status || 'pending',
       revenue_id: current.revenue_id || null,
-      notes: merged.notes || null
+      notes: merged.notes || null,
+      vat_pct: merged.vat_pct != null ? merged.vat_pct : (current.vat_pct || 0)
     }, user.id)
 
     // Cập nhật revenue_id
@@ -13070,7 +13090,8 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
         currency: p.currency || 'VND', paid_date: p.paid_date || null,
         invoice_number: p.invoice_number || null,
         payment_phase: p.payment_phase || null, status: p.status,
-        revenue_id: p.revenue_id || null, notes: p.notes || null
+        revenue_id: p.revenue_id || null, notes: p.notes || null,
+        vat_pct: p.vat_pct || 0
       }, user.id)
       synced++
     }
@@ -13098,7 +13119,8 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
           currency: p.currency || 'VND', paid_date: p.paid_date || null,
           invoice_number: p.invoice_number || null,
           payment_phase: p.payment_phase || null, status: p.status,
-          revenue_id: p.revenue_id || null, notes: p.notes || null
+          revenue_id: p.revenue_id || null, notes: p.notes || null,
+          vat_pct: p.vat_pct || 0
         }, user.id)
         synced++
       } catch (e: any) {
@@ -13200,12 +13222,13 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
     const stats = { stages: 0, parents: 0, children: 0, skipped: 0 }
 
     for (const row of rows) {
-      // row: [stt, title, due_date, status_raw, notes]
+      // row: [stt, title, due_date, actual_completion_date, status_raw, notes]
       const sttRaw = row[0]
       const title = (row[1] || '').toString().trim()
       const dueDateRaw = row[2]
-      const statusRaw = (row[3] || '').toString().trim().toLowerCase()
-      const notes = (row[4] || '').toString().trim()
+      const actualCompletionRaw = row[3]
+      const statusRaw = (row[4] || '').toString().trim().toLowerCase()
+      const notes = (row[5] || '').toString().trim()
 
       if (!title) { stats.skipped++; continue }
 
@@ -13237,6 +13260,23 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
         } else if (d.match(/^[A-Za-z]/)) {
           // Text date like "Trước 21/04/2025" → notes
           if (!notes && d) { /* keep as note */ }
+        }
+      }
+
+      // Parse actual_completion_date
+      let actualCompletionDate: string | null = null
+      if (actualCompletionRaw) {
+        const ac = actualCompletionRaw.toString().trim()
+        if (ac.match(/^\d{4}-\d{2}-\d{2}/)) {
+          actualCompletionDate = ac.substring(0, 10)
+        } else if (ac.match(/^\d+\/\d+\/\d{4}/)) {
+          const parts = ac.split('/')
+          if (parts.length === 3) {
+            actualCompletionDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
+          }
+        } else if (ac.match(/^\d+\/\d+\/\d{2}$/)) {
+          const parts = ac.split('/')
+          actualCompletionDate = `20${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
         }
       }
 
@@ -13319,9 +13359,9 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
       if (isParent) {
         const res = await db.prepare(
           `INSERT INTO legal_items 
-           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
-           VALUES (?, ?, NULL, ?, ?, 'group', ?, ?, ?, ?, ?)`
-        ).bind(projectId, currentStageId, sttStr, title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, NULL, ?, ?, 'group', ?, ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, sttStr, title, dueDate, actualCompletionDate, status, notesFinal || null, itemOrder, user.id).run()
         currentParentId = res.meta.last_row_id as number
         currentParentStt = sttStr   // lưu STT parent để tính sub-item
         childCount = 0              // reset đếm sub-item
@@ -13343,18 +13383,18 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
 
         await db.prepare(
           `INSERT INTO legal_items 
-           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
-           VALUES (?, ?, ?, ?, ?, 'document', ?, ?, ?, ?, ?)`
-        ).bind(projectId, currentStageId, currentParentId, itemStt, title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, ?, ?, ?, 'document', ?, ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, currentParentId, itemStt, title, dueDate, actualCompletionDate, status, notesFinal || null, itemOrder, user.id).run()
         itemOrder++
         stats.children++
       } else {
         // Row không rõ loại → treat as parent
         const res = await db.prepare(
           `INSERT INTO legal_items 
-           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
-           VALUES (?, ?, NULL, ?, ?, 'task', ?, ?, ?, ?, ?)`
-        ).bind(projectId, currentStageId, sttStr || itemOrder.toString(), title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, NULL, ?, ?, 'task', ?, ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, sttStr || itemOrder.toString(), title, dueDate, actualCompletionDate, status, notesFinal || null, itemOrder, user.id).run()
         currentParentId = res.meta.last_row_id as number
         currentParentStt = sttStr || itemOrder.toString()
         childCount = 0

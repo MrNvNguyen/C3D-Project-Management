@@ -8930,7 +8930,7 @@ function renderCostTable() {
         <span title="Số tiền theo Hợp Đồng — số tiền gốc khách hàng thanh toán, chưa trừ phí quản lý">Theo HĐ <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Số tiền theo Ngân Sách — doanh thu thực ghi nhận sau khi trừ % phí quản lý. Công thức: Theo HĐ × (1 − % phí QL)">Theo NS <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
+        <span title="Số tiền theo Ngân Sách — doanh thu thực ghi nhận: đã loại VAT và trừ % phí quản lý (giá trị trước thuế)">Theo NS <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-center">Nguồn</th>
     </tr>`
@@ -8960,15 +8960,43 @@ function renderCostTable() {
         dateCell = fmtDate(r.revenue_date)
       }
 
-      // Tính cột "Theo HĐ" và "Theo NS"
-      const origAmount = r.paid_amount_original || r.amount || 0
-      const netAmount  = r.amount || 0
-      const feePct     = r.fee_pct || 0
-      // Chỉ hiện cột phí khi có fee > 0 và 2 số khác nhau
-      const hasFee     = feePct > 0 && origAmount !== netAmount
-      const feeTooltip = hasFee
-        ? `title="Phí QL ${feePct}%: ${fmt(origAmount)} × ${100 - feePct}% = ${fmt(netAmount)}"`
-        : ''
+      // ── Tính cột "Theo HĐ" và "Theo NS" ──────────────────────────────────────
+      const origAmount = r.paid_amount_original || r.amount || 0   // Tiền KH trả (có VAT)
+      const netAmount  = r.amount || 0                             // Doanh thu đã ghi nhận vào DB
+      const feePct     = r.fee_pct  || 0
+      const vatPct     = r.vat_pct  || 0
+
+      // ── Tính lại để hiển thị từng bước ────────────────────────────────────────
+      // Bước 1: Trước VAT = origAmount / (1 + vat%)
+      const beforeVat  = vatPct > 0 ? Math.round(origAmount / (1 + vatPct / 100)) : origAmount
+      // Bước 2: Trước phí QL = beforeVat × (1 − fee%)
+      const beforeFee  = feePct > 0 ? Math.round(beforeVat * (1 - feePct / 100)) : beforeVat
+      // netAmount là giá trị thực ghi nhận (đã = beforeFee)
+
+      const hasVat     = vatPct  > 0
+      const hasFee     = feePct  > 0
+      const hasAdjust  = hasVat  || hasFee
+
+      // ── Xây tooltip chi tiết ──────────────────────────────────────────────────
+      let tooltipParts = []
+      if (hasVat && hasFee) {
+        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`−VAT ${vatPct}%:  ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(beforeVat)} (trước thuế)`)
+        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(beforeVat)} × ${(100-feePct)}% = ${fmt(netAmount)} (doanh thu NS)`)
+      } else if (hasVat) {
+        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`−VAT ${vatPct}%: ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(netAmount)} (trước thuế)`)
+      } else if (hasFee) {
+        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(origAmount)} × ${(100-feePct)}% = ${fmt(netAmount)}`)
+      }
+      const tooltip = tooltipParts.length ? `title="${tooltipParts.join(' | ')}"` : ''
+
+      // ── Badge ghi chú nhỏ hiển thị dưới số ───────────────────────────────────
+      let badges = []
+      if (hasVat)  badges.push(`<div class="text-xs font-normal text-amber-500 mt-0.5">−VAT ${vatPct}%</div>`)
+      if (hasFee)  badges.push(`<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>`)
+      if (hasAdjust) badges.push(`<div class="text-xs font-medium text-blue-500 mt-0.5">Giá trị trước thuế</div>`)
 
       return `
       <tr class="table-row ${r.payment_status === 'pending' ? 'bg-amber-50/40' : ''}">
@@ -8977,12 +9005,12 @@ function renderCostTable() {
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${dateCell}</td>
         <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right ${hasFee ? 'text-gray-500' : (r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600')} ${hasFee ? '' : 'font-bold'}">
+        <td class="py-2 pr-3 text-sm text-right ${hasAdjust ? 'text-gray-500' : (r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600')} ${hasAdjust ? '' : 'font-bold'}">
           ${fmt(origAmount)}
         </td>
-        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${feeTooltip}>
+        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${tooltip}>
           ${fmt(netAmount)}
-          ${hasFee ? `<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>` : ''}
+          ${badges.join('')}
         </td>
         <td class="py-2 pr-3 text-center">
           <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
@@ -16627,7 +16655,7 @@ async function loadLegalProject(projectId) {
     if (!isSystemAdmin) {
       // Member / Project Leader / Project Admin: chỉ hiện Văn bản gửi đi, Biên bản họp, Tài liệu đính kèm
       $('legalTabs').style.display = ''
-      ;['stages', 'payments'].forEach(t => {
+      ;['stages', 'payments', 'completed'].forEach(t => {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = 'none'
       })
@@ -16702,7 +16730,7 @@ function switchLegalTab(tab) {
   // Nếu gọi từ onclick của người dùng → đánh dấu
   _legalCurrentTab = tab
   _legalTabSetByUser = true
-  ;['stages','letters','minutes','docs','payments'].forEach(t => {
+  ;['stages','letters','minutes','docs','payments','completed'].forEach(t => {
     const btn = $('ltab-' + t)
     const panel = $('legalTab' + t.charAt(0).toUpperCase() + t.slice(1))
     if (btn) btn.classList.toggle('active', t === tab)
@@ -16718,7 +16746,357 @@ function renderLegalTab(tab) {
   else if (tab === 'minutes') renderMeetingMinutes(_legalOverviewData.minutes || [])
   else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
   else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
+  else if (tab === 'completed') renderCompletedItemsTab()
 }
+
+
+// ── Render "Theo dõi hoàn thành" Tab ─────────────────────────────────────────
+function renderCompletedItemsTab() {
+  const container = $('legalCompletedContainer')
+  if (!container) return
+  if (!_legalOverviewData) {
+    container.innerHTML = '<div class="text-center py-10 text-gray-400">Chưa có dữ liệu</div>'
+    return
+  }
+
+  const packages = _legalOverviewData.packages || []
+  const flatStages = _legalOverviewData.stages || []
+
+  const PKG_COLORS = [
+    { bg:'#eff6ff', border:'#3b82f6', text:'#1d4ed8', badgeBg:'#dbeafe', icon:'fa-building' },
+    { bg:'#fdf4ff', border:'#a855f7', text:'#7e22ce', badgeBg:'#f3e8ff', icon:'fa-drafting-compass' },
+    { bg:'#fff7ed', border:'#f97316', text:'#c2410c', badgeBg:'#ffedd5', icon:'fa-hard-hat' },
+    { bg:'#f0fdf4', border:'#22c55e', text:'#15803d', badgeBg:'#dcfce7', icon:'fa-check-double' },
+    { bg:'#fefce8', border:'#eab308', text:'#a16207', badgeBg:'#fef9c3', icon:'fa-star' },
+  ]
+  const STAGE_COLORS = {
+    A:{ bg:'#eff6ff', border:'#3b82f6', text:'#1e40af' },
+    B:{ bg:'#fdf4ff', border:'#a855f7', text:'#6b21a8' },
+    C:{ bg:'#fff7ed', border:'#f97316', text:'#9a3412' },
+    D:{ bg:'#f0fdf4', border:'#22c55e', text:'#166534' },
+    E:{ bg:'#fefce8', border:'#eab308', text:'#854d0e' },
+  }
+
+  // Helper: collect completed items from a stage → [{item, stageCode, stageName}]
+  function stageCompletedItems(stage) {
+    const result = []
+    ;(stage.items || []).forEach(item => {
+      if (item.actual_completion_date) result.push(item)
+      ;(item.children || []).forEach(child => {
+        if (child.actual_completion_date) result.push(child)
+      })
+    })
+    return result
+  }
+
+  // Build package-level structure: [{pkg, pc, stages:[{stage, completedItems:[]}]}]
+  // Support both packages mode and flat stages mode
+  let pkgList = []
+  if (packages.length > 0) {
+    packages.forEach((pkg, pi) => {
+      const pc = PKG_COLORS[pi % PKG_COLORS.length]
+      const stagesWithItems = (pkg.stages || []).map(stage => ({
+        stage,
+        completedItems: stageCompletedItems(stage)
+      })).filter(s => s.completedItems.length > 0)
+      if (stagesWithItems.length > 0) {
+        pkgList.push({ pkg, pc, stagesWithItems })
+      }
+    })
+  } else if (flatStages.length > 0) {
+    // Wrap flat stages as a pseudo-package
+    const stagesWithItems = flatStages.map(stage => ({
+      stage,
+      completedItems: stageCompletedItems(stage)
+    })).filter(s => s.completedItems.length > 0)
+    if (stagesWithItems.length > 0) {
+      pkgList.push({ pkg: { id: 0, name: null }, pc: PKG_COLORS[0], stagesWithItems })
+    }
+  }
+
+  // All completed flat list for stats & timeline
+  const allCompleted = []
+  pkgList.forEach(({ pkg, pc, stagesWithItems }) => {
+    stagesWithItems.forEach(({ stage, completedItems }) => {
+      completedItems.forEach(item => {
+        allCompleted.push({ item, stage, pkg, pc })
+      })
+    })
+  })
+
+  if (allCompleted.length === 0) {
+    container.innerHTML = `
+      <div class="card text-center py-12 text-gray-400">
+        <i class="fas fa-calendar-check text-5xl mb-4 block" style="color:#d1fae5"></i>
+        <div class="font-semibold text-gray-500 mb-1">Chưa có hạng mục nào ghi nhận ngày hoàn thành</div>
+        <div class="text-sm">Hãy điền "Ngày hoàn thành thực tế" vào các hạng mục đã thực hiện xong</div>
+      </div>`
+    return
+  }
+
+  // Stats
+  const totalCompleted = allCompleted.length
+  const thisMonth = new Date()
+  const ym = `${thisMonth.getFullYear()}-${String(thisMonth.getMonth()+1).padStart(2,'0')}`
+  const thisMonthCount = allCompleted.filter(e => (e.item.actual_completion_date||'').startsWith(ym)).length
+  const lastDate = [...allCompleted].sort((a,b) => (b.item.actual_completion_date||'') > (a.item.actual_completion_date||'') ? 1 : -1)[0]?.item.actual_completion_date
+
+  let html = `
+  <div class="card" style="margin-bottom:16px;padding:16px 20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+      <div>
+        <h3 style="font-size:15px;font-weight:700;color:#065f46;margin:0 0 4px"><i class="fas fa-calendar-check mr-2 text-green-500"></i>Theo dõi hoàn thành thực tế</h3>
+        <p style="font-size:12px;color:#64748b;margin:0">Tổng hợp hạng mục đã hoàn thành · phân theo gói thầu → giai đoạn · đồng bộ từ tab Theo dõi hồ sơ</p>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div style="background:#f0fdf4;border:1.5px solid #6ee7b7;border-radius:10px;padding:8px 16px;text-align:center;min-width:90px">
+          <div style="font-size:22px;font-weight:800;color:#059669;line-height:1">${totalCompleted}</div>
+          <div style="font-size:11px;color:#6b7280;font-weight:500">Tổng hoàn thành</div>
+        </div>
+        <div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:8px 16px;text-align:center;min-width:90px">
+          <div style="font-size:22px;font-weight:800;color:#2563eb;line-height:1">${thisMonthCount}</div>
+          <div style="font-size:11px;color:#6b7280;font-weight:500">Tháng này</div>
+        </div>
+        <div style="background:#fefce8;border:1.5px solid #fcd34d;border-radius:10px;padding:8px 16px;text-align:center;min-width:120px">
+          <div style="font-size:13px;font-weight:700;color:#d97706;line-height:1.3">${lastDate ? fmtDate(lastDate) : '—'}</div>
+          <div style="font-size:11px;color:#6b7280;font-weight:500">Mới nhất</div>
+        </div>
+      </div>
+    </div>
+  </div>`
+
+  // ── Render: Package → Stages ─────────────────────────────────────────────────
+  pkgList.forEach(({ pkg, pc, stagesWithItems }, pkgIdx) => {
+    const pkgTotalCompleted = stagesWithItems.reduce((s, x) => s + x.completedItems.length, 0)
+    const pkgIsOpen = _pkgCollapseState['completed_' + pkg.id] !== false
+
+    // Package header (giống renderLegalPackages)
+    if (pkg.name) {
+      html += `
+      <div class="card" style="margin-bottom:14px;padding:0;overflow:hidden;border:2px solid ${pc.border}">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:11px 16px;background:${pc.bg};cursor:pointer"
+             onclick="_toggleCompletedPkg(${pkg.id})">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="width:32px;height:32px;border-radius:8px;background:${pc.border};color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">
+              <i class="fas ${pc.icon}"></i>
+            </span>
+            <div>
+              <div style="font-size:14px;font-weight:700;color:${pc.text}">${pkg.name}</div>
+              <div style="font-size:11px;color:#64748b">${stagesWithItems.length} giai đoạn · ${pkgTotalCompleted} hạng mục hoàn thành</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:12px;font-weight:600;background:#fff;color:${pc.text};border:1.5px solid ${pc.border};border-radius:12px;padding:3px 12px">
+              <i class="fas fa-check-circle mr-1"></i>${pkgTotalCompleted}
+            </span>
+            <i class="fas fa-chevron-${pkgIsOpen?'up':'down'}" style="color:${pc.text};font-size:12px"></i>
+          </div>
+        </div>
+        <div id="completedPkg_${pkg.id}" style="display:${pkgIsOpen?'block':'none'}">`
+    } else {
+      html += `<div>`  // flat stages wrapper
+    }
+
+    // ── Stages inside this package ──────────────────────────────────────────
+    stagesWithItems.forEach(({ stage, completedItems }) => {
+      const sc = STAGE_COLORS[stage.code] || STAGE_COLORS['A']
+      const stageIsOpen = _pkgCollapseState['completed_stage_' + stage.id] !== false
+
+      html += `
+        <div style="margin:${pkg.name ? '10px 12px' : '0 0 14px'};border:1.5px solid ${sc.border};border-radius:10px;overflow:hidden">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:${sc.bg};cursor:pointer;border-bottom:1px solid ${sc.border}"
+               onclick="_toggleCompletedStage(${stage.id})">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="background:${sc.border};color:#fff;font-weight:700;font-size:12px;border-radius:6px;padding:2px 9px">${stage.code || '?'}</span>
+              <span style="font-size:13px;font-weight:600;color:${sc.text}">${stage.name || stage.code}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:11px;font-weight:600;color:${sc.text};background:#fff;border:1px solid ${sc.border};border-radius:10px;padding:1px 9px">
+                <i class="fas fa-check-circle mr-1"></i>${completedItems.length} hạng mục
+              </span>
+              <i class="fas fa-chevron-${stageIsOpen?'up':'down'}" style="color:${sc.text};font-size:11px"></i>
+            </div>
+          </div>
+          <div id="completedStage_${stage.id}" style="display:${stageIsOpen?'block':'none'}">
+            <table class="w-full" style="font-size:13px">
+              <thead>
+                <tr style="background:${sc.bg}">
+                  <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
+                  <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
+                  <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:105px">Hạn thực hiện</th>
+                  <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:135px;color:#065f46"><i class="fas fa-calendar-check mr-1"></i>Ngày HT thực tế</th>
+                  <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
+                  <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:150px">Ghi chú</th>
+                  <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:48px">Sửa</th>
+                </tr>
+              </thead>
+              <tbody>`
+
+      completedItems.forEach((item, idx) => {
+        const isOverdue = item.due_date && item.actual_completion_date && item.actual_completion_date > item.due_date
+        const isOnTime  = item.due_date && item.actual_completion_date && item.actual_completion_date <= item.due_date
+        const timingBadge = isOverdue
+          ? `<span style="font-size:10px;background:#fef2f2;color:#dc2626;border:1px solid #fca5a5;border-radius:4px;padding:1px 5px;margin-left:3px">Trễ</span>`
+          : isOnTime
+            ? `<span style="font-size:10px;background:#f0fdf4;color:#16a34a;border:1px solid #86efac;border-radius:4px;padding:1px 5px;margin-left:3px">Đúng hạn</span>`
+            : ''
+        const isChild = item.parent_id != null
+        const rowBg = idx % 2 === 0 ? '#fff' : '#f9fafb'
+        const dueDateStr = item.due_date
+          ? `<span class="text-xs ${isOverdue ? 'text-red-500 font-medium' : 'text-gray-500'}">${fmtDate(item.due_date)}</span>`
+          : `<span class="text-gray-300 text-xs">—</span>`
+        const typeIcon = item.item_type === 'document'
+          ? `<i class="fas fa-file-alt text-blue-400 mr-1 text-xs"></i>`
+          : `<i class="fas fa-tasks text-gray-400 mr-1 text-xs"></i>`
+
+        html += `
+                <tr style="background:${rowBg};border-bottom:1px solid #f3f4f6">
+                  <td class="py-2 px-3 text-xs" style="${isChild ? 'color:#9ca3af;padding-left:22px' : 'font-weight:700;color:#374151'}">${item.stt || ''}</td>
+                  <td class="py-2 px-3" style="${isChild ? 'padding-left:26px' : 'font-weight:600'}">
+                    <div class="flex items-center gap-1">
+                      <i class="fas fa-check-circle text-green-500 text-xs"></i>
+                      ${typeIcon}
+                      <span class="${isChild ? 'text-sm text-gray-700' : 'text-gray-800'}">${item.title}</span>
+                    </div>
+                  </td>
+                  <td class="py-2 px-3 text-center">${dueDateStr}</td>
+                  <td class="py-2 px-3 text-center">
+                    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+                      <span style="font-size:12px;font-weight:600;color:#059669;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:6px;padding:2px 8px">
+                        <i class="fas fa-calendar-check mr-1" style="font-size:10px"></i>${fmtDate(item.actual_completion_date)}
+                      </span>
+                      ${timingBadge}
+                    </div>
+                  </td>
+                  <td class="py-2 px-3 text-center">
+                    <span class="badge ${LEGAL_STATUS_COLORS[item.status]||'badge-todo'}">${LEGAL_STATUS_LABELS[item.status]||item.status}</span>
+                  </td>
+                  <td class="py-2 px-3 text-xs text-gray-500">
+                    ${item.notes ? `<span title="${item.notes}">${item.notes.length > 38 ? item.notes.substring(0,38)+'…' : item.notes}</span>` : '<span class="text-gray-300">—</span>'}
+                  </td>
+                  <td class="py-2 px-3 text-center">
+                    <button onclick="openEditLegalItem(${JSON.stringify(item).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
+                  </td>
+                </tr>`
+      })
+
+      html += `</tbody></table></div></div>`  // close stage collapse div + stage card
+    })
+
+    // Close package wrapper
+    if (pkg.name) {
+      html += `</div></div>`  // close completedPkg_{id} + package card
+    } else {
+      html += `</div>`
+    }
+  })
+
+  // ── Timeline theo tháng ───────────────────────────────────────────────────
+  allCompleted.sort((a, b) => {
+    const da = a.item.actual_completion_date || ''
+    const db = b.item.actual_completion_date || ''
+    return da < db ? -1 : da > db ? 1 : 0
+  })
+
+  const byMonth = {}
+  allCompleted.forEach(entry => {
+    const m = (entry.item.actual_completion_date || '').substring(0, 7)
+    if (m) {
+      if (!byMonth[m]) byMonth[m] = []
+      byMonth[m].push(entry)
+    }
+  })
+
+  const sortedMonths = Object.keys(byMonth).sort()
+  if (sortedMonths.length > 0) {
+    html += `
+    <div class="card" style="margin-top:10px;padding:16px 20px">
+      <h4 style="font-size:13px;font-weight:700;color:#374151;margin:0 0 14px"><i class="fas fa-stream mr-2 text-indigo-500"></i>Timeline theo tháng hoàn thành</h4>
+      <div style="position:relative;padding-left:20px">`
+
+    sortedMonths.forEach((month, mi) => {
+      const entries = byMonth[month]
+      const [yr, mo] = month.split('-')
+      const monthName = new Date(parseInt(yr), parseInt(mo)-1, 1).toLocaleDateString('vi-VN', { month: 'long', year: 'numeric' })
+      const isLast = mi === sortedMonths.length - 1
+
+      html += `
+        <div style="display:flex;gap:14px;margin-bottom:${isLast?'0':'22px'}">
+          <div style="display:flex;flex-direction:column;align-items:center;min-width:12px">
+            <div style="width:12px;height:12px;border-radius:50%;background:#10b981;border:2.5px solid #fff;box-shadow:0 0 0 2px #10b981;margin-top:3px;flex-shrink:0"></div>
+            ${!isLast ? `<div style="width:2px;flex:1;background:linear-gradient(to bottom,#10b981,#d1d5db);margin-top:4px;min-height:20px"></div>` : ''}
+          </div>
+          <div style="flex:1">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <span style="font-size:13px;font-weight:700;color:#065f46">${monthName}</span>
+              <span style="font-size:11px;background:#d1fae5;color:#065f46;border-radius:10px;padding:1px 8px;font-weight:600">${entries.length} hạng mục</span>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">`
+
+      entries.forEach(entry => {
+        const sc = STAGE_COLORS[entry.stage.code] || STAGE_COLORS['A']
+        const isOverdue = entry.item.due_date && entry.item.actual_completion_date > entry.item.due_date
+        const pkgLabel = entry.pkg.name ? `${entry.pkg.name} · ` : ''
+        html += `
+          <div style="background:#fff;border:1.5px solid #e5e7eb;border-left:3.5px solid ${sc.border};border-radius:8px;padding:6px 12px;max-width:300px;cursor:pointer"
+               onclick="openEditLegalItem(${JSON.stringify(entry.item).replace(/"/g,'&quot;')})"
+               title="Click để chỉnh sửa">
+            <div style="font-size:11px;color:${sc.text};font-weight:600;margin-bottom:2px">
+              [${entry.stage.code}] ${pkgLabel}${entry.stage.name || entry.stage.code}
+            </div>
+            <div style="font-size:12px;color:#374151;font-weight:500;display:flex;align-items:center;gap:4px">
+              <i class="fas fa-check-circle text-green-500" style="font-size:10px"></i>
+              ${entry.item.title.length > 42 ? entry.item.title.substring(0,42)+'…' : entry.item.title}
+              ${isOverdue ? `<span style="font-size:9px;background:#fef2f2;color:#dc2626;border-radius:3px;padding:0 4px">Trễ</span>` : ''}
+            </div>
+            <div style="font-size:11px;color:#059669;margin-top:3px">
+              <i class="fas fa-calendar-check mr-1" style="font-size:9px"></i>${fmtDate(entry.item.actual_completion_date)}
+            </div>
+          </div>`
+      })
+
+      html += `</div></div></div>`
+    })
+
+    html += `</div></div>`
+  }
+
+  container.innerHTML = html
+}
+
+// Toggle collapse cho package trong tab hoàn thành
+function _toggleCompletedPkg(pkgId) {
+  const key = 'completed_' + pkgId
+  const el = $('completedPkg_' + pkgId)
+  if (!el) return
+  const isOpen = el.style.display !== 'none'
+  _pkgCollapseState[key] = !isOpen
+  el.style.display = isOpen ? 'none' : 'block'
+  // Flip chevron
+  const header = el.previousElementSibling
+  if (header) {
+    const icon = header.querySelector('.fa-chevron-up, .fa-chevron-down')
+    if (icon) { icon.classList.toggle('fa-chevron-up', !isOpen); icon.classList.toggle('fa-chevron-down', isOpen) }
+  }
+}
+
+// Toggle collapse cho stage trong tab hoàn thành
+function _toggleCompletedStage(stageId) {
+  const key = 'completed_stage_' + stageId
+  const el = $('completedStage_' + stageId)
+  if (!el) return
+  const isOpen = el.style.display !== 'none'
+  _pkgCollapseState[key] = !isOpen
+  el.style.display = isOpen ? 'none' : 'block'
+  // Flip chevron
+  const header = el.previousElementSibling
+  if (header) {
+    const icon = header.querySelector('.fa-chevron-up, .fa-chevron-down')
+    if (icon) { icon.classList.toggle('fa-chevron-up', !isOpen); icon.classList.toggle('fa-chevron-down', isOpen) }
+  }
+}
+
+
 
 // ── Package collapse state ────────────────────────────────────────────────────
 const _pkgCollapseState = {}
@@ -16929,7 +17307,8 @@ function renderPackageStageCard(stage, pkgColor) {
           <tr style="background:${sc.bg}">
             <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
             <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:100px">Hạn</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Ngày HT thực tế</th>
             <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
             <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
             <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
@@ -17198,9 +17577,10 @@ function renderLegalStages(stages) {
             <tr style="background:${sc.bg}">
               <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
               <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:100px">Hạn</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Ngày HT thực tế</th>
               <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:180px">Ghi chú</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
               <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
             </tr>
           </thead>
@@ -17351,6 +17731,10 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
     ? `<span class="text-xs ${new Date(item.due_date) < new Date() && item.status !== 'completed' ? 'text-red-500 font-medium' : 'text-gray-500'}">${fmtDate(item.due_date)}</span>`
     : `<span class="text-gray-300 text-xs">—</span>`
 
+  const actualDateCell = item.actual_completion_date
+    ? `<span class="text-xs text-green-600 font-medium"><i class="fas fa-calendar-check mr-1"></i>${fmtDate(item.actual_completion_date)}</span>`
+    : `<span class="text-gray-300 text-xs">—</span>`
+
   return `
   <tr style="background:${item.status==='completed'?'#f0fdf4':isChild?'#fafafa':'#fff'};border-bottom:1px solid #f3f4f6" class="table-row">
     <td class="py-2 px-3 text-xs" style="${sttCellStyle}">
@@ -17369,6 +17753,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
       </div>
     </td>
     <td class="py-2 px-3 text-center">${dueDateCell}</td>
+    <td class="py-2 px-3 text-center">${actualDateCell}</td>
     <td class="py-2 px-3 text-center">${statusBadge}</td>
     <td class="py-2 px-3 text-xs text-gray-500">${item.notes ? `<span title="${item.notes}">${item.notes.length > 40 ? item.notes.substring(0,40)+'…' : item.notes}</span>` : '<span class="text-gray-300">—</span>'}</td>
     <td class="py-2 px-3 text-center">
@@ -17387,7 +17772,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
     </td>
   </tr>
   <tr id="legalTaskPanelRow_${item.id}" style="display:table-row">
-    <td colspan="6" style="padding:0;border-bottom:1px solid #eef0f3">
+    <td colspan="7" style="padding:0;border-bottom:1px solid #eef0f3">
       <div id="legalTaskPanel_${item.id}" style="display:none" data-is-child="${isChild?1:0}"></div>
     </td>
   </tr>`
@@ -17540,6 +17925,7 @@ function openAddLegalItem(stageId, parentId, projectId) {
   $('legalItemTitle').value = ''
   $('legalItemType').value = 'task'
   $('legalItemDueDate').value = ''
+  $('legalItemActualDate').value = ''
   $('legalItemStatus').value = 'pending'
   $('legalItemNotes').value = ''
   $('legalItemModalTitle').innerHTML = parentId
@@ -17583,6 +17969,7 @@ function openEditLegalItem(item) {
   $('legalItemTitle').value = item.title
   $('legalItemType').value = item.item_type || 'task'
   $('legalItemDueDate').value = item.due_date || ''
+  $('legalItemActualDate').value = item.actual_completion_date || ''
   $('legalItemStatus').value = item.status || 'pending'
   $('legalItemNotes').value = item.notes || ''
   $('legalItemModalTitle').innerHTML = '<i class="fas fa-edit text-primary mr-2"></i>Chỉnh sửa hạng mục'
@@ -17601,6 +17988,7 @@ async function saveLegalItem(e) {
     title: $('legalItemTitle').value.trim(),
     item_type: $('legalItemType').value,
     due_date: $('legalItemDueDate').value || null,
+    actual_completion_date: $('legalItemActualDate').value || null,
     status: $('legalItemStatus').value,
     notes: $('legalItemNotes').value.trim() || null
   }
@@ -18031,10 +18419,11 @@ function renderPaymentStatus(payments) {
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Nội dung</th>
           <th class="py-2 px-3 text-right text-gray-600 font-semibold">Số tiền ĐN</th>
           <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT</th>
+          <th class="py-2 px-3 text-center text-gray-600 font-semibold">VAT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Ngày TT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Trạng thái</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Hóa đơn</th>
-          <th class="py-2 px-3 text-center text-gray-600 font-semibold">Doanh thu</th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Doanh thu<br><span class="font-normal text-xs text-gray-400">(trước thuế)</span></th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold"></th>
         </tr>
       </thead>
@@ -18068,19 +18457,39 @@ function renderPaymentStatus(payments) {
           <div class="font-mono text-emerald-700">${fmtMoney(p.paid_amount || 0)}</div>
           ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}
         </td>
+        <td class="py-2 px-3 text-center">
+          ${(p.vat_pct > 0)
+            ? `<span class="inline-flex items-center gap-0.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+                <i class="fas fa-percent" style="font-size:9px"></i>${p.vat_pct}%
+               </span>`
+            : `<span class="text-xs text-gray-300">—</span>`
+          }
+        </td>
         <td class="py-2 px-3 text-center text-gray-600 text-xs">${p.paid_date ? p.paid_date : '—'}</td>
         <td class="py-2 px-3 text-center"><span class="badge ${statusClass} text-xs">${statusLabel}</span></td>
         <td class="py-2 px-3 text-center text-xs text-gray-500">
           ${p.invoice_number ? `<div class="font-mono">${p.invoice_number}</div>` : '—'}
           ${p.invoice_date ? `<div class="text-gray-400">${p.invoice_date}</div>` : ''}
         </td>
-        <td class="py-2 px-3 text-center">
-          ${p.revenue_synced
-            ? `<span class="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5" title="Đã tự động tạo doanh thu trong Chi phí & Doanh thu">
-                <i class="fas fa-sync-alt text-emerald-500"></i> Đã đồng bộ
-               </span>`
-            : `<span class="text-xs text-gray-300">—</span>`
-          }
+        <td class="py-2 px-3 text-right">
+          ${(() => {
+            const paidAmt   = p.paid_amount || 0
+            const vatPct    = p.vat_pct || 0
+            const feePct    = _legalOverviewData?.project?.management_fee_pct || 0
+            const noVat     = vatPct > 0 ? Math.round(paidAmt / (1 + vatPct / 100)) : paidAmt
+            const netRev    = feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat
+            const isSynced  = p.revenue_synced || p.revenue_synced_id
+            const isActive  = ['paid','partial'].includes(p.status) && paidAmt > 0
+            if (!isActive) return `<span class="text-xs text-gray-300">—</span>`
+            let titleParts = []
+            if (vatPct > 0) titleParts.push(`Loại VAT ${vatPct}%: ${paidAmt.toLocaleString('vi-VN')} ÷ ${(1+vatPct/100).toFixed(2)} = ${noVat.toLocaleString('vi-VN')} VNĐ`)
+            if (feePct > 0) titleParts.push(`Phí QL ${feePct}%: ×${(100-feePct)}% = ${netRev.toLocaleString('vi-VN')} VNĐ`)
+            const tooltip = titleParts.length ? titleParts.join(' → ') : ''
+            return `<div class="font-mono font-semibold text-blue-700" title="${tooltip}">${fmtMoney(netRev)}</div>
+                    ${vatPct > 0 ? `<div class="text-xs text-amber-500 mt-0.5">−VAT ${vatPct}%</div>` : ''}
+                    ${feePct > 0 && vatPct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : feePct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : ''}
+                    ${isSynced ? `<div class="text-xs text-emerald-500 mt-0.5"><i class="fas fa-sync-alt" style="font-size:9px"></i> Đã ĐB</div>` : ''}`
+          })()}
         </td>
         <td class="py-2 px-3 text-center whitespace-nowrap">
           <button onclick="editPayment(${p.id})" class="text-blue-500 hover:text-blue-700 mr-2" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
@@ -18094,35 +18503,73 @@ function renderPaymentStatus(payments) {
   container.innerHTML = html
 }
 
-// ─── Preview doanh thu sau % phí quản lý trong form thanh toán ───────────────
+// ─── Preview doanh thu sau VAT + phí quản lý trong form thanh toán ───────────
 function updatePaymentRevenuePreview() {
   const proj = _legalOverviewData?.project
   const feePct = proj?.management_fee_pct || 0
   const previewEl = $('paymentRevenuePreview')
   if (!previewEl) return
 
-  // Ẩn preview nếu dự án không có phí QL
-  if (!feePct || feePct <= 0) {
+  const vatPct     = parseFloat($('paymentVatPct')?.value) || 0
+  const amount     = parseMoneyVal('paymentAmount')     || 0
+  const paidAmount = parseMoneyVal('paymentPaidAmount') || 0
+
+  // Ẩn preview nếu không có VAT và không có phí QL
+  if (!feePct && !vatPct) {
     previewEl.style.display = 'none'
     return
   }
 
-  const amount     = parseMoneyVal('paymentAmount')     || 0
-  const paidAmount = parseMoneyVal('paymentPaidAmount') || 0
-  const factor     = (100 - feePct) / 100
+  // BƯỚC 1: Loại VAT ra
+  const vatFactor      = vatPct > 0 ? (1 + vatPct / 100) : 1
+  const amountNoVat    = vatPct > 0 ? Math.round(amount     / vatFactor) : amount
+  const paidNoVat      = vatPct > 0 ? Math.round(paidAmount / vatFactor) : paidAmount
 
-  const amountNet   = Math.round(amount     * factor)
-  const paidNet     = Math.round(paidAmount * factor)
+  // BƯỚC 2: Trừ phí QL
+  const feeFactor      = feePct > 0 ? (1 - feePct / 100) : 1
+  const amountNet      = Math.round(amountNoVat * feeFactor)
+  const paidNet        = Math.round(paidNoVat   * feeFactor)
 
   const fmtVND = n => n > 0 ? n.toLocaleString('vi-VN') + ' VNĐ' : '—'
-  const fmtPct = (net, gross) => gross > 0 ? `(= ${(net/gross*100).toFixed(1)}% giá trị đề nghị)` : ''
 
-  $('paymentFeeLabel').textContent  = `(Phí QL: ${feePct}%)`
-  $('paymentFeeRate').textContent   = feePct
+  // Cập nhật nhãn phí QL
+  let feeLabel = []
+  if (vatPct > 0) feeLabel.push(`VAT ${vatPct}%`)
+  if (feePct > 0) feeLabel.push(`Phí QL ${feePct}%`)
+  $('paymentFeeLabel').textContent = feeLabel.length ? `(${feeLabel.join(' + ')})` : ''
+
+  // Cập nhật kết quả
   $('paymentAmountNet').textContent = fmtVND(amountNet)
-  $('paymentAmountNetPct').textContent = amount > 0 ? `${fmtVND(amount)} × ${(100-feePct)}%` : ''
   $('paymentPaidNet').textContent   = fmtVND(paidNet)
-  $('paymentPaidNetPct').textContent = paidAmount > 0 ? `${fmtVND(paidAmount)} × ${(100-feePct)}%` : ''
+
+  // Ghi chú công thức chi tiết
+  let amountDesc = '', paidDesc = ''
+  if (vatPct > 0 && feePct > 0) {
+    amountDesc = amount > 0 ? `${fmtVND(amount)} ÷${(1+vatPct/100).toFixed(2)} ×${((100-feePct)/100).toFixed(2)}` : ''
+    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} ÷${(1+vatPct/100).toFixed(2)} ×${((100-feePct)/100).toFixed(2)}` : ''
+  } else if (vatPct > 0) {
+    amountDesc = amount > 0 ? `${fmtVND(amount)} ÷ ${(1+vatPct/100).toFixed(2)}` : ''
+    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} ÷ ${(1+vatPct/100).toFixed(2)}` : ''
+  } else if (feePct > 0) {
+    amountDesc = amount > 0 ? `${fmtVND(amount)} × ${(100-feePct)}%` : ''
+    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} × ${(100-feePct)}%` : ''
+  }
+  $('paymentAmountNetPct').textContent = amountDesc
+  $('paymentPaidNetPct').textContent   = paidDesc
+
+  // Cập nhật công thức hiển thị
+  const formulaEl = $('paymentRevenueFormula')
+  const vatRateEl = $('paymentVatRate')
+  if (vatRateEl) vatRateEl.textContent = vatPct
+  if (formulaEl) {
+    if (vatPct > 0 && feePct > 0) {
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>DT = TT ÷ (1+${vatPct}%) × (1−${feePct}%) <span class="text-amber-500">← loại VAT trước, rồi trừ phí QL</span>`
+    } else if (vatPct > 0) {
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Số tiền TT ÷ (1 + <strong>${vatPct}%</strong> VAT)`
+    } else {
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Số tiền × (1 − <strong>${feePct}%</strong> phí QL)`
+    }
+  }
 
   previewEl.style.display = ''
 }
@@ -18143,6 +18590,7 @@ async function openPaymentModal() {
   $('paymentInvoiceNumber').value = ''
   $('paymentInvoiceDate').value = ''
   $('paymentNotes').value = ''
+  if ($('paymentVatPct')) $('paymentVatPct').value = '0'
   // populate legal item select
   _populatePaymentItemSelect(null)
   // Reset preview
@@ -18169,8 +18617,9 @@ async function editPayment(id) {
   $('paymentInvoiceNumber').value = payment.invoice_number || ''
   $('paymentInvoiceDate').value = payment.invoice_date || ''
   $('paymentNotes').value = payment.notes || ''
+  if ($('paymentVatPct')) $('paymentVatPct').value = payment.vat_pct != null ? payment.vat_pct : '0'
   _populatePaymentItemSelect(payment.legal_item_id)
-  // Hiển thị preview doanh thu sau phí QL nếu có
+  // Hiển thị preview doanh thu sau VAT + phí QL nếu có
   updatePaymentRevenuePreview()
   openModal('paymentModal')
 }
@@ -18237,6 +18686,7 @@ async function savePayment(e) {
   e.preventDefault()
   const id = $('paymentId').value
   const projectId = parseInt($('paymentProjectId').value)
+  const vatPctVal = parseFloat($('paymentVatPct')?.value) || 0
   const payload = {
     description:     $('paymentDescription').value.trim(),
     payment_phase:   $('paymentPhase').value.trim(),
@@ -18249,7 +18699,8 @@ async function savePayment(e) {
     invoice_number:  $('paymentInvoiceNumber').value.trim(),
     invoice_date:    $('paymentInvoiceDate').value || null,
     legal_item_id:   parseInt($('paymentLegalItemId').value) || null,
-    notes:           $('paymentNotes').value.trim()
+    notes:           $('paymentNotes').value.trim(),
+    vat_pct:         vatPctVal
   }
   try {
     const syncStatuses = ['paid', 'partial']
@@ -18907,35 +19358,36 @@ function downloadExcelTemplate() {
 
   // Template data
   const templateData = [
-    ['STT', 'Hạng mục công việc', 'Thời gian', 'Trạng thái', 'Ghi chú'],
-    ['A', 'GIAI ĐOẠN CHUẨN BỊ GÓI THẦU', null, null, null],
-    [1, 'Yêu cầu lập đề cương dự toán', '2025-03-01', null, null],
-    ['=A3+0.1', 'Dự toán chi phí', null, null, null],
-    ['=A4+0.1', 'Đề cương nhiệm vụ', null, null, null],
-    [2, 'Trình thẩm tra đề cương dự toán', '2025-04-02', null, null],
-    ['=A6+0.1', 'In đề cương dự toán', null, null, null],
-    ['=A7+0.1', 'Trình TVTK ký', null, null, null],
-    [3, 'Quyết định phê duyệt đề cương dự toán', '2025-04-04', null, null],
-    ['B', 'GIAI ĐOẠN THAM GIA GÓI THẦU', null, null, null],
-    [1, 'Yêu cầu chuẩn bị hồ sơ năng lực nhà thầu', '2025-03-01', null, null],
-    ['=A11+0.1', 'Xin tên gói thầu, các thông tin liên quan nếu có', null, null, null],
-    ['=A12+0.1', 'Thư ngỏ', '2024-03-24', null, null],
-    ['=A13+0.1', 'Thư cam kết thực hiện', '2024-03-24', null, null],
-    [2, 'Trình phiếu đánh giá năng lực nhà thầu', '2025-04-14', null, null],
-    [3, 'Nhận hồ sơ yêu cầu', '2025-04-15', null, null],
-    ['=A16+0.1', 'Văn bản giới thiệu nhân sự đến nhận HSYC', '2025-04-15', null, null],
-    [4, 'Nộp hồ sơ đề xuất', '2025-04-21', null, 'In đóng cuốn 1 bộ gốc và photo thành 3 bộ'],
-    ['C', 'GIAI ĐOẠN KÝ HỢP ĐỒNG VÀ THỰC HIỆN GÓI THẦU', null, null, null],
-    [1, 'Thư mời thương thảo hợp đồng', '2025-04-21', null, null],
-    ['=A20+0.1', 'Công văn tham gia thương thảo hợp đồng', '2025-04-21', null, null],
-    ['=A21+0.1', 'Thương thảo hợp đồng', '2025-04-21', null, null],
-    [2, 'Ký hợp đồng', '2025-04-23', null, null],
-    ['=A23+0.1', 'Bảo lãnh tạm ứng (Nếu có)', null, null, null],
-    ['=A24+0.1', 'Đơn đề nghị tạm ứng', null, null, null],
-    ['D', 'GIAI ĐOẠN NGHIỆM THU', null, null, null],
-    [1, 'Biên bản nghiệm thu hoàn thành sản phẩm tư vấn', null, null, null],
-    [2, 'Mẫu số 3A - Xác định khối lượng công việc hoàn thành', null, null, null],
-    [3, 'Giấy đề nghị thanh toán', null, null, null],
+    ['STT', 'Hạng mục công việc', 'Hạn thực hiện', 'Ngày hoàn thành thực tế', 'Trạng thái', 'Ghi chú'],
+    [null, null, '(dd/mm/yyyy)', '(ngày ký HĐ, ngày nghiệm thu...)', '(x = hoàn thành)', null],
+    ['A', 'GIAI ĐOẠN CHUẨN BỊ GÓI THẦU', null, null, null, null],
+    [1, 'Yêu cầu lập đề cương dự toán', '2025-03-01', null, null, null],
+    ['=A4+0.1', 'Dự toán chi phí', null, null, null, null],
+    ['=A5+0.1', 'Đề cương nhiệm vụ', null, null, null, null],
+    [2, 'Trình thẩm tra đề cương dự toán', '2025-04-02', null, null, null],
+    ['=A7+0.1', 'In đề cương dự toán', null, null, null, null],
+    ['=A8+0.1', 'Trình TVTK ký', null, null, null, null],
+    [3, 'Quyết định phê duyệt đề cương dự toán', '2025-04-04', '2025-04-05', 'x', null],
+    ['B', 'GIAI ĐOẠN THAM GIA GÓI THẦU', null, null, null, null],
+    [1, 'Yêu cầu chuẩn bị hồ sơ năng lực nhà thầu', '2025-03-01', null, null, null],
+    ['=A12+0.1', 'Xin tên gói thầu, các thông tin liên quan nếu có', null, null, null, null],
+    ['=A13+0.1', 'Thư ngỏ', '2024-03-24', null, null, null],
+    ['=A14+0.1', 'Thư cam kết thực hiện', '2024-03-24', null, null, null],
+    [2, 'Trình phiếu đánh giá năng lực nhà thầu', '2025-04-14', null, null, null],
+    [3, 'Nhận hồ sơ yêu cầu', '2025-04-15', null, null, null],
+    ['=A17+0.1', 'Văn bản giới thiệu nhân sự đến nhận HSYC', '2025-04-15', null, null, null],
+    [4, 'Nộp hồ sơ đề xuất', '2025-04-21', null, null, 'In đóng cuốn 1 bộ gốc và photo thành 3 bộ'],
+    ['C', 'GIAI ĐOẠN KÝ HỢP ĐỒNG VÀ THỰC HIỆN GÓI THẦU', null, null, null, null],
+    [1, 'Thư mời thương thảo hợp đồng', '2025-04-21', null, null, null],
+    ['=A21+0.1', 'Công văn tham gia thương thảo hợp đồng', '2025-04-21', null, null, null],
+    ['=A22+0.1', 'Thương thảo hợp đồng', '2025-04-21', null, null, null],
+    [2, 'Ký hợp đồng', '2025-04-23', '2025-04-25', 'x', null],
+    ['=A24+0.1', 'Bảo lãnh tạm ứng (Nếu có)', null, null, null, null],
+    ['=A25+0.1', 'Đơn đề nghị tạm ứng', null, null, null, null],
+    ['D', 'GIAI ĐOẠN NGHIỆM THU', null, null, null, null],
+    [1, 'Biên bản nghiệm thu hoàn thành sản phẩm tư vấn', null, null, null, null],
+    [2, 'Mẫu số 3A - Xác định khối lượng công việc hoàn thành', null, null, null, null],
+    [3, 'Giấy đề nghị thanh toán', null, null, null, null],
   ]
 
   const ws = XLSX.utils.aoa_to_sheet(templateData)
@@ -18944,9 +19396,10 @@ function downloadExcelTemplate() {
   ws['!cols'] = [
     { wch: 12 },  // STT
     { wch: 55 },  // Hạng mục
-    { wch: 18 },  // Thời gian
-    { wch: 14 },  // Trạng thái
-    { wch: 30 },  // Ghi chú
+    { wch: 18 },  // Hạn thực hiện
+    { wch: 22 },  // Ngày hoàn thành thực tế
+    { wch: 16 },  // Trạng thái
+    { wch: 35 },  // Ghi chú
   ]
 
   XLSX.utils.book_append_sheet(wb, ws, 'TimeLine')
