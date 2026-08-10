@@ -2,6 +2,10 @@
 // OneCad BIM Management System - Frontend Application
 // ================================================================
 
+// Helper: dùng XLSXStyle (có cell styling) cho writeFile, dùng XLSX core cho read/parse
+function getXLSXForWrite() { return window.XLSXStyle || window.XLSX }
+function getXLSXCore()     { return window._XLSXCore   || window.XLSX }
+
 const API_BASE = ''
 let currentUser = null
 let authToken = null
@@ -2678,9 +2682,10 @@ function catHandleFile(file) {
   const reader = new FileReader()
   reader.onload = (ev) => {
     try {
-      const wb = XLSX.read(ev.target.result, { type: 'array' })
+      const XLSXLib = getXLSXCore()
+      const wb = XLSXLib.read(ev.target.result, { type: 'array' })
       const ws = wb.Sheets[wb.SheetNames[0]]
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+      const rows = XLSXLib.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
       // Tự động detect header row
       let dataStart = 0
@@ -5688,13 +5693,14 @@ function handleSubtaskFileSelect(input) {
 }
 
 function parseSubtaskExcel(file) {
-  if (!window.XLSX) { toast('Thư viện đọc Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return }
+  const XLSXLib = getXLSXCore()
+  if (!XLSXLib) { toast('Thư viện đọc Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return }
   const reader = new FileReader()
   reader.onload = e => {
     try {
-      const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true })
+      const wb = XLSXLib.read(e.target.result, { type: 'array', cellDates: true })
       const ws = wb.Sheets[wb.SheetNames[0]]
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+      const rows = XLSXLib.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
       // Dòng 0 = header (bỏ qua), từ dòng 1 trở đi là data
       const data = rows.slice(1).map(r => ({
@@ -19909,6 +19915,10 @@ function renderCostBreakdown(el, data) {
   window._cbPivotPage          = 1
   window._cbPivotPageSize      = 15
 
+  // ── Store pivot filter state ───────────────────────────────────
+  window._cbPivotFilterText = ''
+  window._cbPivotSelectedProject = null  // { code, name } | null
+
   const pivotHtml = `
     <div class="card mb-6" id="cbPivotCard">
       <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
@@ -19922,6 +19932,20 @@ function renderCostBreakdown(el, data) {
             <option value="50">50</option>
           </select>
         </div>
+      </div>
+      <!-- Search/filter bar for pivot -->
+      <div class="flex flex-wrap items-center gap-2 mb-2 p-2 bg-indigo-50 rounded-lg border border-indigo-100">
+        <div class="relative flex-1 min-w-40">
+          <i class="fas fa-search absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+          <input type="text" id="cbPivotSearch" placeholder="Tìm dự án trong bảng..." oninput="cbFilterPivot(this.value)"
+            class="w-full pl-6 pr-2 py-1 border rounded text-xs outline-none focus:border-indigo-400">
+        </div>
+        <div id="cbPivotSelectedBadge" class="hidden items-center gap-1.5 bg-indigo-600 text-white text-xs rounded px-2 py-1">
+          <i class="fas fa-filter text-xs"></i>
+          <span id="cbPivotSelectedName"></span>
+          <button onclick="cbClearPivotSelection()" class="ml-1 hover:text-red-200" title="Bỏ chọn"><i class="fas fa-times"></i></button>
+        </div>
+        <span class="text-xs text-indigo-500"><i class="fas fa-mouse-pointer mr-1"></i>Click dòng dự án → xem chi tiết phiếu bên dưới</span>
       </div>
       <div class="text-xs text-gray-400 mb-2"><i class="fas fa-info-circle mr-1"></i>Số tiền (màu) · <span class="text-indigo-500 font-medium">% GTHĐ</span> hiển thị bên dưới từng loại chi phí</div>
       <div class="overflow-x-auto" id="cbPivotTableWrap">
@@ -20272,7 +20296,7 @@ function cbSetPageSize(val) {
 
 // ── Pivot table pagination helpers ────────────────────────────
 function cbRenderPivotPage(page) {
-  const projects   = window._cbPivotProjects   || []
+  const allProjects = window._cbPivotProjects   || []
   const typeList   = window._cbPivotTypeList   || []
   const typeColorMap = window._cbPivotTypeColorMap || {}
   const typeNameMap  = window._cbPivotTypeNameMap  || {}
@@ -20284,6 +20308,16 @@ function cbRenderPivotPage(page) {
   const grandTotalAll      = window._cbPivotGrandAll      || 0
   const total_contract_value = window._cbPivotContractValue || 0
   const pageSize   = window._cbPivotPageSize   || 15
+  const filterText = (window._cbPivotFilterText || '').toLowerCase().trim()
+  const selectedCode = window._cbPivotSelectedProject?.code || null
+
+  // Apply text filter
+  const projects = filterText
+    ? allProjects.filter(p =>
+        p.code.toLowerCase().includes(filterText) ||
+        p.name.toLowerCase().includes(filterText))
+    : allProjects
+
   const total      = projects.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   page = Math.max(1, Math.min(page, totalPages))
@@ -20318,9 +20352,13 @@ function cbRenderPivotPage(page) {
     const pctGthd  = p.contract_value > 0 ? (rowTotal / p.contract_value * 100) : null
     const pctColor = pctGthd === null ? 'text-gray-400' : pctGthd > 100 ? 'text-red-600 font-bold' : pctGthd > 80 ? 'text-orange-600' : 'text-green-600'
     const cv = p.contract_value || 0
-    return `<tr class="hover:bg-gray-50">
+    const isSelected = selectedCode === p.code
+    const rowBg = isSelected ? 'bg-indigo-50 ring-1 ring-indigo-300' : 'hover:bg-blue-50'
+    const safeName = (p.name || '').replace(/'/g, "\\'")
+    return `<tr class="${rowBg} cursor-pointer transition-colors" onclick="cbPivotSelectProject('${p.code}','${safeName}')" title="Click để lọc chi tiết phiếu của [${p.code}]">
       <td class="py-2 pr-3 text-gray-400 whitespace-nowrap">${start + i + 1}</td>
       <td class="py-2 pr-3 font-medium whitespace-nowrap">
+        ${isSelected ? '<i class="fas fa-filter text-indigo-500 mr-1 text-xs"></i>' : ''}
         <span class="text-gray-400 text-xs">[${p.code}]</span> ${p.name.length>28?p.name.substring(0,28)+'…':p.name}
       </td>
       <td class="py-2 pr-3 text-right text-gray-500">${cv > 0 ? fmtM(cv) : '—'}</td>
@@ -20343,12 +20381,13 @@ function cbRenderPivotPage(page) {
   }).join('')
 
   // Footer total row (always shown)
+  const shownProjects = filterText ? projects : allProjects
   tbody.innerHTML += `<tr class="font-bold border-t-2 bg-blue-50 text-sm">
     <td class="py-2 pr-3 text-gray-400 text-xs">Tổng</td>
-    <td class="py-2 pr-3">Tất cả ${total} dự án</td>
-    <td class="py-2 pr-3 text-right">${fmtM(projects.reduce((s,p)=>s+(p.contract_value||0),0))}</td>
+    <td class="py-2 pr-3">Tất cả ${filterText ? `<span class="text-indigo-600">${total}</span> / ${allProjects.length}` : total} dự án</td>
+    <td class="py-2 pr-3 text-right">${fmtM(shownProjects.reduce((s,p)=>s+(p.contract_value||0),0))}</td>
     ${typeList.map(t => {
-      const sum = by_project_type.filter(r=>r.cost_type===t).reduce((s,r)=>s+r.amount,0)
+      const sum = shownProjects.reduce((s,p)=>s+(p.types[t]||0), 0)
       return `<td class="py-2 pr-3 text-right" style="color:${typeColorMap[t]}">${fmtM(sum)}</td>`
     }).join('')}
     ${total_labor > 0 ? `<td class="py-2 pr-3 text-right text-green-700">${fmtM(total_labor)}</td>` : ''}
@@ -20360,7 +20399,7 @@ function cbRenderPivotPage(page) {
   // Pager
   const pager = document.getElementById('cbPivotPager')
   if (!pager) return
-  if (totalPages <= 1) { pager.innerHTML = `<span class="text-gray-400">${total} dự án</span>`; return }
+  if (totalPages <= 1) { pager.innerHTML = `<span class="text-gray-400">${total} dự án${filterText ? ' (đã lọc)' : ''}</span>`; return }
   const pw = 2
   let btns = `<button onclick="cbRenderPivotPage(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded border text-xs ${page<=1?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i> Trước</button>`
   const pagesHtml = []
@@ -20373,12 +20412,52 @@ function cbRenderPivotPage(page) {
   if (page < totalPages-pw) pagesHtml.push(`<button onclick="cbRenderPivotPage(${totalPages})" class="px-2 py-1 rounded border text-xs hover:bg-gray-100">${totalPages}</button>`)
   btns += pagesHtml.join('')
   btns += `<button onclick="cbRenderPivotPage(${page+1})" ${page>=totalPages?'disabled':''} class="px-2 py-1 rounded border text-xs ${page>=totalPages?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}">Tiếp <i class="fas fa-chevron-right"></i></button>`
-  pager.innerHTML = `<span class="text-gray-400">Hiển thị ${start+1}–${end} / ${total} dự án (trang ${page}/${totalPages})</span><div class="flex items-center gap-1">${btns}</div>`
+  pager.innerHTML = `<span class="text-gray-400">Hiển thị ${start+1}–${end} / ${total} dự án${filterText?` (lọc từ ${allProjects.length})`:''}  (trang ${page}/${totalPages})</span><div class="flex items-center gap-1">${btns}</div>`
 }
 
 function cbSetPivotPageSize(val) {
   window._cbPivotPageSize = parseInt(val) || 15
   cbRenderPivotPage(1)
+}
+
+// ── Pivot filter by text search ────────────────────────────────
+function cbFilterPivot(text) {
+  window._cbPivotFilterText = text || ''
+  cbRenderPivotPage(1)
+}
+
+// ── Click dòng dự án trong pivot → filter bảng chi tiết ────────
+function cbPivotSelectProject(code, name) {
+  const isSame = window._cbPivotSelectedProject?.code === code
+  if (isSame) {
+    // Toggle off nếu click lại dự án đang chọn
+    cbClearPivotSelection()
+    return
+  }
+  window._cbPivotSelectedProject = { code, name }
+  // Cập nhật badge trên pivot
+  const badge = document.getElementById('cbPivotSelectedBadge')
+  const label = document.getElementById('cbPivotSelectedName')
+  if (badge) badge.classList.remove('hidden'), badge.classList.add('flex')
+  if (label) label.textContent = `[${code}] ${name.length > 25 ? name.substring(0,25)+'…' : name}`
+  // Re-render pivot để highlight
+  cbRenderPivotPage(window._cbPivotPage || 1)
+  // Filter bảng chi tiết theo project_code
+  cbSelectDetailProj(code, `[${code}] ${name}`)
+  // Scroll xuống bảng chi tiết
+  setTimeout(() => {
+    const detail = document.getElementById('cbDetailCard')
+    if (detail) detail.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, 150)
+}
+
+function cbClearPivotSelection() {
+  window._cbPivotSelectedProject = null
+  const badge = document.getElementById('cbPivotSelectedBadge')
+  if (badge) badge.classList.add('hidden'), badge.classList.remove('flex')
+  cbRenderPivotPage(window._cbPivotPage || 1)
+  // Xóa filter detail
+  cbSelectDetailProj('', '-- Tất cả dự án --')
 }
 // ── END pivot table pagination ─────────────────────────────────
 
@@ -23008,19 +23087,26 @@ async function openImportTaskModal() {
 }
 
 function downloadTaskTemplate() {
+  const XS = getXLSXForWrite()
+  if (!XS) { toast('Thư viện XLSX chưa tải', 'error'); return }
   const headers = ['ten_cong_viec','mo_ta','bo_mon','filename_model','phu_trach','uu_tien','ngay_bat_dau','ngay_het_han','gio_du_kien','ghi_chu','theo_hstk']
   const examples = [
     ['Vẽ mô hình tầng 1','Hoàn thiện model kiến trúc tầng 1','AA','A001_T01.rvt','nguyen.van.a','medium','2026-07-01','2026-07-15','8','Theo bản vẽ đã duyệt','HSTK ngày 01/01/2025'],
     ['Kiểm tra kết cấu cột','Kiểm tra toàn bộ cột tầng 1-3','ES','S001_COT.rvt','le.van.c','high','2026-07-05','2026-07-20','12','',''],
-    ['','','','','','','','','','','']
   ]
-  const csvContent = [headers, ...examples].map(row => row.map(v => `"${v}"`).join(',')).join('\n')
-  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = 'task_import_template.csv'; a.click()
-  URL.revokeObjectURL(url)
-  toast('Đã tải file mẫu', 'success')
+  const wb = XS.utils.book_new()
+  const ws = XS.utils.aoa_to_sheet([headers, ...examples])
+  ws['!cols'] = [
+    {wch:30},{wch:40},{wch:10},{wch:20},{wch:20},{wch:10},{wch:14},{wch:14},{wch:12},{wch:30},{wch:25}
+  ]
+  // Style header row
+  headers.forEach((_, i) => {
+    const cell = XS.utils.encode_cell({ r: 0, c: i })
+    if (ws[cell]) ws[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: '00A651' } }, alignment: { horizontal: 'center' } }
+  })
+  XS.utils.book_append_sheet(wb, ws, 'Tasks')
+  XS.writeFile(wb, 'task_import_template.xlsx')
+  toast('Đã tải file mẫu task_import_template.xlsx', 'success')
 }
 
 function handleImpFileDrop(e) {
@@ -23086,60 +23172,39 @@ function _csvParseLine(line) {
 }
 
 function _parseXLSX(buffer) {
-  // Simple XLSX parser: extract shared strings + first sheet
   try {
-    const uint8 = new Uint8Array(buffer)
-    const zip = _unzipXLSX(uint8)
-    if (!zip) { toast('Không đọc được file XLSX', 'error'); return }
-    // Parse shared strings
-    const ssXml = zip['xl/sharedStrings.xml'] || ''
-    const sharedStrings = []
-    const siRe = /<si>([\s\S]*?)<\/si>/g
-    let m
-    while ((m = siRe.exec(ssXml)) !== null) {
-      const text = (m[1].match(/<t[^>]*>([\s\S]*?)<\/t>/g) || [])
-        .map(t => t.replace(/<[^>]+>/g,''))
-        .join('')
-      sharedStrings.push(text)
-    }
-    // Parse first sheet
-    const sheetXml = zip['xl/worksheets/sheet1.xml'] || ''
-    const rowRe = /<row[^>]*>([\s\S]*?)<\/row>/g
-    const rows2d = []
-    while ((m = rowRe.exec(sheetXml)) !== null) {
-      const cellRe = /<c r="([A-Z]+\d+)"([^>]*)>([\s\S]*?)<\/c>/g
-      let cm; const rowCells = {}
-      while ((cm = cellRe.exec(m[1])) !== null) {
-        const col = cm[1].replace(/\d/g,'')
-        const t = cm[2].includes('t="s"') ? 'shared' : cm[2].includes('t="str"') ? 'str' : 'val'
-        const vMatch = cm[3].match(/<v>([\s\S]*?)<\/v>/)
-        let val = vMatch ? vMatch[1] : ''
-        if (t === 'shared') val = sharedStrings[parseInt(val)] || ''
-        rowCells[col] = val
-      }
-      // Convert to array
-      const maxCol = Object.keys(rowCells).reduce((acc, k) => {
-        const n = k.charCodeAt(0) - 64; return n > acc ? n : acc
-      }, 0)
-      const arr = []
-      for (let i = 1; i <= maxCol; i++) arr.push(rowCells[String.fromCharCode(64 + i)] || '')
-      rows2d.push(arr)
-    }
+    const XLSXLib = getXLSXCore()
+    if (typeof XLSXLib === 'undefined') { toast('Thư viện XLSX chưa tải, vui lòng thử lại', 'error'); return }
+    const wb = XLSXLib.read(new Uint8Array(buffer), { type: 'array', cellDates: true })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+    if (!ws) { toast('File XLSX không có sheet dữ liệu', 'warning'); return }
+    // Convert to array-of-arrays, then array-of-objects
+    const rows2d = XLSXLib.utils.sheet_to_json(ws, { header: 1, defval: '' })
     if (rows2d.length < 2) { toast('File XLSX không có dữ liệu', 'warning'); return }
     const headers = rows2d[0].map(h => String(h).trim().toLowerCase())
-    const dataRows = rows2d.slice(1)
-    const objRows = dataRows.map(arr => {
+    const dataRows = rows2d.slice(1).map(arr => {
       const row = {}
-      headers.forEach((h, j) => row[h] = (arr[j] || '').toString().trim())
+      headers.forEach((h, j) => {
+        let val = arr[j]
+        // Handle Date objects from cellDates:true
+        if (val instanceof Date) {
+          const y = val.getFullYear()
+          const mo = String(val.getMonth()+1).padStart(2,'0')
+          const d = String(val.getDate()).padStart(2,'0')
+          val = `${y}-${mo}-${d}`
+        }
+        row[h] = val !== undefined && val !== null ? String(val).trim() : ''
+      })
       return row
     }).filter(r => Object.values(r).some(v => v))
-    _impRows = objRows.map(r => _mapImpRow(r)).filter(r => r.title)
-    _showImpPreview(headers, objRows)
+    if (dataRows.length === 0) { toast('File XLSX không có dữ liệu hợp lệ', 'warning'); return }
+    _impRows = dataRows.map(r => _mapImpRow(r)).filter(r => r.title)
+    _showImpPreview(headers, dataRows)
   } catch(ex) { toast('Lỗi parse XLSX: ' + ex.message, 'error') }
 }
 
 function _unzipXLSX(data) {
-  // Minimal ZIP reader
+  // Minimal ZIP reader (kept for backward compat, no longer used by _parseXLSX)
   try {
     const files = {}
     let i = 0
@@ -23158,11 +23223,7 @@ function _unzipXLSX(data) {
       if (comp === 0) {
         files[fn] = new TextDecoder().decode(compData)
       } else if (comp === 8) {
-        try {
-          const ds = new DecompressionStream('deflate-raw')
-          // async but we'll handle via sync fallback
-          files[fn] = _inflateSync(compData, uSize)
-        } catch { files[fn] = '' }
+        files[fn] = ''
       }
       i = dataStart + cSize
     }
@@ -23171,17 +23232,7 @@ function _unzipXLSX(data) {
 }
 
 function _inflateSync(data, uSize) {
-  // Use DecompressionStream via ReadableStream sync wrapper
-  try {
-    let result = ''
-    const blob = new Blob([data])
-    const ds = new DecompressionStream('deflate-raw')
-    const reader = blob.stream().pipeThrough(ds).getReader()
-    const chunks = []
-    // We can't do sync, so we store as pending — the calling code must handle async
-    // For simplicity: return empty and rely on async path
-    return ''
-  } catch { return '' }
+  return ''
 }
 
 // Column name mapping (flexible)

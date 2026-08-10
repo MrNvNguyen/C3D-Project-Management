@@ -12,7 +12,16 @@
   <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script>
+    // Lưu lại XLSX gốc (SheetJS 0.20.3) trước khi xlsx-js-style có thể ghi đè
+    window._XLSXCore = window.XLSX;
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+  <script>
+    // Khôi phục XLSX gốc sau khi xlsx-js-style load; giữ XLSXStyle cho styling
+    window.XLSXStyle = window.XLSX;
+    window.XLSX = window._XLSXCore;
+  </script>
   <script>
     tailwind.config = {
       theme: {
@@ -7148,7 +7157,7 @@ document.addEventListener('keydown', function(e) {
       </div>
       <div class="flex items-center gap-3">
         <button onclick="downloadTaskTemplate()" class="btn-secondary text-sm">
-          <i class="fas fa-download mr-1.5 text-green-600"></i>Tải file mẫu (.csv)
+          <i class="fas fa-download mr-1.5 text-green-600"></i>Tải file mẫu (.xlsx)
         </button>
         <span class="text-xs text-gray-500">File mẫu gồm các cột: Tên công việc, Mô tả, Bộ môn, Filename, Phụ trách, Ưu tiên, Ngày bắt đầu, Ngày hết hạn, Giờ dự kiến, Ghi chú, HSTK</span>
       </div>
