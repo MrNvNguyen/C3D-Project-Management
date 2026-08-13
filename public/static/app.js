@@ -8933,10 +8933,13 @@ function renderCostTable() {
       <th class="pb-3 pr-3">Ngày</th>
       <th class="pb-3 pr-3">Trạng thái</th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Số tiền theo Hợp Đồng — số tiền gốc khách hàng thanh toán, chưa trừ phí quản lý">Theo HĐ <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
+        <span title="Nghiệm thu HĐ — giá trị nghiệm thu theo hợp đồng (chưa trừ VAT và phí quản lý)">Nghiệm thu HĐ<br><span class="normal-case font-normal text-gray-400">Theo HĐ</span> <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Số tiền theo Ngân Sách — doanh thu thực ghi nhận: đã loại VAT và trừ % phí quản lý (giá trị trước thuế)">Theo NS <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
+        <span title="Doanh thu Ngân Sách — doanh thu thực ghi nhận: đã loại VAT và trừ % phí quản lý (giá trị trước thuế)">Doanh thu NS<br><span class="normal-case font-normal text-gray-400">Theo NS</span> <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
+      </th>
+      <th class="pb-3 pr-3 text-right">
+        <span title="Dòng tiền thực tế — số tiền khách hàng đã thực sự chuyển khoản/thanh toán">Dòng tiền<br><span class="normal-case font-normal text-blue-400">Thực thu</span> <i class="fas fa-info-circle text-blue-200 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-center">Nguồn</th>
     </tr>`
@@ -8949,9 +8952,12 @@ function renderCostTable() {
     // Tính tổng theo trạng thái
     const revTotalCollected    = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.amount || 0), 0)
     const revTotalAll          = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
-    // Tổng "theo HĐ" = paid_amount_original (trước phí QL)
+    // Tổng "Theo HĐ" = paid_amount_original = giá trị nghiệm thu
     const revTotalOrigCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
     const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
+    // Tổng "Dòng tiền" = paid_amount thực thu
+    const revTotalCashCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.paid_amount || 0), 0)
+    const revTotalCashAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount || 0), 0)
 
     tbody.innerHTML = displayRevenues.map(r => {
       // Hiển thị ngày thông minh:
@@ -8966,9 +8972,10 @@ function renderCostTable() {
         dateCell = fmtDate(r.revenue_date)
       }
 
-      // ── Tính cột "Theo HĐ" và "Theo NS" ──────────────────────────────────────
-      const origAmount = r.paid_amount_original || r.amount || 0   // Tiền KH trả (có VAT)
-      const netAmount  = r.amount || 0                             // Doanh thu đã ghi nhận vào DB
+      // ── Tính cột "Theo HĐ", "Theo NS" và "Dòng tiền" ─────────────────────────
+      const origAmount = r.paid_amount_original || r.amount || 0   // Nghiệm thu HĐ (chưa trừ VAT/phí QL)
+      const cashAmount = r.paid_amount || 0                        // Dòng tiền thực thu
+      const netAmount  = r.amount || 0                             // Doanh thu NS đã ghi nhận vào DB
       const feePct     = r.fee_pct  || 0
       const vatPct     = r.vat_pct  || 0
 
@@ -8986,14 +8993,14 @@ function renderCostTable() {
       // ── Xây tooltip chi tiết ──────────────────────────────────────────────────
       let tooltipParts = []
       if (hasVat && hasFee) {
-        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
         tooltipParts.push(`−VAT ${vatPct}%:  ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(beforeVat)} (trước thuế)`)
         tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(beforeVat)} × ${(100-feePct)}% = ${fmt(netAmount)} (doanh thu NS)`)
       } else if (hasVat) {
-        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
         tooltipParts.push(`−VAT ${vatPct}%: ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(netAmount)} (trước thuế)`)
       } else if (hasFee) {
-        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
         tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(origAmount)} × ${(100-feePct)}% = ${fmt(netAmount)}`)
       }
       const tooltip = tooltipParts.length ? `title="${tooltipParts.join(' | ')}"` : ''
@@ -9004,6 +9011,11 @@ function renderCostTable() {
       if (hasFee)  badges.push(`<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>`)
       if (hasAdjust) badges.push(`<div class="text-xs font-medium text-blue-500 mt-0.5">Giá trị trước thuế</div>`)
 
+      // Badge dòng tiền
+      const cashDiffPct = origAmount > 0 ? Math.round((cashAmount / origAmount) * 100) : 0
+      const cashBadge   = cashAmount > 0 && cashAmount !== origAmount
+        ? `<div class="text-xs text-gray-400 mt-0.5">${cashDiffPct}% nghiệm thu</div>` : ''
+
       return `
       <tr class="table-row ${r.payment_status === 'pending' ? 'bg-amber-50/40' : ''}">
         <td class="py-2 pr-3 text-sm font-medium">${r.project_code || '-'}</td>
@@ -9011,12 +9023,16 @@ function renderCostTable() {
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${dateCell}</td>
         <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right ${hasAdjust ? 'text-gray-500' : (r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600')} ${hasAdjust ? '' : 'font-bold'}">
+        <td class="py-2 pr-3 text-sm text-right ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-gray-700'} font-semibold">
           ${fmt(origAmount)}
         </td>
         <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${tooltip}>
           ${fmt(netAmount)}
           ${badges.join('')}
+        </td>
+        <td class="py-2 pr-3 text-sm text-right font-semibold ${cashAmount > 0 ? 'text-blue-600' : 'text-gray-300'}">
+          ${cashAmount > 0 ? fmt(cashAmount) : '—'}
+          ${cashBadge}
         </td>
         <td class="py-2 pr-3 text-center">
           <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
@@ -9024,7 +9040,7 @@ function renderCostTable() {
           </span>
         </td>
       </tr>`
-    }).join('') || '<tr><td colspan="8" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
+    }).join('') || '<tr><td colspan="9" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
 
     // ── Tổng cộng footer ──────────────────────────────────────────
     const revTfoot = document.getElementById('revTfoot')
@@ -9038,6 +9054,7 @@ function renderCostTable() {
           </td>
           <td class="py-2 pr-3 text-right font-bold text-gray-500 text-sm whitespace-nowrap">${fmt(revTotalOrigCollected)}</td>
           <td class="py-2 pr-3 text-right font-bold text-green-700 text-sm whitespace-nowrap">${fmt(revTotalCollected)}</td>
+          <td class="py-2 pr-3 text-right font-bold text-blue-600 text-sm whitespace-nowrap">${revTotalCashCollected > 0 ? fmt(revTotalCashCollected) : '—'}</td>
           <td></td>
         </tr>
         <tr class="border-t border-gray-200 bg-gray-50">
@@ -9046,6 +9063,7 @@ function renderCostTable() {
           </td>
           <td class="py-2 pr-3 text-right font-bold text-gray-400 text-sm whitespace-nowrap">${fmt(revTotalOrigAll)}</td>
           <td class="py-2 pr-3 text-right font-bold text-gray-700 text-sm whitespace-nowrap">${fmt(revTotalAll)}</td>
+          <td class="py-2 pr-3 text-right font-bold text-blue-500 text-sm whitespace-nowrap">${revTotalCashAll > 0 ? fmt(revTotalCashAll) : '—'}</td>
           <td></td>
         </tr>`
     }
@@ -15918,61 +15936,162 @@ async function renderProjectFinancialTab(force = false) {
     // Bar helper (width capped at 100%)
     const bar = (pct, color) => `<div class="w-full bg-gray-100 rounded-full h-1.5 mt-1"><div class="h-1.5 rounded-full ${color}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div>`
 
-    // ── KPI summary row ─────────────────────────────────────────────
-    const hasBudget = totals.project_budget > 0
-    // Tính công nợ = GTHĐ - đã thu theo HĐ
-    const revOrig       = totals.revenue_collected_original || totals.revenue_collected
-    const hasOrigDiff   = revOrig > totals.revenue_collected + 1
-    const debtRemaining = Math.max(0, totals.contract_value - revOrig)
-    // Helper: số KPI dùng class kpi-value (clamp font-size, no-wrap)
-    const numCls = 'kpi-value'
+    // ── KPI summary rows (3 hàng × 4 cột) ─────────────────────────
+    // Row 1: GTHĐ | Đã nghiệm thu | Giá trị TT thực tế | Công nợ theo HĐ
+    // Row 2: Ngân sách | Doanh thu NS | Công nợ NS | Tiến độ NS
+    // Row 3: Tổng chi phí | Lợi nhuận ròng | Biên lợi nhuận | Tiến độ tổng theo HĐ
+
+    const nghiemThuTotal  = totals.revenue_collected_original || totals.revenue_collected
+    const paidAmtTotal    = totals.paid_amount_total || 0
+    // Công nợ theo HĐ = GTHĐ - Giá trị TT thực tế (paid_amount) → số tiền khách còn nợ
+    const debtHD          = Math.max(0, totals.contract_value - paidAmtTotal)
+    // Công nợ theo NS  = Ngân sách - Doanh thu NS
+    const debtNS          = Math.max(0, totals.project_budget - totals.revenue_collected)
+    const hasBudget       = totals.project_budget > 0
+    const numCls          = 'kpi-value'
+
     const kpiHtml = `
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+      <!-- ── Hàng 1: Hợp đồng ───────────────────────────────────────── -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+
+        <!-- Tổng GTHĐ -->
         <div class="kpi-card" style="border-left-color:#6366f1">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng GTHĐ</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-file-signature mr-1 text-indigo-400"></i>Tổng GTHĐ
+          </div>
           <div class="${numCls} text-indigo-600">${fmtM(totals.contract_value)}</div>
           <div class="text-xs text-gray-400 mt-1">Giá trị hợp đồng</div>
         </div>
-        ${hasBudget ? `
-        <div class="kpi-card" style="border-left-color:#059669;background:linear-gradient(135deg,#f0fdf4,#ffffff)">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide"><i class="fas fa-wallet mr-1 text-emerald-500"></i>Tổng ngân sách</div>
-          <div class="${numCls} text-emerald-700">${fmtM(totals.project_budget)}</div>
-          <div class="text-xs text-gray-400 mt-1">Sau trừ % phí quản lý</div>
-        </div>` : ''}
-        <div class="kpi-card" style="border-left-color:#06b6d4">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide"><i class="fas fa-file-contract mr-1 text-cyan-500"></i>Đã thu theo HĐ</div>
-          <div class="${numCls} text-cyan-600">${fmtM(revOrig)}</div>
-          <div class="text-xs mt-1 space-y-0.5">
-            ${totals.contract_value > 0
-              ? `<div class="${debtRemaining > 0 ? 'text-red-400 font-medium' : 'text-green-500'}"><i class="fas fa-${debtRemaining > 0 ? 'exclamation-circle' : 'check-circle'} mr-0.5"></i>Công nợ: ${fmtM(debtRemaining)}</div>`
-              : '<div class="text-gray-400">Số tiền gốc khách TT</div>'}
-            ${totals.revenue_pending > 0 ? `<div class="text-amber-500"><i class="fas fa-clock mr-0.5"></i>Chờ thu: ${fmtM(totals.revenue_pending)}</div>` : ''}
+
+        <!-- Đã nghiệm thu (Doanh thu HĐ) -->
+        <div class="kpi-card" style="border-left-color:#0891b2">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-clipboard-check mr-1 text-cyan-500"></i>Đã nghiệm thu
+          </div>
+          <div class="${numCls} text-cyan-700">${fmtM(nghiemThuTotal)}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            Doanh thu HĐ${totals.contract_value > 0 ? ` · ${pct(nghiemThuTotal, totals.contract_value)}%` : ''}
+          </div>
+          ${totals.revenue_pending > 0 ? `<div class="text-xs text-amber-500 mt-0.5"><i class="fas fa-clock mr-0.5"></i>Chờ NT: ${fmtM(totals.revenue_pending)}</div>` : ''}
+        </div>
+
+        <!-- Giá trị TT thực tế (Dòng tiền) -->
+        <div class="kpi-card" style="border-left-color:#2563eb">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-money-bill-wave mr-1 text-blue-400"></i>Giá trị TT thực tế
+          </div>
+          <div class="${numCls} text-blue-600">${paidAmtTotal > 0 ? fmtM(paidAmtTotal) : '—'}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            Dòng tiền thực thu${nghiemThuTotal > 0 && paidAmtTotal > 0 ? ` · ${pct(paidAmtTotal, nghiemThuTotal)}% NT` : ''}
           </div>
         </div>
+
+        <!-- Công nợ theo HĐ -->
+        <div class="kpi-card" style="border-left-color:${debtHD > 0 ? '#dc2626' : '#16a34a'}">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-exclamation-circle mr-1 ${debtHD > 0 ? 'text-red-400' : 'text-green-400'}"></i>Công nợ theo HĐ
+          </div>
+          <div class="${numCls} ${debtHD > 0 ? 'text-red-500' : 'text-green-600'}">${fmtM(debtHD)}</div>
+          <div class="text-xs mt-1 ${debtHD > 0 ? 'text-red-400' : 'text-green-500'}">
+            ${debtHD > 0 ? `GTHĐ − TT thực tế` : '✅ Đã thanh toán đủ'}
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Hàng 2: Ngân sách ──────────────────────────────────────── -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+
+        <!-- Tổng ngân sách -->
+        <div class="kpi-card" style="border-left-color:#059669;${hasBudget ? 'background:linear-gradient(135deg,#f0fdf4,#ffffff)' : ''}">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-wallet mr-1 text-emerald-500"></i>Tổng ngân sách
+          </div>
+          <div class="${numCls} text-emerald-700">${hasBudget ? fmtM(totals.project_budget) : '—'}</div>
+          <div class="text-xs text-gray-400 mt-1">${hasBudget ? 'Sau trừ % phí quản lý' : 'Chưa có ngân sách'}</div>
+        </div>
+
+        <!-- Doanh thu NS -->
         <div class="kpi-card" style="border-left-color:#10b981">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Doanh thu theo NS</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-chart-line mr-1 text-green-500"></i>Doanh thu NS
+          </div>
           <div class="${numCls} text-emerald-600">${fmtM(totals.revenue_collected)}</div>
-          <div class="text-xs text-gray-400 mt-1">${hasOrigDiff ? 'Sau trừ phí QL' : 'Doanh thu ghi nhận'}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            Sau VAT + phí QL${hasBudget && totals.project_budget > 0 ? ` · ${pct(totals.revenue_collected, totals.project_budget)}% NS` : ''}
+          </div>
         </div>
+
+        <!-- Công nợ theo NS -->
+        <div class="kpi-card" style="border-left-color:${debtNS > 0 && hasBudget ? '#f59e0b' : '#16a34a'}">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-balance-scale mr-1 ${debtNS > 0 && hasBudget ? 'text-amber-400' : 'text-green-400'}"></i>Công nợ theo NS
+          </div>
+          <div class="${numCls} ${debtNS > 0 && hasBudget ? 'text-amber-600' : 'text-green-600'}">${hasBudget ? fmtM(debtNS) : '—'}</div>
+          <div class="text-xs mt-1 ${debtNS > 0 && hasBudget ? 'text-amber-500' : 'text-green-500'}">
+            ${hasBudget ? (debtNS > 0 ? 'NS − Doanh thu NS' : '✅ Đạt ngân sách') : 'Không có ngân sách'}
+          </div>
+        </div>
+
+        <!-- Tiến độ NS -->
+        <div class="kpi-card" style="border-left-color:#7c3aed">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-tachometer-alt mr-1 text-violet-500"></i>Tiến độ NS
+          </div>
+          <div class="${numCls} text-violet-600">${hasBudget ? totals.budget_progress : totals.contract_progress}%</div>
+          <div class="text-xs text-gray-400 mt-1">Tỷ lệ thực hiện${hasBudget ? ' / NS' : ' / HĐ'}</div>
+          <div class="w-full bg-gray-100 rounded-full h-1.5 mt-1.5">
+            <div class="h-1.5 rounded-full bg-violet-400" style="width:${Math.min(100, hasBudget ? totals.budget_progress : totals.contract_progress)}%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Hàng 3: Chi phí & Lợi nhuận ───────────────────────────── -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+
+        <!-- Tổng chi phí -->
         <div class="kpi-card" style="border-left-color:#ef4444">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng chi phí</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-receipt mr-1 text-red-400"></i>Tổng chi phí
+          </div>
           <div class="${numCls} text-red-500">${fmtM(totals.total_cost)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ · ' : ''}${totals.pct_cost}% DT</div>
+          <div class="text-xs text-gray-400 mt-1">
+            ${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ' : ''}${totals.contract_value > 0 && totals.revenue_collected > 0 ? ' · ' : ''}${totals.revenue_collected > 0 ? totals.pct_cost + '% DT' : ''}
+          </div>
         </div>
-        <div class="kpi-card" style="border-left-color:#3b82f6">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Lợi nhuận ròng</div>
+
+        <!-- Lợi nhuận ròng -->
+        <div class="kpi-card" style="border-left-color:${totals.profit >= 0 ? '#3b82f6' : '#f97316'}">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-coins mr-1 ${totals.profit >= 0 ? 'text-blue-400' : 'text-orange-400'}"></i>Lợi nhuận ròng
+          </div>
           <div class="${numCls} ${profitColor(totals.profit)}">${fmtM(totals.profit)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ' : 'Sau toàn bộ CP'}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            ${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ' : 'Sau toàn bộ CP'}
+          </div>
         </div>
+
+        <!-- Biên lợi nhuận -->
         <div class="kpi-card" style="border-left-color:#8b5cf6">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Biên lợi nhuận</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-percentage mr-1 text-purple-400"></i>Biên lợi nhuận
+          </div>
           <div class="${numCls} ${marginColor(totals.margin)}">${totals.margin}%</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.margin>=30?'✅ Tốt':totals.margin>=10?'🟡 Trung bình':'🔴 Thấp'}</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.margin >= 30 ? '✅ Tốt' : totals.margin >= 10 ? '🟡 Trung bình' : '🔴 Thấp'}</div>
+          <div class="w-full bg-gray-100 rounded-full h-1.5 mt-1.5">
+            <div class="h-1.5 rounded-full ${totals.margin >= 30 ? 'bg-green-400' : totals.margin >= 10 ? 'bg-blue-400' : totals.margin >= 0 ? 'bg-yellow-400' : 'bg-red-400'}" style="width:${Math.min(100, Math.max(0, totals.margin))}%"></div>
+          </div>
         </div>
+
+        <!-- Tiến độ tổng theo HĐ -->
         <div class="kpi-card" style="border-left-color:#f59e0b">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tiến độ GTHĐ</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-flag-checkered mr-1 text-amber-500"></i>Tiến độ tổng
+          </div>
           <div class="${numCls} text-amber-600">${totals.contract_progress}%</div>
-          <div class="text-xs text-gray-400 mt-1">Doanh thu / GTHĐ</div>
+          <div class="text-xs text-gray-400 mt-1">Nghiệm thu / GTHĐ</div>
+          <div class="w-full bg-gray-100 rounded-full h-1.5 mt-1.5">
+            <div class="h-1.5 rounded-full bg-amber-400" style="width:${Math.min(100, totals.contract_progress)}%"></div>
+          </div>
         </div>
       </div>
     `
@@ -16035,10 +16154,10 @@ async function renderProjectFinancialTab(force = false) {
     // Dùng 1 table duy nhất với sticky thead/tfoot để tránh lệch cột khi tên dài
     const hasBudgetCol = projects.some(p => p.project_budget > 0)
     const nameColW  = isLifetime ? 200 : 220   // px — cột tên dự án cố định
-    // GTHĐ, Đã thu HĐ, Công nợ, [NS], DT đã thu, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
+    // GTHĐ, Đã nghiệm thu, GTTT Thực tế, Công nợ, [NS], DT đã thu, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
     const numCols   = hasBudgetCol
-      ? [90, 90, 85, 90, 90, 80, 80, 70, 80, 80, 60, 105]
-      : [95, 95, 85, 90, 85, 85, 75, 85, 85, 65, 110]
+      ? [90, 85, 85, 80, 90, 90, 80, 80, 70, 80, 80, 60, 105]
+      : [90, 85, 85, 80, 90, 85, 85, 75, 85, 85, 65, 110]
     const totalMinW = nameColW + numCols.reduce((a,b)=>a+b,0)
     const colgroup  = `<colgroup>
         <col style="width:${nameColW}px;min-width:${nameColW}px;max-width:${nameColW}px">
@@ -16069,8 +16188,9 @@ async function renderProjectFinancialTab(force = false) {
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
                 <th class="text-left py-3 px-3 font-semibold border-b border-gray-200" style="overflow:hidden">Dự án</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2"><i class="fas fa-hand-holding-usd mr-1"></i>Đã thu HĐ</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#dc2626" title="Công nợ = GTHĐ − Đã thu HĐ"><i class="fas fa-exclamation-circle mr-1"></i>Công nợ</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2" title="Giá trị nghiệm thu gốc"><i class="fas fa-clipboard-check mr-1"></i>Đã nghiệm thu</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#2563eb" title="Dòng tiền thực thu từ khách hàng"><i class="fas fa-money-bill-wave mr-1"></i>GTTT Thực tế</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#dc2626" title="Công nợ = GTHĐ − GTTT Thực tế"><i class="fas fa-exclamation-circle mr-1"></i>Công nợ</th>
                 ${hasBudgetCol ? `<th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#059669"><i class="fas fa-wallet mr-1"></i>Ngân sách</th>` : ''}
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT đã thu</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP trực tiếp</th>
@@ -16118,7 +16238,11 @@ async function renderProjectFinancialTab(force = false) {
                       <span class="font-semibold text-cyan-700">${(p.revenue_collected_original || p.revenue_collected) > 0 ? fmtM(p.revenue_collected_original || p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
                       ${(p.revenue_collected_original || p.revenue_collected) > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.revenue_collected_original || p.revenue_collected, pctBaseRow)}%</div>` : ''}
                     </td>
-                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.revenue_collected_original || p.revenue_collected||0)); return `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:${debt>0?'#fff5f5':''}"><span class="font-semibold ${debt>0?'text-red-500':'text-gray-300'}">${debt>0?fmtM(debt):'—'}</span>${debt>0&&pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`; })()}
+                    <td class="py-2 px-3 text-right whitespace-nowrap" style="background:#eff6ff">
+                      <span class="font-semibold text-blue-600">${p.paid_amount_total > 0 ? fmtM(p.paid_amount_total) : '<span class="text-gray-300">—</span>'}</span>
+                      ${p.paid_amount_total > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.paid_amount_total, pctBaseRow)}%</div>` : ''}
+                    </td>
+                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.paid_amount_total||0)); return `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:${debt>0?'#fff5f5':''}"><span class="font-semibold ${debt>0?'text-red-500':'text-gray-300'}">${debt>0?fmtM(debt):'—'}</span>${debt>0&&pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`; })()}
                     ${hasBudgetCol ? `
                     <td class="py-2 px-3 text-right whitespace-nowrap" style="background:${p.project_budget>0?'#f0fdf4':''}">
                       ${p.project_budget > 0
@@ -16177,7 +16301,8 @@ async function renderProjectFinancialTab(force = false) {
                 <td class="py-3 px-3 text-gray-700 whitespace-nowrap" style="overflow:hidden;text-overflow:ellipsis;max-width:${nameColW}px"><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
                 <td class="py-3 px-3 text-right text-indigo-700 whitespace-nowrap">${fmtM(totals.contract_value)}</td>
                 <td class="py-3 px-3 text-right text-cyan-700 whitespace-nowrap font-bold" style="background:#f0f9ff">${fmtM(totals.revenue_collected_original || totals.revenue_collected)}</td>
-                ${(() => { const tDebt = Math.max(0, (totals.contract_value||0) - (totals.revenue_collected_original||totals.revenue_collected||0)); return `<td class="py-3 px-3 text-right whitespace-nowrap font-bold ${tDebt>0?'text-red-500':'text-gray-300'}" style="background:${tDebt>0?'#fff5f5':''}"> ${tDebt>0?fmtM(tDebt):'—'}</td>`; })()}
+                <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap font-bold" style="background:#eff6ff">${totals.paid_amount_total > 0 ? fmtM(totals.paid_amount_total) : '—'}</td>
+                ${(() => { const tDebt = Math.max(0, (totals.contract_value||0) - (totals.paid_amount_total||0)); return `<td class="py-3 px-3 text-right whitespace-nowrap font-bold ${tDebt>0?'text-red-500':'text-gray-300'}" style="background:${tDebt>0?'#fff5f5':''}"> ${tDebt>0?fmtM(tDebt):'—'}</td>`; })()}
                 ${hasBudgetCol ? `<td class="py-3 px-3 text-right text-emerald-700 whitespace-nowrap font-bold">${totals.project_budget > 0 ? fmtM(totals.project_budget) : '—'}</td>` : ''}
                 <td class="py-3 px-3 text-right text-emerald-600 whitespace-nowrap">${fmtM(totals.revenue_collected)}</td>
                 <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap">${fmtM(totals.direct_cost)}</td>
@@ -16204,7 +16329,9 @@ async function renderProjectFinancialTab(force = false) {
           <span><strong>GTHĐ</strong>: Giá trị hợp đồng</span>
           ${hasBudgetCol ? `<span><strong class="text-emerald-700">Ngân sách</strong>: GTHĐ × (1 − % phí quản lý) — ngân sách thực tế để kiểm soát chi phí</span>` : ''}
           <span><strong>DT đã thu</strong>: Doanh thu trạng thái <em>paid + partial</em></span>
-          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − Đã thu HĐ (số tiền khách hàng chưa thanh toán)</span>
+          <span><strong style="color:#0891b2">Đã nghiệm thu</strong>: Giá trị nghiệm thu gốc theo hợp đồng</span>
+          <span><strong style="color:#2563eb">GTTT Thực tế</strong>: Dòng tiền thực thu từ khách hàng</span>
+          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − GTTT Thực tế (số tiền khách hàng chưa thanh toán)</span>
           <span><strong>CP trực tiếp</strong>: Chi phí vật liệu, thiết bị, đi lại, văn phòng…</span>
           <span><strong>CP lương</strong>: Từ bảng project_labor_costs (tính theo timesheet)</span>
           <span><strong>CP chung</strong>: Chi phí chung phân bổ (điện, nước, văn phòng…)</span>
@@ -18362,6 +18489,9 @@ function renderPaymentStatus(payments) {
   const summaryEl = $('paymentSummaryCards')
   if (!container) return
 
+  // Lấy thông tin dự án để tính doanh thu net (VAT/phí QL)
+  const proj = _legalOverviewData?.project || {}
+
   // Summary cards
   const total = payments.length
   const totalAmount = payments.reduce((s, p) => s + (p.amount || 0), 0)
@@ -18377,11 +18507,11 @@ function renderPaymentStatus(payments) {
       </div>
       <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
         <div class="text-sm font-bold text-amber-700">${fmtMoney(totalAmount)}</div>
-        <div class="text-xs text-amber-500 mt-1">Tổng đề nghị</div>
+        <div class="text-xs text-amber-500 mt-1">Tổng nghiệm thu</div>
       </div>
-      <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
-        <div class="text-sm font-bold text-emerald-700">${fmtMoney(paidAmount)}</div>
-        <div class="text-xs text-emerald-500 mt-1">Đã thanh toán</div>
+      <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
+        <div class="text-sm font-bold text-blue-600">${fmtMoney(paidAmount)}</div>
+        <div class="text-xs text-blue-400 mt-1">Dòng tiền đã thu</div>
       </div>
       <div class="bg-rose-50 border border-rose-200 rounded-xl p-3 text-center">
         <div class="text-2xl font-bold text-rose-700">${pending}</div>
@@ -18413,8 +18543,8 @@ function renderPaymentStatus(payments) {
         <div class="h-2 rounded-full transition-all" style="width:${progressPct}%;background:${progressColor}"></div>
       </div>
       <div class="flex justify-between text-xs text-gray-400 mt-1">
-        <span>Đã TT: ${fmtMoney(paidAmount)}</span>
-        <span>Tổng ĐN: ${fmtMoney(totalAmount)}</span>
+        <span>Dòng tiền đã thu: ${fmtMoney(paidAmount)}</span>
+        <span>Tổng nghiệm thu: ${fmtMoney(totalAmount)}</span>
       </div>
     </div>
     <div class="overflow-x-auto">
@@ -18423,8 +18553,8 @@ function renderPaymentStatus(payments) {
         <tr class="border-b border-gray-200 bg-gray-50">
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Đợt TT</th>
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Nội dung</th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Số tiền ĐN</th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT</th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Nghiệm thu<br><span class="font-normal text-xs text-emerald-500">→ Doanh thu</span></th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT<br><span class="font-normal text-xs text-blue-400">→ Dòng tiền</span></th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">VAT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Ngày TT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Trạng thái</th>
@@ -18458,9 +18588,12 @@ function renderPaymentStatus(payments) {
             : ''}
           ${p.notes ? `<div class="text-xs text-gray-400 mt-0.5 italic">${p.notes}</div>` : ''}
         </td>
-        <td class="py-2 px-3 text-right font-mono text-gray-700">${fmtMoney(p.amount || 0)}</td>
+        <td class="py-2 px-3 text-right font-mono text-gray-700">
+          <div>${fmtMoney(p.amount || 0)}</div>
+          ${p.vat_pct > 0 || (proj?.management_fee_pct > 0) ? `<div class="text-xs text-emerald-600" title="Doanh thu sau VAT/phí QL">DT: ${fmtMoney(calcRevenueNet(p.amount||0, p.vat_pct||0, proj?.management_fee_pct||0))}</div>` : ''}
+        </td>
         <td class="py-2 px-3 text-right">
-          <div class="font-mono text-emerald-700">${fmtMoney(p.paid_amount || 0)}</div>
+          <div class="font-mono text-blue-600">${fmtMoney(p.paid_amount || 0)}</div>
           ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}
         </td>
         <td class="py-2 px-3 text-center">
@@ -18479,21 +18612,21 @@ function renderPaymentStatus(payments) {
         </td>
         <td class="py-2 px-3 text-right">
           ${(() => {
-            const paidAmt   = p.paid_amount || 0
+            const nghiemThu = p.amount || 0              // Giá trị nghiệm thu → căn cứ tính doanh thu
             const vatPct    = p.vat_pct || 0
             const feePct    = _legalOverviewData?.project?.management_fee_pct || 0
-            const noVat     = vatPct > 0 ? Math.round(paidAmt / (1 + vatPct / 100)) : paidAmt
+            const noVat     = vatPct > 0 ? Math.round(nghiemThu / (1 + vatPct / 100)) : nghiemThu
             const netRev    = feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat
             const isSynced  = p.revenue_synced || p.revenue_synced_id
-            const isActive  = ['paid','partial'].includes(p.status) && paidAmt > 0
+            const isActive  = ['paid','partial'].includes(p.status) && nghiemThu > 0
             if (!isActive) return `<span class="text-xs text-gray-300">—</span>`
             let titleParts = []
-            if (vatPct > 0) titleParts.push(`Loại VAT ${vatPct}%: ${paidAmt.toLocaleString('vi-VN')} ÷ ${(1+vatPct/100).toFixed(2)} = ${noVat.toLocaleString('vi-VN')} VNĐ`)
+            if (vatPct > 0) titleParts.push(`Loại VAT ${vatPct}%: ${nghiemThu.toLocaleString('vi-VN')} ÷ ${(1+vatPct/100).toFixed(2)} = ${noVat.toLocaleString('vi-VN')} VNĐ`)
             if (feePct > 0) titleParts.push(`Phí QL ${feePct}%: ×${(100-feePct)}% = ${netRev.toLocaleString('vi-VN')} VNĐ`)
             const tooltip = titleParts.length ? titleParts.join(' → ') : ''
             return `<div class="font-mono font-semibold text-blue-700" title="${tooltip}">${fmtMoney(netRev)}</div>
                     ${vatPct > 0 ? `<div class="text-xs text-amber-500 mt-0.5">−VAT ${vatPct}%</div>` : ''}
-                    ${feePct > 0 && vatPct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : feePct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : ''}
+                    ${feePct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : ''}
                     ${isSynced ? `<div class="text-xs text-emerald-500 mt-0.5"><i class="fas fa-sync-alt" style="font-size:9px"></i> Đã ĐB</div>` : ''}`
           })()}
         </td>
@@ -18509,7 +18642,16 @@ function renderPaymentStatus(payments) {
   container.innerHTML = html
 }
 
+// ─── Helper: tính doanh thu net từ giá trị nghiệm thu ────────────────────────
+function calcRevenueNet(amount, vatPct, feePct) {
+  if (!amount) return 0
+  const noVat = vatPct > 0 ? Math.round(amount / (1 + vatPct / 100)) : amount
+  return feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat
+}
+
 // ─── Preview doanh thu sau VAT + phí quản lý trong form thanh toán ───────────
+// - `amount`      = Giá trị nghiệm thu → tính DOANH THU vào sổ
+// - `paidAmount`  = Dòng tiền thực thu → hiển thị riêng, không tính doanh thu
 function updatePaymentRevenuePreview() {
   const proj = _legalOverviewData?.project
   const feePct = proj?.management_fee_pct || 0
@@ -18517,8 +18659,8 @@ function updatePaymentRevenuePreview() {
   if (!previewEl) return
 
   const vatPct     = parseFloat($('paymentVatPct')?.value) || 0
-  const amount     = parseMoneyVal('paymentAmount')     || 0
-  const paidAmount = parseMoneyVal('paymentPaidAmount') || 0
+  const amount     = parseMoneyVal('paymentAmount')     || 0  // Giá trị nghiệm thu
+  const paidAmount = parseMoneyVal('paymentPaidAmount') || 0  // Dòng tiền
 
   // Ẩn preview nếu không có VAT và không có phí QL
   if (!feePct && !vatPct) {
@@ -18526,15 +18668,16 @@ function updatePaymentRevenuePreview() {
     return
   }
 
-  // BƯỚC 1: Loại VAT ra
-  const vatFactor      = vatPct > 0 ? (1 + vatPct / 100) : 1
-  const amountNoVat    = vatPct > 0 ? Math.round(amount     / vatFactor) : amount
-  const paidNoVat      = vatPct > 0 ? Math.round(paidAmount / vatFactor) : paidAmount
+  // BƯỚC 1: Loại VAT ra — tính từ NGHIỆM THU (amount)
+  const vatFactor   = vatPct > 0 ? (1 + vatPct / 100) : 1
+  const amountNoVat = vatPct > 0 ? Math.round(amount / vatFactor) : amount
 
-  // BƯỚC 2: Trừ phí QL
-  const feeFactor      = feePct > 0 ? (1 - feePct / 100) : 1
-  const amountNet      = Math.round(amountNoVat * feeFactor)
-  const paidNet        = Math.round(paidNoVat   * feeFactor)
+  // Dòng tiền sau VAT (chỉ hiển thị tham chiếu, không ghi doanh thu)
+  const paidNoVat   = vatPct > 0 ? Math.round(paidAmount / vatFactor) : paidAmount
+
+  // BƯỚC 2: Trừ phí QL — tính từ nghiệm thu trước VAT
+  const feeFactor   = feePct > 0 ? (1 - feePct / 100) : 1
+  const amountNet   = Math.round(amountNoVat * feeFactor)  // → Doanh thu vào sổ
 
   const fmtVND = n => n > 0 ? n.toLocaleString('vi-VN') + ' VNĐ' : '—'
 
@@ -18544,21 +18687,23 @@ function updatePaymentRevenuePreview() {
   if (feePct > 0) feeLabel.push(`Phí QL ${feePct}%`)
   $('paymentFeeLabel').textContent = feeLabel.length ? `(${feeLabel.join(' + ')})` : ''
 
-  // Cập nhật kết quả
+  // Cột trái: Nghiệm thu → Doanh thu (giá trị ghi sổ)
   $('paymentAmountNet').textContent = fmtVND(amountNet)
-  $('paymentPaidNet').textContent   = fmtVND(paidNet)
+
+  // Cột phải: Dòng tiền thực thu (sau VAT, không trừ phí QL — chỉ tham chiếu)
+  $('paymentPaidNet').textContent = paidAmount > 0 ? fmtVND(paidNoVat) : '—'
 
   // Ghi chú công thức chi tiết
   let amountDesc = '', paidDesc = ''
   if (vatPct > 0 && feePct > 0) {
     amountDesc = amount > 0 ? `${fmtVND(amount)} ÷${(1+vatPct/100).toFixed(2)} ×${((100-feePct)/100).toFixed(2)}` : ''
-    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} ÷${(1+vatPct/100).toFixed(2)} ×${((100-feePct)/100).toFixed(2)}` : ''
+    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} ÷ ${(1+vatPct/100).toFixed(2)} (trước thuế)` : ''
   } else if (vatPct > 0) {
     amountDesc = amount > 0 ? `${fmtVND(amount)} ÷ ${(1+vatPct/100).toFixed(2)}` : ''
     paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} ÷ ${(1+vatPct/100).toFixed(2)}` : ''
   } else if (feePct > 0) {
     amountDesc = amount > 0 ? `${fmtVND(amount)} × ${(100-feePct)}%` : ''
-    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} × ${(100-feePct)}%` : ''
+    paidDesc   = paidAmount > 0 ? fmtVND(paidAmount) + ' (chưa trừ phí QL)' : ''
   }
   $('paymentAmountNetPct').textContent = amountDesc
   $('paymentPaidNetPct').textContent   = paidDesc
@@ -18569,11 +18714,11 @@ function updatePaymentRevenuePreview() {
   if (vatRateEl) vatRateEl.textContent = vatPct
   if (formulaEl) {
     if (vatPct > 0 && feePct > 0) {
-      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>DT = TT ÷ (1+${vatPct}%) × (1−${feePct}%) <span class="text-amber-500">← loại VAT trước, rồi trừ phí QL</span>`
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>DT = NT ÷ (1+${vatPct}%) × (1−${feePct}%) <span class="text-amber-500">← loại VAT trước, rồi trừ phí QL</span>`
     } else if (vatPct > 0) {
-      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Số tiền TT ÷ (1 + <strong>${vatPct}%</strong> VAT)`
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Giá trị nghiệm thu ÷ (1 + <strong>${vatPct}%</strong> VAT)`
     } else {
-      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Số tiền × (1 − <strong>${feePct}%</strong> phí QL)`
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Giá trị nghiệm thu × (1 − <strong>${feePct}%</strong> phí QL)`
     }
   }
 

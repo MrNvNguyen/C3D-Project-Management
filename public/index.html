@@ -4387,12 +4387,16 @@
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="label">Số tiền đề nghị (VND)</label>
+          <label class="label">Giá trị nghiệm thu (VND)
+            <span class="ml-1 text-xs font-normal text-emerald-600">→ Doanh thu</span>
+          </label>
           <input type="text" id="paymentAmount" class="input-field" placeholder="0" inputmode="numeric"
             oninput="moneyInputFmt(this); updatePaymentRevenuePreview()">
         </div>
         <div>
-          <label class="label">Số tiền đã thanh toán (VND)</label>
+          <label class="label">Số tiền đã thanh toán (VND)
+            <span class="ml-1 text-xs font-normal text-blue-500">→ Dòng tiền</span>
+          </label>
           <input type="text" id="paymentPaidAmount" class="input-field" placeholder="0" inputmode="numeric"
             oninput="moneyInputFmt(this); updatePaymentRevenuePreview()">
         </div>
@@ -4413,12 +4417,11 @@
         <div class="flex items-end pb-1">
           <div class="text-xs text-gray-500 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed">
             <i class="fas fa-info-circle text-amber-500 mr-1"></i>
-            <strong>Doanh thu = Số tiền TT ÷ (1 + VAT%)</strong><br>
+            <strong>Doanh thu = Giá trị nghiệm thu ÷ (1 + VAT%)</strong><br>
             Ví dụ: 110 tr ÷ 1.1 = <strong>100 tr</strong> trước VAT
           </div>
         </div>
       </div>
-      <!-- Preview doanh thu sau VAT + phí QL -->
       <div id="paymentRevenuePreview" style="display:none"
         class="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
         <div class="flex items-start gap-3">
@@ -4429,20 +4432,20 @@
               <span id="paymentFeeLabel" class="ml-1 text-xs font-normal text-gray-400"></span>
             </p>
             <div class="grid grid-cols-2 gap-3">
-              <div class="bg-white rounded-lg p-2 border border-emerald-100">
-                <p class="text-xs text-gray-400">Đề nghị → Doanh thu</p>
+              <div class="bg-white rounded-lg p-2 border border-emerald-200">
+                <p class="text-xs text-emerald-600 font-medium">Nghiệm thu → Doanh thu</p>
                 <p id="paymentAmountNet" class="font-bold text-emerald-700 text-sm mt-0.5">—</p>
                 <p id="paymentAmountNetPct" class="text-xs text-gray-400 mt-0.5"></p>
               </div>
-              <div class="bg-white rounded-lg p-2 border border-emerald-100">
-                <p class="text-xs text-gray-400">Đã thu → Doanh thu</p>
-                <p id="paymentPaidNet" class="font-bold text-blue-700 text-sm mt-0.5">—</p>
+              <div class="bg-white rounded-lg p-2 border border-blue-100">
+                <p class="text-xs text-blue-400 font-medium"><i class="fas fa-arrow-right mr-0.5"></i>Đã thu → Dòng tiền</p>
+                <p id="paymentPaidNet" class="font-bold text-blue-600 text-sm mt-0.5">—</p>
                 <p id="paymentPaidNetPct" class="text-xs text-gray-400 mt-0.5"></p>
               </div>
             </div>
             <p class="text-xs text-gray-400 mt-2" id="paymentRevenueFormula">
               <i class="fas fa-info-circle mr-1"></i>
-              Doanh thu = Số tiền ÷ (1 + <span id="paymentVatRate">0</span>% VAT)
+              Doanh thu = Giá trị nghiệm thu ÷ (1 + <span id="paymentVatRate">0</span>% VAT)
             </p>
           </div>
         </div>

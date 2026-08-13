@@ -4234,7 +4234,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
     const dateFilter   = year ? `AND pr.revenue_date >= '${fyStart}' AND pr.revenue_date <= '${fyEnd}'` : ''
 
     // ── Phần 1: project_revenues (paid / partial) đã có revenue_date ──────────
-    // LEFT JOIN payment_requests để lấy paid_amount gốc (trước khi trừ phí QL)
+    // paid_amount_original = amount (Giá trị nghiệm thu) → Cột "Theo HĐ"
+    // paid_amount          = paid_amount thực tế từ payment_requests → Cột "Dòng tiền"
     const paidQuery = `
       SELECT
         pr.id            AS id,
@@ -4250,10 +4251,12 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         pr.payment_status,
         pr.notes,
         'revenue'        AS source,
-        -- Lấy paid_amount gốc từ payment_requests nếu có liên kết
-        COALESCE(pq.paid_amount, pr.amount) AS paid_amount_original,
-        p.management_fee_pct       AS fee_pct,
-        COALESCE(pq.vat_pct, 0)    AS vat_pct
+        -- Theo HĐ = Giá trị nghiệm thu (amount từ payment_requests nếu có, fallback pr.amount)
+        COALESCE(pq.amount, pr.amount)      AS paid_amount_original,
+        -- Dòng tiền = số tiền thực đã thu (paid_amount từ payment_requests)
+        COALESCE(pq.paid_amount, 0)         AS paid_amount,
+        p.management_fee_pct               AS fee_pct,
+        COALESCE(pq.vat_pct, 0)            AS vat_pct
       FROM project_revenues pr
       JOIN projects p ON p.id = pr.project_id
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
@@ -4279,7 +4282,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         'pending'        AS payment_status,
         pq.notes,
         'payment_request' AS source,
-        pq.amount        AS paid_amount_original,
+        pq.amount           AS paid_amount_original,  -- Theo HĐ = nghiệm thu
+        COALESCE(pq.paid_amount, 0) AS paid_amount,   -- Dòng tiền (thường = 0 với pending)
         p.management_fee_pct AS fee_pct,
         COALESCE(pq.vat_pct, 0) AS vat_pct
       FROM payment_requests pq
@@ -11088,10 +11092,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       GROUP BY project_id
     `).all()
 
-    // ── Doanh thu gốc (theo HĐ) trước khi trừ % phí QL — COALESCE(paid_amount, amount)
+    // ── Nghiệm thu gốc (NTC) + dòng tiền thực thu
+    // COALESCE(pr.amount_original, pr.amount): backfill cho data cũ chưa có amount_original
     const revOrigRows = await db.prepare(`
       SELECT pr.project_id,
-        SUM(COALESCE(pq.paid_amount, pr.amount)) as revenue_collected_original
+        SUM(COALESCE(pr.amount_original, pr.amount))  as revenue_collected_original,
+        SUM(COALESCE(pq.paid_amount, 0))               as paid_amount_total
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status IN ('paid','partial')
@@ -11099,7 +11105,11 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       GROUP BY pr.project_id
     `).bind(fyStart, fyEnd).all()
     const revOrigMap: Record<number, number> = {}
-    ;(revOrigRows.results as any[]).forEach((r: any) => { revOrigMap[r.project_id] = r.revenue_collected_original || 0 })
+    const paidAmtMap: Record<number, number> = {}
+    ;(revOrigRows.results as any[]).forEach((r: any) => {
+      revOrigMap[r.project_id] = r.revenue_collected_original || 0
+      paidAmtMap[r.project_id] = r.paid_amount_total || 0
+    })
 
     // ── 3. Chi phí trực tiếp theo dự án (non-salary, trong NTC)
     const directCostRows = await db.prepare(`
@@ -11156,7 +11166,8 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       const feePct           = p.management_fee_pct || 0
       const projectBudget    = contractValue > 0 ? Math.round(contractValue * (1 - feePct / 100)) : 0
       const revenueCollected = rev.revenue_collected || 0
-      const revenueCollectedOriginal = revOrigMap[p.id] || revenueCollected  // gross trước phí QL
+      const revenueCollectedOriginal = revOrigMap[p.id] || revenueCollected  // nghiệm thu gốc
+      const paidAmountTotal  = paidAmtMap[p.id] || 0                         // dòng tiền thực thu
       const revenuePaid      = rev.revenue_paid || 0
       const revenuePartial   = rev.revenue_partial || 0
       const revenuePending   = rev.revenue_pending || 0
@@ -11191,6 +11202,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         project_budget: projectBudget,
         revenue_collected: revenueCollected,
         revenue_collected_original: revenueCollectedOriginal,
+        paid_amount_total: paidAmountTotal,
         revenue_paid: revenuePaid,
         revenue_partial: revenuePartial,
         revenue_pending: revenuePending,
@@ -11222,6 +11234,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       acc.project_budget             += (p.project_budget             || 0)
       acc.revenue_collected          += (p.revenue_collected          || 0)
       acc.revenue_collected_original += (p.revenue_collected_original || 0)
+      acc.paid_amount_total          += (p.paid_amount_total          || 0)
       acc.revenue_pending            += (p.revenue_pending            || 0)
       acc.revenue_total              += (p.revenue_total              || 0)
       acc.direct_cost                += (p.direct_cost                || 0)
@@ -11231,7 +11244,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       acc.profit                     += (p.profit                     || 0)
       return acc
     }, { contract_value:0, project_budget:0, revenue_collected:0, revenue_collected_original:0,
-         revenue_pending:0, revenue_total:0,
+         paid_amount_total:0, revenue_pending:0, revenue_total:0,
          direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
 
     totals.margin = totals.revenue_collected > 0
@@ -11293,17 +11306,23 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       GROUP BY project_id
     `).all()
 
-    // ── Doanh thu gốc (theo HĐ) toàn vòng đời – COALESCE(paid_amount, amount)
+    // ── Nghiệm thu gốc (toàn vòng đời) + dòng tiền thực thu
+    // COALESCE(pr.amount_original, pr.amount): backfill cho data cũ chưa có amount_original
     const revOrigRowsLT = await db.prepare(`
       SELECT pr.project_id,
-        SUM(COALESCE(pq.paid_amount, pr.amount)) as revenue_collected_original
+        SUM(COALESCE(pr.amount_original, pr.amount))  as revenue_collected_original,
+        SUM(COALESCE(pq.paid_amount, 0))               as paid_amount_total
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status IN ('paid','partial')
       GROUP BY pr.project_id
     `).all()
     const revOrigMapLT: Record<number, number> = {}
-    ;(revOrigRowsLT.results as any[]).forEach((r: any) => { revOrigMapLT[r.project_id] = r.revenue_collected_original || 0 })
+    const paidAmtMapLT: Record<number, number> = {}
+    ;(revOrigRowsLT.results as any[]).forEach((r: any) => {
+      revOrigMapLT[r.project_id] = r.revenue_collected_original || 0
+      paidAmtMapLT[r.project_id] = r.paid_amount_total || 0
+    })
 
     // ── 3. Chi phí trực tiếp theo dự án (TOÀN BỘ – không lọc ngày)
     const directCostRows = await db.prepare(`
@@ -11359,7 +11378,8 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       const feePctLT         = p.management_fee_pct || 0
       const projectBudgetLT  = contractValue > 0 ? Math.round(contractValue * (1 - feePctLT / 100)) : 0
       const revenueCollected = rev.revenue_collected || 0
-      const revenueCollectedOriginal = revOrigMapLT[p.id] || revenueCollected  // gross trước phí QL
+      const revenueCollectedOriginal = revOrigMapLT[p.id] || revenueCollected  // nghiệm thu gốc
+      const paidAmountTotal  = paidAmtMapLT[p.id] || 0                         // dòng tiền thực thu
       const revenuePaid      = rev.revenue_paid      || 0
       const revenuePartial   = rev.revenue_partial   || 0
       const revenuePending   = rev.revenue_pending   || 0
@@ -11398,6 +11418,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         project_budget: projectBudgetLT,
         revenue_collected: revenueCollected,
         revenue_collected_original: revenueCollectedOriginal,
+        paid_amount_total: paidAmountTotal,
         revenue_paid: revenuePaid,
         revenue_partial: revenuePartial,
         revenue_pending: revenuePending,
@@ -11429,6 +11450,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       acc.project_budget             += (p.project_budget             || 0)
       acc.revenue_collected          += (p.revenue_collected          || 0)
       acc.revenue_collected_original += (p.revenue_collected_original || 0)
+      acc.paid_amount_total          += (p.paid_amount_total          || 0)
       acc.revenue_pending            += (p.revenue_pending            || 0)
       acc.revenue_total              += (p.revenue_total              || 0)
       acc.direct_cost                += (p.direct_cost                || 0)
@@ -11438,7 +11460,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       acc.profit                     += (p.profit                     || 0)
       return acc
     }, { contract_value:0, project_budget:0, revenue_collected:0, revenue_collected_original:0,
-         revenue_pending:0, revenue_total:0,
+         paid_amount_total:0, revenue_pending:0, revenue_total:0,
          direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
 
     totals.margin = totals.revenue_collected > 0
@@ -12763,11 +12785,16 @@ function paymentStatusToRevenue(status: string): string {
 }
 
 // ── Helper: tạo hoặc cập nhật revenue từ payment request ─────────────────────
+// Quy tắc:
+//   - `amount`      = Giá trị nghiệm thu  → dùng để tính DOANH THU vào sổ
+//   - `paid_amount` = Số tiền đã thanh toán (Dòng tiền) → KHÔNG dùng tính doanh thu
 async function syncPaymentToRevenue(
   db: D1Database,
   payment: {
     id: number, project_id: number, description: string,
-    paid_amount: number, currency: string,
+    amount: number,      // Giá trị nghiệm thu → làm căn cứ doanh thu
+    paid_amount: number, // Dòng tiền thực thu (lưu nhưng không tính doanh thu)
+    currency: string,
     paid_date: string | null, invoice_number: string | null,
     payment_phase: string | null, status: string,
     revenue_id: number | null, notes: string | null,
@@ -12782,11 +12809,13 @@ async function syncPaymentToRevenue(
     'SELECT management_fee_pct FROM projects WHERE id = ?'
   ).bind(payment.project_id).first() as any
   const feePct = (projRow?.management_fee_pct || 0) as number
-  const rawAmount = payment.paid_amount || 0
+
+  // Sử dụng `amount` (Giá trị nghiệm thu) làm căn cứ tính doanh thu
+  const rawAmount = payment.amount || 0
   const vatPct = (payment.vat_pct != null ? payment.vat_pct : 0) as number
 
-  // BƯỚC 1: Tính doanh thu trước VAT = paid_amount / (1 + vat_pct/100)
-  // Ví dụ: paid=1,100,000, VAT=10% → trước VAT = 1,100,000 / 1.10 = 1,000,000
+  // BƯỚC 1: Tính doanh thu trước VAT = amount (nghiệm thu) / (1 + vat_pct/100)
+  // Ví dụ: nghiệm thu=1,100,000, VAT=10% → trước VAT = 1,100,000 / 1.10 = 1,000,000
   const amountBeforeVat = vatPct > 0
     ? Math.round(rawAmount / (1 + vatPct / 100))
     : rawAmount
@@ -12810,26 +12839,30 @@ async function syncPaymentToRevenue(
     : payment.description
   const revenueStatus = paymentStatusToRevenue(payment.status)
 
-  // Ghi chú: bổ sung thông tin VAT + phí QL nếu có
+  // Ghi chú: bổ sung thông tin nguồn gốc + VAT + phí QL
   let calcNote = ''
   if (vatPct > 0 && feePct > 0) {
-    calcNote = `\n[VAT ${vatPct}%: ${rawAmount.toLocaleString('vi-VN')} ÷ ${(100+vatPct)}% = ${amountBeforeVat.toLocaleString('vi-VN')} VNĐ trước thuế → Phí QL ${feePct}%: × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ doanh thu]`
+    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ ÷ ${(100+vatPct)}% = ${amountBeforeVat.toLocaleString('vi-VN')} VNĐ trước thuế → Phí QL ${feePct}%: × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ doanh thu]`
   } else if (vatPct > 0) {
-    calcNote = `\n[VAT ${vatPct}%: ${rawAmount.toLocaleString('vi-VN')} ÷ ${(100+vatPct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ trước thuế]`
+    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ ÷ ${(100+vatPct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ trước thuế]`
   } else if (feePct > 0) {
-    calcNote = `\n[Phí QL ${feePct}%: ${rawAmount.toLocaleString('vi-VN')} × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ]`
+    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ]`
   }
-  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Tình trạng thanh toán]${calcNote}${payment.notes ? '\n' + payment.notes : ''}`
+  // Ghi thêm dòng tiền thực thu để tham chiếu
+  const paidRef = payment.paid_amount > 0
+    ? `\n[Dòng tiền thực thu: ${payment.paid_amount.toLocaleString('vi-VN')} VNĐ]`
+    : ''
+  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Giá trị nghiệm thu]${calcNote}${paidRef}${payment.notes ? '\n' + payment.notes : ''}`
 
   if (payment.revenue_id) {
     // Cập nhật revenue đã có
     await db.prepare(`
       UPDATE project_revenues
-      SET description = ?, amount = ?, currency = ?, revenue_date = ?,
+      SET description = ?, amount = ?, amount_original = ?, currency = ?, revenue_date = ?,
           invoice_number = ?, payment_status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).bind(
-      revenueDesc, syncAmount, payment.currency || 'VND',
+      revenueDesc, syncAmount, rawAmount, payment.currency || 'VND',
       payment.paid_date || null, payment.invoice_number || null,
       revenueStatus, revenueNotes, payment.revenue_id
     ).run()
@@ -12838,10 +12871,10 @@ async function syncPaymentToRevenue(
     // Tạo revenue mới
     const result = await db.prepare(`
       INSERT INTO project_revenues
-        (project_id, description, amount, currency, revenue_date, invoice_number, payment_status, notes, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?)
+        (project_id, description, amount, amount_original, currency, revenue_date, invoice_number, payment_status, notes, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
     `).bind(
-      payment.project_id, revenueDesc, syncAmount, payment.currency || 'VND',
+      payment.project_id, revenueDesc, syncAmount, rawAmount, payment.currency || 'VND',
       payment.paid_date || null, payment.invoice_number || null,
       revenueStatus, revenueNotes, userId
     ).run()
@@ -12903,7 +12936,9 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
     // Auto-sync revenue nếu cần
     const revenueId = await syncPaymentToRevenue(c.env.DB, {
       id: paymentId, project_id: projectId, description,
-      paid_amount: paid_amount || 0, currency: currency || 'VND',
+      amount: amount || 0,           // Giá trị nghiệm thu → tính doanh thu
+      paid_amount: paid_amount || 0, // Dòng tiền → chỉ lưu tham chiếu
+      currency: currency || 'VND',
       paid_date: paid_date || null, invoice_number: invoice_number || null,
       payment_phase: payment_phase || null, status: status || 'pending',
       revenue_id: null, notes: notes || null, vat_pct: vatPctVal
@@ -12971,7 +13006,8 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
     const revenueId = await syncPaymentToRevenue(c.env.DB, {
       id, project_id: current.project_id,
       description: merged.description,
-      paid_amount: merged.paid_amount || 0,
+      amount: merged.amount || 0,           // Giá trị nghiệm thu → tính doanh thu
+      paid_amount: merged.paid_amount || 0, // Dòng tiền → chỉ lưu tham chiếu
       currency: merged.currency || 'VND',
       paid_date: merged.paid_date || null,
       invoice_number: merged.invoice_number || null,
@@ -13079,14 +13115,16 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
   const user = c.get('user') as any
   try {
     const payments = await c.env.DB.prepare(
-      `SELECT * FROM payment_requests WHERE project_id = ? AND status IN ('paid','partial') AND paid_amount > 0`
+      `SELECT * FROM payment_requests WHERE project_id = ? AND status IN ('paid','partial') AND amount > 0`
     ).bind(projectId).all()
 
     let synced = 0
     for (const p of payments.results as any[]) {
       await syncPaymentToRevenue(c.env.DB, {
         id: p.id, project_id: p.project_id,
-        description: p.description, paid_amount: p.paid_amount || 0,
+        description: p.description,
+        amount: p.amount || 0,           // Giá trị nghiệm thu → tính doanh thu
+        paid_amount: p.paid_amount || 0, // Dòng tiền → chỉ tham chiếu
         currency: p.currency || 'VND', paid_date: p.paid_date || null,
         invoice_number: p.invoice_number || null,
         payment_phase: p.payment_phase || null, status: p.status,
@@ -13106,7 +13144,7 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
   const user = c.get('user') as any
   try {
     const payments = await c.env.DB.prepare(
-      `SELECT * FROM payment_requests WHERE status IN ('paid','partial') AND paid_amount > 0`
+      `SELECT * FROM payment_requests WHERE status IN ('paid','partial') AND amount > 0`
     ).all()
 
     let synced = 0
@@ -13115,7 +13153,9 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
       try {
         await syncPaymentToRevenue(c.env.DB, {
           id: p.id, project_id: p.project_id,
-          description: p.description, paid_amount: p.paid_amount || 0,
+          description: p.description,
+          amount: p.amount || 0,           // Giá trị nghiệm thu → tính doanh thu
+          paid_amount: p.paid_amount || 0, // Dòng tiền → chỉ tham chiếu
           currency: p.currency || 'VND', paid_date: p.paid_date || null,
           invoice_number: p.invoice_number || null,
           payment_phase: p.payment_phase || null, status: p.status,
