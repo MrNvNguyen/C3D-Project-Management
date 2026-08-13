@@ -4290,6 +4290,7 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
       JOIN projects p ON p.id = pq.project_id
       WHERE pq.status = 'pending'
         ${project_id ? `AND pq.project_id = ${parseInt(project_id)}` : ''}
+        ${year ? `AND (pq.request_date IS NULL OR (pq.request_date >= '${fyStart}' AND pq.request_date <= '${fyEnd}'))` : ''}
     `
 
     const [paidRows, pendingRows] = await Promise.all([
@@ -11100,10 +11101,14 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         SUM(COALESCE(pq.paid_amount, 0))               as paid_amount_total
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
-      WHERE pr.payment_status IN ('paid','partial')
-        AND pr.revenue_date >= ? AND pr.revenue_date <= ?
+      WHERE pr.payment_status IN ('paid','partial','pending')
+        AND (
+          (pr.payment_status IN ('paid','partial') AND pr.revenue_date >= ? AND pr.revenue_date <= ?)
+          OR
+          (pr.payment_status = 'pending' AND (pq.request_date IS NULL OR (pq.request_date >= ? AND pq.request_date <= ?)))
+        )
       GROUP BY pr.project_id
-    `).bind(fyStart, fyEnd).all()
+    `).bind(fyStart, fyEnd, fyStart, fyEnd).all()
     const revOrigMap: Record<number, number> = {}
     const paidAmtMap: Record<number, number> = {}
     ;(revOrigRows.results as any[]).forEach((r: any) => {
@@ -11314,7 +11319,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         SUM(COALESCE(pq.paid_amount, 0))               as paid_amount_total
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
-      WHERE pr.payment_status IN ('paid','partial')
+      WHERE pr.payment_status IN ('paid','partial','pending')
       GROUP BY pr.project_id
     `).all()
     const revOrigMapLT: Record<number, number> = {}
@@ -12802,16 +12807,15 @@ async function syncPaymentToRevenue(
   },
   userId: number
 ): Promise<number | null> {
-  const shouldSync = payment.status === 'paid' || payment.status === 'partial'
+  // Sync khi có giá trị nghiệm thu — bất kể status (pending/partial/paid)
+  const rawAmount = payment.amount || 0
+  const shouldSync = rawAmount > 0
 
   // Lấy % phí quản lý của dự án để tính doanh thu thực
   const projRow = await db.prepare(
     'SELECT management_fee_pct FROM projects WHERE id = ?'
   ).bind(payment.project_id).first() as any
   const feePct = (projRow?.management_fee_pct || 0) as number
-
-  // Sử dụng `amount` (Giá trị nghiệm thu) làm căn cứ tính doanh thu
-  const rawAmount = payment.amount || 0
   const vatPct = (payment.vat_pct != null ? payment.vat_pct : 0) as number
 
   // BƯỚC 1: Tính doanh thu trước VAT = amount (nghiệm thu) / (1 + vat_pct/100)
@@ -12825,8 +12829,8 @@ async function syncPaymentToRevenue(
     ? Math.round(amountBeforeVat * (1 - feePct / 100))
     : amountBeforeVat
 
-  // Nếu không cần sync → xóa revenue cũ nếu có
-  if (!shouldSync || rawAmount <= 0) {
+  // Nếu không cần sync (amount = 0) → xóa revenue cũ nếu có
+  if (!shouldSync) {
     if (payment.revenue_id) {
       await db.prepare('DELETE FROM project_revenues WHERE id = ?').bind(payment.revenue_id).run()
       await db.prepare('UPDATE payment_requests SET revenue_id = NULL WHERE id = ?').bind(payment.id).run()
@@ -12838,6 +12842,8 @@ async function syncPaymentToRevenue(
     ? `[${payment.payment_phase}] ${payment.description}`
     : payment.description
   const revenueStatus = paymentStatusToRevenue(payment.status)
+  // Với pending: revenue_date = null (chưa có ngày thanh toán)
+  const revenueDate = payment.status === 'pending' ? null : (payment.paid_date || null)
 
   // Ghi chú: bổ sung thông tin nguồn gốc + VAT + phí QL
   let calcNote = ''
@@ -12863,7 +12869,7 @@ async function syncPaymentToRevenue(
       WHERE id = ?
     `).bind(
       revenueDesc, syncAmount, rawAmount, payment.currency || 'VND',
-      payment.paid_date || null, payment.invoice_number || null,
+      revenueDate, payment.invoice_number || null,
       revenueStatus, revenueNotes, payment.revenue_id
     ).run()
     return payment.revenue_id
@@ -12875,7 +12881,7 @@ async function syncPaymentToRevenue(
       VALUES (?,?,?,?,?,?,?,?,?,?)
     `).bind(
       payment.project_id, revenueDesc, syncAmount, rawAmount, payment.currency || 'VND',
-      payment.paid_date || null, payment.invoice_number || null,
+      revenueDate, payment.invoice_number || null,
       revenueStatus, revenueNotes, userId
     ).run()
     return result.meta.last_row_id as number

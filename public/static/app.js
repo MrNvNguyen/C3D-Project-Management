@@ -8946,17 +8946,21 @@ function renderCostTable() {
     const payColors  = { pending: 'badge-todo', processing: 'badge-in_progress', partial: 'badge-in_progress', paid: 'badge-completed', rejected: 'badge-canceled' }
     const payLabels  = { pending: '⏳ Chờ TT', processing: '🔄 Đang xử lý', partial: '💰 TT một phần', paid: '✅ Đã TT', rejected: '❌ Từ chối' }
 
-    // Chỉ hiển thị doanh thu đã thu (paid/partial) — pending ẩn khỏi tab này
-    const displayRevenues = allRevenues.filter(r => r.payment_status !== 'pending')
+    // Hiển thị tất cả trạng thái — pending (chờ TT) cũng được hiển thị với màu amber
+    const displayRevenues = allRevenues
 
     // Tính tổng theo trạng thái
-    const revTotalCollected    = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.amount || 0), 0)
+    const revPending            = displayRevenues.filter(r => r.payment_status === 'pending')
+    const revCollected          = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status))
+    const revTotalCollected    = revCollected.reduce((s, r) => s + (r.amount || 0), 0)
     const revTotalAll          = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
+    const revTotalPending      = revPending.reduce((s, r) => s + (r.amount || 0), 0)
     // Tổng "Theo HĐ" = paid_amount_original = giá trị nghiệm thu
-    const revTotalOrigCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
+    const revTotalOrigCollected = revCollected.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
+    const revTotalOrigPending   = revPending.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
     const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
     // Tổng "Dòng tiền" = paid_amount thực thu
-    const revTotalCashCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).reduce((s, r) => s + (r.paid_amount || 0), 0)
+    const revTotalCashCollected = revCollected.reduce((s, r) => s + (r.paid_amount || 0), 0)
     const revTotalCashAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount || 0), 0)
 
     tbody.innerHTML = displayRevenues.map(r => {
@@ -9045,8 +9049,20 @@ function renderCostTable() {
     // ── Tổng cộng footer ──────────────────────────────────────────
     const revTfoot = document.getElementById('revTfoot')
     if (revTfoot) {
-      const countCollected = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status)).length
+      const countCollected = revCollected.length
+      const countPending   = revPending.length
       revTfoot.innerHTML = `
+        ${countPending > 0 ? `
+        <tr class="border-t border-amber-200 bg-amber-50/60">
+          <td colspan="5" class="py-2 px-0 font-semibold text-amber-700 text-xs">
+            <i class="fas fa-clock mr-1 text-amber-500"></i>
+            Chờ thanh toán — ${countPending} khoản
+          </td>
+          <td class="py-2 pr-3 text-right font-bold text-amber-600 text-sm whitespace-nowrap">${fmt(revTotalOrigPending)}</td>
+          <td class="py-2 pr-3 text-right font-bold text-amber-600 text-sm whitespace-nowrap">${fmt(revTotalPending)}</td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-300 text-sm whitespace-nowrap">—</td>
+          <td></td>
+        </tr>` : ''}
         <tr class="border-t-2 border-green-200 bg-green-50/60">
           <td colspan="5" class="py-2 px-0 font-semibold text-green-700 text-xs">
             <i class="fas fa-check-circle mr-1 text-green-500"></i>
