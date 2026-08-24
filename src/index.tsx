@@ -12888,6 +12888,163 @@ async function syncPaymentToRevenue(
   }
 }
 
+// ===================================================
+// PROJECT ESTIMATES — Dự toán dự án
+// ===================================================
+
+const ESTIMATE_CATEGORIES = ['revenue','direct_cost','labor','shared','other'] as const
+
+// GET /api/projects/:id/estimates — danh sách dự toán (system_admin only)
+app.get('/api/projects/:id/estimates', authMiddleware, adminOnly, async (c) => {
+  const db        = c.env.DB
+  const projectId = parseInt(c.req.param('id'))
+  const rows = await db.prepare(
+    `SELECT * FROM project_estimates WHERE project_id = ? ORDER BY category, sort_order, id`
+  ).bind(projectId).all()
+  return c.json(rows.results)
+})
+
+// POST /api/projects/:id/estimates — tạo dòng dự toán mới
+app.post('/api/projects/:id/estimates', authMiddleware, adminOnly, async (c) => {
+  const db        = c.env.DB
+  const projectId = parseInt(c.req.param('id'))
+  const user      = (c as any).get('user')
+  const body      = await c.req.json()
+  const { category = 'direct_cost', description, amount = 0, unit, notes, sort_order = 0 } = body
+  if (!description) return c.json({ error: 'description bắt buộc' }, 400)
+  if (!ESTIMATE_CATEGORIES.includes(category)) return c.json({ error: 'category không hợp lệ' }, 400)
+  const r = await db.prepare(
+    `INSERT INTO project_estimates (project_id, category, description, amount, unit, notes, sort_order, created_by)
+     VALUES (?,?,?,?,?,?,?,?)`
+  ).bind(projectId, category, description, amount, unit||null, notes||null, sort_order, user.id).run()
+  const created = await db.prepare('SELECT * FROM project_estimates WHERE id = ?').bind(r.meta.last_row_id).first()
+  return c.json(created, 201)
+})
+
+// PUT /api/projects/:id/estimates/:eid — cập nhật dòng dự toán
+app.put('/api/projects/:id/estimates/:eid', authMiddleware, adminOnly, async (c) => {
+  const db  = c.env.DB
+  const eid = parseInt(c.req.param('eid'))
+  const pid = parseInt(c.req.param('id'))
+  const body = await c.req.json()
+  const fields = ['category','description','amount','unit','notes','sort_order']
+  const updates: string[] = []
+  const vals: any[] = []
+  for (const f of fields) {
+    if (body[f] !== undefined) { updates.push(`${f} = ?`); vals.push(body[f]) }
+  }
+  if (!updates.length) return c.json({ error: 'Không có trường cần cập nhật' }, 400)
+  updates.push('updated_at = CURRENT_TIMESTAMP')
+  vals.push(eid, pid)
+  await db.prepare(
+    `UPDATE project_estimates SET ${updates.join(', ')} WHERE id = ? AND project_id = ?`
+  ).bind(...vals).run()
+  const updated = await db.prepare('SELECT * FROM project_estimates WHERE id = ?').bind(eid).first()
+  return c.json(updated)
+})
+
+// DELETE /api/projects/:id/estimates/:eid — xóa dòng dự toán
+app.delete('/api/projects/:id/estimates/:eid', authMiddleware, adminOnly, async (c) => {
+  const db  = c.env.DB
+  const eid = parseInt(c.req.param('eid'))
+  const pid = parseInt(c.req.param('id'))
+  await db.prepare('DELETE FROM project_estimates WHERE id = ? AND project_id = ?').bind(eid, pid).run()
+  return c.json({ success: true })
+})
+
+// GET /api/projects/:id/estimate-vs-actual — so sánh dự toán vs thực tế (system_admin only)
+app.get('/api/projects/:id/estimate-vs-actual', authMiddleware, adminOnly, async (c) => {
+  const db        = c.env.DB
+  const projectId = parseInt(c.req.param('id'))
+
+  // ── 1. Dự toán ──────────────────────────────────────────────────────────────
+  const estRows = await db.prepare(
+    `SELECT category, SUM(amount) as total, COUNT(*) as items
+     FROM project_estimates WHERE project_id = ? GROUP BY category`
+  ).bind(projectId).all()
+  const estMap: Record<string, number> = {}
+  const estItems: Record<string, number> = {}
+  ;(estRows.results as any[]).forEach((r: any) => {
+    estMap[r.category]   = r.total   || 0
+    estItems[r.category] = r.items   || 0
+  })
+  const estTotalCost    = (estMap.direct_cost||0) + (estMap.labor||0) + (estMap.shared||0) + (estMap.other||0)
+  const estTotalRevenue = estMap.revenue || 0
+  const estProfit       = estTotalRevenue - estTotalCost
+
+  // ── 2. Thực tế — Doanh thu (toàn vòng đời, bao gồm pending) ─────────────────
+  const revActual = await db.prepare(`
+    SELECT
+      SUM(COALESCE(pr.amount_original, pr.amount)) as nghiem_thu,
+      SUM(pr.amount)                               as doanh_thu_ns,
+      SUM(COALESCE(pq.paid_amount, 0))             as dong_tien
+    FROM project_revenues pr
+    LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
+    WHERE pr.project_id = ?
+      AND pr.payment_status IN ('paid','partial','pending')
+  `).bind(projectId).first() as any
+
+  // ── 3. Thực tế — Chi phí trực tiếp ──────────────────────────────────────────
+  const directActual = await db.prepare(`
+    SELECT SUM(amount) as total FROM project_costs
+    WHERE project_id = ? AND cost_type != 'salary'
+  `).bind(projectId).first() as any
+
+  // ── 4. Thực tế — Chi phí lương ───────────────────────────────────────────────
+  const laborActual = await db.prepare(`
+    SELECT COALESCE(SUM(total_labor_cost), 0) as total
+    FROM project_labor_costs WHERE project_id = ?
+  `).bind(projectId).first() as any
+
+  // ── 5. Thực tế — Chi phí chung phân bổ ─────────────────────────────────────
+  const sharedActual = await db.prepare(`
+    SELECT COALESCE(SUM(sca.allocated_amount), 0) as total
+    FROM shared_cost_allocations sca WHERE sca.project_id = ?
+  `).bind(projectId).first() as any
+
+  // ── 6. Tổng hợp thực tế ─────────────────────────────────────────────────────
+  const actDirectCost = directActual?.total   || 0
+  const actLaborCost  = laborActual?.total    || 0
+  const actSharedCost = sharedActual?.total   || 0
+  const actTotalCost  = actDirectCost + actLaborCost + actSharedCost
+  const actRevenue    = revActual?.nghiem_thu || 0
+  const actProfit     = actRevenue - actTotalCost
+
+  // ── Helper: tính chênh lệch ─────────────────────────────────────────────────
+  function diff(est: number, act: number) {
+    return { estimate: est, actual: act, diff: act - est, pct: est > 0 ? Math.round((act / est) * 100) : null }
+  }
+
+  return c.json({
+    project_id: projectId,
+    estimates:  estRows.results,
+    summary: {
+      revenue:     diff(estTotalRevenue, actRevenue),
+      direct_cost: diff(estMap.direct_cost||0, actDirectCost),
+      labor:       diff(estMap.labor||0, actLaborCost),
+      shared:      diff(estMap.shared||0, actSharedCost),
+      other_cost:  diff(estMap.other||0, 0),   // chưa có actual riêng cho 'other'
+      total_cost:  diff(estTotalCost, actTotalCost),
+      profit:      diff(estProfit, actProfit),
+    },
+    actual: {
+      nghiem_thu:   revActual?.nghiem_thu  || 0,
+      doanh_thu_ns: revActual?.doanh_thu_ns|| 0,
+      dong_tien:    revActual?.dong_tien   || 0,
+      direct_cost:  actDirectCost,
+      labor_cost:   actLaborCost,
+      shared_cost:  actSharedCost,
+      total_cost:   actTotalCost,
+      profit:       actProfit,
+    },
+    est_totals: {
+      revenue: estTotalRevenue,
+      cost:    estTotalCost,
+      profit:  estProfit,
+    }
+  })
+})
+
 // GET /api/legal/:projectId/payments — list all payment requests
 app.get('/api/legal/:projectId/payments', authMiddleware, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
