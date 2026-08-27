@@ -1,0 +1,88 @@
+{
+  "scope": "engineering_smoke_wave3_legal_chat_gantt",
+  "base": "http://127.0.0.1:8788",
+  "passed": 16,
+  "failed": 0,
+  "results": [
+    {
+      "ok": true,
+      "msg": "phone: legal tabs overflow-x",
+      "detail": "auto"
+    },
+    {
+      "ok": true,
+      "msg": "phone: legal tabs nowrap",
+      "detail": "nowrap"
+    },
+    {
+      "ok": true,
+      "msg": "phone: 6 legal tabs present",
+      "detail": "6"
+    },
+    {
+      "ok": true,
+      "msg": "phone: legal tabs can scroll if needed",
+      "detail": "924/348"
+    },
+    {
+      "ok": true,
+      "msg": "phone: gantt label sticky",
+      "detail": "sticky"
+    },
+    {
+      "ok": true,
+      "msg": "phone: gantt swipe hint visible",
+      "detail": "block"
+    },
+    {
+      "ok": true,
+      "msg": "phone: chat panel uses dvh (not fixed 520)",
+      "detail": "560px"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: gantt hint hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: gantt label not sticky",
+      "detail": "static"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: project chat panel 520px",
+      "detail": "520px"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: .chat-wrap height 500px",
+      "detail": "500px"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: work-summary min-width 980 preserved",
+      "detail": "980px"
+    },
+    {
+      "ok": true,
+      "msg": "desktop sidebar 260"
+    },
+    {
+      "ok": true,
+      "msg": "desktop no bottom nav"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave3-phone-390.png",
+      "bytes": 44013,
+      "sha256": "13adfb1942c1e20d2c0f1b6c44c42bb4d8006441a4a4277f85a6f2fbbf069f0d"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave3-desktop-1280.png",
+      "bytes": 123545,
+      "sha256": "1e7e94ef8831d51328d8bd05fc6881d5a6ac2771a0f68507240b9d12e2535734"
+    }
+  ]
+}

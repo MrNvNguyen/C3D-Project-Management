@@ -1,0 +1,105 @@
+{
+  "scope": "engineering_smoke_wave4_wave5_arc_close",
+  "base": "http://127.0.0.1:8788",
+  "passed": 20,
+  "failed": 0,
+  "results": [
+    {
+      "ok": true,
+      "msg": "SW CACHE_NAME bim-sw-v3"
+    },
+    {
+      "ok": true,
+      "msg": "SW skipWaiting present"
+    },
+    {
+      "ok": true,
+      "msg": "SW still bypasses /api/*"
+    },
+    {
+      "ok": true,
+      "msg": "phone: exec layout stacks",
+      "detail": "column"
+    },
+    {
+      "ok": true,
+      "msg": "phone: exec left col full width",
+      "detail": "348"
+    },
+    {
+      "ok": true,
+      "msg": "phone: finance filter sheet visible",
+      "detail": "block"
+    },
+    {
+      "ok": true,
+      "msg": "phone: finance filter toggle visible",
+      "detail": "flex"
+    },
+    {
+      "ok": true,
+      "msg": "phone: users cards visible",
+      "detail": "block"
+    },
+    {
+      "ok": true,
+      "msg": "phone: users table hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "phone: install banner can show",
+      "detail": "vis=true disp=block"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: exec layout row",
+      "detail": "row"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: exec left 280px",
+      "detail": "280"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: users cards hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: users table visible",
+      "detail": "block"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: install banner hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: finance sheet toggle hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "desktop sidebar 260"
+    },
+    {
+      "ok": true,
+      "msg": "desktop no bottom nav"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave45-phone-390.png",
+      "bytes": 49336,
+      "sha256": "78a3b65b871bd0dbbc5b4799ca2a2ddae2f2df5a10f7d0fc1d651b96bd4cbf2f"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave45-desktop-1280.png",
+      "bytes": 236484,
+      "sha256": "6234e9895cd42ebf9f3771a02118daf7f7d0953d78490f25665586b3fdbe5755"
+    }
+  ]
+}

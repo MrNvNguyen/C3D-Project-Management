@@ -1,0 +1,73 @@
+{
+  "scope": "engineering_smoke_wave2_cards",
+  "base": "http://127.0.0.1:8788",
+  "passed": 13,
+  "failed": 0,
+  "results": [
+    {
+      "ok": true,
+      "msg": "phone: desk tables hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "phone: card lists visible",
+      "detail": "block"
+    },
+    {
+      "ok": true,
+      "msg": "phone: leave sticky CTA visible",
+      "detail": "flex"
+    },
+    {
+      "ok": true,
+      "msg": "phone: card containers have width",
+      "detail": "tasks=320 ts=320 leave=346"
+    },
+    {
+      "ok": true,
+      "msg": "phone: dashboard KPI ≥2 columns",
+      "detail": "168.75px 168.75px"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: task table visible",
+      "detail": "block"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: card lists hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: leave sticky CTA hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "desktop sidebar 260",
+      "detail": "260"
+    },
+    {
+      "ok": true,
+      "msg": "desktop no bottom nav"
+    },
+    {
+      "ok": true,
+      "msg": "mobile card render helpers present in app.js"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave2-phone-390.png",
+      "bytes": 46233,
+      "sha256": "7aaa8b73e1c594c87a8b9c5bf5356e147447fc38ad2cc21f290288170faad74f"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave2-desktop-1280.png",
+      "bytes": 129393,
+      "sha256": "b7be88202bd484976f644ea15a40721bda5ff7160e627221b67a149dffd6b17b"
+    }
+  ]
+}

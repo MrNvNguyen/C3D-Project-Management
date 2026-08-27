@@ -7,6 +7,13 @@ function getXLSXForWrite() { return window.XLSXStyle || window.XLSX }
 function getXLSXCore()     { return window._XLSXCore   || window.XLSX }
 
 const API_BASE = ''
+// #region agent log
+function _agentLog(payload) {
+  const body = JSON.stringify({ sessionId: '18dfab', timestamp: Date.now(), ...payload })
+  try { fetch('/api/_debug/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {}) } catch (_) {}
+  try { fetch('http://127.0.0.1:7713/ingest/6f559b40-1998-4d4b-a4dc-49984b6e31e8', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18dfab' }, body }).catch(() => {}) } catch (_) {}
+}
+// #endregion
 let currentUser = null
 let authToken = null
 let allProjects = []
@@ -123,6 +130,18 @@ function api(endpoint, options = {}) {
     headers,
     ...options
   }).then(r => r.data)
+}
+
+function authedFileUrl(path) {
+  if (!path) return ''
+  if (path.startsWith('data:')) return path
+  const base = path.startsWith('http') ? path : `${API_BASE}${path.startsWith('/') ? '' : '/'}${path}`
+  const sep = base.includes('?') ? '&' : '?'
+  return authToken ? `${base}${sep}token=${encodeURIComponent(authToken)}` : base
+}
+
+function isAvatarSrc(v) {
+  return !!v && (String(v).startsWith('data:image/') || String(v).includes('/api/users/'))
 }
 
 function toast(message, type = 'success', duration = 3000) {
@@ -372,6 +391,11 @@ function startSmartNotifPoll() {
 // ================================================================
 
 function closeModal(id) {
+  // #region agent log
+  if (id === 'projectModal') {
+    _agentLog({ runId: 'pre-fix', hypothesisId: 'B,C', location: 'app.js:closeModal', message: 'closeModal called', data: { id, elExists: !!$(id), beforeDisplay: $(id) ? $(id).style.display : null } })
+  }
+  // #endregion
   $(id).style.display = 'none'
   // Close & return any teleported combobox panels to their wraps
   Object.keys(_cbState).forEach(cbId => {
@@ -397,7 +421,14 @@ function closeModal(id) {
     }
   }
 }
-function openModal(id) { $(id).style.display = 'flex' }
+function openModal(id) {
+  // #region agent log
+  if (id === 'projectModal') {
+    _agentLog({ runId: 'pre-fix', hypothesisId: 'C', location: 'app.js:openModal', message: 'openModal projectModal', data: { stack: (new Error()).stack?.split('\n').slice(0, 5) } })
+  }
+  // #endregion
+  $(id).style.display = 'flex'
+}
 
 function getRoleBadge(role) {
   const map = {
@@ -580,7 +611,47 @@ function logout() {
 // ================================================================
 // NAVIGATION
 // ================================================================
-function navigate(page) {
+// Valid pages that can be deep-linked via URL hash
+const _navigablePages = [
+  'dashboard', 'projects', 'tasks', 'timesheet', 'gantt', 'costs',
+  'assets', 'depreciation', 'users', 'profile', 'email-admin',
+  'productivity', 'finance-project', 'labor-cost', 'cost-types',
+  'system-config', 'analytics', 'legal', 'leave', 'executive-dashboard'
+]
+
+const _adminOnlyPages = [
+  'costs', 'finance-project', 'labor-cost', 'cost-types',
+  'analytics', 'system-config', 'assets', 'depreciation', 'users', 'email-admin'
+]
+const _pmoOnlyPages = ['executive-dashboard']
+
+function getPageFromHash() {
+  const raw = (window.location.hash || '').replace(/^#\/?/, '')
+  return (raw.split(/[/?#]/)[0] || '').trim()
+}
+
+function canAccessPage(page) {
+  const role = currentUser?.role
+  if (_adminOnlyPages.includes(page) && role !== 'system_admin') return false
+  if (_pmoOnlyPages.includes(page) && role !== 'system_admin' && role !== 'project_admin') return false
+  return true
+}
+
+// Restore the page from URL hash (used on refresh / first load).
+// hashchange does not fire on initial load, so initApp must call this.
+function restorePageFromHash() {
+  const page = getPageFromHash()
+  if (_navigablePages.includes(page) && canAccessPage(page)) {
+    navigate(page, { fromHash: true })
+    return
+  }
+  navigate('dashboard')
+}
+
+// Flag to prevent hashchange loop when navigate() itself sets the hash
+let _navigatingByHash = false
+
+function navigate(page, opts = {}) {
   // Stop project chat polling when leaving project-detail
   if (window._currentProjectDetailId && page !== 'project-detail') {
     const pid = window._currentProjectDetailId
@@ -617,11 +688,25 @@ function navigate(page) {
     productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
     'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí',
     'system-config': 'Cấu hình hệ thống', analytics: 'Báo cáo & Phân tích',
-    legal: 'Hồ Sơ Pháp Lý Dự Án', leave: 'Đăng ký Nghỉ phép'
+    legal: 'Hồ Sơ Pháp Lý Dự Án', leave: 'Đăng ký Nghỉ phép',
+    'executive-dashboard': '🏆 Executive PMO Hub'
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
-  if (page === 'dashboard') loadDashboard()
+  // Update URL hash for deep-linking (skip for sub-pages like project-detail)
+  if (_navigablePages.includes(page) && !opts.fromHash) {
+    const newHash = '#/' + page
+    if (window.location.hash !== newHash) {
+      _navigatingByHash = true
+      window.location.hash = newHash
+      setTimeout(() => { _navigatingByHash = false }, 100)
+    }
+  }
+
+  if (page === 'executive-dashboard') {
+    if (typeof initExecutiveDashboard === 'function') initExecutiveDashboard()
+  }
+  else if (page === 'dashboard') loadDashboard()
   else if (page === 'projects') loadProjects()
   else if (page === 'tasks') loadTasks()
   else if (page === 'timesheet') loadTimesheets()
@@ -642,9 +727,26 @@ function navigate(page) {
   else if (page === 'leave') loadLeaveRequests()
 
   closeAllDropdowns()
+  closeMobileDrawer()
+  syncMobileBottomNav(page)
 }
 
+// Handle browser back/forward button via hash changes
+window.addEventListener('hashchange', () => {
+  if (_navigatingByHash) return  // Avoid loop: navigate() triggered this
+  if (!authToken) return          // Not logged in yet
+  restorePageFromHash()
+})
+
 function toggleSidebar() {
+  // Phone: open/close drawer via mobile-open (do not reuse desktop .collapsed)
+  if (window.innerWidth < 768) {
+    const sidebar = $('sidebar')
+    if (!sidebar) return
+    if (sidebar.classList.contains('mobile-open')) closeMobileDrawer()
+    else openMobileDrawer()
+    return
+  }
   const sidebar = $('sidebar')
   const mainContent = $('mainContent')
   // Nếu đang mini → mở full trước
@@ -657,6 +759,94 @@ function toggleSidebar() {
   sidebar.classList.toggle('collapsed')
   mainContent.classList.toggle('expanded')
   localStorage.setItem('sidebar_state', sidebar.classList.contains('collapsed') ? 'collapsed' : 'full')
+}
+
+function openMobileDrawer() {
+  const sidebar = $('sidebar')
+  const scrim = $('mobileNavScrim')
+  if (!sidebar) return
+  sidebar.classList.add('mobile-open')
+  if (scrim) scrim.classList.add('mobile-open')
+  document.body.style.overflow = 'hidden'
+}
+
+function closeMobileDrawer() {
+  const sidebar = $('sidebar')
+  const scrim = $('mobileNavScrim')
+  if (sidebar) sidebar.classList.remove('mobile-open')
+  if (scrim) scrim.classList.remove('mobile-open')
+  document.body.style.overflow = ''
+}
+
+function getMobileBottomTabs() {
+  const role = currentUser?.role || 'member'
+  const base = [
+    { page: 'dashboard', icon: 'fa-tachometer-alt', label: 'Home' },
+    { page: 'tasks', icon: 'fa-tasks', label: 'Việc' },
+    { page: 'timesheet', icon: 'fa-clock', label: 'Công' },
+  ]
+  if (role === 'system_admin') {
+    base.push({ page: 'finance-project', icon: 'fa-chart-line', label: 'Tài chính' })
+  } else if (role === 'project_admin') {
+    base.push({ page: 'executive-dashboard', icon: 'fa-crown', label: 'PMO' })
+  } else {
+    base.push({ page: 'leave', icon: 'fa-umbrella-beach', label: 'Phép' })
+  }
+  base.push({ page: '__more__', icon: 'fa-bars', label: 'Thêm' })
+  return base
+}
+
+function renderMobileBottomNav() {
+  const nav = $('mobileBottomNav')
+  if (!nav) return
+  const tabs = getMobileBottomTabs()
+  nav.innerHTML = tabs.map(t => `
+    <button type="button" class="mobile-tab" data-mobile-page="${t.page}" onclick="onMobileTab('${t.page}')">
+      <i class="fas ${t.icon}"></i>
+      <span>${t.label}</span>
+    </button>
+  `).join('')
+  const active = document.querySelector('.page.active')?.id?.replace('page-', '') || 'dashboard'
+  syncMobileBottomNav(active)
+}
+
+function syncMobileBottomNav(page) {
+  const nav = $('mobileBottomNav')
+  if (!nav) return
+  nav.querySelectorAll('.mobile-tab').forEach(btn => {
+    const p = btn.getAttribute('data-mobile-page')
+    btn.classList.toggle('active', p === page)
+  })
+}
+
+function onMobileTab(page) {
+  if (page === '__more__') {
+    openMobileDrawer()
+    return
+  }
+  if (!canAccessPage(page)) {
+    toast('Không có quyền truy cập mục này', 'warning')
+    return
+  }
+  closeMobileDrawer()
+  navigate(page)
+}
+
+function registerServiceWorkerShell() {
+  if (!('serviceWorker' in navigator)) return
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {})
+}
+
+function setupMobileViewportGuards() {
+  if (!window.visualViewport) return
+  const sync = () => {
+    const nav = $('mobileBottomNav')
+    if (!nav || window.innerWidth >= 768) return
+    const shrunk = window.visualViewport.height < window.innerHeight * 0.75
+    nav.classList.toggle('keyboard-hidden', shrunk)
+  }
+  window.visualViewport.addEventListener('resize', sync)
+  window.visualViewport.addEventListener('scroll', sync)
 }
 
 function toggleSidebarMini() {
@@ -708,9 +898,12 @@ window.addEventListener('resize', () => {
   const sidebar = $('sidebar')
   const mainContent = $('mainContent')
   if (!sidebar || !mainContent) return
+  if (window.innerWidth >= 768) {
+    closeMobileDrawer()
+  }
   if (window.innerWidth >= 768 && window.innerWidth < 1024) {
     // Tablet: CSS media query đã handle, bỏ JS-added classes để tránh conflict
-    sidebar.classList.remove('mini', 'collapsed')
+    sidebar.classList.remove('mini', 'collapsed', 'mobile-open')
     mainContent.classList.remove('mini-sidebar', 'expanded')
   }
 })
@@ -764,8 +957,8 @@ async function initApp() {
   if (avatarMini) avatarMini.textContent = initials
 
   // Hiển thị avatar ảnh nếu có
-  if (currentUser.avatar && currentUser.avatar.startsWith('data:image/')) {
-    _applyAvatarToTopbar(currentUser.avatar)
+  if (isAvatarSrc(currentUser.avatar)) {
+    _applyAvatarToTopbar(authedFileUrl(currentUser.avatar))
   }
 
   // Khôi phục trạng thái sidebar đã lưu
@@ -782,6 +975,13 @@ async function initApp() {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none')
   } else {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none')
+  }
+
+  // Executive PMO Hub: hiện cho system_admin và project_admin
+  if (currentUser.role === 'system_admin' || currentUser.role === 'project_admin') {
+    document.querySelectorAll('.pmo-only').forEach(el => el.style.display = 'flex')
+  } else {
+    document.querySelectorAll('.pmo-only').forEach(el => el.style.display = 'none')
   }
 
   // Initialize DB
@@ -811,10 +1011,72 @@ async function initApp() {
   } catch (e) { /* ignore */ }
 
   initDatetimeClock()
-  loadDashboard()
+  restorePageFromHash()
   loadNotifications()
   startSmartNotifPoll()          // Smart polling: 5s when active, pause when hidden
-  initPushNotifications()        // Register SW + subscribe if permission already granted
+  registerServiceWorkerShell()   // PWA SW (independent of Notification permission)
+  initPushNotifications()        // Subscribe push if permission already granted
+  renderMobileBottomNav()
+  setupMobileViewportGuards()
+  closeMobileDrawer()
+  setupPwaInstallBanner()
+  // Wave 1: mini-sidebar tooltips need focus on tap (coarse pointer)
+  document.querySelectorAll('.sidebar .nav-item[data-tooltip]').forEach((el) => {
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0')
+  })
+}
+
+let _pwaDeferredPrompt = null
+
+function setupPwaInstallBanner() {
+  const banner = $('pwaInstallBanner')
+  if (!banner) return
+  if (window.innerWidth >= 768) return
+  if (localStorage.getItem('bim_pwa_install_dismissed') === '1') return
+  if (window.matchMedia('(display-mode: standalone)').matches) return
+  if (window.navigator.standalone === true) return
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault()
+    _pwaDeferredPrompt = e
+    showPwaInstallBanner('android')
+  })
+
+  const ua = navigator.userAgent || ''
+  const isIOS = /iphone|ipad|ipod/i.test(ua)
+  if (isIOS) showPwaInstallBanner('ios')
+}
+
+function showPwaInstallBanner(kind) {
+  const banner = $('pwaInstallBanner')
+  const text = $('pwaInstallText')
+  const installBtn = $('pwaInstallBtn')
+  if (!banner || !text) return
+  if (kind === 'ios') {
+    text.textContent = 'Cài OneCad BIM: nhấn Chia sẻ → Thêm vào Màn hình chính'
+    if (installBtn) installBtn.style.display = 'none'
+  } else {
+    text.textContent = 'Cài OneCad BIM lên màn hình chính để mở nhanh'
+    if (installBtn) installBtn.style.display = ''
+  }
+  banner.classList.add('pwa-banner-visible')
+}
+
+function dismissPwaInstallBanner() {
+  const banner = $('pwaInstallBanner')
+  if (banner) banner.classList.remove('pwa-banner-visible')
+  localStorage.setItem('bim_pwa_install_dismissed', '1')
+}
+
+async function acceptPwaInstall() {
+  if (!_pwaDeferredPrompt) {
+    dismissPwaInstallBanner()
+    return
+  }
+  _pwaDeferredPrompt.prompt()
+  try { await _pwaDeferredPrompt.userChoice } catch (_) {}
+  _pwaDeferredPrompt = null
+  dismissPwaInstallBanner()
 }
 
 // ================================================================
@@ -955,7 +1217,7 @@ function renderBirthdayWidget(birthdays) {
         <div class="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
           style="${avatarBg}">
           ${u.avatar
-            ? `<img src="${u.avatar}" class="w-9 h-9 rounded-full object-cover" alt="${u.full_name}">`
+            ? `<img src="${authedFileUrl(u.avatar)}" class="w-9 h-9 rounded-full object-cover" alt="${u.full_name}">`
             : initials}
         </div>
         <div class="flex-1 min-w-0">
@@ -1290,6 +1552,20 @@ async function renderRecentTasksTable(projectData) {
         </td>
       </tr>`
     }).join('') || '<tr><td colspan="6" class="text-center py-6 text-gray-400">Không có task trễ hạn</td></tr>'
+    setMobileCardList('recentTasksCardList', displayTasks.length
+      ? displayTasks.map(t => {
+          const overdue = isOverdue(t)
+          return `<div class="mobile-list-card ${overdue ? 'border-red-200' : ''}">
+            <div class="mlc-title">${t.title}</div>
+            <div class="mlc-meta">${t.project_code || '—'} · ${t.assigned_to_name || 'Chưa giao'} · ${fmtDate(t.due_date)}</div>
+            <div class="mlc-row">
+              ${getStatusBadge(t.status)}
+              <span class="text-xs text-gray-500">${t.progress || 0}%</span>
+              ${overdue ? '<span class="badge badge-overdue text-xs">Trễ hạn</span>' : ''}
+            </div>
+          </div>`
+        }).join('')
+      : '<div class="text-center py-6 text-gray-400 text-sm">Không có task trễ hạn</div>')
   } catch (e) { console.error(e) }
 }
 
@@ -2035,7 +2311,7 @@ async function openProjectDetail(id, openChatTab = false) {
       <!-- Project Tabs: Tasks / Weekly Plan / Chat -->
       <div class="card p-0 overflow-hidden">
         <!-- Tab bar -->
-        <div class="flex border-b bg-gray-50 px-4 pt-2 overflow-x-auto">
+        <div class="flex border-b bg-gray-50 px-4 pt-2 overflow-x-auto tabs-scroll-row">
           <button id="projTab-tasks" onclick="switchProjectTab('tasks',${project.id})"
             class="tab-btn active text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-tasks mr-1"></i>Danh sách Task (${tasks.length})
@@ -2092,7 +2368,7 @@ async function openProjectDetail(id, openChatTab = false) {
         </div>
 
         <!-- Chat panel (lazy-loaded) -->
-        <div id="projPanel-chat" class="hidden" style="height:520px">
+        <div id="projPanel-chat" class="hidden chat-project-panel">
           <div id="projectChatPanel_${project.id}" style="height:100%"></div>
         </div>
 
@@ -2220,6 +2496,10 @@ function openProjectModal(project = null) {
 
 $('projectForm').addEventListener('submit', async (e) => {
   e.preventDefault()
+  if (window._projectFormSaving) return
+  window._projectFormSaving = true
+  const submitBtn = e.submitter || $('projectForm')?.querySelector('button[type="submit"]')
+  if (submitBtn) submitBtn.disabled = true
   const id = $('projectId').value
   const data = {
     code: $('projectCode').value, name: $('projectName').value,
@@ -2233,17 +2513,40 @@ $('projectForm').addEventListener('submit', async (e) => {
     admin_id: parseInt($('projectAdmin').value) || null,
     leader_id: parseInt($('projectLeader').value) || null
   }
+  // #region agent log
+  _agentLog({ runId: 'post-fix', hypothesisId: 'A,D', location: 'app.js:projectForm.submit', message: 'submit start', data: { isEdit: !!id, code: data.code || null } })
+  // #endregion
   try {
-    if (id) await api(`/projects/${id}`, { method: 'put', data })
-    else await api('/projects', { method: 'post', data })
+    let apiRes = null
+    if (id) apiRes = await api(`/projects/${id}`, { method: 'put', data })
+    else apiRes = await api('/projects', { method: 'post', data })
+    // #region agent log
+    _agentLog({ runId: 'post-fix', hypothesisId: 'A,D', location: 'app.js:projectForm.afterApi', message: 'api success', data: { isEdit: !!id, apiRes: apiRes || null } })
+    // #endregion
     closeModal('projectModal')
+    const modalEl = $('projectModal')
+    // #region agent log
+    _agentLog({ runId: 'post-fix', hypothesisId: 'B,C', location: 'app.js:projectForm.afterClose', message: 'after closeModal', data: { display: modalEl ? modalEl.style.display : null, computed: modalEl ? getComputedStyle(modalEl).display : null } })
+    // #endregion
     toast(id ? 'Cập nhật dự án thành công' : 'Tạo dự án thành công')
-    loadProjects()
+    await loadProjects()
     // Nếu đang xem chi tiết dự án vừa sửa → refresh lại để hiện thông tin mới
     if (id && $('page-project-detail')?.classList.contains('active')) {
       openProjectDetail(parseInt(id))
     }
-  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+  } catch (e) {
+    // #region agent log
+    _agentLog({ runId: 'post-fix', hypothesisId: 'A', location: 'app.js:projectForm.catch', message: 'api/handler error', data: { err: e?.response?.data?.error || e?.message || String(e), status: e?.response?.status || null, modalDisplay: $('projectModal') ? $('projectModal').style.display : null } })
+    // #endregion
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+    // Refresh list so a race-created project is visible after user closes modal
+    if (!id) {
+      try { await loadProjects() } catch (_) {}
+    }
+  } finally {
+    window._projectFormSaving = false
+    if (submitBtn) submitBtn.disabled = false
+  }
 })
 
 // Members
@@ -3451,6 +3754,7 @@ function renderTaskRows() {
 
   if (_taskAllData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="13" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
+    setMobileCardList('tasksCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có task nào</div>')
     return
   }
 
@@ -3545,6 +3849,42 @@ function renderTaskRows() {
       </td>
     </tr>`
   }).join('')
+  renderTasksMobileCards(tasks)
+}
+
+function setMobileCardList(id, html) {
+  const el = $(id)
+  if (el) el.innerHTML = html
+}
+
+function renderTasksMobileCards(tasks) {
+  if (!tasks || !tasks.length) {
+    setMobileCardList('tasksCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có task nào</div>')
+    return
+  }
+  setMobileCardList('tasksCardList', tasks.map(t => {
+    const isAssigned = t.assigned_to === currentUser?.id
+    const isCreatedByMe = t.assigned_by === currentUser?.id
+    const effForTask = getEffectiveRoleForProject(t.project_id)
+    const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(effForTask)
+    const canEditThisTask = isAdminOrLeader || isAssigned || isCreatedByMe
+    const canDeleteThisTask = ['system_admin','project_admin'].includes(currentUser?.role) || effForTask === 'project_admin'
+    const overdue = isOverdue(t)
+    return `<div class="mobile-list-card ${overdue ? 'border-red-200' : ''}">
+      <div class="mlc-title cursor-pointer" onclick="openTaskDetail(${t.id})">${t.title}</div>
+      <div class="mlc-meta">${t.project_code || '—'} · ${t.assigned_to_name || 'Chưa giao'} · Hạn ${fmtDate(t.due_date)}</div>
+      <div class="mlc-row">
+        ${getPriorityBadge(t.priority)}
+        ${getStatusBadge(t.status)}
+        <span class="text-xs text-gray-500">${t.progress || 0}%</span>
+        ${overdue ? '<span class="badge badge-overdue text-xs">Trễ hạn</span>' : ''}
+      </div>
+      <div class="mlc-actions">
+        ${canEditThisTask ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-edit mr-1"></i>Sửa</button>` : ''}
+        ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash mr-1"></i>Xóa</button>` : ''}
+      </div>
+    </div>`
+  }).join(''))
 }
 
 // ── Expand / collapse subtasks inline ─────────────────────────────────────
@@ -4449,12 +4789,13 @@ let _chatMembersCache = {}  // projectId → members list for @mention
 async function initChatPanel(container, contextType, contextId, heightPx = 500) {
   container.style.display = 'flex'
   container.style.flexDirection = 'column'
-  // For task chat: use flex:1 to fill the modal; for project: use fixed height
+  const isPhone = window.innerWidth < 768
+  // For task chat: use flex:1 to fill the modal; for project: use fixed height (dvh on phone)
   if (contextType === 'task') {
     container.style.flex = '1'
-    container.style.minHeight = '420px'
+    container.style.minHeight = isPhone ? 'min(55dvh, 420px)' : '420px'
   } else {
-    container.style.height = heightPx + 'px'
+    container.style.height = isPhone ? 'min(70dvh, 560px)' : (heightPx + 'px')
   }
 
   container.innerHTML = `
@@ -4623,10 +4964,11 @@ function renderChatContent(text, mentions) {
 }
 
 function renderAttachment(a) {
+  const src = authedFileUrl(a.data || a.url || (a.id ? `/api/messages/attachments/${a.id}` : ''))
   const isImage = a.file_type?.startsWith('image/')
   if (isImage) {
     return `<div class="chat-att-thumb">
-      <img src="${a.data}" alt="${a.file_name}" onclick="openImageViewer('${a.data}','${a.file_name}')" title="${a.file_name}">
+      <img src="${src}" alt="${a.file_name}" onclick="openImageViewer('${src}','${a.file_name}')" title="${a.file_name}">
     </div>`
   }
   const icon = a.file_type?.includes('pdf') ? 'fa-file-pdf text-red-500' :
@@ -4634,7 +4976,7 @@ function renderAttachment(a) {
                a.file_type?.includes('sheet') || a.file_type?.includes('excel') ? 'fa-file-excel text-green-500' :
                'fa-file text-gray-500'
   const size = a.file_size > 1024*1024 ? (a.file_size/1024/1024).toFixed(1)+'MB' : Math.round(a.file_size/1024)+'KB'
-  return `<a href="${a.data}" download="${a.file_name}" class="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 rounded-lg px-3 py-2 text-sm transition-colors no-underline text-gray-700">
+  return `<a href="${src}" download="${a.file_name}" class="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 rounded-lg px-3 py-2 text-sm transition-colors no-underline text-gray-700">
     <i class="fas ${icon} text-lg flex-shrink-0"></i>
     <div class="min-w-0"><div class="font-medium truncate max-w-xs">${a.file_name}</div><div class="text-xs text-gray-400">${size}</div></div>
     <i class="fas fa-download text-gray-400 ml-auto flex-shrink-0"></i>
@@ -6526,6 +6868,7 @@ function renderTsRows() {
       <i class="fas fa-clock text-3xl mb-2 block"></i>
       ${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào. Nhấn "+ Thêm timesheet" để bắt đầu.'}
     </td></tr>`
+    setMobileCardList('tsCardList', `<div class="text-center py-8 text-gray-400 text-sm">${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào.'}</div>`)
     return
   }
 
@@ -6630,6 +6973,50 @@ function renderTsRows() {
       </td>
     </tr>`
   }).join('')
+  renderTsMobileCards(pageData, { canSeeAll, canApprove, isAdmin })
+}
+
+function renderTsMobileCards(pageData, opts = {}) {
+  const canSeeAll = opts.canSeeAll
+  const canApprove = opts.canApprove
+  const isAdmin = opts.isAdmin
+  const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
+  const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
+  if (!pageData.length) {
+    setMobileCardList('tsCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có timesheet nào</div>')
+    return
+  }
+  setMobileCardList('tsCardList', pageData.map(t => {
+    const isOwner   = t.user_id === currentUser.id
+    const isDraft   = t.status === 'draft'
+    const isRejected = t.status === 'rejected'
+    const isSubmitted = t.status === 'submitted'
+    const effForThisTs = getEffectiveRoleForProject(t.project_id)
+    const isProjAdminForThisTs = isAdmin || effForThisTs === 'project_admin'
+    const canEdit      = isProjAdminForThisTs || (isOwner && (isDraft || isRejected))
+    const canDelete    = isProjAdminForThisTs || (isOwner && (isDraft || isRejected))
+    const canSubmit    = isOwner && (isDraft || isRejected)
+    const canApproveBt = canApprove && isSubmitted
+    const canRejectBt  = canApprove && isSubmitted
+    const isFullLeaveRow = !['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
+    const hours = isFullLeaveRow ? '0h' : `${(t.regular_hours || 0) + (t.overtime_hours || 0)}h`
+    const hoursDetail = isFullLeaveRow ? 'Nghỉ' : `HC ${t.regular_hours || 0}h · OT ${t.overtime_hours || 0}h`
+    return `<div class="mobile-list-card">
+      <div class="mlc-title">${fmtDate(t.work_date)}${canSeeAll ? ` · ${t.user_name || ''}` : ''}</div>
+      <div class="mlc-meta">${isFullLeaveRow ? '—' : (t.project_code || '—')} · ${hoursDetail}</div>
+      <div class="mlc-row">
+        <span class="font-bold text-primary text-sm">${hours}</span>
+        <span class="badge ${statusColors[t.status] || 'badge-todo'}">${statusLabels[t.status] || t.status}</span>
+      </div>
+      <div class="mlc-actions">
+        ${canSubmit ? `<button onclick="submitTimesheet(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-paper-plane mr-1"></i>Gửi</button>` : ''}
+        ${canEdit ? `<button onclick="openTimesheetModal(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-edit mr-1"></i>Sửa</button>` : ''}
+        ${canApproveBt ? `<button onclick="approveTimesheet(${t.id})" class="btn-primary text-xs px-3 py-2"><i class="fas fa-check mr-1"></i>Duyệt</button>` : ''}
+        ${canRejectBt ? `<button onclick="rejectTimesheet(${t.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-times mr-1"></i>Từ chối</button>` : ''}
+        ${canDelete ? `<button onclick="deleteTimesheet(${t.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash"></i></button>` : ''}
+      </div>
+    </div>`
+  }).join(''))
 }
 
 // ── Biến lưu trạng thái locked hiện tại của modal ────────────────────────────
@@ -8043,8 +8430,8 @@ async function renderGantt() {
       const overdue = isOverdue(t)
       const barColor = (t.status === 'completed') ? '#00A651' : (t.status === 'review') ? '#10B981' : overdue ? '#EF4444' : t.status === 'in_progress' ? '#0066CC' : '#9CA3AF'
 
-      return `<div class="flex items-center gap-3 py-1.5 border-b border-gray-100 hover:bg-gray-50">
-        <div class="w-56 flex-shrink-0 text-xs truncate">
+      return `<div class="gantt-row flex items-center gap-3 py-1.5 border-b border-gray-100 hover:bg-gray-50">
+        <div class="gantt-label text-xs truncate pr-2">
           <span class="font-medium text-gray-800">${t.title}</span>
           <div class="text-gray-400">${t.discipline_code||''} • ${t.assigned_to_name||''}</div>
         </div>
@@ -8057,27 +8444,28 @@ async function renderGantt() {
             <span class="text-white text-xs font-bold px-1 truncate relative z-10">${t.progress||0}%</span>
           </div>
         </div>
-        <div class="w-16 text-right text-xs ${overdue?'text-red-500 font-bold':'text-gray-400'}">${fmtDate(t.due_date)}</div>
-        <div class="w-20">${getStatusBadge(t.status)}</div>
+        <div class="w-16 text-right text-xs flex-shrink-0 ${overdue?'text-red-500 font-bold':'text-gray-400'}">${fmtDate(t.due_date)}</div>
+        <div class="w-20 flex-shrink-0">${getStatusBadge(t.status)}</div>
       </div>`
     }).join('')
 
     container.innerHTML = `
-      <div class="overflow-x-auto">
-        <div class="flex items-center gap-3 mb-4 pb-2 border-b">
-          <div class="w-56 flex-shrink-0 text-xs font-bold text-gray-500 uppercase">Task</div>
-          <div class="flex-1 relative">
+      <div class="gantt-hint"><i class="fas fa-hand-point-right mr-1"></i>Vuốt ngang để xem timeline — tên task cố định bên trái</div>
+      <div class="gantt-scroll overflow-x-auto">
+        <div class="gantt-row flex items-center gap-3 mb-4 pb-2 border-b">
+          <div class="gantt-label text-xs font-bold text-gray-500 uppercase">Task</div>
+          <div class="flex-1 relative" style="min-width:200px">
             <div class="flex justify-between text-xs text-gray-400">
               <span>${fmtDate(project?.start_date)}</span>
               <span class="text-red-500 font-bold">Hôm nay: ${fmtDate(now.toISOString().split('T')[0])}</span>
               <span>${fmtDate(project?.end_date)}</span>
             </div>
           </div>
-          <div class="w-16"></div>
-          <div class="w-20"></div>
+          <div class="w-16 flex-shrink-0"></div>
+          <div class="w-20 flex-shrink-0"></div>
         </div>
         <div>${taskRows}</div>
-        <div class="mt-4 flex gap-4 text-xs">
+        <div class="mt-4 flex gap-4 text-xs flex-wrap">
           <span><span class="inline-block w-4 h-3 rounded mr-1" style="background:#00A651"></span>Hoàn thành</span>
           <span><span class="inline-block w-4 h-3 rounded mr-1" style="background:#0066CC"></span>Đang làm</span>
           <span><span class="inline-block w-4 h-3 rounded mr-1" style="background:#EF4444"></span>Trễ hạn</span>
@@ -8997,18 +9385,12 @@ function renderCostTable() {
       }
 
       // ── Tính cột "Theo HĐ", "Theo NS" và "Dòng tiền" ─────────────────────────
-      const origAmount = r.paid_amount_original || r.amount || 0   // Nghiệm thu HĐ (chưa trừ VAT/phí QL)
-      const cashAmount = r.paid_amount || 0                        // Dòng tiền thực thu
-      const netAmount  = r.amount || 0                             // Doanh thu NS đã ghi nhận vào DB
+      const origAmount = r.acceptance_amount || r.paid_amount_original || r.amount || 0
+      const cashAmount = r.cash_collected != null ? r.cash_collected : (r.paid_amount || 0)
+      const netAmount  = r.booked_revenue != null ? r.booked_revenue : (r.amount || 0)
       const feePct     = r.fee_pct  || 0
       const vatPct     = r.vat_pct  || 0
-
-      // ── Tính lại để hiển thị từng bước ────────────────────────────────────────
-      // Bước 1: Trước VAT = origAmount / (1 + vat%)
-      const beforeVat  = vatPct > 0 ? Math.round(origAmount / (1 + vatPct / 100)) : origAmount
-      // Bước 2: Trước phí QL = beforeVat × (1 − fee%)
-      const beforeFee  = feePct > 0 ? Math.round(beforeVat * (1 - feePct / 100)) : beforeVat
-      // netAmount là giá trị thực ghi nhận (đã = beforeFee)
+      const beforeVat  = r.amount_before_vat != null ? r.amount_before_vat : netAmount
 
       const hasVat     = vatPct  > 0
       const hasFee     = feePct  > 0
@@ -10502,10 +10884,12 @@ function renderUserRows() {
 
   if (_userAllData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400">Không có nhân sự</td></tr>'
+    setMobileCardList('usersCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có nhân sự</div>')
     return
   }
 
-  tbody.innerHTML = userPaginatedData().map(u => `
+  const pageUsers = userPaginatedData()
+  tbody.innerHTML = pageUsers.map(u => `
     <tr class="table-row cursor-pointer hover:bg-primary/5 transition-colors" onclick="openUserDetail(${u.id})">
       <td class="py-2 pr-3">
         <div class="flex items-center gap-2">
@@ -10541,6 +10925,24 @@ function renderUserRows() {
       </td>
     </tr>
   `).join('')
+  renderUsersMobileCards(pageUsers)
+}
+
+function renderUsersMobileCards(users) {
+  if (!users || !users.length) {
+    setMobileCardList('usersCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có nhân sự</div>')
+    return
+  }
+  setMobileCardList('usersCardList', users.map(u => `
+    <div class="mobile-list-card cursor-pointer" onclick="openUserDetail(${u.id})">
+      <div class="mlc-title">${u.full_name}</div>
+      <div class="mlc-meta">${u.department || '—'} · ${u.username || ''}</div>
+      <div class="mlc-row">
+        ${getRoleBadge(u.role)}
+        <span class="badge ${u.is_active ? 'badge-completed' : 'badge-cancelled'}">${u.is_active ? 'Hoạt động' : 'Vô hiệu'}</span>
+      </div>
+    </div>
+  `).join(''))
 }
 
 function filterUsers() {
@@ -10665,8 +11067,8 @@ function _renderStaffTableRows() {
     tbody.innerHTML = `<tr><td colspan="22" class="py-12 text-center text-gray-400"><i class="fas fa-search text-3xl mb-2 block"></i>Không tìm thấy nhân viên nào</td></tr>`
   } else {
     tbody.innerHTML = slice.map((u, i) => {
-      const avatar = u.avatar?.startsWith('data:image/')
-        ? `<img src="${u.avatar}" class="w-8 h-8 rounded-full object-cover flex-shrink-0" />`
+      const avatar = isAvatarSrc(u.avatar)
+        ? `<img src="${authedFileUrl(u.avatar)}" class="w-8 h-8 rounded-full object-cover flex-shrink-0" />`
         : `<div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white text-xs font-bold flex-shrink-0">${(u.full_name||'?').split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase()}</div>`
       const fmtDate = s => {
         if (!s) return '<span class="text-gray-300">—</span>'
@@ -10903,8 +11305,8 @@ async function openUserDetail(userId) {
 
   // Render nội dung
   const initials = detail.full_name?.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() || 'U'
-  const avatarHtml = detail.avatar?.startsWith('data:image/')
-    ? `<img src="${detail.avatar}" class="w-20 h-20 rounded-full object-cover" />`
+  const avatarHtml = isAvatarSrc(detail.avatar)
+    ? `<img src="${authedFileUrl(detail.avatar)}" class="w-20 h-20 rounded-full object-cover" />`
     : `<div class="w-20 h-20 rounded-full bg-primary flex items-center justify-center text-white text-2xl font-bold">${initials}</div>`
 
   const row = (icon, label, val, cls='') => val
@@ -11349,8 +11751,8 @@ async function loadProfile() {
     // --- Avatar ---
     const avatarImg = $('profileAvatarImg')
     const avatarText = $('profileAvatar')
-    if (user.avatar && user.avatar.startsWith('data:image/')) {
-      avatarImg.src = user.avatar
+    if (isAvatarSrc(user.avatar)) {
+      avatarImg.src = authedFileUrl(user.avatar)
       avatarImg.classList.remove('hidden')
       avatarText.classList.add('hidden')
     } else {
@@ -11458,8 +11860,8 @@ function _syncTopbarAvatar() {
   const sidebarAvatarMini = $('sidebarAvatarMini')
   if (sidebarAvatar) sidebarAvatar.textContent = initials
   if (sidebarAvatarMini) sidebarAvatarMini.textContent = initials
-  if (user.avatar && user.avatar.startsWith('data:image/')) {
-    _applyAvatarToTopbar(user.avatar)
+  if (isAvatarSrc(user.avatar)) {
+    _applyAvatarToTopbar(authedFileUrl(user.avatar))
   }
 }
 
@@ -11497,7 +11899,7 @@ async function handleAvatarUpload(event) {
       avatarImg.src = base64
       avatarImg.classList.remove('hidden')
       avatarText.classList.add('hidden')
-      currentUser.avatar = base64
+      currentUser.avatar = res.avatar || base64
       toast('Cập nhật ảnh đại diện thành công!', 'success')
     }
   } catch (e) {
@@ -12515,6 +12917,12 @@ async function loadFinanceProjectPage() {
 }
 
 // Period-type toggle for Finance Project page
+function toggleFinFilterSheet() {
+  const sheet = $('finFilterSheet')
+  if (!sheet) return
+  sheet.classList.toggle('fin-sheet-collapsed')
+}
+
 function onFinPeriodTypeChange() {
   const pt = $('finPeriodType')?.value || 'all_time'
   const ntcYearCtrl = $('finNtcYearCtrl')
@@ -12811,7 +13219,7 @@ async function loadFinanceProject() {
       <!-- Revenue detail -->
       <div class="card mb-4">
         <h3 class="font-bold text-sm mb-3"><i class="fas fa-money-bill-wave text-green-600 mr-2"></i>Thông tin doanh thu</h3>
-        <div class="grid ${project.project_budget > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-4 text-center">
+        <div class="grid ${project.project_budget > 0 ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-2 md:grid-cols-3'} gap-4 text-center">
           <div class="${summary.total_revenue > 0 ? 'bg-green-50' : (pendingRevenue > 0 ? 'bg-amber-50' : 'bg-orange-50')} rounded-lg p-3">
             <p class="text-xs text-gray-500">Doanh thu đã TT</p>
             ${summary.total_revenue > 0
@@ -17474,13 +17882,13 @@ function renderPackageStageCard(stage, pkgColor) {
       <table class="w-full" style="font-size:13px">
         <thead>
           <tr style="background:${sc.bg}">
-            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:40px" title="Click checkbox để đánh dấu hoàn thành">✓</th>
+            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
             <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:100px">Hạn</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Ngày HT thực tế</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
-            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Ngày HT thực tế</th>
+            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:170px">Ghi chú</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Thao tác</th>
           </tr>
         </thead>
         <tbody>`}
@@ -17494,14 +17902,20 @@ function renderPackageStageCard(stage, pkgColor) {
         html += renderLegalItemRow(child, sc, rowBg, true, stage.id)
       })
     })
-    html += `</tbody></table>`
   }
+  // Quick-add inline row (ẩn mặc định)
+  html += renderLegalQuickAddRow(stage.id, _legalCurrentProjectId, null)
+  html += `</tbody></table>`
 
   html += `
-      <div style="padding:7px 14px;border-top:1px solid #f3f4f6;display:flex;justify-content:flex-end">
+      <div style="padding:7px 14px;border-top:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+        <button onclick="legalQuickAddShow(${stage.id})"
+          style="font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:7px;padding:5px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
+          <i class="fas fa-plus" style="font-size:10px"></i> Thêm dòng
+        </button>
         <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
           style="font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:3px">
-          <i class="fas fa-plus-circle" style="font-size:10px"></i> Thêm hạng mục
+          <i class="fas fa-external-link-alt" style="font-size:9px"></i> Nhập chi tiết
         </button>
       </div>
     </div>
@@ -17744,13 +18158,13 @@ function renderLegalStages(stages) {
         <table class="w-full" style="font-size:13px">
           <thead>
             <tr style="background:${sc.bg}">
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:40px" title="Click checkbox để đánh dấu hoàn thành">✓</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
               <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:100px">Hạn</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Ngày HT thực tế</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Ngày HT thực tế</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:170px">Ghi chú</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Thao tác</th>
             </tr>
           </thead>
           <tbody>`
@@ -17762,14 +18176,20 @@ function renderLegalStages(stages) {
         html += renderLegalItemRow(child, sc, rowBg, true, stage.id)
       })
     })
+    // Quick-add inline row
+    html += renderLegalQuickAddRow(stage.id, _legalCurrentProjectId, null)
 
     html += `
           </tbody>
         </table>
-        <div style="padding:8px 16px;border-top:1px solid #f3f4f6;display:flex;justify-content:flex-end">
+        <div style="padding:8px 16px;border-top:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+          <button onclick="legalQuickAddShow(${stage.id})"
+            style="font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:7px;padding:5px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
+            <i class="fas fa-plus" style="font-size:10px"></i> Thêm dòng
+          </button>
           <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
-            style="font-size:12px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-            <i class="fas fa-plus-circle" style="font-size:11px"></i> Thêm hạng mục vào giai đoạn này
+            style="font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+            <i class="fas fa-external-link-alt" style="font-size:9px"></i> Nhập chi tiết
           </button>
         </div>
       </div><!-- /body -->
@@ -17882,56 +18302,632 @@ function openAddStageModal() {
     .catch(err => toast('Lỗi: ' + err.message, 'error'))
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// QUICK-ADD ROW — thêm dòng công việc trực tiếp trong bảng (kiểu Excel)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Render hàng nhập liệu nhanh (ẩn mặc định)
+function renderLegalQuickAddRow(stageId, projectId, parentId) {
+  const rowId = `legal-quickadd-${stageId}${parentId ? '-'+parentId : ''}`
+  return `
+  <tr id="${rowId}" style="display:none;background:#f0fdf4;border-bottom:2px solid #6ee7b7">
+    <!-- checkbox placeholder -->
+    <td style="padding:6px 6px;text-align:center;width:40px">
+      <i class="fas fa-plus" style="color:#10b981;font-size:12px"></i>
+    </td>
+    <!-- STT auto -->
+    <td style="padding:6px 8px;width:60px">
+      <span id="${rowId}-stt" style="font-size:12px;color:#9ca3af;font-style:italic">auto</span>
+    </td>
+    <!-- Title — focus ngay khi hiện -->
+    <td style="padding:4px 6px;min-width:180px">
+      <input id="${rowId}-title" type="text"
+        placeholder="Nhập tên hạng mục... (Enter để lưu)"
+        style="width:100%;border:1.5px solid #6ee7b7;border-radius:6px;padding:5px 8px;font-size:13px;outline:none;background:#fff"
+        onkeydown="legalQuickAddKeydown(event, ${stageId}, ${projectId}, ${parentId||'null'})"
+      />
+    </td>
+    <!-- Hạn -->
+    <td style="padding:4px 6px;width:110px">
+      <input id="${rowId}-due" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+        onkeydown="legalQuickAddKeydown(event, ${stageId}, ${projectId}, ${parentId||'null'})"
+      />
+    </td>
+    <!-- Ngày HT thực tế -->
+    <td style="padding:4px 6px;width:120px">
+      <input id="${rowId}-actual" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+        onkeydown="legalQuickAddKeydown(event, ${stageId}, ${projectId}, ${parentId||'null'})"
+      />
+    </td>
+    <!-- Ghi chú -->
+    <td style="padding:4px 6px;width:170px">
+      <input id="${rowId}-notes" type="text"
+        placeholder="Ghi chú..."
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+        onkeydown="legalQuickAddKeydown(event, ${stageId}, ${projectId}, ${parentId||'null'})"
+      />
+    </td>
+    <!-- Nút Lưu / Huỷ -->
+    <td style="padding:4px 8px;text-align:center;width:120px">
+      <div style="display:flex;gap:5px;justify-content:center;align-items:center">
+        <button onclick="legalQuickAddSave(${stageId}, ${projectId}, ${parentId||'null'})"
+          style="font-size:11px;font-weight:700;color:#fff;background:#10b981;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <i class="fas fa-check" style="font-size:10px"></i> Lưu
+        </button>
+        <button onclick="legalQuickAddCancel(${stageId}, ${parentId||'null'})"
+          style="font-size:11px;font-weight:600;color:#6b7280;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px;cursor:pointer">
+          Huỷ
+        </button>
+      </div>
+    </td>
+  </tr>`
+}
+
+// Hiện hàng quick-add và focus vào ô title
+function legalQuickAddShow(stageId, parentId) {
+  const rowId = `legal-quickadd-${stageId}${parentId ? '-'+parentId : ''}`
+  const row = document.getElementById(rowId)
+  if (!row) return
+  row.style.display = 'table-row'
+  // Preview STT
+  const sttEl = document.getElementById(`${rowId}-stt`)
+  if (sttEl) {
+    _previewAutoStt(stageId, parentId || null)
+    // Lấy giá trị preview từ hàm hiện có
+    const prev = document.getElementById('legalItemSttPreviewVal')
+    if (prev) sttEl.textContent = prev.textContent
+  }
+  // Focus vào title
+  const titleEl = document.getElementById(`${rowId}-title`)
+  if (titleEl) { titleEl.value = ''; titleEl.focus() }
+  // Clear các ô còn lại
+  const dueEl = document.getElementById(`${rowId}-due`)
+  const actualEl = document.getElementById(`${rowId}-actual`)
+  const notesEl = document.getElementById(`${rowId}-notes`)
+  if (dueEl) dueEl.value = ''
+  if (actualEl) actualEl.value = ''
+  if (notesEl) notesEl.value = ''
+}
+
+// Ẩn hàng quick-add
+function legalQuickAddCancel(stageId, parentId) {
+  const rowId = `legal-quickadd-${stageId}${parentId ? '-'+parentId : ''}`
+  const row = document.getElementById(rowId)
+  if (row) row.style.display = 'none'
+}
+
+// Xử lý phím: Enter = lưu, Escape = huỷ, Tab = chuyển ô
+function legalQuickAddKeydown(e, stageId, projectId, parentId) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    legalQuickAddCancel(stageId, parentId)
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    legalQuickAddSave(stageId, projectId, parentId)
+  }
+}
+
+// Lưu dòng mới — POST rồi focus vào title hàng tiếp theo (chuỗi thêm liên tục)
+async function legalQuickAddSave(stageId, projectId, parentId) {
+  const rowId = `legal-quickadd-${stageId}${parentId ? '-'+parentId : ''}`
+  const titleEl  = document.getElementById(`${rowId}-title`)
+  const dueEl    = document.getElementById(`${rowId}-due`)
+  const actualEl = document.getElementById(`${rowId}-actual`)
+  const notesEl  = document.getElementById(`${rowId}-notes`)
+
+  const title = titleEl ? titleEl.value.trim() : ''
+  if (!title) {
+    if (titleEl) {
+      titleEl.style.border = '1.5px solid #ef4444'
+      titleEl.focus()
+      setTimeout(() => { if (titleEl) titleEl.style.border = '1.5px solid #6ee7b7' }, 1500)
+    }
+    return
+  }
+
+  // Disable inputs khi đang lưu
+  ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = true })
+
+  try {
+    const res = await api(`/legal/${projectId}/items`, {
+      method: 'POST',
+      data: {
+        stage_id: stageId,
+        parent_id: parentId || null,
+        title,
+        item_type: 'task',
+        due_date: dueEl?.value || null,
+        actual_completion_date: actualEl?.value || null,
+        status: 'pending',
+        notes: notesEl?.value?.trim() || null,
+      }
+    })
+    toast(`✓ Đã thêm: ${title}`)
+
+    // Ẩn row trước khi reload
+    legalQuickAddCancel(stageId, parentId)
+
+    // Reload và sau đó tự động hiện lại quick-add row để nhập tiếp
+    await loadLegalProject(projectId)
+
+    // Sau reload, hiện lại hàng thêm mới để nhập tiếp (luồng liên tục)
+    setTimeout(() => legalQuickAddShow(stageId, parentId), 100)
+
+  } catch(err) {
+    toast('Lỗi thêm hạng mục: ' + err.message, 'error')
+    ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = false })
+    if (titleEl) titleEl.focus()
+  }
+}
+
+// ── Keyboard handler trong ô title của hàng tồn tại ─────────────────────────
+// Enter → thêm dòng mới ngay bên dưới (cùng cấp)
+// Tab   → thêm sub-hạng mục (nếu là parent item)
+function legalItemKeydown(e, itemId, stageId, projectId, parentId, isChild) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    // Lưu nội dung hiện tại trước
+    const el = e.target
+    if (el) {
+      const val = el.innerText.trim()
+      if (val) legalInlineSave(itemId, 'title', val, null)
+      el.blur()
+    }
+    // Chèn quick-add row ngay bên dưới hàng này
+    legalInsertRowAfter(itemId, stageId, projectId, parentId)
+  } else if (e.key === 'Tab') {
+    e.preventDefault()
+    if (!isChild) {
+      // Tạo sub-hạng mục (child của itemId)
+      const el = e.target
+      if (el) { const val = el.innerText.trim(); if (val) legalInlineSave(itemId, 'title', val, null); el.blur() }
+      legalInsertSubRow(itemId, stageId, projectId)
+    }
+    // Nếu đã là child → Tab không làm gì thêm (hoặc có thể jump sang ô khác)
+  }
+}
+
+// ── Chèn quick-add row ngay sau hàng itemId (cùng cấp) ──────────────────────
+function legalInsertRowAfter(afterItemId, stageId, projectId, parentId) {
+  const anchorId = `legalTaskPanelRow_${afterItemId}`
+  const anchor = document.getElementById(anchorId)
+  if (!anchor) {
+    // Fallback: hiện quick-add cuối stage
+    legalQuickAddShow(stageId, parentId)
+    return
+  }
+
+  const rowId = `legal-quickadd-after-${afterItemId}`
+
+  // Nếu đã tồn tại row này → chỉ focus lại
+  let existingRow = document.getElementById(rowId)
+  if (existingRow) {
+    existingRow.style.display = 'table-row'
+    const titleEl = document.getElementById(`${rowId}-title`)
+    if (titleEl) { titleEl.value = ''; titleEl.focus() }
+    return
+  }
+
+  // Tạo hàng mới và inject vào DOM sau anchor
+  const tr = document.createElement('tr')
+  tr.id = rowId
+  tr.style.cssText = 'background:#f0fdf4;border-bottom:2px solid #6ee7b7'
+  tr.innerHTML = `
+    <td style="padding:6px 6px;text-align:center;width:40px">
+      <i class="fas fa-plus" style="color:#10b981;font-size:12px"></i>
+    </td>
+    <td style="padding:6px 8px;width:60px">
+      <span style="font-size:12px;color:#9ca3af;font-style:italic">auto</span>
+    </td>
+    <td style="padding:4px 6px;min-width:180px">
+      <input id="${rowId}-title" type="text"
+        placeholder="Nhập tên hạng mục... (Enter để lưu, Esc để huỷ)"
+        style="width:100%;border:1.5px solid #6ee7b7;border-radius:6px;padding:5px 8px;font-size:13px;outline:none;background:#fff"
+      />
+    </td>
+    <td style="padding:4px 6px;width:110px">
+      <input id="${rowId}-due" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 6px;width:120px">
+      <input id="${rowId}-actual" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 6px;width:170px">
+      <input id="${rowId}-notes" type="text"
+        placeholder="Ghi chú..."
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 8px;text-align:center;width:120px">
+      <div style="display:flex;gap:5px;justify-content:center;align-items:center">
+        <button onclick="legalInsertRowAfterSave(${afterItemId}, ${stageId}, ${projectId}, ${parentId||'null'})"
+          style="font-size:11px;font-weight:700;color:#fff;background:#10b981;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <i class="fas fa-check" style="font-size:10px"></i> Lưu
+        </button>
+        <button onclick="legalInsertRowAfterCancel(${afterItemId})"
+          style="font-size:11px;font-weight:600;color:#6b7280;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px;cursor:pointer">
+          Huỷ
+        </button>
+      </div>
+    </td>`
+
+  // Insert sau anchor
+  anchor.insertAdjacentElement('afterend', tr)
+
+  // Bind keyboard handler
+  const titleEl = document.getElementById(`${rowId}-title`)
+  if (titleEl) {
+    titleEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); legalInsertRowAfterCancel(afterItemId) }
+      else if (e.key === 'Enter') { e.preventDefault(); legalInsertRowAfterSave(afterItemId, stageId, projectId, parentId) }
+    })
+    // Bind các ô khác
+    ;[`${rowId}-due`, `${rowId}-actual`, `${rowId}-notes`].forEach(id => {
+      const el2 = document.getElementById(id)
+      if (el2) el2.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); legalInsertRowAfterCancel(afterItemId) }
+        else if (e.key === 'Enter') { e.preventDefault(); legalInsertRowAfterSave(afterItemId, stageId, projectId, parentId) }
+      })
+    })
+    titleEl.value = ''
+    titleEl.focus()
+  }
+}
+
+// Huỷ hàng insert-after
+function legalInsertRowAfterCancel(afterItemId) {
+  const row = document.getElementById(`legal-quickadd-after-${afterItemId}`)
+  if (row) row.remove()
+}
+
+// Lưu hàng insert-after
+async function legalInsertRowAfterSave(afterItemId, stageId, projectId, parentId) {
+  const rowId = `legal-quickadd-after-${afterItemId}`
+  const titleEl  = document.getElementById(`${rowId}-title`)
+  const dueEl    = document.getElementById(`${rowId}-due`)
+  const actualEl = document.getElementById(`${rowId}-actual`)
+  const notesEl  = document.getElementById(`${rowId}-notes`)
+
+  const title = titleEl ? titleEl.value.trim() : ''
+  if (!title) {
+    if (titleEl) {
+      titleEl.style.border = '1.5px solid #ef4444'
+      titleEl.focus()
+      setTimeout(() => { if (titleEl) titleEl.style.border = '1.5px solid #6ee7b7' }, 1500)
+    }
+    return
+  }
+
+  ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = true })
+
+  try {
+    await api(`/legal/${projectId}/items`, {
+      method: 'POST',
+      data: {
+        stage_id: stageId,
+        parent_id: parentId || null,
+        title,
+        item_type: 'task',
+        due_date: dueEl?.value || null,
+        actual_completion_date: actualEl?.value || null,
+        status: 'pending',
+        notes: notesEl?.value?.trim() || null,
+        after_item_id: afterItemId,  // hint cho backend sort_order (optional)
+      }
+    })
+    toast(`✓ Đã thêm: ${title}`)
+
+    // Xóa row tạm
+    legalInsertRowAfterCancel(afterItemId)
+
+    // Reload và sau đó focus vào nút "+" của item vừa tạo (hoặc để user Enter tiếp)
+    await loadLegalProject(projectId)
+
+  } catch(err) {
+    toast('Lỗi thêm hạng mục: ' + err.message, 'error')
+    ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = false })
+    if (titleEl) titleEl.focus()
+  }
+}
+
+// ── Chèn sub-hạng mục (child item) ngay sau parent item ─────────────────────
+function legalInsertSubRow(parentItemId, stageId, projectId) {
+  // Tái dụng legalInsertRowAfter nhưng với parentId = parentItemId
+  // Row sẽ xuất hiện ngay dưới parent, tạo item với parent_id = parentItemId
+  const anchorId = `legalTaskPanelRow_${parentItemId}`
+  const anchor = document.getElementById(anchorId)
+  if (!anchor) {
+    // Fallback: dùng quick-add cuối stage với parentId
+    legalQuickAddShow(stageId, parentItemId)
+    return
+  }
+
+  const rowId = `legal-quickadd-sub-${parentItemId}`
+
+  let existingRow = document.getElementById(rowId)
+  if (existingRow) {
+    existingRow.style.display = 'table-row'
+    const titleEl = document.getElementById(`${rowId}-title`)
+    if (titleEl) { titleEl.value = ''; titleEl.focus() }
+    return
+  }
+
+  const tr = document.createElement('tr')
+  tr.id = rowId
+  tr.style.cssText = 'background:#f5f3ff;border-bottom:2px solid #c4b5fd'
+  tr.innerHTML = `
+    <td style="padding:6px 6px;text-align:center;width:40px">
+      <i class="fas fa-level-down-alt" style="color:#7c3aed;font-size:12px"></i>
+    </td>
+    <td style="padding:6px 8px;width:60px">
+      <span style="font-size:11px;color:#9ca3af;font-style:italic;padding-left:16px">↳ auto</span>
+    </td>
+    <td style="padding:4px 6px;min-width:180px">
+      <div style="padding-left:20px">
+        <input id="${rowId}-title" type="text"
+          placeholder="Tên sub-hạng mục... (Enter lưu, Tab lưu+thêm tiếp, Esc huỷ)"
+          style="width:100%;border:1.5px solid #c4b5fd;border-radius:6px;padding:5px 8px;font-size:13px;outline:none;background:#fff"
+        />
+      </div>
+    </td>
+    <td style="padding:4px 6px;width:110px">
+      <input id="${rowId}-due" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 6px;width:120px">
+      <input id="${rowId}-actual" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 6px;width:170px">
+      <input id="${rowId}-notes" type="text"
+        placeholder="Ghi chú..."
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 8px;text-align:center;width:120px">
+      <div style="display:flex;gap:5px;justify-content:center;align-items:center">
+        <button onclick="legalInsertSubRowSave(${parentItemId}, ${stageId}, ${projectId})"
+          style="font-size:11px;font-weight:700;color:#fff;background:#7c3aed;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <i class="fas fa-check" style="font-size:10px"></i> Lưu
+        </button>
+        <button onclick="legalInsertSubRowCancel(${parentItemId})"
+          style="font-size:11px;font-weight:600;color:#6b7280;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px;cursor:pointer">
+          Huỷ
+        </button>
+      </div>
+    </td>`
+
+  anchor.insertAdjacentElement('afterend', tr)
+
+  const titleEl = document.getElementById(`${rowId}-title`)
+  if (titleEl) {
+    titleEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); legalInsertSubRowCancel(parentItemId) }
+      else if (e.key === 'Enter') { e.preventDefault(); legalInsertSubRowSave(parentItemId, stageId, projectId) }
+      else if (e.key === 'Tab') {
+        // Tab trong sub-row: lưu và mở thêm sub tiếp theo
+        e.preventDefault()
+        legalInsertSubRowSaveAndContinue(parentItemId, stageId, projectId)
+      }
+    })
+    ;[`${rowId}-due`, `${rowId}-actual`, `${rowId}-notes`].forEach(id => {
+      const el2 = document.getElementById(id)
+      if (el2) el2.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); legalInsertSubRowCancel(parentItemId) }
+        else if (e.key === 'Enter') { e.preventDefault(); legalInsertSubRowSave(parentItemId, stageId, projectId) }
+      })
+    })
+    titleEl.value = ''
+    titleEl.focus()
+  }
+}
+
+function legalInsertSubRowCancel(parentItemId) {
+  const row = document.getElementById(`legal-quickadd-sub-${parentItemId}`)
+  if (row) row.remove()
+}
+
+async function legalInsertSubRowSave(parentItemId, stageId, projectId, andContinue) {
+  const rowId = `legal-quickadd-sub-${parentItemId}`
+  const titleEl  = document.getElementById(`${rowId}-title`)
+  const dueEl    = document.getElementById(`${rowId}-due`)
+  const actualEl = document.getElementById(`${rowId}-actual`)
+  const notesEl  = document.getElementById(`${rowId}-notes`)
+
+  const title = titleEl ? titleEl.value.trim() : ''
+  if (!title) {
+    if (titleEl) {
+      titleEl.style.border = '1.5px solid #ef4444'
+      titleEl.focus()
+      setTimeout(() => { if (titleEl) titleEl.style.border = '1.5px solid #c4b5fd' }, 1500)
+    }
+    return
+  }
+
+  ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = true })
+
+  try {
+    await api(`/legal/${projectId}/items`, {
+      method: 'POST',
+      data: {
+        stage_id: stageId,
+        parent_id: parentItemId,
+        title,
+        item_type: 'task',
+        due_date: dueEl?.value || null,
+        actual_completion_date: actualEl?.value || null,
+        status: 'pending',
+        notes: notesEl?.value?.trim() || null,
+      }
+    })
+    toast(`✓ Đã thêm sub: ${title}`)
+
+    legalInsertSubRowCancel(parentItemId)
+    await loadLegalProject(projectId)
+
+    if (andContinue) {
+      // Mở lại sub-row để nhập tiếp
+      setTimeout(() => legalInsertSubRow(parentItemId, stageId, projectId), 100)
+    }
+
+  } catch(err) {
+    toast('Lỗi thêm sub-hạng mục: ' + err.message, 'error')
+    ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = false })
+    if (titleEl) titleEl.focus()
+  }
+}
+
+async function legalInsertSubRowSaveAndContinue(parentItemId, stageId, projectId) {
+  await legalInsertSubRowSave(parentItemId, stageId, projectId, true)
+}
+
 function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
-  const statusBadge = `<span class="badge ${LEGAL_STATUS_COLORS[item.status]||'badge-todo'}">${LEGAL_STATUS_LABELS[item.status]||item.status}</span>`
-  const checkIcon = item.status === 'completed'
-    ? `<i class="fas fa-check-circle text-green-500 mr-1"></i>`
-    : (item.item_type === 'document' ? `<i class="fas fa-file-alt text-blue-400 mr-1"></i>` : `<i class="fas fa-tasks text-gray-400 mr-1"></i>`)
+  const isDone     = item.status === 'completed'
+  const isInprog   = item.status === 'in_progress'
+  const isPending  = !isDone && !isInprog
 
-  // STT styling: parent = bold, child = thụt lề + màu xám
-  const sttDisplay = item.stt || ''
-  const sttCellStyle = isChild
-    ? 'color:#6b7280; padding-left:28px; font-size:12px;'
-    : 'font-weight:700; color:#374151;'
-  const titleIndent = isChild ? 'pl-7' : 'font-semibold'
+  // Màu nền hàng
+  const trBg = isDone ? '#f0fdf4' : isChild ? '#fafafa' : '#fff'
 
-  // Hạn + Trạng thái + Ghi chú: luôn hiển thị cho cả parent & child
-  const dueDateCell = item.due_date
-    ? `<span class="text-xs ${new Date(item.due_date) < new Date() && item.status !== 'completed' ? 'text-red-500 font-medium' : 'text-gray-500'}">${fmtDate(item.due_date)}</span>`
-    : `<span class="text-gray-300 text-xs">—</span>`
+  // Checkbox
+  const cbStyle = `width:16px;height:16px;cursor:pointer;accent-color:#10b981;border-radius:4px;flex-shrink:0`
 
-  const actualDateCell = item.actual_completion_date
-    ? `<span class="text-xs text-green-600 font-medium"><i class="fas fa-calendar-check mr-1"></i>${fmtDate(item.actual_completion_date)}</span>`
-    : `<span class="text-gray-300 text-xs">—</span>`
+  // STT
+  const sttDisplay   = item.stt || ''
+  const sttStyle     = isChild ? 'color:#9ca3af;font-size:11px;padding-left:24px' : 'font-weight:700;color:#374151;font-size:13px'
+
+  // Icon type (chỉ khi chưa hoàn thành)
+  const typeIcon = isDone
+    ? `<i class="fas fa-check-circle" style="color:#10b981;font-size:13px;flex-shrink:0"></i>`
+    : item.item_type === 'document'
+      ? `<i class="fas fa-file-alt" style="color:#60a5fa;font-size:12px;flex-shrink:0"></i>`
+      : `<i class="fas fa-tasks" style="color:#94a3b8;font-size:12px;flex-shrink:0"></i>`
+
+  // Trạng thái badge nhỏ (chỉ in_progress)
+  const statusChip = isInprog
+    ? `<span style="font-size:10px;font-weight:600;color:#2563eb;background:#dbeafe;border-radius:10px;padding:1px 7px;white-space:nowrap">⟳ Đang làm</span>`
+    : isPending
+      ? `<span style="font-size:10px;color:#9ca3af;white-space:nowrap">○ Chưa làm</span>`
+      : ''
+
+  // Title — contenteditable, blur to save
+  const titleStyle = `font-size:13px;${isDone?'text-decoration:line-through;color:#9ca3af':'color:#1e293b'};${isChild?'font-size:12px;padding-left:20px':''}`
+
+  // Due date inline
+  const dueDateIsOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
+  const dueDateStyle = dueDateIsOverdue
+    ? 'border:1px solid #fca5a5;background:#fef2f2;border-radius:5px;padding:2px 4px;font-size:12px;color:#dc2626;font-weight:600;cursor:pointer;width:100%'
+    : 'border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-size:12px;color:#374151;cursor:pointer;width:100%;text-align:center'
+
+  // Actual date inline
+  const actualDateStyle = item.actual_completion_date
+    ? 'border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-size:12px;color:#059669;font-weight:600;cursor:pointer;width:100%;text-align:center'
+    : 'border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-size:12px;color:#9ca3af;cursor:pointer;width:100%;text-align:center'
 
   return `
-  <tr style="background:${item.status==='completed'?'#f0fdf4':isChild?'#fafafa':'#fff'};border-bottom:1px solid #f3f4f6" class="table-row">
-    <td class="py-2 px-3 text-xs" style="${sttCellStyle}">
-      <div class="flex items-center gap-1">
-        <span>${sttDisplay}</span>
-        <div class="flex flex-col opacity-0 group-hover:opacity-100" style="line-height:1">
-          <button onclick="reorderLegalItem(${item.id},'up')" class="text-gray-300 hover:text-gray-600 leading-none" title="Lên" style="font-size:9px;padding:0"><i class="fas fa-caret-up"></i></button>
-          <button onclick="reorderLegalItem(${item.id},'down')" class="text-gray-300 hover:text-gray-600 leading-none" title="Xuống" style="font-size:9px;padding:0"><i class="fas fa-caret-down"></i></button>
-        </div>
+  <tr id="legal-row-${item.id}" style="background:${trBg};border-bottom:1px solid #f3f4f6;transition:background .2s">
+
+    <!-- ☑ Checkbox hoàn thành -->
+    <td style="padding:8px 6px;text-align:center;vertical-align:middle;width:40px">
+      <input type="checkbox"
+        style="${cbStyle}"
+        ${isDone ? 'checked' : ''}
+        onchange="legalToggleComplete(${item.id}, this.checked, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        title="${isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'}"
+      />
+    </td>
+
+    <!-- STT -->
+    <td style="padding:8px 10px;vertical-align:middle;width:60px">
+      <span style="${sttStyle}">${sttDisplay}</span>
+    </td>
+
+    <!-- Tên hạng mục — inline contenteditable -->
+    <td style="padding:6px 8px;vertical-align:middle;min-width:180px">
+      <div style="display:flex;align-items:center;gap:6px">
+        ${typeIcon}
+        <span
+          contenteditable="true"
+          data-field="title"
+          data-item-id="${item.id}"
+          data-original="${item.title.replace(/"/g,'&quot;')}"
+          onblur="legalInlineSave(${item.id}, 'title', this.innerText.trim(), ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+          onkeydown="legalItemKeydown(event, ${item.id}, ${stageId}, ${_legalCurrentProjectId}, ${item.parent_id||'null'}, ${isChild?'true':'false'})"
+          style="${titleStyle};outline:none;border-radius:4px;padding:2px 4px;min-width:100px;display:block;flex:1;word-break:break-word"
+          onfocus="this.style.background='#f0fdf4';this.style.outline='1px solid #6ee7b7'"
+          title="Click để sửa · Enter: thêm dòng dưới · Tab: thêm sub-hạng mục"
+        >${item.title}</span>
+        ${statusChip}
       </div>
     </td>
-    <td class="py-2 px-3 ${titleIndent}">
-      <div class="flex items-center gap-2">
-        ${checkIcon}
-        <span class="${isChild ? 'text-sm text-gray-700' : 'text-gray-800'}">${item.title}</span>
-      </div>
+
+    <!-- Hạn thực hiện — date input inline -->
+    <td style="padding:6px 8px;vertical-align:middle;text-align:center;width:110px">
+      <input type="date"
+        value="${item.due_date || ''}"
+        style="${dueDateStyle}"
+        onchange="legalInlineSave(${item.id}, 'due_date', this.value, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        title="Ngày hết hạn — click để thay đổi"
+        onfocus="this.style.border='1px solid #6ee7b7';this.style.background='#f0fdf4'"
+        onblur="this.style.border='1px solid ${dueDateIsOverdue?'#fca5a5':'transparent'}';this.style.background='${dueDateIsOverdue?'#fef2f2':'transparent'}'"
+      />
     </td>
-    <td class="py-2 px-3 text-center">${dueDateCell}</td>
-    <td class="py-2 px-3 text-center">${actualDateCell}</td>
-    <td class="py-2 px-3 text-center">${statusBadge}</td>
-    <td class="py-2 px-3 text-xs text-gray-500">${item.notes ? `<span title="${item.notes}">${item.notes.length > 40 ? item.notes.substring(0,40)+'…' : item.notes}</span>` : '<span class="text-gray-300">—</span>'}</td>
-    <td class="py-2 px-3 text-center">
-      <div class="flex items-center justify-center gap-1 flex-wrap">
-        <button onclick="reorderLegalItem(${item.id},'up')" class="text-gray-400 hover:text-gray-600 p-1" title="Lên"><i class="fas fa-arrow-up text-xs"></i></button>
-        <button onclick="reorderLegalItem(${item.id},'down')" class="text-gray-400 hover:text-gray-600 p-1" title="Xuống"><i class="fas fa-arrow-down text-xs"></i></button>
-        ${!isChild ? `<button onclick="openAddLegalItem(${stageId}, ${item.id}, ${_legalCurrentProjectId})" class="text-blue-500 hover:text-blue-700 p-1" title="Thêm sub-hạng mục"><i class="fas fa-indent text-xs"></i></button>` : ''}
-        <button onclick="openEditLegalItem(${JSON.stringify(item).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
-        <button onclick="deleteLegalItem(${item.id})" class="text-red-400 hover:text-red-600 p-1" title="Xóa"><i class="fas fa-trash text-xs"></i></button>
+
+    <!-- Ngày hoàn thành thực tế — date input inline -->
+    <td style="padding:6px 8px;vertical-align:middle;text-align:center;width:120px">
+      <input type="date"
+        value="${item.actual_completion_date || ''}"
+        style="${actualDateStyle}"
+        onchange="legalInlineSave(${item.id}, 'actual_completion_date', this.value, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        title="Ngày hoàn thành thực tế — click để thay đổi"
+        onfocus="this.style.border='1px solid #6ee7b7';this.style.background='#f0fdf4'"
+        onblur="this.style.border='1px solid transparent';this.style.background='transparent'"
+      />
+    </td>
+
+    <!-- Ghi chú — contenteditable inline -->
+    <td style="padding:6px 8px;vertical-align:middle;width:170px">
+      <span
+        contenteditable="true"
+        data-field="notes"
+        data-item-id="${item.id}"
+        onblur="legalInlineSave(${item.id}, 'notes', this.innerText.trim(), ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
+        style="font-size:12px;color:#6b7280;font-style:italic;outline:none;border-radius:4px;padding:2px 4px;display:block;word-break:break-word;min-height:18px"
+        onfocus="this.style.background='#f0fdf4';this.style.outline='1px solid #6ee7b7';this.style.fontStyle='normal'"
+        onblur2=""
+        title="Click để thêm/sửa ghi chú"
+      >${item.notes || ''}</span>
+      ${!item.notes ? `<span style="font-size:11px;color:#d1d5db;pointer-events:none;position:absolute;margin-top:-18px;margin-left:6px">Ghi chú...</span>` : ''}
+    </td>
+
+    <!-- Thao tác -->
+    <td style="padding:6px 8px;vertical-align:middle;text-align:center;width:120px">
+      <div style="display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap">
+        <button onclick="legalInsertRowAfter(${item.id}, ${stageId}, ${_legalCurrentProjectId}, ${item.parent_id||'null'})"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #6ee7b7;background:#f0fdf4;color:#10b981;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Thêm dòng bên dưới (hoặc Enter trong ô tên)"><i class="fas fa-plus" style="font-size:9px"></i></button>
+        <button onclick="reorderLegalItem(${item.id},'up')"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #e5e7eb;background:#f9fafb;color:#9ca3af;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Dịch lên"><i class="fas fa-arrow-up" style="font-size:9px"></i></button>
+        <button onclick="reorderLegalItem(${item.id},'down')"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #e5e7eb;background:#f9fafb;color:#9ca3af;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Dịch xuống"><i class="fas fa-arrow-down" style="font-size:9px"></i></button>
+        ${!isChild ? `
+        <button onclick="legalInsertSubRow(${item.id}, ${stageId}, ${_legalCurrentProjectId})"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #c7d2fe;background:#eef2ff;color:#6366f1;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Thêm sub-hạng mục (hoặc Tab trong ô tên)"><i class="fas fa-indent" style="font-size:9px"></i></button>
+        ` : ''}
+        <button onclick="deleteLegalItem(${item.id})"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Xóa"><i class="fas fa-trash" style="font-size:9px"></i></button>
         <button id="taskToggleBtn_${item.id}" onclick="toggleLegalItemTasks(${item.id}, this)"
           style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:5px;padding:3px 7px;cursor:pointer"
           title="Xem / Quản lý tasks">
@@ -18193,6 +19189,99 @@ async function deleteLegalItem(id) {
     await loadLegalProject(_legalCurrentProjectId)
   } catch(err) {
     toast('Lỗi xóa: ' + err.message, 'error')
+  }
+}
+
+// ── Inline Edit: toggle hoàn thành bằng checkbox ─────────────────────────────
+async function legalToggleComplete(id, isChecked, item) {
+  if (typeof item === 'string') item = JSON.parse(item)
+  const newStatus = isChecked ? 'completed' : 'pending'
+
+  // Cập nhật giao diện tức thì (optimistic UI)
+  const row = document.getElementById(`legal-row-${id}`)
+  if (row) row.style.background = isChecked ? '#f0fdf4' : '#fff'
+
+  try {
+    await api(`/legal/items/${id}`, {
+      method: 'PUT',
+      data: {
+        title: item.title,
+        item_type: item.item_type || 'task',
+        due_date: item.due_date || null,
+        actual_completion_date: item.actual_completion_date || null,
+        status: newStatus,
+        notes: item.notes || null,
+      }
+    })
+    toast(isChecked ? '✓ Đã đánh dấu hoàn thành' : 'Đã bỏ đánh dấu hoàn thành')
+    // Reload để cập nhật progress bar + badge
+    await loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi cập nhật trạng thái: ' + err.message, 'error')
+    // Revert checkbox
+    const cb = document.querySelector(`#legal-row-${id} input[type=checkbox]`)
+    if (cb) cb.checked = !isChecked
+    if (row) row.style.background = ''
+  }
+}
+
+// ── Inline Edit: lưu trực tiếp từ contenteditable / date input ───────────────
+async function legalInlineSave(id, field, value, item) {
+  if (typeof item === 'string') item = JSON.parse(item)
+
+  // Không lưu nếu không thay đổi
+  const oldVal = (item[field] || '').toString().trim()
+  if (value === oldVal) return
+  if (field === 'title' && !value) return // không cho phép tên rỗng
+
+  // Build payload đầy đủ (PUT yêu cầu tất cả fields)
+  const payload = {
+    title: field === 'title' ? value : item.title,
+    item_type: item.item_type || 'task',
+    due_date: field === 'due_date' ? (value || null) : (item.due_date || null),
+    actual_completion_date: field === 'actual_completion_date' ? (value || null) : (item.actual_completion_date || null),
+    status: item.status || 'pending',
+    notes: field === 'notes' ? (value || null) : (item.notes || null),
+  }
+
+  try {
+    await api(`/legal/items/${id}`, { method: 'PUT', data: payload })
+    // Nhẹ nhàng — không reload toàn bộ, chỉ update item trong _legalOverviewData
+    _legalUpdateLocalItem(id, field, value)
+    // Reset focus style
+    const el = document.querySelector(`[data-item-id="${id}"][data-field="${field}"]`)
+    if (el) { el.style.background = ''; el.style.outline = '' }
+  } catch(err) {
+    toast('Lỗi lưu: ' + err.message, 'error')
+    // Revert giá trị hiển thị
+    const el = document.querySelector(`[data-item-id="${id}"][data-field="${field}"]`)
+    if (el) el.innerText = item[field] || ''
+  }
+}
+
+// Cập nhật item trong _legalOverviewData mà không reload
+function _legalUpdateLocalItem(id, field, value) {
+  if (!_legalOverviewData) return
+  const updateInList = (items) => {
+    for (const it of items || []) {
+      if (it.id === id) { it[field] = value; return true }
+      if (it.children) {
+        for (const ch of it.children) {
+          if (ch.id === id) { ch[field] = value; return true }
+        }
+      }
+    }
+    return false
+  }
+  const pkgs = _legalOverviewData.packages || []
+  for (const pkg of pkgs) {
+    for (const st of pkg.stages || []) {
+      if (updateInList(st.items)) return
+    }
+  }
+  // fallback: flat stages
+  for (const st of _legalOverviewData.stages || []) {
+    if (updateInList(st.items)) return
   }
 }
 
@@ -20776,7 +21865,7 @@ async function _renderLeaveEmployeeStats(userId) {
     const avatarEl = $('leaveEmpAvatar')
     if (avatarEl) {
       if (data.avatar) {
-        avatarEl.innerHTML = `<img src="${data.avatar}" class="w-12 h-12 rounded-2xl object-cover" alt="${data.full_name}">`
+        avatarEl.innerHTML = `<img src="${authedFileUrl(data.avatar)}" class="w-12 h-12 rounded-2xl object-cover" alt="${data.full_name}">`
         avatarEl.style.background = 'transparent'
       } else {
         avatarEl.textContent = initials
@@ -21031,6 +22120,7 @@ function renderLeaveTable(data) {
       </div>
     </td></tr>`
     $('leavePagination').innerHTML = ''
+    setMobileCardList('leaveCardList', '<div class="text-center py-10 text-gray-400 text-sm">Chưa có đơn xin nghỉ nào</div>')
     return
   }
 
@@ -21181,8 +22271,45 @@ function renderLeaveTable(data) {
     </tr>`
   }).join('')
 
+  renderLeaveMobileCards(pageData, { isAdmin, myId })
+
   // ── Pagination bar ──────────────────────────────────────────────────────────
   renderLeavePagination(totalItems, totalPages)
+}
+
+function renderLeaveMobileCards(pageData, opts = {}) {
+  const isAdmin = opts.isAdmin
+  const myId = opts.myId
+  if (!pageData.length) {
+    setMobileCardList('leaveCardList', '<div class="text-center py-10 text-gray-400 text-sm">Chưa có đơn xin nghỉ nào</div>')
+    return
+  }
+  setMobileCardList('leaveCardList', pageData.map(r => {
+    const typeCfg   = LEAVE_TYPE_CONFIG[r.leave_type]   || { label: r.leave_type, icon: '📋', cls: 'bg-gray-100 text-gray-700' }
+    const statusCfg = LEAVE_STATUS_CONFIG[r.status] || { label: r.status, cls: 'bg-gray-100 text-gray-700', icon: '' }
+    const isSelf    = myId && Number(r.user_id) === myId
+    const isPending = r.status === 'pending'
+    const canEdit   = isPending && (isSelf || isAdmin)
+    const canDel    = isPending && (isSelf || isAdmin)
+    const canReview = isAdmin && isPending
+    const empName = r.employee_name || r.employee_username || ''
+    let actions = ''
+    if (canReview) {
+      actions += `<button onclick="openLeaveReviewModal(${r.id})" class="btn-primary text-xs px-3 py-2"><i class="fas fa-check mr-1"></i>Duyệt</button>
+        <button onclick="quickRejectLeave(${r.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-times mr-1"></i>Từ chối</button>`
+    }
+    if (canEdit) actions += `<button onclick="openLeaveModal(${r.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-pen mr-1"></i>Sửa</button>`
+    if (canDel) actions += `<button onclick="deleteLeaveRequest(${r.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash"></i></button>`
+    return `<div class="mobile-list-card">
+      <div class="mlc-title">${typeCfg.icon} ${typeCfg.label}${isAdmin && empName ? ` · ${empName}` : ''}</div>
+      <div class="mlc-meta">${formatDateVN(r.start_date)} → ${formatDateVN(r.end_date)} · ${r.total_days} ngày</div>
+      <div class="mlc-row">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${statusCfg.cls}">${statusCfg.label}</span>
+      </div>
+      ${r.reason ? `<div class="mlc-meta mt-1 truncate">${r.reason}</div>` : ''}
+      ${actions ? `<div class="mlc-actions">${actions}</div>` : ''}
+    </div>`
+  }).join(''))
 }
 
 function renderLeavePagination(totalItems, totalPages) {

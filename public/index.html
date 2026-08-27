@@ -2,9 +2,15 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#00A651">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="OneCad BIM">
   <title>OneCad BIM - Quản Lý Dự Án</title>
-  <link rel="icon" href="https://onecadvn.com/Upload/images/logo/logo.png" type="image/png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="icon" href="/icon-192.png" type="image/png">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -256,16 +262,358 @@
     }
 
     @media (max-width: 767px) {
-      .sidebar { transform: translateX(-260px); }
-      .sidebar.mini { transform: translateX(-64px); }
-      .main-content { margin-left: 0 !important; }
+      .sidebar {
+        transform: translateX(-100%);
+        width: 260px;
+        z-index: 1100;
+      }
+      .sidebar.mini { width: 260px; transform: translateX(-100%); }
+      .sidebar.mobile-open,
+      .sidebar.mini.mobile-open {
+        transform: translateX(0);
+        width: 260px;
+        box-shadow: 8px 0 24px rgba(0,0,0,0.25);
+      }
+      .sidebar.mobile-open .nav-item span,
+      .sidebar.mini.mobile-open .nav-item span { display: inline; }
+      .sidebar.mobile-open .nav-item,
+      .sidebar.mini.mobile-open .nav-item {
+        padding: 10px 14px;
+        justify-content: flex-start;
+        margin: 2px 8px;
+      }
+      .sidebar.mobile-open .nav-item i,
+      .sidebar.mini.mobile-open .nav-item i { margin-right: 10px; }
+      .sidebar.mobile-open .sidebar-section,
+      .sidebar.mini.mobile-open .sidebar-section { display: block; }
+      .sidebar.mobile-open .sidebar-logo-full .logo-text,
+      .sidebar.mini.mobile-open .sidebar-logo-full .logo-text { display: block; }
+      .sidebar.mobile-open .sidebar-user-info,
+      .sidebar.mini.mobile-open .sidebar-user-info { display: block; }
+      .sidebar.mobile-open .sidebar-user-mini,
+      .sidebar.mini.mobile-open .sidebar-user-mini { display: none !important; }
+      .main-content {
+        margin-left: 0 !important;
+        padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+      }
       .sidebar-toggle-btn { display: none; }
       .chart-container-fixed { height: 220px; }
       .chart-container-lg { height: 250px; }
       .chart-container-sm { height: 180px; }
       .kpi-card { padding: 14px; }
       .card { padding: 14px; }
+      .top-bar { padding-top: env(safe-area-inset-top, 0px); }
+      #mobileBottomNav { display: flex !important; }
+      #mobileNavScrim.mobile-open { display: block !important; }
     }
+
+    /* Mobile drawer scrim */
+    #mobileNavScrim {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 1050;
+    }
+
+    /* Bottom nav — phone only (hidden on desktop/tablet via default) */
+    #mobileBottomNav {
+      display: none;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 1000;
+      background: #fff;
+      border-top: 1px solid #e5e7eb;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      box-shadow: 0 -4px 16px rgba(0,0,0,0.06);
+      align-items: stretch;
+      justify-content: space-around;
+      min-height: 56px;
+    }
+    #mobileBottomNav.keyboard-hidden { display: none !important; }
+    .mobile-tab {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      padding: 8px 4px;
+      min-height: 44px;
+      border: none;
+      background: transparent;
+      color: #6b7280;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .mobile-tab i { font-size: 18px; }
+    .mobile-tab.active { color: #00A651; }
+    .mobile-tab:active { background: #f3f4f6; }
+
+    @media (min-width: 768px) {
+      #mobileBottomNav { display: none !important; }
+      #mobileNavScrim { display: none !important; }
+    }
+
+    /* ================================================================
+       WAVE 1 — Touch / coarse pointer (desktop fine+hover unchanged)
+    ================================================================ */
+    @media (pointer: coarse) {
+      /* Reveal actions that are hover-only on desktop */
+      .msg-delete-btn { opacity: 1; min-width: 44px; min-height: 44px; }
+      .st-actions { opacity: 1 !important; }
+      .group .opacity-0.group-hover\:opacity-100,
+      .opacity-0.group-hover\:opacity-100 { opacity: 1 !important; }
+
+      /* 44px hit targets */
+      .btn-primary, .btn-secondary, .btn-accent, .btn-danger {
+        min-height: 44px; padding-top: 10px; padding-bottom: 10px;
+      }
+      .nav-item { min-height: 44px; }
+      .top-bar button { min-width: 44px; min-height: 44px; }
+
+      /* Mini-sidebar: show tooltip on tap/focus (no hover) */
+      .sidebar.mini .nav-item:focus::after,
+      .sidebar.mini .nav-item:active::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        left: calc(100% + 10px);
+        top: 50%;
+        transform: translateY(-50%);
+        background: rgba(0,0,0,0.85);
+        color: #fff;
+        padding: 5px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        white-space: nowrap;
+        z-index: 9999;
+        pointer-events: none;
+      }
+    }
+
+    /* Phone: modals + notif sheet fit ≤767 */
+    @media (max-width: 767px) {
+      .modal-overlay { padding: 12px; align-items: flex-end; }
+      .modal {
+        max-width: 100% !important;
+        min-width: 0 !important;
+        width: 100% !important;
+        max-height: min(92vh, 100dvh);
+        border-radius: 16px 16px 8px 8px;
+      }
+      .modal-wide { min-width: 0 !important; }
+      #notifDropdown {
+        position: fixed !important;
+        left: 0 !important;
+        right: 0 !important;
+        top: auto !important;
+        bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        max-height: 55vh;
+        border-radius: 16px 16px 0 0;
+        box-shadow: 0 -8px 32px rgba(0,0,0,0.15);
+      }
+    }
+    @media (min-width: 768px) {
+      .modal-wide { min-width: 560px; }
+    }
+
+    /* ================================================================
+       WAVE 2 — Phone card lists (desktop tables unchanged)
+    ================================================================ */
+    .phone-only-cards { display: none; }
+    #leaveStickyCta { display: none; }
+    @media (max-width: 767px) {
+      .desk-only-table { display: none !important; }
+      .phone-only-cards { display: block; }
+      .mobile-list-card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 12px 14px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      }
+      .mobile-list-card + .mobile-list-card { margin-top: 8px; }
+      .mobile-list-card .mlc-title { font-weight: 600; font-size: 14px; color: #1f2937; }
+      .mobile-list-card .mlc-meta { font-size: 12px; color: #6b7280; margin-top: 4px; }
+      .mobile-list-card .mlc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+      .mobile-list-card .mlc-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+      #leaveStickyCta {
+        display: flex !important;
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+        z-index: 990;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 48px;
+        background: #00A651;
+        color: #fff;
+        border: none;
+        border-radius: 12px;
+        font-weight: 600;
+        font-size: 14px;
+        box-shadow: 0 4px 16px rgba(0,166,81,0.35);
+      }
+      #page-leave.page { padding-bottom: calc(120px + env(safe-area-inset-bottom, 0px)); }
+    }
+    @media (min-width: 768px) {
+      .phone-only-cards { display: none !important; }
+      #leaveStickyCta { display: none !important; }
+    }
+
+    /* ================================================================
+       WAVE 3 — Legal tabs / chat dvh / Gantt sticky (desktop heights kept)
+    ================================================================ */
+    .tabs-scroll-row {
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+    }
+    .tabs-scroll-row .tab-btn {
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .chat-project-panel { height: 520px; }
+    .gantt-hint { display: none; }
+    .gantt-label {
+      flex-shrink: 0;
+      width: 14rem;
+    }
+
+    @media (max-width: 767px) {
+      .chat-wrap {
+        height: auto !important;
+        min-height: min(60dvh, 480px);
+        max-height: calc(100dvh - 200px);
+      }
+      .chat-project-wrap,
+      .chat-project-panel {
+        height: min(70dvh, 560px) !important;
+      }
+      #taskDetailChat {
+        min-height: min(55dvh, 420px) !important;
+      }
+      .gantt-hint {
+        display: block;
+        font-size: 11px;
+        color: #9ca3af;
+        margin-bottom: 8px;
+      }
+      .gantt-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .gantt-row {
+        min-width: 720px;
+      }
+      .gantt-label {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background: #fff;
+        box-shadow: 2px 0 6px rgba(0,0,0,0.06);
+      }
+      /* Work-summary table (min-width 980): sticky name col on phone */
+      [id^="wsSummaryTable_"] th:first-child,
+      [id^="wsSummaryTable_"] td:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background: #fff;
+        box-shadow: 2px 0 4px rgba(0,0,0,0.06);
+      }
+      [id^="wsSummaryTable_"] tr.ws-phase-hdr td:first-child {
+        background: #1e3a5f;
+      }
+
+      /* WAVE 4 — PMO / Finance / HR phone */
+      .exec-layout-row { flex-direction: column !important; }
+      .exec-left-col { width: 100% !important; flex-shrink: 1 !important; }
+      #exec-left-list { max-height: 36vh !important; }
+      .exec-right-col { width: 100%; min-width: 0; }
+      #finFilterBar {
+        flex-direction: column;
+        align-items: stretch !important;
+      }
+      #finFilterBar > * { width: 100% !important; max-width: 100% !important; }
+      #finProjSelectCombobox,
+      #finPeriodType,
+      #finNtcYearFilter,
+      #finYearFilter,
+      #finMonthFilter { width: 100% !important; }
+      #finFilterSheet {
+        display: block;
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      #finFilterSheetToggle { display: flex !important; }
+      #finFilterSheet.fin-sheet-collapsed #finFilterBar { display: none; }
+    }
+    @media (min-width: 768px) {
+      #finFilterSheetToggle { display: none !important; }
+      .exec-left-col { width: 280px; }
+      #finFilterSheet.fin-sheet-collapsed #finFilterBar { display: flex; }
+    }
+
+    /* WAVE 5 — PWA install banner (phone only) */
+    #pwaInstallBanner {
+      display: none;
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+      z-index: 1010;
+    }
+    #pwaInstallBanner.pwa-banner-visible { display: block; }
+    .pwa-banner-inner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #0f172a;
+      color: #fff;
+      border-radius: 14px;
+      padding: 10px 12px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+    }
+    .pwa-banner-icon { border-radius: 8px; flex-shrink: 0; }
+    .pwa-banner-text { flex: 1; font-size: 12px; line-height: 1.35; margin: 0; }
+    .pwa-banner-install {
+      flex-shrink: 0;
+      background: #00A651;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      min-height: 36px;
+    }
+    .pwa-banner-dismiss {
+      flex-shrink: 0;
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 22px;
+      line-height: 1;
+      padding: 0 4px;
+      cursor: pointer;
+    }
+    @media (min-width: 768px) {
+      #pwaInstallBanner { display: none !important; }
+    }
+
     /* Analytics Tabs */
     .analytics-tab { color: #6b7280; background: transparent; border: none; cursor: pointer; }
     .analytics-tab:hover { background: white; color: #374151; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
@@ -373,6 +721,9 @@
 
 <!-- MAIN APP -->
 <div id="mainApp" style="display:none">
+  <!-- Mobile drawer scrim -->
+  <div id="mobileNavScrim" onclick="closeMobileDrawer()" aria-hidden="true"></div>
+
   <!-- Sidebar -->
   <div class="sidebar" id="sidebar">
     <!-- Header -->
@@ -388,6 +739,10 @@
 
     <nav class="py-4 overflow-y-auto" id="sidebarNav" style="height:calc(100vh - 72px - 68px)">
       <div class="sidebar-section">Tổng quan</div>
+      <div class="nav-item pmo-only" onclick="navigate('executive-dashboard')" data-tooltip="Executive PMO Hub - Dành Cho Lãnh Đạo" style="display:none;background:linear-gradient(135deg,rgba(0,166,81,0.25),rgba(0,122,61,0.15));border:1px solid rgba(0,166,81,0.3);">
+        <i class="fas fa-crown" style="color:#fbbf24;"></i><span style="color:#fff;font-weight:700;">Executive PMO Hub</span>
+        <span class="sidebar-label-badge" style="display:inline-block;font-size:9px;background:#fbbf24;color:#000;border-radius:4px;padding:1px 5px;margin-left:4px;font-weight:700;flex-shrink:0;">Lãnh Đạo</span>
+      </div>
       <div class="nav-item active" onclick="navigate('dashboard')" data-tooltip="Dashboard">
         <i class="fas fa-tachometer-alt"></i><span>Dashboard</span>
       </div>
@@ -549,6 +904,29 @@
     <!-- Pages Container -->
     <div class="p-6">
       <div style="max-width:1400px;margin:0 auto">
+
+      <!-- ========== EXECUTIVE PMO DASHBOARD ========== -->
+      <div id="page-executive-dashboard" class="page">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-[#00A651] flex items-center justify-center shadow-md">
+              <i class="fas fa-crown text-yellow-300 text-lg"></i>
+            </div>
+            <div>
+              <h1 class="text-xl font-bold text-gray-800">EXECUTIVE PMO HUB</h1>
+              <p class="text-xs text-gray-500">Hệ thống Báo cáo &amp; Điều hành Tổng thể Dự Án Toàn Công Ty</p>
+            </div>
+          </div>
+          <span class="text-xs bg-[#00A651] text-white font-bold px-3 py-1.5 rounded-full">Dành Cho Lãnh Đạo</span>
+        </div>
+
+        <!-- Alert Banner -->
+        <div id="exec-alert-banner"></div>
+
+        <!-- Main 2-column layout: generated by executive-dashboard.js -->
+        <div id="exec-main-layout"></div>
+      </div>
 
       <!-- ========== DASHBOARD ========== -->
       <div id="page-dashboard" class="page active">
@@ -837,7 +1215,7 @@
             <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-exclamation-circle text-warning mr-2"></i>Task cần chú ý (trễ hạn)</h3>
             <button onclick="navigate('tasks')" class="text-sm text-primary hover:underline">Xem tất cả →</button>
           </div>
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto desk-only-table">
             <table class="w-full text-sm">
               <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
                 <th class="pb-2 font-medium">Tên task</th>
@@ -850,6 +1228,7 @@
               <tbody id="recentTasksTable" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="recentTasksCardList" class="phone-only-cards" aria-label="Task trễ hạn"></div>
         </div>
       </div>
 
@@ -969,7 +1348,7 @@
         </div>
 
         <div class="card">
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto desk-only-table">
             <table class="w-full text-sm">
               <thead><tr class="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
                 <th class="pb-3 pr-3 font-medium" style="width:32px"></th>
@@ -989,6 +1368,7 @@
               <tbody id="tasksTable" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="tasksCardList" class="phone-only-cards px-1" aria-label="Danh sách công việc"></div>
           <div id="taskPagination"></div>
         </div>
       </div>
@@ -1145,7 +1525,7 @@
 
         <!-- Timesheet table -->
         <div class="card">
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto desk-only-table">
             <table class="w-full text-sm">
               <thead>
                 <tr id="tsTableHeader" class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
@@ -1167,6 +1547,7 @@
               <tbody id="timesheetTable" class="divide-y"></tbody>
             </table>
           </div>
+          <div id="tsCardList" class="phone-only-cards px-1" aria-label="Danh sách timesheet"></div>
           <div id="tsPagination"></div>
           <div id="tsEmptyState" class="hidden text-center py-12 text-gray-400">
             <i class="fas fa-clock text-4xl mb-3"></i>
@@ -1353,7 +1734,7 @@
               <i class="fas fa-rotate-right text-xs"></i><span>Làm mới</span>
             </button>
           </div>
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto desk-only-table">
             <table class="w-full text-sm" id="leaveTable">
               <thead>
                 <tr style="background:linear-gradient(90deg,#f0fdf4 0%,#f8fafb 60%,#f0fdf4 100%);border-bottom:2px solid #e6f7f0">
@@ -1375,8 +1756,12 @@
               </tbody>
             </table>
           </div>
+          <div id="leaveCardList" class="phone-only-cards px-3 pb-3" aria-label="Danh sách đơn nghỉ"></div>
           <div id="leavePagination" class="px-5 py-3 border-t border-gray-100 min-h-[52px]" style="background:#f9fafb"></div>
         </div>
+        <button type="button" id="leaveStickyCta" onclick="openLeaveModal()" aria-label="Đăng ký nghỉ">
+          <i class="fas fa-plus"></i> Đăng ký nghỉ
+        </button>
       </div>
 
       <!-- ========== GANTT ========== -->
@@ -2064,7 +2449,7 @@
           </div>
 
           <div class="card">
-            <div class="overflow-x-auto">
+            <div class="overflow-x-auto desk-only-table">
               <table class="w-full text-sm">
                 <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
                   <th class="pb-3 pr-3">Nhân viên</th>
@@ -2078,6 +2463,7 @@
                 <tbody id="usersTable" class="divide-y"></tbody>
               </table>
             </div>
+            <div id="usersCardList" class="phone-only-cards px-1" aria-label="Danh sách nhân sự"></div>
             <div id="userPagination"></div>
           </div>
         </div>
@@ -3222,7 +3608,7 @@
                 <th class="pb-3 pr-3 text-center" title="Số task đã hoàn thành">Đã xong</th>
                 <th class="pb-3 pr-3 text-center" title="% Hoàn Thành = Đã xong / Task giao × 100">% Hoàn Thành</th>
                 <th class="pb-3 pr-3 text-center" title="Task hoàn thành đúng hạn (actual_end_date ≤ due_date)">Đúng hạn</th>
-                <th class="pb-3 pr-3 text-center" title="Task hoàn thành trễ hạn (actual_end_date > due_date)">Trễ hạn</th>
+                <th class="pb-3 pr-3 text-center" title="Task hoàn thành trễ hạn (actual_end_date &gt; due_date)">Trễ hạn</th>
                 <th class="pb-3 pr-3 text-center" title="Chính xác = Đúng hạn / Đã xong × 100  (đo mức độ đúng deadline)">Chính xác</th>
                 <th class="pb-3 pr-3 text-center" title="Năng suất = (% Hoàn Thành + Chính xác) / 2">Năng suất</th>
                 <th class="pb-3 text-center" title="Điểm = (Năng suất + Chính xác) / 2 — Xanh ≥75 | Vàng 50-74 | Đỏ &lt;50">Điểm</th>
@@ -3241,7 +3627,12 @@
             <h1 class="text-2xl font-bold text-gray-800">Tài chính theo Dự án</h1>
             <p class="text-gray-500 text-sm">Phân tích doanh thu, chi phí, lợi nhuận — theo toàn dự án hoặc kỳ bất kỳ</p>
           </div>
-          <div class="flex flex-wrap gap-2 items-center">
+          <button type="button" id="finFilterSheetToggle" onclick="toggleFinFilterSheet()" class="btn-secondary text-sm items-center gap-2 hidden"
+            style="display:none">
+            <i class="fas fa-sliders-h"></i> Bộ lọc kỳ
+          </button>
+          <div id="finFilterSheet" class="w-full">
+          <div id="finFilterBar" class="flex flex-wrap gap-2 items-center">
             <div id="finProjSelectCombobox" style="width:220px"></div>
             <!-- Period mode selector -->
             <select id="finPeriodType" class="select-field text-sm" style="width:180px" onchange="onFinPeriodTypeChange()">
@@ -3300,6 +3691,7 @@
             <button onclick="runDataAudit()" class="btn-secondary text-sm flex items-center gap-1.5">
               <i class="fas fa-stethoscope text-amber-500"></i>Kiểm tra dữ liệu
             </button>
+          </div>
           </div>
         </div>
 
@@ -3896,7 +4288,7 @@
         </div>
 
         <!-- Tabs -->
-        <div id="legalTabs" class="flex gap-2 mb-4" style="display:none">
+        <div id="legalTabs" class="flex gap-2 mb-4 tabs-scroll-row" style="display:none">
           <button class="tab-btn active" id="ltab-stages" onclick="switchLegalTab('stages')"><i class="fas fa-list-ol mr-1"></i>Theo dõi hồ sơ</button>
           <button class="tab-btn" id="ltab-letters" onclick="switchLegalTab('letters')"><i class="fas fa-paper-plane mr-1"></i>Văn bản gửi đi</button>
           <button class="tab-btn" id="ltab-minutes" onclick="switchLegalTab('minutes')"><i class="fas fa-clipboard-list mr-1"></i>Biên bản họp</button>
@@ -3975,7 +4367,8 @@
             <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
           </div>
         </div>
-      </div>= -->
+      </div>
+      <!-- ========== END HỒ SƠ PHÁP LÝ PAGE ========== -->
 
       </div><!-- End Pages -->
       </div><!-- End max-width wrapper -->
@@ -5088,7 +5481,7 @@
 
 <!-- Modal Nhập tổng giờ theo năm (system_admin) -->
 <div id="tsBulkModal" class="modal-overlay" style="display:none">
-  <div class="modal p-6" style="max-width:820px;width:100%;min-width:560px">
+  <div class="modal modal-wide p-6" style="max-width:820px;width:100%">
     <div class="flex justify-between items-center mb-3">
       <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-layer-group text-indigo-500 mr-2"></i>Nhập tổng giờ theo năm</h3>
       <button onclick="closeModal('tsBulkModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
@@ -5842,7 +6235,7 @@
       <button onclick="closeModal('taskDetailModal')" class="text-gray-400 hover:text-gray-600 flex-shrink-0"><i class="fas fa-times text-xl"></i></button>
     </div>
     <!-- Tabs -->
-    <div class="flex gap-1 px-6 pt-3 flex-shrink-0 border-b bg-gray-50">
+    <div class="flex gap-1 px-6 pt-3 flex-shrink-0 border-b bg-gray-50 tabs-scroll-row">
       <button onclick="switchTaskDetailTab('info')" id="tdTab-info" class="tab-btn active text-xs py-2 px-4">
         <i class="fas fa-info-circle mr-1"></i>Thông tin
       </button>
@@ -6089,8 +6482,20 @@
   </div>
 </div>
 
+<!-- Mobile bottom navigation (phone only; CSS hides ≥768px) -->
+<nav id="mobileBottomNav" aria-label="Điều hướng chính"></nav>
+<div id="pwaInstallBanner" role="dialog" aria-label="Cài đặt ứng dụng">
+  <div class="pwa-banner-inner">
+    <img src="/icon-192.png" alt="" width="40" height="40" class="pwa-banner-icon">
+    <p id="pwaInstallText" class="pwa-banner-text">Cài OneCad BIM lên màn hình chính</p>
+    <button type="button" id="pwaInstallBtn" class="pwa-banner-install" onclick="acceptPwaInstall()">Cài</button>
+    <button type="button" class="pwa-banner-dismiss" onclick="dismissPwaInstallBanner()" aria-label="Đóng">×</button>
+  </div>
+</div>
+
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260402h"></script>
+<script src="/static/app.js?v=20260826h"></script>
+<script src="/static/executive-dashboard.js?v=20260826d"></script>
 <script>
   // Prevent Ctrl+Scroll zoom from breaking layout
   document.addEventListener('wheel', (e) => {

@@ -1,0 +1,90 @@
+{
+  "scope": "engineering_smoke_wave1_touch",
+  "base": "http://127.0.0.1:8788",
+  "passed": 16,
+  "failed": 0,
+  "results": [
+    {
+      "ok": true,
+      "msg": "phone coarse: group-hover action visible",
+      "detail": "1"
+    },
+    {
+      "ok": true,
+      "msg": "phone coarse: chat delete visible",
+      "detail": "1"
+    },
+    {
+      "ok": true,
+      "msg": "phone coarse: st-actions visible",
+      "detail": "1"
+    },
+    {
+      "ok": true,
+      "msg": "phone: delete hit ≥44px",
+      "detail": "44"
+    },
+    {
+      "ok": true,
+      "msg": "phone: tsBulkModal fits ≤390",
+      "detail": "366"
+    },
+    {
+      "ok": true,
+      "msg": "phone: modal min-width cleared",
+      "detail": "0px"
+    },
+    {
+      "ok": true,
+      "msg": "phone: notif sheet full-width",
+      "detail": "w=390 left=0"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: group-hover action hidden until hover",
+      "detail": "0"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: chat delete hidden until hover",
+      "detail": "0"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: modal-wide min-width 560",
+      "detail": "560px"
+    },
+    {
+      "ok": true,
+      "msg": "desktop sidebar 260",
+      "detail": "260"
+    },
+    {
+      "ok": true,
+      "msg": "desktop no bottom nav",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: hover reveals group action",
+      "detail": "1"
+    },
+    {
+      "ok": true,
+      "msg": "desktop: hover reveals chat delete",
+      "detail": "1"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave1-phone-390.png",
+      "bytes": 40758,
+      "sha256": "9b26c6d8d6e4859bd3ca47353a00a5c7b440eff221c83342fca802c84d18e67c"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave1-desktop-1280.png",
+      "bytes": 59705,
+      "sha256": "cd6834daf44c8f657ac38fb414b108388d34b0773e5bea00844866448f6b991b"
+    }
+  ]
+}

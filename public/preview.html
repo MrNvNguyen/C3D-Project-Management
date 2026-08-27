@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kiểm thử trước deploy — OneCad BIM</title>
+  <link rel="icon" href="https://onecadvn.com/Upload/images/logo/logo.png" type="image/png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: { DEFAULT: '#00A651', 600: '#006e36', 700: '#005228' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; }
+    .check-pass { color: #00A651; }
+    .check-fail { color: #EF4444; }
+    .check-warn { color: #FF6B00; }
+    .check-pending { color: #94a3b8; }
+    .result-row { transition: background 0.15s; }
+    .result-row:hover { background: #f8fafc; }
+    code { font-size: 0.85em; background: #e2e8f0; padding: 1px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <header class="bg-gradient-to-r from-primary to-primary-700 text-white shadow-lg">
+    <div class="max-w-5xl mx-auto px-4 py-5 flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-bold flex items-center gap-2">
+          <i class="fas fa-vial"></i> Kiểm thử trước deploy
+        </h1>
+        <p class="text-white/80 text-sm mt-1">Chạy smoke test local trước khi commit / deploy production</p>
+      </div>
+      <span id="env-badge" class="text-xs bg-white/20 px-3 py-1 rounded-full">Đang tải…</span>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 py-6 space-y-6">
+
+    <!-- Môi trường -->
+    <section class="bg-white rounded-xl shadow-sm p-5">
+      <h2 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+        <i class="fas fa-fingerprint text-primary"></i> Fingerprint môi trường
+      </h2>
+      <dl id="fingerprint" class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-gray-600">
+        <div><dt class="text-gray-400">URL</dt><dd id="fp-url" class="font-mono">—</dd></div>
+        <div><dt class="text-gray-400">Thời điểm</dt><dd id="fp-time">—</dd></div>
+        <div><dt class="text-gray-400">D1 (DB)</dt><dd id="fp-d1">—</dd></div>
+        <div><dt class="text-gray-400">R2 (FILES)</dt><dd id="fp-r2">—</dd></div>
+      </dl>
+    </section>
+
+    <!-- Chuẩn bị -->
+    <section class="bg-amber-50 border border-amber-200 rounded-xl p-5">
+      <h2 class="font-semibold text-amber-900 mb-2 flex items-center gap-2">
+        <i class="fas fa-terminal"></i> Chuẩn bị local (chạy một lần)
+      </h2>
+      <ol class="text-sm text-amber-900/90 space-y-1 list-decimal list-inside">
+        <li><code>npm install</code></li>
+        <li><code>npm run db:migrate:local</code> — áp migration D1 local</li>
+        <li><code>npm run db:seed</code> — dữ liệu mẫu (tùy chọn)</li>
+        <li><code>npm run preview:watch</code> — build + D1 local + <strong>auto reload</strong> khi đổi code</li>
+        <li>Nếu login fail: <code>npm run db:seed:test</code></li>
+        <li>Mở trang này: <code id="preview-url">/preview</code></li>
+      </ol>
+      <p class="text-xs text-amber-700 mt-3">
+        Một lần (không watch): <code>npm run preview:local</code>. Dev HMR: <code>npm run dev</code>.
+      </p>
+    </section>
+
+    <!-- Liên kết nhanh -->
+    <section class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <a href="/" target="_blank" class="bg-white rounded-xl shadow-sm p-4 hover:shadow-md transition flex items-center gap-3 border border-gray-100">
+        <i class="fas fa-th-large text-2xl text-primary"></i>
+        <div>
+          <div class="font-semibold text-gray-800">App chính</div>
+          <div class="text-xs text-gray-500">SPA quản lý dự án</div>
+        </div>
+        <i class="fas fa-external-link-alt ml-auto text-gray-300"></i>
+      </a>
+      <a href="/" target="_blank" onclick="sessionStorage.setItem('preview_open_exec','1')" class="bg-white rounded-xl shadow-sm p-4 hover:shadow-md transition flex items-center gap-3 border border-gray-100">
+        <i class="fas fa-chart-line text-2xl text-blue-600"></i>
+        <div>
+          <div class="font-semibold text-gray-800">Dashboard điều hành</div>
+          <div class="text-xs text-gray-500">Mở app → menu Điều hành</div>
+        </div>
+        <i class="fas fa-external-link-alt ml-auto text-gray-300"></i>
+      </a>
+      <button type="button" id="btn-run-all" class="bg-primary text-white rounded-xl shadow-sm p-4 hover:bg-primary-600 transition flex items-center gap-3 text-left">
+        <i class="fas fa-play-circle text-2xl"></i>
+        <div>
+          <div class="font-semibold">Chạy smoke test</div>
+          <div class="text-xs text-white/80">API + auth + danh sách dự án</div>
+        </div>
+      </button>
+    </section>
+
+    <!-- Tài khoản test -->
+    <section class="bg-white rounded-xl shadow-sm p-5">
+      <h2 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+        <i class="fas fa-users text-primary"></i> Tài khoản test (D1 local)
+      </h2>
+      <p class="text-xs text-gray-500 mb-3">Chạy <code>npm run db:seed:test</code> nếu login báo sai mật khẩu.</p>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left">
+          <thead class="text-gray-500 border-b">
+            <tr>
+              <th class="py-2 pr-3">Username</th>
+              <th class="py-2 pr-3">Password</th>
+              <th class="py-2 pr-3">Vai trò</th>
+              <th class="py-2">Dùng để test</th>
+            </tr>
+          </thead>
+          <tbody class="text-gray-700">
+            <tr class="border-b"><td class="py-2 pr-3 font-mono">admin</td><td class="py-2 pr-3 font-mono">Admin@123456</td><td class="py-2 pr-3">system_admin</td><td class="py-2">Toàn quyền, finance, executive</td></tr>
+            <tr class="border-b"><td class="py-2 pr-3 font-mono">pham.thi.d</td><td class="py-2 pr-3 font-mono">Bim@2024</td><td class="py-2 pr-3">project_admin</td><td class="py-2">PMO, duyệt leave, quản lý dự án</td></tr>
+            <tr class="border-b"><td class="py-2 pr-3 font-mono">le.van.c</td><td class="py-2 pr-3 font-mono">Bim@2024</td><td class="py-2 pr-3">project_leader</td><td class="py-2">Leader dự án PRJ001–003</td></tr>
+            <tr class="border-b"><td class="py-2 pr-3 font-mono">nguyen.van.a</td><td class="py-2 pr-3 font-mono">Bim@2024</td><td class="py-2 pr-3">member</td><td class="py-2">Timesheet, task được giao</td></tr>
+            <tr><td class="py-2 pr-3 font-mono">tran.thi.b</td><td class="py-2 pr-3 font-mono">Bim@2024</td><td class="py-2 pr-3">member</td><td class="py-2">Member thứ 2 — test RBAC 403</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Đăng nhập test -->
+    <section class="bg-white rounded-xl shadow-sm p-5">
+      <h2 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+        <i class="fas fa-user-shield text-primary"></i> Đăng nhập smoke test
+      </h2>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+        <label class="block">
+          <span class="text-gray-500">Username</span>
+          <input id="login-user" type="text" value="admin" class="mt-1 w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none">
+        </label>
+        <label class="block">
+          <span class="text-gray-500">Password</span>
+          <input id="login-pass" type="password" value="Admin@123456" class="mt-1 w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none">
+        </label>
+        <div class="flex items-end">
+          <p class="text-xs text-gray-400">Mặc định admin. Đổi username ở bảng trên để test role khác.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Kết quả -->
+    <section class="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div class="px-5 py-3 border-b flex items-center justify-between">
+        <h2 class="font-semibold text-gray-800 flex items-center gap-2">
+          <i class="fas fa-list-check text-primary"></i> Kết quả kiểm thử
+        </h2>
+        <div id="summary" class="text-sm font-medium text-gray-500">Chưa chạy</div>
+      </div>
+      <div id="results" class="divide-y text-sm">
+        <div class="px-5 py-8 text-center text-gray-400">
+          Nhấn <strong>Chạy smoke test</strong> để bắt đầu
+        </div>
+      </div>
+    </section>
+
+    <!-- Checklist thủ công -->
+    <section class="bg-white rounded-xl shadow-sm p-5">
+      <h2 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+        <i class="fas fa-clipboard-check text-primary"></i> Checklist thủ công (trước commit)
+      </h2>
+      <ul class="space-y-2 text-sm text-gray-700">
+        <li class="flex items-start gap-2"><input type="checkbox" class="mt-1"> <span><code>npm test</code> — vitest PASS (Layer A)</span></li>
+        <li class="flex items-start gap-2"><input type="checkbox" class="mt-1"> <span>Đăng nhập app chính, mở 1 dự án, xem tab Tài chính — số đồng khớp API</span></li>
+        <li class="flex items-start gap-2"><input type="checkbox" class="mt-1"> <span>Member không truy cập được route admin/finance (403)</span></li>
+        <li class="flex items-start gap-2"><input type="checkbox" class="mt-1"> <span>Timesheet: 2 dự án cùng ngày lưu được, không ghi đè</span></li>
+        <li class="flex items-start gap-2"><input type="checkbox" class="mt-1"> <span>Migration mới đã <code>db:migrate:local</code> và sẵn sàng apply prod</span></li>
+      </ul>
+    </section>
+
+    <!-- Deploy -->
+    <section class="bg-gray-800 text-white rounded-xl p-5">
+      <h2 class="font-semibold mb-2 flex items-center gap-2">
+        <i class="fas fa-rocket"></i> Khi smoke test PASS
+      </h2>
+      <pre class="text-sm bg-black/30 rounded-lg p-3 overflow-x-auto text-green-300">git add …
+git commit -m "feat: …"
+npm run deploy
+wrangler d1 migrations apply bim-management-production</pre>
+      <p class="text-xs text-gray-400 mt-2">Trang <code>/preview</code> chỉ hiện trên localhost — không có trên production.</p>
+    </section>
+  </main>
+
+  <script src="/static/preview.js"></script>
+</body>
+</html>

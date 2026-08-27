@@ -1,0 +1,135 @@
+{
+  "scope": "engineering_smoke_shell_no_login",
+  "base": "http://127.0.0.1:8788",
+  "passed": 26,
+  "failed": 0,
+  "results": [
+    {
+      "ok": true,
+      "msg": "GET /manifest.webmanifest",
+      "status": 200,
+      "contentType": "application/manifest+json"
+    },
+    {
+      "ok": true,
+      "msg": "GET /sw.js",
+      "status": 200,
+      "contentType": "application/javascript"
+    },
+    {
+      "ok": true,
+      "msg": "GET /icon-192.png",
+      "status": 200,
+      "contentType": "image/png"
+    },
+    {
+      "ok": true,
+      "msg": "GET /icon-512.png",
+      "status": 200,
+      "contentType": "image/png"
+    },
+    {
+      "ok": true,
+      "msg": "GET /badge-72.png",
+      "status": 200,
+      "contentType": "image/png"
+    },
+    {
+      "ok": true,
+      "msg": "SW CACHE_NAME bim-sw-v2"
+    },
+    {
+      "ok": true,
+      "msg": "SW bypasses /api/*"
+    },
+    {
+      "ok": true,
+      "msg": "SW does not precache index/app.js"
+    },
+    {
+      "ok": true,
+      "msg": "manifest has 192 icon"
+    },
+    {
+      "ok": true,
+      "msg": "manifest has 512 icon"
+    },
+    {
+      "ok": true,
+      "msg": "manifest theme_color #00A651"
+    },
+    {
+      "ok": true,
+      "msg": "phone DOM has bottom nav + scrim"
+    },
+    {
+      "ok": true,
+      "msg": "phone ≤767 bottom nav display:flex",
+      "detail": "flex"
+    },
+    {
+      "ok": true,
+      "msg": "manifest link present"
+    },
+    {
+      "ok": true,
+      "msg": "apple-touch-icon present"
+    },
+    {
+      "ok": true,
+      "msg": "viewport allows pinch (no maximum-scale=1)"
+    },
+    {
+      "ok": true,
+      "msg": "phone drawer closed off-canvas",
+      "detail": "-260"
+    },
+    {
+      "ok": true,
+      "msg": "scrim visible when mobile-open"
+    },
+    {
+      "ok": true,
+      "msg": "drawer left ≈0 when mobile-open",
+      "detail": "0"
+    },
+    {
+      "ok": true,
+      "msg": "drawer width 260 when open",
+      "detail": "260"
+    },
+    {
+      "ok": true,
+      "msg": "desktop ≥1280 bottom nav hidden",
+      "detail": "none"
+    },
+    {
+      "ok": true,
+      "msg": "desktop sidebar width 260px",
+      "detail": "260"
+    },
+    {
+      "ok": true,
+      "msg": "desktop main margin-left 260px",
+      "detail": "260px"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave0-phone-390.png",
+      "bytes": 41761,
+      "sha256": "8e448dc573d317ebc55af138685bbe60387efbaaf805ceee869227f9a837561c"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave0-phone-drawer-open.png",
+      "bytes": 51153,
+      "sha256": "681949881030cb31428dde02baace1dd057a1b270fcd4f7a555ac059fed4cb83"
+    },
+    {
+      "ok": true,
+      "msg": "screenshot wave0-desktop-1280.png",
+      "bytes": 123545,
+      "sha256": "1e7e94ef8831d51328d8bd05fc6881d5a6ac2771a0f68507240b9d12e2535734"
+    }
+  ]
+}
