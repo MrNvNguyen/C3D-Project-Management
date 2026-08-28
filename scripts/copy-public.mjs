@@ -10,6 +10,7 @@ const copies = [
   ['public/icon-192.png', 'dist/icon-192.png'],
   ['public/icon-512.png', 'dist/icon-512.png'],
   ['public/badge-72.png', 'dist/badge-72.png'],
+  ['public/brand', 'dist/brand'],
 ]
 
 for (const [src, dest] of copies) {

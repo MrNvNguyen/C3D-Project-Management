@@ -373,16 +373,42 @@ function renderPushButton() {
   container.innerHTML = btnHtml
 }
 
-// ── Smart polling: 5s active, paused when hidden ──────────────────
+// ── Smart polling: 60s active, paused when hidden; full list only when panel open ──
 let _notifPollInterval = null
+async function pollNotificationBadge() {
+  try {
+    const [summary, unreadChat] = await Promise.all([
+      api('/notifications/summary'),
+      api('/messages/unread').catch(() => [])
+    ])
+
+    const unread = summary?.unread_count || 0
+    const badge = $('notifBadge')
+    if (badge) {
+      badge.textContent = unread
+      badge.style.display = unread > 0 ? 'flex' : 'none'
+    }
+
+    _chatUnreadMap = {}
+    ;(unreadChat || []).forEach(r => {
+      _chatUnreadMap[`${r.context_type}_${r.context_id}`] = r.count
+    })
+    updateChatUnreadBadges()
+
+    if ((summary?.max_id || 0) > _lastSeenNotifId) {
+      await loadNotifications()
+    }
+  } catch (e) { /* silent */ }
+}
+
 function startSmartNotifPoll() {
   if (_notifPollInterval) clearInterval(_notifPollInterval)
   _notifPollInterval = setInterval(() => {
-    if (!document.hidden) loadNotifications()
-  }, 5000)
+    if (!document.hidden) pollNotificationBadge()
+  }, 60000)
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) loadNotifications()  // Reload immediately on tab focus
+    if (!document.hidden) pollNotificationBadge()
   }, { passive: true })
 }
 
@@ -1013,7 +1039,7 @@ async function initApp() {
   initDatetimeClock()
   restorePageFromHash()
   loadNotifications()
-  startSmartNotifPoll()          // Smart polling: 5s when active, pause when hidden
+  startSmartNotifPoll()          // Poll badge 60s; full list when panel opens
   registerServiceWorkerShell()   // PWA SW (independent of Notification permission)
   initPushNotifications()        // Subscribe push if permission already granted
   renderMobileBottomNav()
