@@ -24,6 +24,7 @@ npm run preview:local
 Mở trình duyệt: **http://localhost:8788/preview**
 
 - `preview:watch` — sửa `src/` hoặc `public/` → rebuild + trình duyệt tự reload.
+- Local cần `JWT_SECRET`: file `.dev.vars` (copy từ `.dev.vars.example`) hoặc script `preview:local` đã gắn `--binding`.
 - Nhấn **Chạy smoke test** — kiểm `/health`, login, `/api/projects`, finance spot.
 - Mở **App chính** để kiểm UI thủ công.
 - Trang `/preview` **chỉ hiện trên localhost** — không có trên production.

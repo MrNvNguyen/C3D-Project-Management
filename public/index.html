@@ -13,20 +13,34 @@
   <link rel="icon" href="/icon-192.png" type="image/png">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  <!-- XLSX: lazy-load khi vào luồng import/export (ensureXlsxLoaded) — không nạp 3 bản trùng -->
   <script>
-    // Lưu lại XLSX gốc (SheetJS 0.20.3) trước khi xlsx-js-style có thể ghi đè
-    window._XLSXCore = window.XLSX;
-  </script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-  <script>
-    // Khôi phục XLSX gốc sau khi xlsx-js-style load; giữ XLSXStyle cho styling
-    window.XLSXStyle = window.XLSX;
-    window.XLSX = window._XLSXCore;
+    window._XLSXCore = null;
+    window.XLSXStyle = null;
+    window.ensureXlsxLoaded = function () {
+      if (window.XLSX && window._XLSXCore) return Promise.resolve();
+      return new Promise(function (resolve, reject) {
+        var s1 = document.createElement('script');
+        s1.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+        s1.onload = function () {
+          window._XLSXCore = window.XLSX;
+          var s2 = document.createElement('script');
+          s2.src = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
+          s2.onload = function () {
+            window.XLSXStyle = window.XLSX;
+            window.XLSX = window._XLSXCore;
+            resolve();
+          };
+          s2.onerror = reject;
+          document.head.appendChild(s2);
+        };
+        s1.onerror = reject;
+        document.head.appendChild(s1);
+      });
+    };
   </script>
   <script>
     tailwind.config = {
@@ -6494,8 +6508,21 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260828b"></script>
-<script src="/static/executive-dashboard.js?v=20260826d"></script>
+<script src="/static/app.js?v=20260829c"></script>
+<script>
+  // Lazy-load executive dashboard chỉ khi vào trang PMO
+  window._execDashLoaded = false;
+  window.ensureExecutiveDashboard = function () {
+    if (window._execDashLoaded) return Promise.resolve();
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = '/static/executive-dashboard.js?v=20260826d';
+      s.onload = function () { window._execDashLoaded = true; resolve(); };
+      s.onerror = reject;
+      document.body.appendChild(s);
+    });
+  };
+</script>
 <script>
   // Prevent Ctrl+Scroll zoom from breaking layout
   document.addEventListener('wheel', (e) => {

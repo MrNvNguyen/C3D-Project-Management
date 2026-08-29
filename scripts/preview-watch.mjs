@@ -104,6 +104,9 @@ async function main() {
     '--local',
     '--live-reload',
     `--port=${port}`,
+    // Local-only auth secret (also in .dev.vars). Never use --remote with this.
+    '--binding', 'JWT_SECRET=local-preview-jwt-secret-bim-pm-2026',
+    '--binding', 'ALLOW_PREVIEW=1',
   ])
 
   const shutdown = () => {

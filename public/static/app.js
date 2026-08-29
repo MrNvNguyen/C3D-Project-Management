@@ -4,6 +4,10 @@
 
 // Helper: dùng XLSXStyle (có cell styling) cho writeFile, dùng XLSX core cho read/parse
 function getXLSXForWrite() { return window.XLSXStyle || window.XLSX }
+async function ensureXlsxReady() {
+  if (typeof window.ensureXlsxLoaded === 'function') await window.ensureXlsxLoaded()
+  if (!window.XLSX) throw new Error('Không tải được thư viện Excel')
+}
 function getXLSXCore()     { return window._XLSXCore   || window.XLSX }
 
 const API_BASE = ''
@@ -129,7 +133,27 @@ function api(endpoint, options = {}) {
     url: `${API_BASE}/api${endpoint}`,
     headers,
     ...options
-  }).then(r => r.data)
+  }).then(r => r.data).catch(err => {
+    // #region agent log
+    const status = err?.response?.status
+    const data = err?.response?.data
+    if (status >= 400 || /\/(tasks|projects|timesheets)/.test(String(endpoint))) {
+      _agentLog({
+        runId: 'repro-500',
+        hypothesisId: 'A,B,D,E',
+        location: 'app.js:api',
+        message: 'API error',
+        data: {
+          endpoint: String(endpoint).slice(0, 120),
+          status: status || null,
+          errMsg: data?.error || err?.message || String(err),
+          hasToken: !!authToken,
+        },
+      })
+    }
+    // #endregion
+    throw err
+  })
 }
 
 function authedFileUrl(path) {
@@ -578,7 +602,7 @@ function isOverdue(task) {
 
 function getProjectTypeName(t) {
   const m = { building: 'Công trình', infrastructure: 'Hạ tầng', transport: 'Giao thông', energy: 'Năng lượng', hydraulic: 'Thủy lợi' }
-  return m[t] || t
+  return m[t] || t || '—'
 }
 
 function initDatetimeClock() {
@@ -730,7 +754,12 @@ function navigate(page, opts = {}) {
   }
 
   if (page === 'executive-dashboard') {
-    if (typeof initExecutiveDashboard === 'function') initExecutiveDashboard()
+    const boot = typeof window.ensureExecutiveDashboard === 'function'
+      ? window.ensureExecutiveDashboard()
+      : Promise.resolve()
+    boot.then(() => {
+      if (typeof initExecutiveDashboard === 'function') initExecutiveDashboard()
+    }).catch(e => toast('Lỗi tải Executive Dashboard: ' + e.message, 'error'))
   }
   else if (page === 'dashboard') loadDashboard()
   else if (page === 'projects') loadProjects()
@@ -1010,31 +1039,26 @@ async function initApp() {
     document.querySelectorAll('.pmo-only').forEach(el => el.style.display = 'none')
   }
 
-  // Initialize DB
-  try {
-    await api('/system/init', { method: 'post' })
-  } catch (e) {
-    // Already initialized
-  }
+  // Schema chỉ qua wrangler migrations — không gọi /system/init mỗi boot (tránh DDL/request rác)
 
-  // Load disciplines
+  // Load boot data song song (disciplines + fiscal + projects slim)
   try {
-    allDisciplines = await api('/disciplines')
-    window.allDisciplines = allDisciplines   // sync to window for weekly plan module
-  } catch (e) { allDisciplines = []; window.allDisciplines = [] }
-
-  // Load fiscal year settings để dùng khi tính NTC cho chi phí chung
-  try {
-    const sysConf = await api('/system/config')
-    window._fiscalStartMonth = sysConf.fiscal_year_start_month || 2
-  } catch (e) { window._fiscalStartMonth = 2 }
-
-  // Preload allProjects để populate _projectRoleCache sớm nhất có thể
-  // (quan trọng: giúp task/timesheet pages biết effective role của user)
-  try {
-    allProjects = await api('/projects')
+    const [disc, sysConf, projects] = await Promise.all([
+      api('/disciplines').catch(() => []),
+      api('/system/config').catch(() => ({})),
+      api('/projects?fields=slim').catch(() => []),
+    ])
+    allDisciplines = disc || []
+    window.allDisciplines = allDisciplines
+    window._fiscalStartMonth = sysConf?.fiscal_year_start_month || 2
+    allProjects = projects || []
+    _projectsCacheAt = Date.now()
+    _projectsCacheKind = 'slim'
     refreshProjectRoleCache()
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    allDisciplines = []; window.allDisciplines = []
+    window._fiscalStartMonth = 2
+  }
 
   initDatetimeClock()
   restorePageFromHash()
@@ -1174,7 +1198,7 @@ async function loadDashboard() {
     renderDisciplineChart(discipline_breakdown)
     renderHoursChart(monthly_hours)
     renderProjectProgressList(project_progress)
-    renderRecentTasksTable(project_progress)
+    renderRecentTasksTable(project_progress, data.overdue_tasks_list || [])
     renderBirthdayWidget(birthdays_this_month || [])
   } catch (e) {
     console.error('Dashboard error:', e)
@@ -1553,9 +1577,10 @@ function renderProjectProgressList(data) {
   }).join('') || '<p class="text-gray-400 text-sm text-center">Chưa có dữ liệu</p>'
 }
 
-async function renderRecentTasksTable(projectData) {
+async function renderRecentTasksTable(projectData, overdueFromStats) {
   try {
-    const tasks = await api('/tasks?overdue=1')
+    // Dùng top-N overdue từ /dashboard/stats — không gọi GET /tasks?overdue=1 (tránh full-scan + UPDATE)
+    const tasks = Array.isArray(overdueFromStats) ? overdueFromStats : []
     const tbody = $('recentTasksTable')
     if (!tbody) return
     const displayTasks = tasks.slice(0, 8)
@@ -1770,9 +1795,48 @@ async function markChatNotifsRead(contextType, contextId) {
 // ================================================================
 // PROJECTS
 // ================================================================
-async function loadProjects() {
+let _projectsCacheAt = 0
+let _projectsCacheKind = '' // 'slim' | 'full'
+const PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000
+
+async function fetchProjectsCached(force = false, fields) {
+  const wantSlim = fields === 'slim'
+  const kind = wantSlim ? 'slim' : 'full'
+  const fresh = !force && allProjects?.length && (Date.now() - _projectsCacheAt) < PROJECTS_CACHE_TTL_MS
+  // #region agent log
+  const sample = allProjects?.[0] || null
+  _agentLog({
+    runId: 'repro-500',
+    hypothesisId: 'C',
+    location: 'app.js:fetchProjectsCached',
+    message: 'projects cache decision',
+    data: {
+      force: !!force,
+      fields: fields || null,
+      kind,
+      cacheKind: _projectsCacheKind,
+      fresh: !!fresh,
+      count: allProjects?.length || 0,
+      sampleHasClient: sample ? ('client' in sample) : null,
+      sampleHasTotalTasks: sample ? ('total_tasks' in sample) : null,
+      sampleProjectType: sample?.project_type ?? null,
+      willReturnCache: !!(fresh && _projectsCacheKind === kind),
+    },
+  })
+  // #endregion
+  // Chỉ reuse cache khi cùng loại (slim vs full) — tránh render card bằng dữ liệu slim
+  if (fresh && _projectsCacheKind === kind) return allProjects
+  const q = wantSlim ? '?fields=slim' : ''
+  allProjects = await api(`/projects${q}`)
+  _projectsCacheAt = Date.now()
+  _projectsCacheKind = kind
+  refreshProjectRoleCache()
+  return allProjects
+}
+
+async function loadProjects(force = false) {
   try {
-    allProjects = await api('/projects')
+    allProjects = await fetchProjectsCached(force)
     allUsers = await api('/users')
     // Cập nhật cache role ngay sau khi load (my_project_role từ API)
     refreshProjectRoleCache()
@@ -2546,6 +2610,9 @@ $('projectForm').addEventListener('submit', async (e) => {
     let apiRes = null
     if (id) apiRes = await api(`/projects/${id}`, { method: 'put', data })
     else apiRes = await api('/projects', { method: 'post', data })
+    _projectsCacheAt = 0
+    _projectsCacheKind = ''
+    await fetchProjectsCached(true)
     // #region agent log
     _agentLog({ runId: 'post-fix', hypothesisId: 'A,D', location: 'app.js:projectForm.afterApi', message: 'api success', data: { isEdit: !!id, apiRes: apiRes || null } })
     // #endregion
@@ -3124,8 +3191,8 @@ async function submitCatImport() {
 }
 
 // Tải template Excel cho user
-function downloadCatTemplate() {
-  if (typeof XLSX === 'undefined') { toast('Thư viện Excel chưa tải xong, thử lại sau', 'warning'); return }
+async function downloadCatTemplate() {
+  try { await ensureXlsxReady() } catch (e) { toast(e.message, 'error'); return }
   const wb = XLSX.utils.book_new()
   const data = [
     ['Mã hạng mục', 'Tên hạng mục'],
@@ -3158,9 +3225,12 @@ document.addEventListener('DOMContentLoaded', () => {
 })
 async function loadTasks() {
   try {
-    if (!allProjects.length) allProjects = await api('/projects')
+    if (!allProjects.length) await fetchProjectsCached(false, 'slim')
     if (!allUsers.length) allUsers = await api('/users')
-    allTasks = await api('/tasks')
+    // Phân trang server: mặc định 500; có thể tăng limit khi cần
+    const pageLimit = 500
+    allTasks = await api(`/tasks?limit=${pageLimit}&offset=0`)
+    if (!Array.isArray(allTasks)) allTasks = allTasks?.data || []
 
     // Populate project role cache for current user
     refreshProjectRoleCache()
@@ -4900,9 +4970,9 @@ async function initChatPanel(container, contextType, contextId, heightPx = 500) 
         }
       }
     }
-    // Always refresh notifications to update badges (both when visible and hidden)
-    loadNotifications()
-  }, 15000)
+    // Badge nhẹ — không load full list khi panel chat ẩn
+    pollNotificationBadge()
+  }, 30000)
 }
 
 // ── Load & render messages ────────────────────────────────────────────────
@@ -16864,7 +16934,8 @@ async function renderProjectFinancialTab(force = false) {
 let _projFinData = null
 
 // ── Xuất Excel bảng chi tiết tài chính từng dự án ────────────────
-function exportFinDetailExcel() {
+async function exportFinDetailExcel() {
+  try { await ensureXlsxReady() } catch (e) { toast(e.message, 'error'); return }
   if (typeof XLSX === 'undefined') {
     toast('Thư viện Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return
   }
@@ -20450,6 +20521,7 @@ async function openImportExcelModal() {
   if (!_legalCurrentProjectId) {
     toast('Vui lòng chọn dự án trước', 'warning'); return
   }
+  try { await ensureXlsxReady() } catch (e) { toast(e.message, 'error'); return }
   clearImportFile()
   $('importResultBox').classList.add('hidden')
   $('importResultBox').innerHTML = ''
@@ -20650,11 +20722,8 @@ async function executeImportExcel() {
 }
 
 // ── Download Excel Template ──────────────────────────────────────────────────
-function downloadExcelTemplate() {
-  // Generate template Excel using SheetJS (XLSX library đã có sẵn)
-  if (typeof XLSX === 'undefined') {
-    toast('Thư viện XLSX chưa tải, vui lòng thử lại', 'error'); return
-  }
+async function downloadExcelTemplate() {
+  try { await ensureXlsxReady() } catch (e) { toast(e.message, 'error'); return }
 
   const wb = XLSX.utils.book_new()
 
@@ -21758,7 +21827,7 @@ function cbClearPivotSelection() {
 // ── END pivot table pagination ─────────────────────────────────
 
 async function exportCostBreakdownExcel() {
-  if (typeof XLSX === 'undefined') { toast('Thư viện XLSX chưa được tải', 'error'); return }
+  try { await ensureXlsxReady() } catch (e) { toast(e.message, 'error'); return }
   const year   = $('cbYear')?.value || String(new Date().getFullYear())
   const projId = _cbGetValue('cbProjectCombobox')
   const costType = $('cbCostType')?.value || ''

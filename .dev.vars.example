@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local wrangler (gitignored).
+# Production: set JWT_SECRET in Cloudflare Pages → Settings → Environment variables.
+JWT_SECRET=local-preview-jwt-secret-bim-pm-2026
+ALLOW_PREVIEW=1
