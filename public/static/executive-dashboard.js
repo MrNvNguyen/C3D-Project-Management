@@ -1324,6 +1324,7 @@ function exec_tab_finance(ov) {
             <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
               <tr>
                 <th class="px-3 py-2 text-left">Đợt / Nội dung</th>
+                <th class="px-3 py-2 text-left">Gói thầu</th>
                 <th class="px-3 py-2 text-right">Số tiền</th>
                 <th class="px-3 py-2 text-right">Đã thanh toán</th>
                 <th class="px-3 py-2 text-center">Trạng thái</th>
@@ -1336,6 +1337,9 @@ function exec_tab_finance(ov) {
                 <td class="px-3 py-2">
                   <p class="font-medium text-gray-800 truncate max-w-[200px]">${pay.payment_phase||pay.description}</p>
                   ${pay.request_number?`<p class="text-xs text-gray-400 font-mono">${pay.request_number}</p>`:''}
+                </td>
+                <td class="px-3 py-2">
+                  <p class="text-sm text-gray-700 truncate max-w-[160px]" title="${(pay.package_name||'').replace(/"/g,'&quot;')}">${pay.package_name || '—'}</p>
                 </td>
                 <td class="px-3 py-2 text-right font-bold text-gray-800 whitespace-nowrap">${exec_fmtMoney(pay.amount)}</td>
                 <td class="px-3 py-2 text-right font-bold text-green-600 whitespace-nowrap">${exec_fmtMoney(pay.paid_amount)}</td>

@@ -892,21 +892,6 @@ app.use('/api/*', cors({
   allowHeaders: ['Content-Type', 'Authorization'],
 }))
 
-// #region agent log
-app.post('/api/_debug/client-log', async (c) => {
-  try {
-    const body = await c.req.json()
-    console.log('[DEBUG_AGENT]', JSON.stringify(body))
-    await fetch('http://127.0.0.1:7713/ingest/6f559b40-1998-4d4b-a4dc-49984b6e31e8', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18dfab' },
-      body: JSON.stringify({ sessionId: '18dfab', ...body, timestamp: body.timestamp || Date.now() }),
-    }).catch(() => {})
-  } catch (_) {}
-  return c.json({ ok: true })
-})
-// #endregion
-
 // Auth middleware
 const authMiddleware = async (c: any, next: any) => {
   const authHeader = c.req.header('Authorization')
@@ -918,9 +903,6 @@ const authMiddleware = async (c: any, next: any) => {
   }
   const secret = c.env.JWT_SECRET
   if (!secret) {
-    // #region agent log
-    console.log('[DEBUG_AGENT]', JSON.stringify({ sessionId: '18dfab', hypothesisId: 'A', location: 'authMiddleware', message: 'JWT_SECRET missing', timestamp: Date.now() }))
-    // #endregion
     return c.json({ error: 'Server misconfigured: JWT_SECRET missing' }, 500)
   }
   const payload = await verifyToken(token, secret)
@@ -1442,9 +1424,6 @@ app.get('/api/projects', authMiddleware, async (c) => {
       }
     }))
   } catch (e: any) {
-    // #region agent log
-    console.log('[DEBUG_AGENT]', JSON.stringify({ sessionId: '18dfab', hypothesisId: 'D', location: 'GET /api/projects', message: e?.message || String(e), data: { fields: c.req.query('fields') || null }, timestamp: Date.now() }))
-    // #endregion
     return c.json({ error: e.message }, 500)
   }
 })
@@ -1543,11 +1522,6 @@ app.post('/api/projects', authMiddleware, async (c) => {
       admin_id || user.id, leader_id || null, project_code_letter || codeNorm, user.id).run()
 
     const projectId = result.meta.last_row_id
-
-    // #region agent log
-    console.log('[DEBUG_AGENT]', JSON.stringify({ sessionId: '18dfab', hypothesisId: 'A', location: 'index.tsx:POST /api/projects', message: 'insert ok before email', data: { projectId, code: codeNorm }, timestamp: Date.now() }))
-    fetch('http://127.0.0.1:7713/ingest/6f559b40-1998-4d4b-a4dc-49984b6e31e8', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18dfab' }, body: JSON.stringify({ sessionId: '18dfab', runId: 'pre-fix', hypothesisId: 'A', location: 'index.tsx:POST /api/projects', message: 'insert ok before email', data: { projectId, code: codeNorm }, timestamp: Date.now() }) }).catch(() => {})
-    // #endregion
 
     // ── Email (background): không chặn response — tránh popup kẹt khi Resend/DB chậm ──
     const emailTask = (async () => {
@@ -1920,12 +1894,21 @@ app.get('/api/projects/:id/categories', authMiddleware, async (c) => {
     const db = c.env.DB
     const projectId = parseInt(c.req.param('id'))
     const categories = await db.prepare(`
-      SELECT c.*, 
-        (SELECT COUNT(*) FROM tasks t WHERE t.category_id = c.id) as task_count,
-        (SELECT COUNT(*) FROM tasks t WHERE t.category_id = c.id AND t.status = 'completed') as completed_tasks
-      FROM categories c WHERE c.project_id = ?
+      SELECT c.*,
+        COALESCE(tc.task_count, 0) AS task_count,
+        COALESCE(tc.completed_tasks, 0) AS completed_tasks
+      FROM categories c
+      LEFT JOIN (
+        SELECT category_id,
+          COUNT(*) AS task_count,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_tasks
+        FROM tasks
+        WHERE project_id = ? AND category_id IS NOT NULL
+        GROUP BY category_id
+      ) tc ON tc.category_id = c.id
+      WHERE c.project_id = ?
       ORDER BY c.created_at ASC
-    `).bind(projectId).all()
+    `).bind(projectId, projectId).all()
     return c.json(categories.results)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -2258,13 +2241,22 @@ app.get('/api/tasks', authMiddleware, async (c) => {
         u2.full_name as assigned_by_name,
         p.name as project_name, p.code as project_code,
         cat.name as category_name,
-        (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id) as subtask_count,
-        (SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id AND st.status = 'done') as subtask_done_count,
-        (SELECT DATE(MIN(th.created_at)) FROM task_history th
-         WHERE th.task_id = t.id AND th.field_changed = 'status'
-           AND th.new_value IN ('review','completed')
-        ) as first_review_date
+        COALESCE(sc.subtask_count, 0) AS subtask_count,
+        COALESCE(sc.subtask_done_count, 0) AS subtask_done_count,
+        fr.first_review_date
       FROM tasks t
+      LEFT JOIN (
+        SELECT task_id,
+          COUNT(*) AS subtask_count,
+          SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS subtask_done_count
+        FROM subtasks GROUP BY task_id
+      ) sc ON sc.task_id = t.id
+      LEFT JOIN (
+        SELECT task_id, DATE(MIN(created_at)) AS first_review_date
+        FROM task_history
+        WHERE field_changed = 'status' AND new_value IN ('review','completed')
+        GROUP BY task_id
+      ) fr ON fr.task_id = t.id
       LEFT JOIN users u1 ON t.assigned_to = u1.id
       LEFT JOIN users u2 ON t.assigned_by = u2.id
       LEFT JOIN projects p ON t.project_id = p.id
@@ -2318,9 +2310,6 @@ app.get('/api/tasks', authMiddleware, async (c) => {
     const result = await db.prepare(query).bind(...params).all()
     return c.json(result.results)
   } catch (e: any) {
-    // #region agent log
-    console.log('[DEBUG_AGENT]', JSON.stringify({ sessionId: '18dfab', hypothesisId: 'B', location: 'GET /api/tasks', message: e?.message || String(e), timestamp: Date.now() }))
-    // #endregion
     return c.json({ error: e.message }, 500)
   }
 })
@@ -3366,9 +3355,6 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       }
     })
   } catch (e: any) {
-    // #region agent log
-    console.log('[DEBUG_AGENT]', JSON.stringify({ sessionId: '18dfab', hypothesisId: 'E', location: 'GET /api/timesheets', message: e?.message || String(e), timestamp: Date.now() }))
-    // #endregion
     return c.json({ error: e.message }, 500)
   }
 })
@@ -5853,6 +5839,9 @@ interface FiscalYearSettings {
 let _fySettingsCache: { at: number; value: FiscalYearSettings } | null = null
 const FY_SETTINGS_TTL_MS = 60_000
 
+let _availableYearsCache: { at: number; value: any } | null = null
+const AVAILABLE_YEARS_TTL_MS = 300_000
+
 async function getFiscalYearSettings(db: any): Promise<FiscalYearSettings> {
   if (_fySettingsCache && (Date.now() - _fySettingsCache.at) < FY_SETTINGS_TTL_MS) {
     return _fySettingsCache.value
@@ -7531,7 +7520,7 @@ app.patch('/api/notifications/read-all', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    await db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').bind(user.id).run()
+    await db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0').bind(user.id).run()
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -8134,6 +8123,9 @@ app.post('/api/dashboard/send-birthday-emails', authMiddleware, async (c) => {
 // Luôn thêm năm hiện tại + 1 năm tiếp theo dù chưa có dữ liệu
 app.get('/api/dashboard/available-years', authMiddleware, adminOnly, async (c) => {
   try {
+    if (_availableYearsCache && (Date.now() - _availableYearsCache.at) < AVAILABLE_YEARS_TTL_MS) {
+      return c.json(_availableYearsCache.value)
+    }
     const db = c.env.DB
     const fySettings = await getFiscalYearSettings(db)
     const currentCalYear = new Date().getFullYear()
@@ -8233,13 +8225,15 @@ app.get('/api/dashboard/available-years', authMiddleware, adminOnly, async (c) =
     const years = Array.from(yearSet).sort((a, b) => a - b)
     const calendarYears = Array.from(calYearSet).sort((a, b) => a - b)
 
-    return c.json({
+    const payload = {
       years,
       calendar_years: calendarYears,
       current_ntc_year: currentNtcYear,
       current_cal_year: currentCalYear,
       fiscal_year_start_month: fySettings.start_month
-    })
+    }
+    _availableYearsCache = { at: Date.now(), value: payload }
+    return c.json(payload)
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -16324,9 +16318,12 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     const recentPayments = await db.prepare(`
       SELECT pr.id, pr.request_number, pr.description, pr.payment_phase,
              pr.amount, pr.paid_amount, pr.status, pr.request_date, pr.paid_date,
-             li.stt as item_stt, li.title as item_title
+             li.stt as item_stt, li.title as item_title,
+             lp.name as package_name, lp.package_type as package_type
       FROM payment_requests pr
       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+      LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+      LEFT JOIN legal_packages lp ON lp.id = ls.package_id
       WHERE pr.project_id = ?
       ORDER BY pr.request_date DESC, pr.created_at DESC
       LIMIT 10

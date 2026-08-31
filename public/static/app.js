@@ -11,15 +11,13 @@ async function ensureXlsxReady() {
 function getXLSXCore()     { return window._XLSXCore   || window.XLSX }
 
 const API_BASE = ''
-// #region agent log
-function _agentLog(payload) {
-  const body = JSON.stringify({ sessionId: '18dfab', timestamp: Date.now(), ...payload })
-  try { fetch('/api/_debug/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {}) } catch (_) {}
-  try { fetch('http://127.0.0.1:7713/ingest/6f559b40-1998-4d4b-a4dc-49984b6e31e8', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18dfab' }, body }).catch(() => {}) } catch (_) {}
-}
-// #endregion
 let currentUser = null
 let authToken = null
+const TASK_LIST_LIMIT = 500
+let _projectDetailFetchCache = { projectId: null, tasks: [], categories: [] }
+function _invalidateProjectDetailCache() {
+  _projectDetailFetchCache = { projectId: null, tasks: [], categories: [] }
+}
 let allProjects = []
 let _projectViewMode = 'card'    // 'card' | 'list'
 let _allCategoriesForFilter = [] // unused legacy – kept for safety
@@ -134,24 +132,6 @@ function api(endpoint, options = {}) {
     headers,
     ...options
   }).then(r => r.data).catch(err => {
-    // #region agent log
-    const status = err?.response?.status
-    const data = err?.response?.data
-    if (status >= 400 || /\/(tasks|projects|timesheets)/.test(String(endpoint))) {
-      _agentLog({
-        runId: 'repro-500',
-        hypothesisId: 'A,B,D,E',
-        location: 'app.js:api',
-        message: 'API error',
-        data: {
-          endpoint: String(endpoint).slice(0, 120),
-          status: status || null,
-          errMsg: data?.error || err?.message || String(err),
-          hasToken: !!authToken,
-        },
-      })
-    }
-    // #endregion
     throw err
   })
 }
@@ -441,11 +421,6 @@ function startSmartNotifPoll() {
 // ================================================================
 
 function closeModal(id) {
-  // #region agent log
-  if (id === 'projectModal') {
-    _agentLog({ runId: 'pre-fix', hypothesisId: 'B,C', location: 'app.js:closeModal', message: 'closeModal called', data: { id, elExists: !!$(id), beforeDisplay: $(id) ? $(id).style.display : null } })
-  }
-  // #endregion
   $(id).style.display = 'none'
   // Close & return any teleported combobox panels to their wraps
   Object.keys(_cbState).forEach(cbId => {
@@ -472,11 +447,6 @@ function closeModal(id) {
   }
 }
 function openModal(id) {
-  // #region agent log
-  if (id === 'projectModal') {
-    _agentLog({ runId: 'pre-fix', hypothesisId: 'C', location: 'app.js:openModal', message: 'openModal projectModal', data: { stack: (new Error()).stack?.split('\n').slice(0, 5) } })
-  }
-  // #endregion
   $(id).style.display = 'flex'
 }
 
@@ -1803,27 +1773,6 @@ async function fetchProjectsCached(force = false, fields) {
   const wantSlim = fields === 'slim'
   const kind = wantSlim ? 'slim' : 'full'
   const fresh = !force && allProjects?.length && (Date.now() - _projectsCacheAt) < PROJECTS_CACHE_TTL_MS
-  // #region agent log
-  const sample = allProjects?.[0] || null
-  _agentLog({
-    runId: 'repro-500',
-    hypothesisId: 'C',
-    location: 'app.js:fetchProjectsCached',
-    message: 'projects cache decision',
-    data: {
-      force: !!force,
-      fields: fields || null,
-      kind,
-      cacheKind: _projectsCacheKind,
-      fresh: !!fresh,
-      count: allProjects?.length || 0,
-      sampleHasClient: sample ? ('client' in sample) : null,
-      sampleHasTotalTasks: sample ? ('total_tasks' in sample) : null,
-      sampleProjectType: sample?.project_type ?? null,
-      willReturnCache: !!(fresh && _projectsCacheKind === kind),
-    },
-  })
-  // #endregion
   // Chỉ reuse cache khi cùng loại (slim vs full) — tránh render card bằng dữ liệu slim
   if (fresh && _projectsCacheKind === kind) return allProjects
   const q = wantSlim ? '?fields=slim' : ''
@@ -2224,8 +2173,18 @@ function projTaskGoPage(page) {
 async function openProjectDetail(id, openChatTab = false) {
   try {
     const project = await api(`/projects/${id}`)
-    const categories = await api(`/projects/${id}/categories`)
-    const tasks = await api(`/tasks?project_id=${id}`)
+    const pid = parseInt(id)
+    let categories, tasks
+    if (_projectDetailFetchCache.projectId === pid) {
+      categories = _projectDetailFetchCache.categories
+      tasks = _projectDetailFetchCache.tasks
+    } else {
+      ;[categories, tasks] = await Promise.all([
+        api(`/projects/${id}/categories`),
+        api(`/tasks?project_id=${id}&limit=${TASK_LIST_LIMIT}`)
+      ])
+      _projectDetailFetchCache = { projectId: pid, categories, tasks }
+    }
     let projectModels = []
     try { projectModels = await api(`/projects/${id}/models`) } catch(_) {}
 
@@ -2603,9 +2562,6 @@ $('projectForm').addEventListener('submit', async (e) => {
     admin_id: parseInt($('projectAdmin').value) || null,
     leader_id: parseInt($('projectLeader').value) || null
   }
-  // #region agent log
-  _agentLog({ runId: 'post-fix', hypothesisId: 'A,D', location: 'app.js:projectForm.submit', message: 'submit start', data: { isEdit: !!id, code: data.code || null } })
-  // #endregion
   try {
     let apiRes = null
     if (id) apiRes = await api(`/projects/${id}`, { method: 'put', data })
@@ -2613,14 +2569,7 @@ $('projectForm').addEventListener('submit', async (e) => {
     _projectsCacheAt = 0
     _projectsCacheKind = ''
     await fetchProjectsCached(true)
-    // #region agent log
-    _agentLog({ runId: 'post-fix', hypothesisId: 'A,D', location: 'app.js:projectForm.afterApi', message: 'api success', data: { isEdit: !!id, apiRes: apiRes || null } })
-    // #endregion
     closeModal('projectModal')
-    const modalEl = $('projectModal')
-    // #region agent log
-    _agentLog({ runId: 'post-fix', hypothesisId: 'B,C', location: 'app.js:projectForm.afterClose', message: 'after closeModal', data: { display: modalEl ? modalEl.style.display : null, computed: modalEl ? getComputedStyle(modalEl).display : null } })
-    // #endregion
     toast(id ? 'Cập nhật dự án thành công' : 'Tạo dự án thành công')
     await loadProjects()
     // Nếu đang xem chi tiết dự án vừa sửa → refresh lại để hiện thông tin mới
@@ -2628,9 +2577,6 @@ $('projectForm').addEventListener('submit', async (e) => {
       openProjectDetail(parseInt(id))
     }
   } catch (e) {
-    // #region agent log
-    _agentLog({ runId: 'post-fix', hypothesisId: 'A', location: 'app.js:projectForm.catch', message: 'api/handler error', data: { err: e?.response?.data?.error || e?.message || String(e), status: e?.response?.status || null, modalDisplay: $('projectModal') ? $('projectModal').style.display : null } })
-    // #endregion
     toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
     // Refresh list so a race-created project is visible after user closes modal
     if (!id) {
@@ -3223,14 +3169,23 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
 })
+async function fetchTasksForList(projectId = '') {
+  let url = `/tasks?limit=${TASK_LIST_LIMIT}&offset=0`
+  if (projectId) url += `&project_id=${encodeURIComponent(projectId)}`
+  const resp = await api(url)
+  return Array.isArray(resp) ? resp : (resp?.data || [])
+}
+
 async function loadTasks() {
   try {
     if (!allProjects.length) await fetchProjectsCached(false, 'slim')
     if (!allUsers.length) allUsers = await api('/users')
-    // Phân trang server: mặc định 500; có thể tăng limit khi cần
-    const pageLimit = 500
-    allTasks = await api(`/tasks?limit=${pageLimit}&offset=0`)
-    if (!Array.isArray(allTasks)) allTasks = allTasks?.data || []
+
+    // Lưu lại giá trị filter đang chọn trước khi rebuild combobox
+    const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
+
+    // Khi đã chọn dự án: fetch theo project_id (cùng RBAC + phạm vi như Chi tiết dự án)
+    allTasks = await fetchTasksForList(prevProjectFilter)
 
     // Populate project role cache for current user
     refreshProjectRoleCache()
@@ -3242,9 +3197,6 @@ async function loadTasks() {
       btnNewTask.innerHTML = '<i class="fas fa-plus"></i>Tạo task mới'
       btnNewTask.title = ''
     }
-
-    // Lưu lại giá trị filter đang chọn trước khi rebuild combobox
-    const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
 
     // Build project combobox (restore giá trị cũ để không mất filter)
     createCombobox('taskProjectCombobox', {
@@ -3273,8 +3225,8 @@ async function loadTasks() {
       }
     }
 
-    // Build category combobox (all categories from loaded tasks)
-    updateTaskCategoryFilter()
+    // Build category combobox (categories của dự án đang lọc)
+    await updateTaskCategoryFilter(prevProjectFilter)
 
     // Áp lại filter hiện tại thay vì render toàn bộ
     filterTasks()
@@ -3595,16 +3547,21 @@ document.addEventListener('click', function(e) {
 // TASK FILTERS - combobox-powered
 // ================================================================
 
-// Called when project combobox selection changes
-function onTaskProjectFilterChange(projectId) {
-  updateTaskCategoryFilter(projectId)
-  filterTasks()
+// Called when project combobox selection changes — refetch từ server (không chỉ lọc client)
+async function onTaskProjectFilterChange(projectId) {
+  try {
+    allTasks = await fetchTasksForList(projectId || '')
+    await updateTaskCategoryFilter(projectId || '')
+    filterTasks()
+  } catch (e) {
+    toast('Lỗi tải task: ' + e.message, 'error')
+  }
 }
 
 // Rebuild category combobox items based on selected project.
 // - No project selected → hide the category combobox entirely
-// - Project selected    → show combobox with only that project's categories
-function updateTaskCategoryFilter(selectedProjectId = '') {
+// - Project selected    → show combobox with categories from API (đồng bộ với Chi tiết dự án)
+async function updateTaskCategoryFilter(selectedProjectId = '') {
   const wrapper = $('taskCategoryCombobox')
   if (!wrapper) return
 
@@ -3620,17 +3577,23 @@ function updateTaskCategoryFilter(selectedProjectId = '') {
     return
   }
 
-  // ── Project selected: collect its categories ────────────────
-  const tasksForProject = allTasks.filter(t => String(t.project_id) === String(selectedProjectId))
-  const catMap = {}
-  tasksForProject.forEach(t => {
-    if (t.category_id && t.category_name) catMap[t.category_id] = t.category_name
-  })
-  const items = Object.entries(catMap).map(([id, name]) => ({ value: id, label: name }))
+  // ── Project selected: load categories từ API (không suy từ allTasks đã tải) ──
+  let items = []
+  try {
+    const cats = await api(`/projects/${selectedProjectId}/categories`)
+    items = (Array.isArray(cats) ? cats : []).map(c => ({ value: String(c.id), label: c.name }))
+  } catch (_) {
+    const tasksForProject = allTasks.filter(t => String(t.project_id) === String(selectedProjectId))
+    const catMap = {}
+    tasksForProject.forEach(t => {
+      if (t.category_id && t.category_name) catMap[t.category_id] = t.category_name
+    })
+    items = Object.entries(catMap).map(([id, name]) => ({ value: id, label: name }))
+  }
 
   // Keep previous category only if it still belongs to this project
   const prevVal = _cbGetValue('taskCategoryCombobox')
-  const keepValue = !!catMap[prevVal]
+  const keepValue = items.some(i => String(i.value) === String(prevVal))
 
   if (wrapper.querySelector('[id$="_wrap"]')) {
     // Combobox already rendered – just refresh items
@@ -4661,6 +4624,7 @@ $('taskForm').addEventListener('submit', async (e) => {
 
     // Nếu đang xem chi tiết dự án → reload lại để cập nhật realtime
     if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
+      _invalidateProjectDetailCache()
       await openProjectDetail(window._currentProjectDetailId)
     } else {
       loadTasks()
@@ -4690,6 +4654,7 @@ async function deleteTask(id) {
     await api(`/tasks/${id}`, { method: 'delete' })
     toast('Đã xóa task')
     if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
+      _invalidateProjectDetailCache()
       await openProjectDetail(window._currentProjectDetailId)
     } else {
       loadTasks()
@@ -6319,6 +6284,7 @@ $('subtaskForm').addEventListener('submit', async (e) => {
 
     // Nếu đang xem chi tiết dự án → reload lại tiến độ / danh sách task
     if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
+      _invalidateProjectDetailCache()
       await openProjectDetail(window._currentProjectDetailId)
     }
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
@@ -7380,7 +7346,7 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
   if (spinner) spinner.style.display = 'inline'
   if (spinnerMulti) spinnerMulti.style.display = 'inline'
   try {
-    const tasks = await api(`/tasks?project_id=${projectId}`)
+    const tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_LIST_LIMIT}`)
     if (token !== null && token !== _tsProjChangeToken) return
     _tsCachedTasks = Array.isArray(tasks) ? tasks : []
     // Lọc theo hạng mục nếu đang có category được chọn
@@ -8491,8 +8457,18 @@ async function renderGantt() {
   if (!projectId) return
 
   try {
-    const tasks = await api(`/tasks?project_id=${projectId}`)
-    const categories = await api(`/projects/${projectId}/categories`)
+    const pid = parseInt(projectId)
+    let tasks, categories
+    if (_projectDetailFetchCache.projectId === pid) {
+      tasks = _projectDetailFetchCache.tasks
+      categories = _projectDetailFetchCache.categories
+    } else {
+      ;[tasks, categories] = await Promise.all([
+        api(`/tasks?project_id=${projectId}&limit=${TASK_LIST_LIMIT}`),
+        api(`/projects/${projectId}/categories`)
+      ])
+      _projectDetailFetchCache = { projectId: pid, tasks, categories }
+    }
     const container = $('ganttContainer')
 
     if (!tasks.length) {
