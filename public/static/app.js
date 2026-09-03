@@ -3169,11 +3169,16 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
 })
-async function fetchTasksForList(projectId = '') {
+async function fetchTasksForList(projectId = '', overdueOnly = false) {
   let url = `/tasks?limit=${TASK_LIST_LIMIT}&offset=0`
   if (projectId) url += `&project_id=${encodeURIComponent(projectId)}`
+  if (overdueOnly) url += `&overdue=1`
   const resp = await api(url)
   return Array.isArray(resp) ? resp : (resp?.data || [])
+}
+
+function _taskListOverdueOnly() {
+  return !!$('taskOverdueFilter')?.checked
 }
 
 async function loadTasks() {
@@ -3185,7 +3190,7 @@ async function loadTasks() {
     const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
 
     // Khi đã chọn dự án: fetch theo project_id (cùng RBAC + phạm vi như Chi tiết dự án)
-    allTasks = await fetchTasksForList(prevProjectFilter)
+    allTasks = await fetchTasksForList(prevProjectFilter, _taskListOverdueOnly())
 
     // Populate project role cache for current user
     refreshProjectRoleCache()
@@ -3550,8 +3555,18 @@ document.addEventListener('click', function(e) {
 // Called when project combobox selection changes — refetch từ server (không chỉ lọc client)
 async function onTaskProjectFilterChange(projectId) {
   try {
-    allTasks = await fetchTasksForList(projectId || '')
+    allTasks = await fetchTasksForList(projectId || '', _taskListOverdueOnly())
     await updateTaskCategoryFilter(projectId || '')
+    filterTasks()
+  } catch (e) {
+    toast('Lỗi tải task: ' + e.message, 'error')
+  }
+}
+
+async function onTaskOverdueFilterChange() {
+  const projectId = _cbGetValue('taskProjectCombobox') || ''
+  try {
+    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly())
     filterTasks()
   } catch (e) {
     toast('Lỗi tải task: ' + e.message, 'error')

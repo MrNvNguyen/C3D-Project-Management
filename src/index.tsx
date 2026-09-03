@@ -2302,7 +2302,7 @@ app.get('/api/tasks', authMiddleware, async (c) => {
     if (project_id) { query += ` AND t.project_id = ?`; params.push(parseInt(project_id)) }
     if (status) { query += ` AND t.status = ?`; params.push(status) }
     if (assigned_to) { query += ` AND t.assigned_to = ?`; params.push(parseInt(assigned_to)) }
-    if (overdue === '1') { query += ` AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')` }
+    if (overdue === '1') { query += ` AND t.due_date IS NOT NULL AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')` }
 
     query += ` ORDER BY t.due_date ASC, t.priority DESC LIMIT ? OFFSET ?`
     params.push(limit, offset)

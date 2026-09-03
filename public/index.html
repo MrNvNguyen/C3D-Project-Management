@@ -1353,7 +1353,7 @@
             </select>
             <div id="taskDisciplineFilterCombobox" style="position:relative;display:inline-block;min-width:160px"></div>
             <label class="flex items-center gap-2 text-sm cursor-pointer">
-              <input type="checkbox" id="taskOverdueFilter" onchange="filterTasks()"> Chỉ task trễ hạn
+              <input type="checkbox" id="taskOverdueFilter" onchange="onTaskOverdueFilterChange()"> Chỉ task trễ hạn
             </label>
             <button onclick="_taskSetSort('default')" class="flex items-center gap-1.5 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 hover:border-indigo-300 rounded px-2.5 py-1.5 transition-colors" id="taskSortResetBtn" title="Sắp xếp mặc định: theo trạng thái + ngày hạn">
               <i class="fas fa-sort-amount-down text-xs"></i> Mặc định
@@ -6508,7 +6508,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260831c"></script>
+<script src="/static/app.js?v=20260903a"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
