@@ -87,6 +87,10 @@ let _lastAnalysisKey = ''              // cache key: projId+periodType+month+yea
 const $ = id => document.getElementById(id)
 const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(n || 0))
 const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0)
+/** Định dạng đồng đầy đủ (không compact) — tránh nhầm "2,778 Tr" = 2.778 triệu */
+function fmtDong(n) {
+  return new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0)) + ' ₫'
+}
 
 // ── Money Input Helpers ──────────────────────────────────────────────────────
 // Format khi user gõ: 5240400000 → 5.240.400.000
@@ -3169,16 +3173,38 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
 })
-async function fetchTasksForList(projectId = '', overdueOnly = false) {
+async function fetchTasksForList(projectId = '', overdueOnly = false, search = '') {
   let url = `/tasks?limit=${TASK_LIST_LIMIT}&offset=0`
   if (projectId) url += `&project_id=${encodeURIComponent(projectId)}`
   if (overdueOnly) url += `&overdue=1`
+  const q = String(search || '').trim()
+  if (q) url += `&search=${encodeURIComponent(q)}`
   const resp = await api(url)
   return Array.isArray(resp) ? resp : (resp?.data || [])
 }
 
 function _taskListOverdueOnly() {
   return !!$('taskOverdueFilter')?.checked
+}
+
+function _taskListSearch() {
+  return ($('taskSearch')?.value || '').trim()
+}
+
+let _taskSearchTimer = null
+function onTaskSearchInput() {
+  clearTimeout(_taskSearchTimer)
+  _taskSearchTimer = setTimeout(() => { onTaskSearchCommit() }, 300)
+}
+
+async function onTaskSearchCommit() {
+  const projectId = _cbGetValue('taskProjectCombobox') || ''
+  try {
+    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly(), _taskListSearch())
+    filterTasks()
+  } catch (e) {
+    toast('Lỗi tải task: ' + e.message, 'error')
+  }
 }
 
 async function loadTasks() {
@@ -3190,7 +3216,7 @@ async function loadTasks() {
     const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
 
     // Khi đã chọn dự án: fetch theo project_id (cùng RBAC + phạm vi như Chi tiết dự án)
-    allTasks = await fetchTasksForList(prevProjectFilter, _taskListOverdueOnly())
+    allTasks = await fetchTasksForList(prevProjectFilter, _taskListOverdueOnly(), _taskListSearch())
 
     // Populate project role cache for current user
     refreshProjectRoleCache()
@@ -3555,7 +3581,7 @@ document.addEventListener('click', function(e) {
 // Called when project combobox selection changes — refetch từ server (không chỉ lọc client)
 async function onTaskProjectFilterChange(projectId) {
   try {
-    allTasks = await fetchTasksForList(projectId || '', _taskListOverdueOnly())
+    allTasks = await fetchTasksForList(projectId || '', _taskListOverdueOnly(), _taskListSearch())
     await updateTaskCategoryFilter(projectId || '')
     filterTasks()
   } catch (e) {
@@ -3566,7 +3592,7 @@ async function onTaskProjectFilterChange(projectId) {
 async function onTaskOverdueFilterChange() {
   const projectId = _cbGetValue('taskProjectCombobox') || ''
   try {
-    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly())
+    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly(), _taskListSearch())
     filterTasks()
   } catch (e) {
     toast('Lỗi tải task: ' + e.message, 'error')
@@ -8727,7 +8753,7 @@ async function loadCostDashboard() {
 
     $('costKpiRevenue').innerHTML = fmtMoney(totalRevenue) +
       (totalPendingRevenue > 0
-        ? `<br><span class="text-xs font-normal text-amber-600" title="Doanh thu trạng thái 'Chờ thanh toán' — chưa tính vào doanh thu thực tế"><i class="fas fa-clock mr-1"></i>⏳ Chờ thu: ${fmtMoney(totalPendingRevenue)}</span>`
+        ? `<br><span class="text-xs font-normal text-amber-600" title="Phần doanh thu vào sổ từ phiếu đã nghiệm thu nhưng chưa thu tiền (đã gồm trong tổng)"><i class="fas fa-clock mr-1"></i>Trong đó chờ thu: ${fmtMoney(totalPendingRevenue)}</span>`
         : '')
     $('costKpiCost').innerHTML = fmtMoney(totalCost) +
       (totalSharedAllocated > 0
@@ -9025,7 +9051,11 @@ async function loadCostAnalysis() {
 
     // Update dynamic labels to reflect period type
     if ($('anaRevenueLabel')) $('anaRevenueLabel').textContent = isMultiPeriod0 ? `Doanh thu (${anaPeriodLabel})` : 'Doanh thu tháng'
-    if ($('anaRevenueSubLabel')) $('anaRevenueSubLabel').textContent = isMultiPeriod0 ? 'Tổng thực thu các tháng' : 'Thực thu trong tháng'
+    if ($('anaRevenueSubLabel')) {
+      $('anaRevenueSubLabel').textContent = pendingRev > 0
+        ? `Trong đó chờ thu: ${fmtMoney(pendingRev)}`
+        : (isMultiPeriod0 ? 'DT vào sổ các tháng' : 'DT vào sổ trong tháng')
+    }
 
     $('anaRevenue').textContent   = fmtMoney(revVal)
     $('anaLaborCost').textContent = fmtMoney(laborVal)
@@ -9039,11 +9069,9 @@ async function loadCostAnalysis() {
     }
     $('anaTotalCost').textContent = fmtMoney(totalVal)
     $('anaProfit').textContent    = fmtMoney(profitVal)
-    // Hiển thị tỷ suất LN và cảnh báo pending revenue
+    // Hiển thị tỷ suất LN
     if (revVal > 0) {
       $('anaProfitMargin').textContent = `Tỷ suất LN: ${margin ?? 'N/A'}%`
-    } else if (pendingRev > 0) {
-      $('anaProfitMargin').textContent = `⏳ Chờ TT: ${fmtMoney(pendingRev)} (chưa tính DT)`
     } else {
       $('anaProfitMargin').textContent = '⚠️ Chưa có doanh thu'
     }
@@ -9428,13 +9456,13 @@ function renderCostTable() {
       <th class="pb-3 pr-3">Ngày</th>
       <th class="pb-3 pr-3">Trạng thái</th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Nghiệm thu HĐ — giá trị nghiệm thu theo hợp đồng (chưa trừ VAT và phí quản lý)">Nghiệm thu HĐ<br><span class="normal-case font-normal text-gray-400">Theo HĐ</span> <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
+        <span title="Nghiệm thu HĐ — giá trị trước VAT (= gross ÷ (1+VAT%))">Nghiệm thu HĐ<br><span class="normal-case font-normal text-amber-500">Trước VAT</span> <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Doanh thu Ngân Sách — doanh thu thực ghi nhận: đã loại VAT và trừ % phí quản lý (giá trị trước thuế)">Doanh thu NS<br><span class="normal-case font-normal text-gray-400">Theo NS</span> <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
+        <span title="Dòng tiền — số đã thanh toán trước VAT">Dòng tiền<br><span class="normal-case font-normal text-blue-400">Trước VAT</span> <i class="fas fa-info-circle text-blue-200 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Dòng tiền thực tế — số tiền khách hàng đã thực sự chuyển khoản/thanh toán">Dòng tiền<br><span class="normal-case font-normal text-blue-400">Thực thu</span> <i class="fas fa-info-circle text-blue-200 ml-0.5"></i></span>
+        <span title="Doanh thu Ngân Sách — sau VAT và trừ % phí quản lý">Doanh thu NS<br><span class="normal-case font-normal text-gray-400">Theo NS</span> <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-center">Nguồn</th>
     </tr>`
@@ -9444,19 +9472,25 @@ function renderCostTable() {
     // Hiển thị tất cả trạng thái — pending (chờ TT) cũng được hiển thị với màu amber
     const displayRevenues = allRevenues
 
-    // Tính tổng theo trạng thái
+    // Tính tổng theo trạng thái — NT & dòng tiền = trước VAT; DT NS = booked
     const revPending            = displayRevenues.filter(r => r.payment_status === 'pending')
     const revCollected          = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status))
-    const revTotalCollected    = revCollected.reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalAll          = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalPending      = revPending.reduce((s, r) => s + (r.amount || 0), 0)
-    // Tổng "Theo HĐ" = paid_amount_original = giá trị nghiệm thu
-    const revTotalOrigCollected = revCollected.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
-    const revTotalOrigPending   = revPending.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
-    const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
-    // Tổng "Dòng tiền" = paid_amount thực thu
-    const revTotalCashCollected = revCollected.reduce((s, r) => s + (r.paid_amount || 0), 0)
-    const revTotalCashAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount || 0), 0)
+    const revNt = (r) => r.amount_before_vat != null
+      ? Number(r.amount_before_vat)
+      : calcRevenueNet(r.acceptance_amount || r.paid_amount_original || r.amount || 0, r.vat_pct || 0, 0)
+    const revCash = (r) => r.cash_before_vat != null
+      ? Number(r.cash_before_vat)
+      : calcRevenueNet(r.cash_collected != null ? r.cash_collected : (r.paid_amount || 0), r.vat_pct || 0, 0)
+    const revNs = (r) => r.booked_revenue != null ? Number(r.booked_revenue) : (r.amount || 0)
+
+    const revTotalCollected    = revCollected.reduce((s, r) => s + revNs(r), 0)
+    const revTotalAll          = displayRevenues.reduce((s, r) => s + revNs(r), 0)
+    const revTotalPending      = revPending.reduce((s, r) => s + revNs(r), 0)
+    const revTotalOrigCollected = revCollected.reduce((s, r) => s + revNt(r), 0)
+    const revTotalOrigPending   = revPending.reduce((s, r) => s + revNt(r), 0)
+    const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + revNt(r), 0)
+    const revTotalCashCollected = revCollected.reduce((s, r) => s + revCash(r), 0)
+    const revTotalCashAll       = displayRevenues.reduce((s, r) => s + revCash(r), 0)
 
     tbody.innerHTML = displayRevenues.map(r => {
       // Hiển thị ngày thông minh:
@@ -9471,42 +9505,38 @@ function renderCostTable() {
         dateCell = fmtDate(r.revenue_date)
       }
 
-      // ── Tính cột "Theo HĐ", "Theo NS" và "Dòng tiền" ─────────────────────────
-      const origAmount = r.acceptance_amount || r.paid_amount_original || r.amount || 0
-      const cashAmount = r.cash_collected != null ? r.cash_collected : (r.paid_amount || 0)
-      const netAmount  = r.booked_revenue != null ? r.booked_revenue : (r.amount || 0)
+      const grossNt    = r.acceptance_amount || r.paid_amount_original || r.amount || 0
+      const ntBefore   = revNt(r)
+      const cashBefore = revCash(r)
+      const cashGross  = r.cash_collected != null ? r.cash_collected : (r.paid_amount || 0)
+      const netAmount  = revNs(r)
       const feePct     = r.fee_pct  || 0
       const vatPct     = r.vat_pct  || 0
-      const beforeVat  = r.amount_before_vat != null ? r.amount_before_vat : netAmount
 
       const hasVat     = vatPct  > 0
       const hasFee     = feePct  > 0
       const hasAdjust  = hasVat  || hasFee
 
-      // ── Xây tooltip chi tiết ──────────────────────────────────────────────────
       let tooltipParts = []
       if (hasVat && hasFee) {
-        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
-        tooltipParts.push(`−VAT ${vatPct}%:  ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(beforeVat)} (trước thuế)`)
-        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(beforeVat)} × ${(100-feePct)}% = ${fmt(netAmount)} (doanh thu NS)`)
+        tooltipParts.push(`Gross: ${fmt(grossNt)}`)
+        tooltipParts.push(`−VAT ${vatPct}%: ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(ntBefore)} (NT trước VAT)`)
+        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(ntBefore)} × ${(100-feePct)}% = ${fmt(netAmount)} (doanh thu NS)`)
       } else if (hasVat) {
-        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
-        tooltipParts.push(`−VAT ${vatPct}%: ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(netAmount)} (trước thuế)`)
+        tooltipParts.push(`Gross: ${fmt(grossNt)}`)
+        tooltipParts.push(`−VAT ${vatPct}%: = ${fmt(ntBefore)} (NT trước VAT)`)
       } else if (hasFee) {
-        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
-        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(origAmount)} × ${(100-feePct)}% = ${fmt(netAmount)}`)
+        tooltipParts.push(`Nghiệm thu: ${fmt(ntBefore)}`)
+        tooltipParts.push(`−Phí QL ${feePct}%: × ${(100-feePct)}% = ${fmt(netAmount)}`)
       }
       const tooltip = tooltipParts.length ? `title="${tooltipParts.join(' | ')}"` : ''
 
-      // ── Badge ghi chú nhỏ hiển thị dưới số ───────────────────────────────────
       let badges = []
       if (hasVat)  badges.push(`<div class="text-xs font-normal text-amber-500 mt-0.5">−VAT ${vatPct}%</div>`)
       if (hasFee)  badges.push(`<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>`)
-      if (hasAdjust) badges.push(`<div class="text-xs font-medium text-blue-500 mt-0.5">Giá trị trước thuế</div>`)
 
-      // Badge dòng tiền
-      const cashDiffPct = origAmount > 0 ? Math.round((cashAmount / origAmount) * 100) : 0
-      const cashBadge   = cashAmount > 0 && cashAmount !== origAmount
+      const cashDiffPct = ntBefore > 0 ? Math.round((cashBefore / ntBefore) * 100) : 0
+      const cashBadge   = cashBefore > 0 && cashBefore !== ntBefore
         ? `<div class="text-xs text-gray-400 mt-0.5">${cashDiffPct}% nghiệm thu</div>` : ''
 
       return `
@@ -9516,16 +9546,18 @@ function renderCostTable() {
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${dateCell}</td>
         <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-gray-700'} font-semibold">
-          ${fmt(origAmount)}
+        <td class="py-2 pr-3 text-sm text-right ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-gray-700'} font-semibold" title="${hasVat ? 'Gross có VAT: ' + fmt(grossNt) : ''}">
+          ${fmt(ntBefore)}
+          ${hasVat ? `<div class="text-xs font-normal text-gray-400 mt-0.5">có VAT: ${fmt(grossNt)}</div>` : ''}
+        </td>
+        <td class="py-2 pr-3 text-sm text-right font-semibold ${cashBefore > 0 ? 'text-blue-600' : 'text-gray-300'}" title="${hasVat && cashGross > 0 ? 'Gross có VAT: ' + fmt(cashGross) : ''}">
+          ${cashBefore > 0 ? fmt(cashBefore) : '—'}
+          ${hasVat && cashGross > 0 ? `<div class="text-xs font-normal text-gray-400 mt-0.5">có VAT: ${fmt(cashGross)}</div>` : ''}
+          ${cashBadge}
         </td>
         <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${tooltip}>
           ${fmt(netAmount)}
           ${badges.join('')}
-        </td>
-        <td class="py-2 pr-3 text-sm text-right font-semibold ${cashAmount > 0 ? 'text-blue-600' : 'text-gray-300'}">
-          ${cashAmount > 0 ? fmt(cashAmount) : '—'}
-          ${cashBadge}
         </td>
         <td class="py-2 pr-3 text-center">
           <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
@@ -9535,7 +9567,7 @@ function renderCostTable() {
       </tr>`
     }).join('') || '<tr><td colspan="9" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
 
-    // ── Tổng cộng footer ──────────────────────────────────────────
+    // ── Tổng cộng footer — cột: NT | Dòng tiền | DT NS ──────────────
     const revTfoot = document.getElementById('revTfoot')
     if (revTfoot) {
       const countCollected = revCollected.length
@@ -9548,8 +9580,8 @@ function renderCostTable() {
             Chờ thanh toán — ${countPending} khoản
           </td>
           <td class="py-2 pr-3 text-right font-bold text-amber-600 text-sm whitespace-nowrap">${fmt(revTotalOrigPending)}</td>
-          <td class="py-2 pr-3 text-right font-bold text-amber-600 text-sm whitespace-nowrap">${fmt(revTotalPending)}</td>
           <td class="py-2 pr-3 text-right font-bold text-gray-300 text-sm whitespace-nowrap">—</td>
+          <td class="py-2 pr-3 text-right font-bold text-amber-600 text-sm whitespace-nowrap">${fmt(revTotalPending)}</td>
           <td></td>
         </tr>` : ''}
         <tr class="border-t-2 border-green-200 bg-green-50/60">
@@ -9558,8 +9590,8 @@ function renderCostTable() {
             Đã thu (paid + partial) — ${countCollected} khoản
           </td>
           <td class="py-2 pr-3 text-right font-bold text-gray-500 text-sm whitespace-nowrap">${fmt(revTotalOrigCollected)}</td>
-          <td class="py-2 pr-3 text-right font-bold text-green-700 text-sm whitespace-nowrap">${fmt(revTotalCollected)}</td>
           <td class="py-2 pr-3 text-right font-bold text-blue-600 text-sm whitespace-nowrap">${revTotalCashCollected > 0 ? fmt(revTotalCashCollected) : '—'}</td>
+          <td class="py-2 pr-3 text-right font-bold text-green-700 text-sm whitespace-nowrap">${fmt(revTotalCollected)}</td>
           <td></td>
         </tr>
         <tr class="border-t border-gray-200 bg-gray-50">
@@ -9567,8 +9599,8 @@ function renderCostTable() {
             <i class="fas fa-sigma mr-1"></i>Tổng cộng (${displayRevenues.length} khoản)
           </td>
           <td class="py-2 pr-3 text-right font-bold text-gray-400 text-sm whitespace-nowrap">${fmt(revTotalOrigAll)}</td>
-          <td class="py-2 pr-3 text-right font-bold text-gray-700 text-sm whitespace-nowrap">${fmt(revTotalAll)}</td>
           <td class="py-2 pr-3 text-right font-bold text-blue-500 text-sm whitespace-nowrap">${revTotalCashAll > 0 ? fmt(revTotalCashAll) : '—'}</td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-700 text-sm whitespace-nowrap">${fmt(revTotalAll)}</td>
           <td></td>
         </tr>`
     }
@@ -13183,10 +13215,10 @@ async function loadFinanceProject() {
                  <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>${project.project_budget > 0 ? 'Tiến độ NS' : 'Tiến độ HĐ'}</span><span>${revenueProgress}%</span></div>
                  <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="bg-green-500 h-1.5 rounded-full" style="width:${revenueProgress}%"></div></div>
                </div>
-               ${pendingRevenue > 0 ? `<p class="text-xs text-amber-600 mt-1">⏳ Chờ TT: ${fmtMoney(pendingRevenue)}</p>` : ''}`
+               ${pendingRevenue > 0 ? `<p class="text-xs text-amber-600 mt-1" title="Phần DT vào sổ từ phiếu đã nghiệm thu nhưng chưa thu tiền (đã gồm trong tổng)">⏳ Trong đó chờ thu: ${fmtMoney(pendingRevenue)}</p>` : ''}`
             : pendingRevenue > 0
               ? `<p class="text-xl font-bold text-amber-500 mt-1">${fmtMoney(pendingRevenue)}</p>
-                 <p class="text-xs text-amber-600 mt-1">⏳ Chờ thanh toán (chưa tính DT)</p>`
+                 <p class="text-xs text-amber-600 mt-1">⏳ Chờ thu (đã gồm trong DT vào sổ)</p>`
               : `<p class="text-xl font-bold text-gray-400 mt-1">— 0 ₫</p>
                  <p class="text-xs text-orange-500 mt-1">⚠️ Chưa khai báo doanh thu</p>`
           }
@@ -14763,7 +14795,8 @@ function toggleAllocationPanel() {
 }
 
 async function openSharedCostModal(id = null) {
-  if (!allProjects.length) allProjects = await api('/projects')
+  // Cần GTHĐ đầy đủ để phân bổ theo % — không dùng cache slim (thiếu contract_value)
+  await fetchProjectsCached(true)
 
   // Đảm bảo danh sách loại chi phí đã được load
   if (!allCostTypes.length) {
@@ -14803,7 +14836,7 @@ async function openSharedCostModal(id = null) {
         <span class="font-medium text-sm text-gray-800">${p.code}</span>
         <span class="text-xs text-gray-500 ml-2 truncate">${p.name}</span>
       </div>
-      <span class="text-xs text-gray-400">${fmtMoney(p.contract_value || 0)}</span>
+      <span class="text-xs text-gray-400">${(p.contract_value || 0) > 0 ? fmtDong(p.contract_value) : 'Chưa có GTHĐ'}</span>
       <span class="scManualPctWrap hidden ml-2">
         <input type="number" class="scManualPct border rounded px-1 py-0.5 w-16 text-xs text-right"
           placeholder="%" min="0" max="100" step="0.1"
@@ -14929,13 +14962,21 @@ function updateSharedCostPreview() {
   }))
 
   let rows = []
+  let basisNote = ''
   if (basis === 'contract_value') {
     const totalContract = projects.reduce((s, p) => s + p.contract, 0)
-    rows = projects.map(p => {
-      const pct = totalContract > 0 ? (p.contract / totalContract * 100) : (100 / projects.length)
-      const allocated = Math.round(amount * pct / 100)
-      return { label: p.label, pct: pct.toFixed(1), allocated }
-    })
+    if (totalContract <= 0) {
+      basisNote = `<div class="p-2 bg-amber-50 text-amber-800 text-xs border-b border-amber-100">⚠️ Các dự án chọn chưa có GTHĐ — tạm chia đều. Nhập GTHĐ trên dự án hoặc chọn cơ sở khác.</div>`
+      const pct = 100 / projects.length
+      const allocated = Math.round(amount / projects.length)
+      rows = projects.map(p => ({ label: p.label, pct: pct.toFixed(1), allocated }))
+    } else {
+      rows = projects.map(p => {
+        const pct = p.contract / totalContract * 100
+        const allocated = Math.round(amount * pct / 100)
+        return { label: p.label, pct: pct.toFixed(1), allocated }
+      })
+    }
   } else if (basis === 'equal') {
     const pct = 100 / projects.length
     const allocated = Math.round(amount / projects.length)
@@ -14955,6 +14996,7 @@ function updateSharedCostPreview() {
   }
 
   $('scPreviewTable').innerHTML = `
+    ${basisNote}
     <table class="w-full">
       <thead><tr class="bg-gray-100">
         <th class="text-left px-3 py-1 font-medium">Dự án</th>
@@ -14965,12 +15007,12 @@ function updateSharedCostPreview() {
         ${rows.map(r => `<tr class="border-t">
           <td class="px-3 py-1">${r.label}</td>
           <td class="px-3 py-1 text-right text-gray-600">${r.pct}%</td>
-          <td class="px-3 py-1 text-right font-semibold text-indigo-700">${fmtMoney(r.allocated)}</td>
+          <td class="px-3 py-1 text-right font-semibold text-indigo-700">${fmtDong(r.allocated)}</td>
         </tr>`).join('')}
         <tr class="border-t bg-yellow-50 font-semibold">
           <td class="px-3 py-1">Tổng</td>
           <td class="px-3 py-1 text-right">100%</td>
-          <td class="px-3 py-1 text-right text-yellow-700">${fmtMoney(amount)}</td>
+          <td class="px-3 py-1 text-right text-yellow-700">${fmtDong(amount)}</td>
         </tr>
       </tbody>
     </table>
@@ -16719,7 +16761,7 @@ async function renderProjectFinancialTab(force = false) {
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
                 <th class="text-left py-3 px-3 font-semibold border-b border-gray-200" style="overflow:hidden">Dự án</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2" title="Giá trị nghiệm thu gốc"><i class="fas fa-clipboard-check mr-1"></i>Đã nghiệm thu</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2" title="Nghiệm thu trước VAT"><i class="fas fa-clipboard-check mr-1"></i>Đã nghiệm thu</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#2563eb" title="Dòng tiền thực thu từ khách hàng"><i class="fas fa-money-bill-wave mr-1"></i>GTTT Thực tế</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#dc2626" title="Công nợ = GTHĐ − GTTT Thực tế"><i class="fas fa-exclamation-circle mr-1"></i>Công nợ</th>
                 ${hasBudgetCol ? `<th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#059669"><i class="fas fa-wallet mr-1"></i>Ngân sách</th>` : ''}
@@ -16773,7 +16815,9 @@ async function renderProjectFinancialTab(force = false) {
                       <span class="font-semibold text-blue-600">${p.paid_amount_total > 0 ? fmtM(p.paid_amount_total) : '<span class="text-gray-300">—</span>'}</span>
                       ${p.paid_amount_total > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.paid_amount_total, pctBaseRow)}%</div>` : ''}
                     </td>
-                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.paid_amount_total||0)); return `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:${debt>0?'#fff5f5':''}"><span class="font-semibold ${debt>0?'text-red-500':'text-gray-300'}">${debt>0?fmtM(debt):'—'}</span>${debt>0&&pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`; })()}
+                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.paid_amount_total||0)); return debt > 0
+                      ? `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:#fff5f5"><span class="font-semibold text-red-500">${fmtM(debt)}</span>${pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`
+                      : `<td class="py-2 px-3 text-right whitespace-nowrap"><span class="font-semibold text-green-600" title="GTTT ≥ GTHĐ — không còn công nợ theo HĐ">0</span></td>`; })()}
                     ${hasBudgetCol ? `
                     <td class="py-2 px-3 text-right whitespace-nowrap" style="background:${p.project_budget>0?'#f0fdf4':''}">
                       ${p.project_budget > 0
@@ -16833,7 +16877,9 @@ async function renderProjectFinancialTab(force = false) {
                 <td class="py-3 px-3 text-right text-indigo-700 whitespace-nowrap">${fmtM(totals.contract_value)}</td>
                 <td class="py-3 px-3 text-right text-cyan-700 whitespace-nowrap font-bold" style="background:#f0f9ff">${fmtM(totals.revenue_collected_original || totals.revenue_collected)}</td>
                 <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap font-bold" style="background:#eff6ff">${totals.paid_amount_total > 0 ? fmtM(totals.paid_amount_total) : '—'}</td>
-                ${(() => { const tDebt = Math.max(0, (totals.contract_value||0) - (totals.paid_amount_total||0)); return `<td class="py-3 px-3 text-right whitespace-nowrap font-bold ${tDebt>0?'text-red-500':'text-gray-300'}" style="background:${tDebt>0?'#fff5f5':''}"> ${tDebt>0?fmtM(tDebt):'—'}</td>`; })()}
+                ${(() => { const tDebt = Math.max(0, (totals.contract_value||0) - (totals.paid_amount_total||0)); return tDebt > 0
+                  ? `<td class="py-3 px-3 text-right whitespace-nowrap font-bold text-red-500" style="background:#fff5f5">${fmtM(tDebt)}</td>`
+                  : `<td class="py-3 px-3 text-right whitespace-nowrap font-bold text-green-600" title="Tổng GTTT ≥ tổng GTHĐ">0</td>`; })()}
                 ${hasBudgetCol ? `<td class="py-3 px-3 text-right text-emerald-700 whitespace-nowrap font-bold">${totals.project_budget > 0 ? fmtM(totals.project_budget) : '—'}</td>` : ''}
                 <td class="py-3 px-3 text-right text-emerald-600 whitespace-nowrap">${fmtM(totals.revenue_collected)}</td>
                 <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap">${fmtM(totals.direct_cost)}</td>
@@ -16860,9 +16906,9 @@ async function renderProjectFinancialTab(force = false) {
           <span><strong>GTHĐ</strong>: Giá trị hợp đồng</span>
           ${hasBudgetCol ? `<span><strong class="text-emerald-700">Ngân sách</strong>: GTHĐ × (1 − % phí quản lý) — ngân sách thực tế để kiểm soát chi phí</span>` : ''}
           <span><strong>DT đã thu</strong>: Doanh thu trạng thái <em>paid + partial</em></span>
-          <span><strong style="color:#0891b2">Đã nghiệm thu</strong>: Giá trị nghiệm thu gốc theo hợp đồng</span>
-          <span><strong style="color:#2563eb">GTTT Thực tế</strong>: Dòng tiền thực thu từ khách hàng</span>
-          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − GTTT Thực tế (số tiền khách hàng chưa thanh toán)</span>
+          <span><strong style="color:#0891b2">Đã nghiệm thu</strong>: Giá trị nghiệm thu <em>trước VAT</em> (= gross ÷ (1+VAT%))</span>
+          <span><strong style="color:#2563eb">GTTT Thực tế</strong>: Số đã thanh toán <em>trước VAT</em></span>
+          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − GTTT (cả hai trước VAT)</span>
           <span><strong>CP trực tiếp</strong>: Chi phí vật liệu, thiết bị, đi lại, văn phòng…</span>
           <span><strong>CP lương</strong>: Từ bảng project_labor_costs (tính theo timesheet)</span>
           <span><strong>CP chung</strong>: Chi phí chung phân bổ (điện, nước, văn phòng…)</span>
@@ -19705,10 +19751,10 @@ function renderPaymentStatus(payments) {
   // Lấy thông tin dự án để tính doanh thu net (VAT/phí QL)
   const proj = _legalOverviewData?.project || {}
 
-  // Summary cards
+  // Summary cards — nghiệm thu & thanh toán = trước VAT
   const total = payments.length
-  const totalAmount = payments.reduce((s, p) => s + (p.amount || 0), 0)
-  const paidAmount = payments.reduce((s, p) => s + (p.paid_amount || 0), 0)
+  const totalAmount = payments.reduce((s, p) => s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)), 0)
+  const paidAmount = payments.reduce((s, p) => s + (p.cash_before_vat != null ? Number(p.cash_before_vat) : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0)), 0)
   const pending = payments.filter(p => p.status === 'pending' || p.status === 'processing').length
   const paid = payments.filter(p => p.status === 'paid').length
 
@@ -19720,11 +19766,11 @@ function renderPaymentStatus(payments) {
       </div>
       <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
         <div class="text-sm font-bold text-amber-700">${fmtMoney(totalAmount)}</div>
-        <div class="text-xs text-amber-500 mt-1">Tổng nghiệm thu</div>
+        <div class="text-xs text-amber-500 mt-1">Tổng nghiệm thu <span class="text-amber-400">(trước VAT)</span></div>
       </div>
       <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
         <div class="text-sm font-bold text-blue-600">${fmtMoney(paidAmount)}</div>
-        <div class="text-xs text-blue-400 mt-1">Dòng tiền đã thu</div>
+        <div class="text-xs text-blue-400 mt-1">Đã thanh toán <span class="text-blue-300">(trước VAT)</span></div>
       </div>
       <div class="bg-rose-50 border border-rose-200 rounded-xl p-3 text-center">
         <div class="text-2xl font-bold text-rose-700">${pending}</div>
@@ -19766,8 +19812,8 @@ function renderPaymentStatus(payments) {
         <tr class="border-b border-gray-200 bg-gray-50">
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Đợt TT</th>
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Nội dung</th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Nghiệm thu<br><span class="font-normal text-xs text-emerald-500">→ Doanh thu</span></th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT<br><span class="font-normal text-xs text-blue-400">→ Dòng tiền</span></th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Nghiệm thu<br><span class="font-normal text-xs text-amber-500">trước VAT</span></th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT<br><span class="font-normal text-xs text-blue-400">trước VAT</span></th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">VAT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Ngày TT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Trạng thái</th>
@@ -19802,12 +19848,28 @@ function renderPaymentStatus(payments) {
           ${p.notes ? `<div class="text-xs text-gray-400 mt-0.5 italic">${p.notes}</div>` : ''}
         </td>
         <td class="py-2 px-3 text-right font-mono text-gray-700">
-          <div>${fmtMoney(p.amount || 0)}</div>
-          ${p.vat_pct > 0 || (proj?.management_fee_pct > 0) ? `<div class="text-xs text-emerald-600" title="Doanh thu sau VAT/phí QL">DT: ${fmtMoney(calcRevenueNet(p.amount||0, p.vat_pct||0, proj?.management_fee_pct||0))}</div>` : ''}
+          ${(() => {
+            const beforeVat = p.amount_before_vat != null
+              ? Number(p.amount_before_vat)
+              : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)
+            const feePct = proj?.management_fee_pct || 0
+            const dt = (p.booked_revenue != null)
+              ? Number(p.booked_revenue)
+              : calcRevenueNet(p.amount||0, p.vat_pct||0, feePct)
+            return `<div class="font-semibold" title="Trước VAT">${fmtMoney(beforeVat)}</div>
+              ${p.vat_pct > 0 ? `<div class="text-xs text-gray-400" title="Gross có VAT">có VAT: ${fmtMoney(p.amount||0)}</div>` : ''}
+              ${feePct > 0 ? `<div class="text-xs text-emerald-600" title="Doanh thu vào sổ (sau phí QL)">DT sổ: ${fmtMoney(dt)}</div>` : ''}`
+          })()}
         </td>
         <td class="py-2 px-3 text-right">
-          <div class="font-mono text-blue-600">${fmtMoney(p.paid_amount || 0)}</div>
-          ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}
+          ${(() => {
+            const cashBv = p.cash_before_vat != null
+              ? Number(p.cash_before_vat)
+              : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0)
+            return `<div class="font-mono text-blue-600 font-semibold" title="Trước VAT">${fmtMoney(cashBv)}</div>
+              ${p.vat_pct > 0 && (p.paid_amount||0) > 0 ? `<div class="text-xs text-gray-400">có VAT: ${fmtMoney(p.paid_amount||0)}</div>` : ''}
+              ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}`
+          })()}
         </td>
         <td class="py-2 px-3 text-center">
           ${(p.vat_pct > 0)
@@ -19825,11 +19887,15 @@ function renderPaymentStatus(payments) {
         </td>
         <td class="py-2 px-3 text-right">
           ${(() => {
-            const nghiemThu = p.amount || 0              // Giá trị nghiệm thu → căn cứ tính doanh thu
+            const nghiemThu = p.amount || 0
             const vatPct    = p.vat_pct || 0
             const feePct    = _legalOverviewData?.project?.management_fee_pct || 0
-            const noVat     = vatPct > 0 ? Math.round(nghiemThu / (1 + vatPct / 100)) : nghiemThu
-            const netRev    = feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat
+            const noVat     = p.amount_before_vat != null
+              ? Number(p.amount_before_vat)
+              : (vatPct > 0 ? Math.round(nghiemThu / (1 + vatPct / 100)) : nghiemThu)
+            const netRev    = p.booked_revenue != null
+              ? Number(p.booked_revenue)
+              : (feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat)
             const isSynced  = p.revenue_synced || p.revenue_synced_id
             const isActive  = ['paid','partial'].includes(p.status) && nghiemThu > 0
             if (!isActive) return `<span class="text-xs text-gray-300">—</span>`
@@ -21888,20 +21954,36 @@ let _leaveCurrentPage = 1
 const _leavePageSize  = 10
 let _leaveFilterUserId = null   // null = tất cả nhân sự; số = filter theo user cụ thể
 
-// ── Khởi tạo employee combobox filter (admin only) ───────────────────────────
+function _leaveViewerDept() {
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  return String(cu?.department || '').trim()
+}
+
+function _canSeeDeptLeaveList() {
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  return cu?.role === 'system_admin' || !!_leaveViewerDept()
+}
+
+// ── Khởi tạo employee combobox filter ───────────────────────────────────────
 async function _initLeaveEmployeeFilter() {
   const wrap = $('leaveFilterEmployeeWrap')
   if (!wrap) return
   if (!allUsers.length) {
     try { allUsers = await api('/users') } catch(e) {}
   }
-  const activeUsers = (allUsers || []).filter(u => u.is_active !== 0)
-  // Không thêm placeholder vào items — _cbRenderOptions tự prepend placeholder từ options.placeholder
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  const isAdmin = cu?.role === 'system_admin'
+  const dept = _leaveViewerDept()
+  const activeUsers = (allUsers || []).filter(u => {
+    if (u.is_active === 0) return false
+    if (isAdmin) return true
+    return String(u.department || '').trim() === dept
+  })
   const items = activeUsers.map(u => ({ value: String(u.id), label: u.full_name }))
 
   if (_cbState['leaveEmployeeCombobox']) delete _cbState['leaveEmployeeCombobox']
   createCombobox('leaveEmployeeCombobox', {
-    placeholder: '👥 Tất cả nhân sự',
+    placeholder: isAdmin ? '👥 Tất cả nhân sự' : '👥 Nhân sự trong phòng',
     items,
     fullWidth: true,
     teleport: true,          // teleport panel ra body để thoát overflow:hidden của header card
@@ -22045,6 +22127,7 @@ async function _renderLeaveEmployeeStats(userId) {
 async function loadLeaveRequests() {
   const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
   const isAdmin = cu?.role === 'system_admin'
+  const canSeeList = _canSeeDeptLeaveList()
 
   // Show/hide admin-only UI elements
   const kpiRow = $('leaveKpiRow')
@@ -22052,25 +22135,24 @@ async function loadLeaveRequests() {
   const filterStatus = $('leaveFilterStatus')
   const empFilterWrap = $('leaveFilterEmployeeWrap')
 
-  if (isAdmin) {
+  if (canSeeList) {
     kpiRow?.classList.remove('hidden')
     colEmp?.classList.remove('hidden')
-    document.getElementById('btnManageLeaveQuota')?.classList.remove('hidden')
-    // Hiển thị bộ lọc nhân sự + khởi tạo combobox 1 lần duy nhất
     if (empFilterWrap) {
       empFilterWrap.classList.remove('hidden')
-      if (!empFilterWrap._initialized) {
-        empFilterWrap._initialized = true
-        await _initLeaveEmployeeFilter()
-      }
+      await _initLeaveEmployeeFilter()
     }
   } else {
     kpiRow?.classList.add('hidden')
     colEmp?.classList.add('hidden')
-    document.getElementById('btnManageLeaveQuota')?.classList.add('hidden')
     if (empFilterWrap) empFilterWrap.classList.add('hidden')
-    // Reset filter khi không phải admin
     _leaveFilterUserId = null
+  }
+
+  if (isAdmin) {
+    document.getElementById('btnManageLeaveQuota')?.classList.remove('hidden')
+  } else {
+    document.getElementById('btnManageLeaveQuota')?.classList.add('hidden')
   }
 
   const statusFilter = filterStatus?.value || ''
@@ -22085,7 +22167,7 @@ async function loadLeaveRequests() {
     _leaveData = res.data || []
 
     // KPI — cập nhật tổng theo dữ liệu đang filter
-    if (isAdmin) {
+    if (canSeeList) {
       $('leaveKpiTotal').textContent    = _leaveData.length
       $('leaveKpiPending').textContent  = _leaveData.filter(r => r.status === 'pending').length
       $('leaveKpiApproved').textContent = _leaveData.filter(r => r.status === 'approved').length
@@ -22187,6 +22269,7 @@ function renderLeaveTable(data) {
   if (!tbody) return
   const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
   const isAdmin = cu?.role === 'system_admin'
+  const showEmployeeCol = _canSeeDeptLeaveList()
   const myId    = Number(cu?.id)
 
   const totalItems = data.length
@@ -22294,7 +22377,7 @@ function renderLeaveTable(data) {
       ? (nameParts[nameParts.length-2][0] + nameParts[nameParts.length-1][0]).toUpperCase()
       : empName.substring(0,2).toUpperCase()
     const avatarColor = avatarColors[r.user_id % avatarColors.length]
-    const empCell = isAdmin ? `
+    const empCell = showEmployeeCol ? `
       <td class="py-3.5 px-4">
         <div class="flex items-center gap-2.5">
           <div class="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold text-white flex-shrink-0 shadow-sm"
@@ -22357,7 +22440,7 @@ function renderLeaveTable(data) {
     </tr>`
   }).join('')
 
-  renderLeaveMobileCards(pageData, { isAdmin, myId })
+  renderLeaveMobileCards(pageData, { isAdmin, myId, showEmployeeCol })
 
   // ── Pagination bar ──────────────────────────────────────────────────────────
   renderLeavePagination(totalItems, totalPages)
@@ -22366,6 +22449,7 @@ function renderLeaveTable(data) {
 function renderLeaveMobileCards(pageData, opts = {}) {
   const isAdmin = opts.isAdmin
   const myId = opts.myId
+  const showEmployeeCol = opts.showEmployeeCol
   if (!pageData.length) {
     setMobileCardList('leaveCardList', '<div class="text-center py-10 text-gray-400 text-sm">Chưa có đơn xin nghỉ nào</div>')
     return
@@ -22387,7 +22471,7 @@ function renderLeaveMobileCards(pageData, opts = {}) {
     if (canEdit) actions += `<button onclick="openLeaveModal(${r.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-pen mr-1"></i>Sửa</button>`
     if (canDel) actions += `<button onclick="deleteLeaveRequest(${r.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash"></i></button>`
     return `<div class="mobile-list-card">
-      <div class="mlc-title">${typeCfg.icon} ${typeCfg.label}${isAdmin && empName ? ` · ${empName}` : ''}</div>
+      <div class="mlc-title">${typeCfg.icon} ${typeCfg.label}${showEmployeeCol && empName ? ` · ${empName}` : ''}</div>
       <div class="mlc-meta">${formatDateVN(r.start_date)} → ${formatDateVN(r.end_date)} · ${r.total_days} ngày</div>
       <div class="mlc-row">
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${statusCfg.cls}">${statusCfg.label}</span>

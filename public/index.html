@@ -1325,7 +1325,7 @@
         <!-- Filters -->
         <div class="card mb-4">
           <div class="flex flex-wrap gap-3 items-center">
-            <input type="text" id="taskSearch" placeholder="🔍 Tìm kiếm task..." class="input-field" style="width:220px" oninput="filterTasks()">
+            <input type="text" id="taskSearch" placeholder="🔍 Tìm kiếm task / phụ trách..." class="input-field" style="width:220px" oninput="onTaskSearchInput()">
             <select id="taskStatusFilter" class="select-field" style="width:140px" onchange="filterTasks()">
               <option value="">Tất cả TT</option>
               <option value="todo">Chờ thực hiện</option>
@@ -6508,7 +6508,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260903a"></script>
+<script src="/static/app.js?v=20260910f"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;

@@ -8,16 +8,17 @@ Cần kế toán / PO ký trước khi tin số trên dashboard sau khi đổi c
 
 | Chỉ số | Nguồn | Công thức | Cấm dùng |
 |---|---|---|---|
-| Nghiệm thu (acceptance) | `payment_requests.amount` | Giá trị nghiệm thu / theo HĐ | Không lấy `project_revenues.amount` |
-| Dòng tiền (cash) | `payment_requests.paid_amount` | Số đã thu thực tế | Không cộng vào doanh thu vào sổ |
-| Doanh thu vào sổ (booked) | `project_revenues.amount` | `syncPaymentToRevenue`: trước VAT = nghiệm thu / (1 + vat%/100); sau phí QL = trước VAT × (1 − fee%/100) | Không tính lại trong `app.js` |
-| Trước VAT | API `amount_before_vat` | Cùng hàm `computeBookedRevenue` | Không tự chia ở client |
+| Nghiệm thu (báo cáo / so GTHĐ) | API `amount_before_vat` | `payment_requests.amount ÷ (1 + vat%/100)` — **luôn trước VAT** | Không hiện gross có VAT làm NT trên bảng tài chính |
+| Thanh toán / GTTT (báo cáo) | API `cash_before_vat` | `paid_amount ÷ (1 + vat%/100)` — **luôn trước VAT** | Không so GTHĐ với số có VAT |
+| Gross lưu DB | `payment_requests.amount` / `paid_amount` | Giá trị nhập (có thể gồm VAT) | Không dùng raw làm cột NT/GTTT |
+| Dòng tiền gross (tham chiếu) | `cash_collected` | `paid_amount` nguyên | Không cộng vào doanh thu vào sổ |
+| Doanh thu vào sổ (booked) | `project_revenues.amount` | `syncPaymentToRevenue`: trước VAT → × (1 − fee%/100) | Không tính lại trong `app.js` |
 | Ngân sách dự án | API `project_budget` | `contract_value × (1 − management_fee_pct/100)` | `projects.budget` (cột legacy, luôn coi = 0) |
 | Chi phí trực tiếp | `project_costs` (không `salary`) | SUM(amount) | — |
 | Chi phí lương | Timesheet đã ghi × `monthly_labor_costs` (phân bổ theo giờ quy đổi) | Xem `computeProjectLaborFromTimesheets` | Không đọc `project_labor_costs` cho KPI (bảng đó chỉ cache đồng bộ tay) |
 | Chi phí chung | `shared_cost_allocations.allocated_amount` | — | — |
 
-Ba số phải tách trên mọi báo cáo: **nghiệm thu**, **doanh thu vào sổ**, **dòng tiền**.
+Ba số phải tách trên mọi báo cáo: **nghiệm thu (trước VAT)**, **doanh thu vào sổ** (gồm phiếu `pending` đã NT — chưa thu tiền vẫn vào sổ), **dòng tiền** (chỉ `paid`/`partial`, trước VAT). Công nợ HĐ = GTHĐ − GTTT (cả hai trước VAT).
 
 ## Công / phép / timesheet
 
