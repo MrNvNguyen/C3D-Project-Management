@@ -12087,7 +12087,99 @@ async function loadEmailConfig() {
       const el = $('cfgEmailFromName')
       if (el) el.value = config.email_from_name.value
     }
+    if (config.email_from_address?.value) {
+      const el = $('cfgEmailFromAddress')
+      if (el) el.value = config.email_from_address.value
+    }
+    if (config.resend_daily_limit?.value) {
+      const el = $('cfgResendDailyLimit')
+      if (el) el.value = config.resend_daily_limit.value
+    }
+    if (config.cloudflare_account_id?.value) {
+      const el = $('cfgCfAccountId')
+      if (el) el.value = config.cloudflare_account_id.value
+    }
+    if (config.cloudflare_email_api_token?.configured) {
+      const el = $('cfgCfEmailApiToken')
+      if (el) { el.value = ''; el.placeholder = '(đã cấu hình — nhập để thay đổi)' }
+    }
+    const cfEnabled = config.cloudflare_email_enabled?.value !== '0'
+    const cfChk = $('cfgCfEmailEnabled')
+    if (cfChk) cfChk.checked = cfEnabled
+
+    const stats = config.email_stats_today || {}
+    _applyEmailStatsToday(stats)
   } catch (e) { /* ignore */ }
+}
+
+function _applyEmailStatsToday(stats) {
+  if (!stats) return
+  const resend = Number(stats.resend_sent) || 0
+  const cf = Number(stats.cloudflare_sent) || 0
+  const failed = Number(stats.failed) || 0
+  const limit = Number(stats.resend_limit) || 100
+  const totalSent = resend + cf
+
+  const sentEl = $('emailSentToday')
+  const detailEl = $('emailSentTodayDetail')
+  const failEl = $('emailFailedToday')
+  const hintEl = $('emailProviderSplitHint')
+  const boundEl = $('cfgCfBoundStatus')
+
+  if (sentEl) sentEl.textContent = String(totalSent)
+  if (detailEl) detailEl.textContent = `Resend ${resend}/${limit} · CF ${cf}`
+  if (failEl) failEl.textContent = String(failed)
+  if (hintEl) {
+    hintEl.textContent = resend >= limit
+      ? `Resend đã đủ ${limit}/ngày — email tiếp theo dùng Cloudflare (nếu bật + đã cấu hình).`
+      : `Còn ${Math.max(0, limit - resend)} slot Resend hôm nay trước khi fallback Cloudflare.`
+  }
+  if (boundEl) {
+    if (stats.cloudflare_bound) {
+      boundEl.textContent = stats.cloudflare_enabled === false
+        ? '⚠️ Đã cấu hình — fallback đang tắt'
+        : '✅ Account ID + API Token sẵn sàng'
+      boundEl.className = 'text-sm font-semibold ' + (stats.cloudflare_enabled === false ? 'text-orange-600' : 'text-green-600')
+    } else {
+      boundEl.textContent = '❌ Chưa nhập Account ID / API Token'
+      boundEl.className = 'text-sm font-semibold text-red-600'
+    }
+  }
+}
+
+async function saveCloudflareEmailConfig() {
+  const fromAddress = $('cfgEmailFromAddress')?.value?.trim()
+  const dailyLimit = $('cfgResendDailyLimit')?.value?.trim()
+  const accountId = $('cfgCfAccountId')?.value?.trim()
+  const apiToken = $('cfgCfEmailApiToken')?.value?.trim()
+  const cfEnabled = $('cfgCfEmailEnabled')?.checked ? '1' : '0'
+  const statusEl = $('cfEmailSaveStatus')
+  const btn = $('btnSaveCfEmail')
+
+  if (fromAddress && !fromAddress.includes('@')) {
+    toast('Địa chỉ From không hợp lệ', 'warning')
+    return
+  }
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang lưu...' }
+  if (statusEl) statusEl.textContent = ''
+
+  try {
+    const payload = { cloudflare_email_enabled: cfEnabled }
+    if (fromAddress) payload.email_from_address = fromAddress
+    if (dailyLimit) payload.resend_daily_limit = String(Math.max(1, parseInt(dailyLimit, 10) || 100))
+    if (accountId) payload.cloudflare_account_id = accountId
+    if (apiToken) payload.cloudflare_email_api_token = apiToken
+    await api('/system-config', { method: 'PUT', data: payload })
+    if (statusEl) { statusEl.textContent = '✅ Đã lưu'; statusEl.className = 'text-sm text-green-600' }
+    toast('Đã lưu cấu hình Cloudflare / hạn mức Resend', 'success')
+    await loadEmailConfig()
+  } catch (e) {
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+    if (statusEl) { statusEl.textContent = '❌ Lỗi'; statusEl.className = 'text-sm text-red-600' }
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Lưu cấu hình Cloudflare' }
+  }
 }
 
 async function verifyAndSaveApiKey() {
@@ -12334,32 +12426,26 @@ async function refreshEmailLogs() {
     _emailLogsCache = logs || []
     renderEmailLogs(_emailLogsCache)
 
-    // Stats
-    const today = toLocalDayjs(new Date().toISOString()).format('YYYY-MM-DD')
-    const todayLogs = _emailLogsCache.filter(l => l.sent_at && toLocalDayjs(l.sent_at).format('YYYY-MM-DD') === today)
-    const sentToday = todayLogs.filter(l => l.status === 'sent').length
-    const failedToday = todayLogs.filter(l => l.status === 'failed').length
-
-    const sentEl = $('emailSentToday')
-    const failEl = $('emailFailedToday')
-    const configEl = $('emailConfigStatus')
-
-    if (sentEl) sentEl.textContent = sentEl ? String(sentToday) : '-'
-    if (failEl) failEl.textContent = String(failedToday)
-
-    if (configEl) {
-      const hasLogs = _emailLogsCache.length > 0
-      const hasSuccess = _emailLogsCache.some(l => l.status === 'sent')
-      if (hasSuccess) {
-        configEl.textContent = '✅ Đã cấu hình'
-        configEl.className = 'font-bold text-green-600'
-      } else if (hasLogs) {
-        configEl.textContent = '⚠️ Có lỗi gửi'
-        configEl.className = 'font-bold text-orange-500'
-      } else {
-        configEl.textContent = '❓ Chưa có log'
-        configEl.className = 'font-bold text-gray-500'
+    // Stats từ API (không đếm trong 20 log client)
+    try {
+      const config = await api('/system-config')
+      if (config.email_stats_today) _applyEmailStatsToday(config.email_stats_today)
+      if (config.resend_api_key?.configured || (config.email_stats_today?.resend_sent > 0)) {
+        const configEl = $('emailConfigStatus')
+        if (configEl && config.resend_api_key?.configured) {
+          configEl.textContent = '✅ Đã cấu hình'
+          configEl.className = 'font-bold text-green-600'
+        }
       }
+    } catch (_) {
+      const today = toLocalDayjs(new Date().toISOString()).format('YYYY-MM-DD')
+      const todayLogs = _emailLogsCache.filter(l => l.sent_at && toLocalDayjs(l.sent_at).format('YYYY-MM-DD') === today)
+      const sentToday = todayLogs.filter(l => l.status === 'sent').length
+      const failedToday = todayLogs.filter(l => l.status === 'failed').length
+      const sentEl = $('emailSentToday')
+      const failEl = $('emailFailedToday')
+      if (sentEl) sentEl.textContent = String(sentToday)
+      if (failEl) failEl.textContent = String(failedToday)
     }
   } catch (e) {
     toast('Lỗi tải email logs: ' + (e.response?.data?.error || e.message), 'error')
@@ -12594,16 +12680,19 @@ function renderEmailLogs(logs) {
       ? '<span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0 mt-0.5" title="Thành công"></span>'
       : '<span class="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 mt-0.5" title="Thất bại"></span>'
     const errorHint = l.error_msg
-      ? `<span class="text-red-400 text-xs truncate max-w-[140px]" title="${l.error_msg}">⚠️ ${l.error_msg.slice(0,40)}...</span>`
+      ? `<span class="text-red-400 text-xs truncate max-w-[140px]" title="${String(l.error_msg).replace(/"/g, '&quot;')}">⚠️ ${String(l.error_msg).slice(0,40)}...</span>`
       : ''
+    const prov = l.provider === 'cloudflare' ? 'CF' : (l.provider === 'resend' || !l.provider ? 'RS' : l.provider)
+    const provBadge = `<span class="text-[10px] font-medium px-1 py-0.5 rounded ${l.provider === 'cloudflare' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}" title="${l.provider || 'resend'}">${prov}</span>`
 
     return `<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors group">
       ${statusDot}
       <span class="text-base flex-shrink-0 w-5 text-center">${icon}</span>
       <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
           <span class="text-xs font-semibold text-gray-700">${name}</span>
           <span class="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">${label}</span>
+          ${provBadge}
           ${errorHint}
         </div>
       </div>

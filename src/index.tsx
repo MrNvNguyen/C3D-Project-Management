@@ -55,6 +55,9 @@ type Bindings = {
   RESEND_API_KEY: string
   FILES?: R2Bucket
   ALLOW_SYSTEM_INIT?: string
+  /** Optional Pages secrets for Cloudflare Email Sending REST */
+  CF_ACCOUNT_ID?: string
+  CF_EMAIL_API_TOKEN?: string
 }
 
 // ===================================================
@@ -685,6 +688,143 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
   }
 }
 
+// ---- Email helpers (provider routing) ----
+const DEFAULT_EMAIL_FROM_NAME = 'OneCAD BIM'
+const DEFAULT_EMAIL_FROM_ADDRESS = 'no-reply@bimonecadvn.com'
+const DEFAULT_RESEND_DAILY_LIMIT = 100
+
+async function getSystemConfigMap(db: D1Database, keys: string[]): Promise<Record<string, string>> {
+  if (!keys.length) return {}
+  const placeholders = keys.map(() => '?').join(',')
+  const rows = await db.prepare(
+    `SELECT key, value FROM system_config WHERE key IN (${placeholders})`
+  ).bind(...keys).all()
+  const out: Record<string, string> = {}
+  for (const r of (rows.results as any[]) || []) {
+    out[r.key] = r.value == null ? '' : String(r.value)
+  }
+  return out
+}
+
+async function countResendSentToday(db: D1Database): Promise<number> {
+  // Ngày theo múi giờ VN (UTC+7)
+  try {
+    const row = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM email_logs
+      WHERE status = 'sent'
+        AND COALESCE(provider, 'resend') = 'resend'
+        AND date(sent_at, '+7 hours') = date('now', '+7 hours')
+    `).first() as any
+    return Number(row?.cnt) || 0
+  } catch {
+    const row = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM email_logs
+      WHERE status = 'sent'
+        AND date(sent_at, '+7 hours') = date('now', '+7 hours')
+    `).first() as any
+    return Number(row?.cnt) || 0
+  }
+}
+
+async function resolveCloudflareEmailCreds(
+  env: Bindings,
+  db: D1Database
+): Promise<{ accountId: string; apiToken: string } | null> {
+  const cfg = await getSystemConfigMap(db, ['cloudflare_account_id', 'cloudflare_email_api_token'])
+  const accountId = (env.CF_ACCOUNT_ID || cfg.cloudflare_account_id || '').trim()
+  const apiToken = (env.CF_EMAIL_API_TOKEN || cfg.cloudflare_email_api_token || '').trim()
+  if (!accountId || !apiToken) return null
+  return { accountId, apiToken }
+}
+
+async function sendViaCloudflareRest(
+  creds: { accountId: string; apiToken: string },
+  opts: {
+    to: string
+    toName?: string
+    fromAddress: string
+    fromName: string
+    subject: string
+    html: string
+    text: string
+  }
+): Promise<void> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(creds.accountId)}/email/sending/send`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${creds.apiToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      to: opts.toName ? { address: opts.to, name: opts.toName } : opts.to,
+      from: { address: opts.fromAddress, name: opts.fromName },
+      subject: opts.subject,
+      html: opts.html,
+      text: opts.text,
+    }),
+  })
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(`CF Email HTTP ${res.status}: ${errText.slice(0, 400)}`)
+  }
+  const body = await res.json().catch(() => null) as any
+  if (body && body.success === false) {
+    const msg = Array.isArray(body.errors) && body.errors[0]?.message
+      ? body.errors[0].message
+      : 'Cloudflare Email API returned success=false'
+    throw new Error(msg)
+  }
+}
+
+async function getEmailStatsToday(db: D1Database, env: Bindings): Promise<{
+  resend_sent: number
+  cloudflare_sent: number
+  failed: number
+  resend_limit: number
+  cloudflare_bound: boolean
+  cloudflare_enabled: boolean
+}> {
+  const cfg = await getSystemConfigMap(db, ['resend_daily_limit', 'cloudflare_email_enabled'])
+  const resendLimit = Math.max(0, parseInt(cfg.resend_daily_limit || String(DEFAULT_RESEND_DAILY_LIMIT), 10) || DEFAULT_RESEND_DAILY_LIMIT)
+  const cloudflareEnabled = cfg.cloudflare_email_enabled !== '0'
+  const cfCreds = await resolveCloudflareEmailCreds(env, db)
+  try {
+    const row = await db.prepare(`
+      SELECT
+        SUM(CASE WHEN status = 'sent' AND COALESCE(provider, 'resend') = 'resend' THEN 1 ELSE 0 END) as resend_sent,
+        SUM(CASE WHEN status = 'sent' AND provider = 'cloudflare' THEN 1 ELSE 0 END) as cloudflare_sent,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+      FROM email_logs
+      WHERE date(sent_at, '+7 hours') = date('now', '+7 hours')
+    `).first() as any
+    return {
+      resend_sent: Number(row?.resend_sent) || 0,
+      cloudflare_sent: Number(row?.cloudflare_sent) || 0,
+      failed: Number(row?.failed) || 0,
+      resend_limit: resendLimit,
+      cloudflare_bound: !!cfCreds,
+      cloudflare_enabled: cloudflareEnabled,
+    }
+  } catch {
+    const row = await db.prepare(`
+      SELECT
+        SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as resend_sent,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+      FROM email_logs
+      WHERE date(sent_at, '+7 hours') = date('now', '+7 hours')
+    `).first() as any
+    return {
+      resend_sent: Number(row?.resend_sent) || 0,
+      cloudflare_sent: 0,
+      failed: Number(row?.failed) || 0,
+      resend_limit: resendLimit,
+      cloudflare_bound: !!cfCreds,
+      cloudflare_enabled: cloudflareEnabled,
+    }
+  }
+}
+
 // ---- Core sendEmail function ----
 async function sendEmail(env: Bindings, opts: {
   to: string
@@ -704,21 +844,7 @@ async function sendEmail(env: Bindings, opts: {
   }
   // ─────────────────────────────────────────────────────────────────────────
 
-  // Try env var first, then fall back to DB config
-  let apiKey = env.RESEND_API_KEY
-  console.log(`[sendEmail] eventType=${opts.eventType} to=${opts.to} apiKey_env=${apiKey ? 'SET' : 'EMPTY'}`)
-  if (!apiKey) {
-    const dbConfig = await opts.db.prepare("SELECT value FROM system_config WHERE key = 'resend_api_key'").first() as any
-    apiKey = dbConfig?.value || ''
-    console.log(`[sendEmail] apiKey from DB: ${apiKey ? 'SET' : 'EMPTY'}`)
-  }
-  // 4 mandatory events — always send email regardless of user preference
   const MANDATORY_EVENTS = new Set(['task_assigned', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish'])
-
-  if (!apiKey) {
-    console.log(`[sendEmail] ABORT — no RESEND_API_KEY`)
-    return 'skipped'
-  }
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
     const pref = await opts.db.prepare(
@@ -726,7 +852,7 @@ async function sendEmail(env: Bindings, opts: {
     ).bind(opts.userId).first() as any
 
     if (pref) {
-      if (!pref.email_enabled) return
+      if (!pref.email_enabled) return 'skipped'
       const prefMap: Record<string, string> = {
         task_status_updated:      'notify_task_updated',
         project_updated:          'notify_project_updated',
@@ -739,53 +865,113 @@ async function sendEmail(env: Bindings, opts: {
         member_added_to_project:  'notify_member_added',
       }
       const prefKey = prefMap[opts.eventType]
-      if (prefKey && pref[prefKey] === 0) return   // user turned this off
+      if (prefKey && pref[prefKey] === 0) return 'skipped'
     }
-    // No pref row → use defaults (all enabled)
+  }
+
+  const cfg = await getSystemConfigMap(opts.db, [
+    'resend_api_key', 'email_from_name', 'email_from_address',
+    'resend_daily_limit', 'cloudflare_email_enabled', 'email_enabled',
+    'cloudflare_account_id', 'cloudflare_email_api_token',
+  ])
+  if (cfg.email_enabled === '0') {
+    console.log(`[sendEmail] SKIPPED — email_enabled=0`)
+    return 'skipped'
+  }
+
+  let apiKey = env.RESEND_API_KEY || cfg.resend_api_key || ''
+  const fromName = (cfg.email_from_name || DEFAULT_EMAIL_FROM_NAME).trim() || DEFAULT_EMAIL_FROM_NAME
+  const fromAddress = (cfg.email_from_address || DEFAULT_EMAIL_FROM_ADDRESS).trim() || DEFAULT_EMAIL_FROM_ADDRESS
+  const fromHeader = `${fromName} <${fromAddress}>`
+  const resendLimit = Math.max(0, parseInt(cfg.resend_daily_limit || String(DEFAULT_RESEND_DAILY_LIMIT), 10) || DEFAULT_RESEND_DAILY_LIMIT)
+  const cloudflareEnabled = cfg.cloudflare_email_enabled !== '0'
+  const cfCreds = cloudflareEnabled ? await resolveCloudflareEmailCreds(env, opts.db) : null
+
+  const resendSentToday = apiKey ? await countResendSentToday(opts.db) : resendLimit
+  const useResend = !!apiKey && resendSentToday < resendLimit
+  const useCloudflare = !useResend && !!cfCreds
+
+  console.log(
+    `[sendEmail] eventType=${opts.eventType} to=${opts.to} resendToday=${resendSentToday}/${resendLimit} ` +
+    `provider=${useResend ? 'resend' : (useCloudflare ? 'cloudflare' : 'none')}`
+  )
+
+  if (!useResend && !useCloudflare) {
+    console.log(`[sendEmail] ABORT — no provider (resend key/limit or Cloudflare REST creds)`)
+    return 'skipped'
   }
 
   const { subject, html } = emailTemplates(opts.eventType, { ...opts.data, recipientName: opts.toName })
+  const plainText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000)
 
   let status: 'sent' | 'failed' = 'sent'
   let errorMsg: string | null = null
+  let provider: 'resend' | 'cloudflare' = useResend ? 'resend' : 'cloudflare'
 
   try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'OneCad BIM <no-reply@bimonecadvn.com>',
-        to: [opts.to],
+    if (useResend) {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: fromHeader,
+          to: [opts.to],
+          subject,
+          html,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.text()
+        status = 'failed'
+        errorMsg = err.slice(0, 500)
+        console.log(`[sendEmail] Resend FAILED HTTP ${res.status}: ${errorMsg}`)
+      } else {
+        console.log(`[sendEmail] Resend SUCCESS to=${opts.to} event=${opts.eventType}`)
+      }
+    } else {
+      await sendViaCloudflareRest(cfCreds!, {
+        to: opts.to,
+        toName: opts.toName,
+        fromAddress,
+        fromName,
         subject,
         html,
-      }),
-    })
-
-    if (!res.ok) {
-      const err = await res.text()
-      status = 'failed'
-      errorMsg = err.slice(0, 500)
-      console.log(`[sendEmail] FAILED HTTP ${res.status}: ${errorMsg}`)
-    } else {
-      console.log(`[sendEmail] SUCCESS to=${opts.to} event=${opts.eventType}`)
+        text: plainText || subject,
+      })
+      console.log(`[sendEmail] Cloudflare REST SUCCESS to=${opts.to} event=${opts.eventType}`)
     }
   } catch (e: any) {
     status = 'failed'
-    errorMsg = e.message?.slice(0, 500) || 'Unknown error'
-    console.log(`[sendEmail] EXCEPTION: ${errorMsg}`)
+    errorMsg = (e?.message || e?.code || 'Unknown error').toString().slice(0, 500)
+    console.log(`[sendEmail] EXCEPTION (${provider}): ${errorMsg}`)
   }
 
-  // Log to DB (fire and forget)
   try {
     await opts.db.prepare(
-      `INSERT INTO email_logs (user_id, to_email, subject, event_type, related_type, related_id, status, error_msg) VALUES (?,?,?,?,?,?,?,?)`
-    ).bind(opts.userId || null, opts.to, subject, opts.eventType, opts.relatedType || null, opts.relatedId || null, status, errorMsg).run()
-  } catch { /* ignore log error */ }
+      `INSERT INTO email_logs (user_id, to_email, subject, event_type, related_type, related_id, status, error_msg, provider)
+       VALUES (?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      opts.userId || null, opts.to, subject, opts.eventType,
+      opts.relatedType || null, opts.relatedId || null,
+      status, errorMsg, provider
+    ).run()
+  } catch {
+    // Fallback nếu cột provider chưa migrate
+    try {
+      await opts.db.prepare(
+        `INSERT INTO email_logs (user_id, to_email, subject, event_type, related_type, related_id, status, error_msg)
+         VALUES (?,?,?,?,?,?,?,?)`
+      ).bind(
+        opts.userId || null, opts.to, subject, opts.eventType,
+        opts.relatedType || null, opts.relatedId || null,
+        status, errorMsg
+      ).run()
+    } catch { /* ignore log error */ }
+  }
 
-  // Web Push — fire and forget for mandatory events (requires userId)
   if (opts.userId) {
     const eventIconMap: Record<string, string> = {
       task_assigned:   '📋',
@@ -7691,13 +7877,16 @@ app.get('/api/system-config', authMiddleware, adminOnly, async (c) => {
     // Mask API key value for security
     const configs: Record<string, any> = {}
     for (const row of (rows.results as any[])) {
-      if (row.key === 'resend_api_key' && row.value) {
-        configs[row.key] = { value: row.value.slice(0, 8) + '****' + row.value.slice(-4), description: row.description, updated_at: row.updated_at, configured: true }
+      if ((row.key === 'resend_api_key' || row.key === 'cloudflare_email_api_token') && row.value) {
+        const v = String(row.value)
+        const masked = v.length > 12 ? v.slice(0, 6) + '****' + v.slice(-4) : '****'
+        configs[row.key] = { value: masked, description: row.description, updated_at: row.updated_at, configured: true }
       } else {
         configs[row.key] = { value: row.value, description: row.description, updated_at: row.updated_at, configured: !!row.value }
       }
     }
-    return c.json(configs)
+    const email_stats_today = await getEmailStatsToday(db, c.env)
+    return c.json({ ...configs, email_stats_today })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -7710,8 +7899,12 @@ app.put('/api/system-config', authMiddleware, adminOnly, async (c) => {
     const user = c.get('user') as any
     const data = await c.req.json() as Record<string, string>
     
-    const allowedKeys = ['resend_api_key', 'email_from_name', 'email_from_address', 'email_enabled',
-                          'weekly_report_enabled', 'weekly_report_day', 'weekly_report_hour']
+    const allowedKeys = [
+      'resend_api_key', 'email_from_name', 'email_from_address', 'email_enabled',
+      'resend_daily_limit', 'cloudflare_email_enabled',
+      'cloudflare_account_id', 'cloudflare_email_api_token',
+      'weekly_report_enabled', 'weekly_report_day', 'weekly_report_hour',
+    ]
     
     for (const [key, value] of Object.entries(data)) {
       if (!allowedKeys.includes(key)) continue
@@ -7780,13 +7973,12 @@ app.get('/api/email-logs', authMiddleware, async (c) => {
   }
 })
 
-// POST /api/email-settings/test — gửi email test
+// POST /api/email-settings/test — gửi email test (đi qua cùng routing Resend → Cloudflare)
 app.post('/api/email-settings/test', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
 
-    // Cho phép truyền to_email tuỳ chỉnh (hữu ích khi email trong DB là email giả)
     const body = await c.req.json().catch(() => ({})) as any
     const overrideEmail = body?.to_email?.trim()
 
@@ -7796,40 +7988,42 @@ app.post('/api/email-settings/test', authMiddleware, async (c) => {
 
     if (!toEmail) return c.json({ error: 'Tài khoản chưa có email. Vui lòng truyền to_email trong body.' }, 400)
 
-    let apiKey = c.env.RESEND_API_KEY
-    if (!apiKey) {
-      const dbKey = await db.prepare("SELECT value FROM system_config WHERE key = 'resend_api_key'").first() as any
-      apiKey = dbKey?.value || ''
-    }
-    if (!apiKey) return c.json({ error: 'Chưa cấu hình RESEND_API_KEY. Vào Admin → Cấu hình Email để thêm API Key.' }, 400)
-
-    const { subject, html } = emailTemplates('task_assigned', {
-      recipientName: toName,
-      taskTitle: '[TEST] Kiểm tra email thông báo OneCad BIM',
-      projectName: 'OneCad BIM - Demo Project',
-      discipline: 'Kiến trúc (AA)',
-      priority: 'medium',
-      deadline: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
-      assignedBy: 'System (Test Email)',
-      description: 'Đây là email kiểm tra từ hệ thống OneCad BIM. Nếu bạn nhận được email này, cài đặt thông báo email đã hoạt động chính xác!'
+    const result = await sendEmail(c.env, {
+      to: toEmail,
+      toName,
+      eventType: 'task_assigned',
+      data: {
+        taskTitle: '[TEST] Kiểm tra email thông báo OneCad BIM',
+        projectName: 'OneCad BIM - Demo Project',
+        discipline: 'Kiến trúc (AA)',
+        priority: 'medium',
+        deadline: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+        assignedBy: 'System (Test Email)',
+        description: 'Đây là email kiểm tra từ hệ thống OneCad BIM. Nếu bạn nhận được email này, cài đặt thông báo email đã hoạt động chính xác!',
+      },
+      db,
+      userId: user.id,
     })
 
-    let status = 'sent'
-    let errorMsg: string | null = null
-    try {
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: 'OneCad BIM <no-reply@bimonecadvn.com>', to: [toEmail], subject, html }),
-      })
-      if (!res.ok) { const err = await res.text(); status = 'failed'; errorMsg = err.slice(0, 500) }
-    } catch (e: any) { status = 'failed'; errorMsg = e.message }
+    if (result === 'skipped') {
+      return c.json({
+        error: 'Không gửi được: thiếu Resend API key / đã hết hạn mức Resend và chưa cấu hình Cloudflare (Account ID + API Token), hoặc email bị tắt.',
+      }, 400)
+    }
+    if (result === 'failed') {
+      return c.json({ error: 'Gửi thất bại — xem Lịch sử gửi Email để biết chi tiết.' }, 500)
+    }
 
-    await db.prepare(`INSERT INTO email_logs (user_id, to_email, subject, event_type, status, error_msg) VALUES (?,?,?,?,?,?)`)
-      .bind(user.id, toEmail, subject, 'test', status, errorMsg).run()
-
-    if (status === 'failed') return c.json({ error: `Gửi thất bại: ${errorMsg}` }, 500)
-    return c.json({ success: true, message: `Email test đã gửi đến ${toEmail}` })
+    const stats = await getEmailStatsToday(db, c.env)
+    const providerHint = stats.resend_sent > 0 && stats.resend_sent <= stats.resend_limit
+      ? (stats.resend_sent < stats.resend_limit ? 'resend' : 'cloudflare')
+      : (stats.cloudflare_sent > 0 ? 'cloudflare' : 'resend')
+    return c.json({
+      success: true,
+      message: `Email test đã gửi đến ${toEmail}`,
+      provider_hint: providerHint,
+      email_stats_today: stats,
+    })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

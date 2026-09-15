@@ -2612,6 +2612,7 @@
               <div>
                 <p class="text-xs text-gray-500 uppercase tracking-wide">Email đã gửi (hôm nay)</p>
                 <p class="font-bold text-gray-800" id="emailSentToday">-</p>
+                <p class="text-xs text-gray-400 mt-0.5" id="emailSentTodayDetail"></p>
               </div>
             </div>
           </div>
@@ -2667,6 +2668,61 @@
           <div class="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-800">
             <i class="fas fa-info-circle mr-1"></i>
             <strong>Lưu ý:</strong> API Key được lưu vào database. Với free plan Resend, email chỉ gửi được đến địa chỉ đã đăng ký tài khoản. Để gửi tới bất kỳ địa chỉ nào, cần verify domain tại <a href="https://resend.com/domains" target="_blank" class="underline">resend.com/domains</a>.
+          </div>
+        </div>
+
+        <!-- Cloudflare Email fallback (REST API — Pages không hỗ trợ send_email binding) -->
+        <div class="card mb-6 border-2 border-sky-300 bg-gradient-to-br from-sky-50 to-slate-50" id="cloudflareEmailConfigCard">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-xl bg-sky-600 flex items-center justify-center flex-shrink-0">
+              <i class="fab fa-cloudflare text-white text-lg"></i>
+            </div>
+            <div class="flex-1">
+              <h3 class="font-bold text-gray-800">Cloudflare Email (fallback)</h3>
+              <p class="text-xs text-gray-500">Sau khi Resend đủ hạn mức ngày → gửi qua Cloudflare Email Sending REST API</p>
+            </div>
+            <span class="text-xs font-semibold px-2 py-1 rounded-full bg-sky-100 text-sky-700">CF</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label class="label">Trạng thái</label>
+              <p id="cfgCfBoundStatus" class="text-sm font-semibold text-gray-700 mt-1">Đang kiểm tra...</p>
+            </div>
+            <div>
+              <label class="label">Hạn mức Resend / ngày</label>
+              <input type="number" id="cfgResendDailyLimit" class="input-field" min="1" max="3000" value="100">
+              <p class="text-xs text-gray-400 mt-1">Mặc định 100 — vượt ngưỡng thì dùng Cloudflare</p>
+            </div>
+            <div>
+              <label class="label">Cloudflare Account ID <span class="text-red-500">*</span></label>
+              <input type="text" id="cfgCfAccountId" class="input-field" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+              <p class="text-xs text-gray-400 mt-1">Dashboard → Account → Overview (bên phải)</p>
+            </div>
+            <div>
+              <label class="label">API Token (Email Sending: Edit) <span class="text-red-500">*</span></label>
+              <input type="password" id="cfgCfEmailApiToken" class="input-field" placeholder="Nhập token mới để thay đổi" autocomplete="off">
+              <p class="text-xs text-gray-400 mt-1">My Profile → API Tokens → Create Token</p>
+            </div>
+            <div class="md:col-span-2">
+              <label class="label">Địa chỉ gửi (From)</label>
+              <input type="email" id="cfgEmailFromAddress" class="input-field" placeholder="no-reply@bimonecadvn.com" value="no-reply@bimonecadvn.com">
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-4 mb-3">
+            <label class="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+              <input type="checkbox" id="cfgCfEmailEnabled" class="rounded border-gray-300 text-sky-600" checked>
+              Bật fallback Cloudflare
+            </label>
+            <button onclick="saveCloudflareEmailConfig()" class="btn-primary flex items-center gap-2 text-sm" id="btnSaveCfEmail" style="background:#0284c7;border-color:#0284c7">
+              <i class="fas fa-save"></i> Lưu cấu hình Cloudflare
+            </button>
+            <span id="cfEmailSaveStatus" class="text-sm font-medium"></span>
+          </div>
+          <div class="p-3 bg-white border border-sky-100 rounded-lg text-xs text-gray-700">
+            <i class="fas fa-route mr-1 text-sky-600"></i>
+            Mỗi email chỉ đi <strong>một</strong> kênh: Resend trước (đến hạn mức), sau đó Cloudflare REST.
+            Domain <code class="bg-sky-100 px-1 rounded">bimonecadvn.com</code> cần đã onboard Email Sending + DNS/SPF/DKIM.
+            <span id="emailProviderSplitHint" class="block mt-1 text-gray-500"></span>
           </div>
         </div>
 
@@ -6508,7 +6564,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260915a"></script>
+<script src="/static/app.js?v=20260915d"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
