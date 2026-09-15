@@ -2336,30 +2336,71 @@ app.get('/api/tasks/:id', authMiddleware, async (c) => {
     const user = c.get('user') as any
     const id = parseInt(c.req.param('id'))
 
-    const task = await db.prepare(`
-      SELECT t.*, 
-        u1.full_name as assigned_to_name,
-        u2.full_name as assigned_by_name,
-        p.name as project_name,
-        cat.name as category_name
-      FROM tasks t
-      LEFT JOIN users u1 ON t.assigned_to = u1.id
-      LEFT JOIN users u2 ON t.assigned_by = u2.id
-      LEFT JOIN projects p ON t.project_id = p.id
-      LEFT JOIN categories cat ON t.category_id = cat.id
-      WHERE t.id = ?
-    `).bind(id).first() as any
+    // Explicit columns — không SELECT attachments (blob lớn → Worker/JSON fail).
+    // Cột mở rộng (task_type/…) lấy nếu có; thiếu cột trên D1 cũ → fallback query gọn.
+    let task: any = null
+    try {
+      task = await db.prepare(`
+        SELECT
+          t.id, t.project_id, t.category_id, t.legal_item_id, t.title, t.description,
+          t.discipline_code, t.phase, t.priority, t.status, t.assigned_to, t.assigned_by,
+          t.start_date, t.due_date, t.actual_start_date, t.actual_end_date,
+          t.estimated_hours, t.actual_hours, t.progress, t.tags,
+          t.task_type, t.model_filename, t.cde_report, t.work_notes, t.hstk_date,
+          t.created_at, t.updated_at,
+          CASE WHEN t.due_date IS NOT NULL AND t.due_date < date('now')
+                    AND t.status NOT IN ('completed','review','cancelled')
+               THEN 1 ELSE 0 END AS is_overdue,
+          u1.full_name as assigned_to_name,
+          u2.full_name as assigned_by_name,
+          p.name as project_name, p.code as project_code,
+          cat.name as category_name
+        FROM tasks t
+        LEFT JOIN users u1 ON t.assigned_to = u1.id
+        LEFT JOIN users u2 ON t.assigned_by = u2.id
+        LEFT JOIN projects p ON t.project_id = p.id
+        LEFT JOIN categories cat ON t.category_id = cat.id
+        WHERE t.id = ?
+      `).bind(id).first()
+    } catch {
+      task = await db.prepare(`
+        SELECT
+          t.id, t.project_id, t.category_id, t.legal_item_id, t.title, t.description,
+          t.discipline_code, t.phase, t.priority, t.status, t.assigned_to, t.assigned_by,
+          t.start_date, t.due_date, t.actual_start_date, t.actual_end_date,
+          t.estimated_hours, t.actual_hours, t.progress, t.tags,
+          t.created_at, t.updated_at,
+          CASE WHEN t.due_date IS NOT NULL AND t.due_date < date('now')
+                    AND t.status NOT IN ('completed','review','cancelled')
+               THEN 1 ELSE 0 END AS is_overdue,
+          u1.full_name as assigned_to_name,
+          u2.full_name as assigned_by_name,
+          p.name as project_name, p.code as project_code,
+          cat.name as category_name
+        FROM tasks t
+        LEFT JOIN users u1 ON t.assigned_to = u1.id
+        LEFT JOIN users u2 ON t.assigned_by = u2.id
+        LEFT JOIN projects p ON t.project_id = p.id
+        LEFT JOIN categories cat ON t.category_id = cat.id
+        WHERE t.id = ?
+      `).bind(id).first()
+    }
     if (!task) return c.json({ error: 'Task not found' }, 404)
-    if (!(await canAccessProject(db, user, task.project_id))) {
+
+    // Đọc được nếu: thành viên dự án HOẶC người được giao / người tạo
+    // (cùng phạm vi list/PUT — không khóa vì overdue)
+    const isAssigneeOrCreator = task.assigned_to === user.id || task.assigned_by === user.id
+    if (!isAssigneeOrCreator && !(await canAccessProject(db, user, task.project_id))) {
       return c.json({ error: 'Không có quyền truy cập task này' }, 403)
     }
 
     const history = await db.prepare(`
       SELECT th.*, u.full_name as changed_by_name
       FROM task_history th
-      JOIN users u ON th.user_id = u.id
+      LEFT JOIN users u ON th.user_id = u.id
       WHERE th.task_id = ?
       ORDER BY th.created_at DESC
+      LIMIT 100
     `).bind(id).all()
 
     return c.json({ ...task, history: history.results })

@@ -4409,8 +4409,8 @@ async function openTaskModal(taskId = null, projectId = null) {
       $('taskStartDate').value = task.start_date || ''
       $('taskDueDate').value = task.due_date || ''
       $('taskEstHours').value = task.estimated_hours || 0
-      $('taskProgress').value = task.progress || 0
-      $('taskProgressLabel').textContent = task.progress || 0
+      if ($('taskProgress')) $('taskProgress').value = task.progress || 0
+      if ($('taskProgressLabel')) $('taskProgressLabel').textContent = task.progress || 0
       if ($('taskWorkNotes')) $('taskWorkNotes').value = task.work_notes || ''
       if ($('taskCdeReport')) $('taskCdeReport').checked = !!task.cde_report
       if ($('taskHstkDate')) $('taskHstkDate').value = task.hstk_date || ''
@@ -4475,7 +4475,11 @@ async function openTaskModal(taskId = null, projectId = null) {
       await _loadAndInitTaskFilenameCombobox(task.project_id, task.model_filename || '')
       _taskModalPreserveAssignee = null  // Xóa flag sau khi đã load xong
       _taskModalInitializing    = false  // Mở lại onchange
-    } catch (e) { toast('Lỗi tải task', 'error'); return }
+    } catch (e) {
+      const msg = e?.response?.data?.error || e?.message || 'Không xác định'
+      toast('Lỗi tải task: ' + msg, 'error')
+      return
+    }
   } else {
     $('taskTitle').value = ''
     $('taskDesc').value = ''
@@ -4761,13 +4765,17 @@ async function openTaskDetail(id, openChatTab = false) {
         <div>
           <h4 class="font-bold text-gray-700 mb-2 text-sm"><i class="fas fa-history mr-2 text-gray-400"></i>Lịch sử thay đổi</h4>
           <div class="space-y-1 max-h-32 overflow-y-auto">
-            ${task.history.map(h => `
+            ${task.history.map(h => {
+              let when = ''
+              try { when = toLocalDayjs(h.created_at).format('DD/MM HH:mm') } catch(_) { when = String(h.created_at || '').slice(0, 16) }
+              const safeVal = String(h.new_value ?? '-').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              return `
               <div class="flex gap-2 text-xs text-gray-500 py-1 border-b">
-                <span class="text-gray-400 flex-shrink-0">${toLocalDayjs(h.created_at).format('DD/MM HH:mm')}</span>
-                <span class="font-medium text-gray-700 flex-shrink-0">${h.changed_by_name}</span>
-                <span class="truncate">→ ${h.field_changed}: ${h.new_value || '-'}</span>
-              </div>
-            `).join('')}
+                <span class="text-gray-400 flex-shrink-0">${when}</span>
+                <span class="font-medium text-gray-700 flex-shrink-0">${h.changed_by_name || '—'}</span>
+                <span class="truncate">→ ${h.field_changed || '?'}: ${safeVal}</span>
+              </div>`
+            }).join('')}
           </div>
         </div>` : ''}
         <div class="flex justify-end gap-2 pt-2 border-t">
@@ -4851,7 +4859,10 @@ async function openTaskDetail(id, openChatTab = false) {
 
     // Mark chat notifications as read for this task
     if (openChatTab) markChatNotifsRead('task', task.id)
-  } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+  } catch (e) {
+    const msg = e?.response?.data?.error || e?.message || 'Không xác định'
+    toast('Lỗi tải task: ' + msg, 'error')
+  }
 }
 
 // ── Tab switcher for Task Detail ─────────────────────────────────────────
