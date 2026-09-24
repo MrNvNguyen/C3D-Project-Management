@@ -1476,42 +1476,76 @@ app.delete('/api/users/:id', authMiddleware, adminOnly, async (c) => {
     const user = c.get('user') as any
     const id = parseInt(c.req.param('id'))
 
-    // Không được tự xóa chính mình
     if (user.id === id) return c.json({ error: 'Không thể tự xóa tài khoản của mình' }, 400)
 
-    // Kiểm tra user tồn tại
-    const target = await db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(id).first() as any
+    const target = await db.prepare('SELECT id, username, full_name, role FROM users WHERE id = ?').bind(id).first() as any
     if (!target) return c.json({ error: 'Không tìm thấy tài khoản' }, 404)
 
-    // Cascade xóa dữ liệu liên quan — NULL-ify trước, xóa sau để tránh FK constraint
+    // Chạy từng câu — bỏ qua nếu bảng/cột chưa tồn tại (môi trường lệch schema)
+    const runSafe = async (sql: string, ...params: any[]) => {
+      try { await db.prepare(sql).bind(...params).run() } catch { /* ignore missing table/col */ }
+    }
 
-    // 1. NULL-ify các FK trỏ tới user này (các bảng không có ON DELETE CASCADE)
-    await db.prepare('UPDATE tasks SET assigned_to = NULL WHERE assigned_to = ?').bind(id).run()
-    await db.prepare('UPDATE tasks SET assigned_by = NULL WHERE assigned_by = ?').bind(id).run()
-    await db.prepare('UPDATE projects SET admin_id = NULL WHERE admin_id = ?').bind(id).run()
-    await db.prepare('UPDATE projects SET leader_id = NULL WHERE leader_id = ?').bind(id).run()
-    await db.prepare('UPDATE projects SET created_by = NULL WHERE created_by = ?').bind(id).run()
-    await db.prepare('UPDATE categories SET created_by = NULL WHERE created_by = ?').bind(id).run()
-    await db.prepare('UPDATE project_costs SET approved_by = NULL WHERE approved_by = ?').bind(id).run()
-    await db.prepare('UPDATE project_costs SET created_by = NULL WHERE created_by = ?').bind(id).run()
-    await db.prepare('UPDATE project_revenues SET created_by = NULL WHERE created_by = ?').bind(id).run()
-    await db.prepare('UPDATE timesheets SET approved_by = NULL WHERE approved_by = ?').bind(id).run()
-    await db.prepare('UPDATE assets SET assigned_to = NULL WHERE assigned_to = ?').bind(id).run()
-    await db.prepare('UPDATE assets SET created_by = NULL WHERE created_by = ?').bind(id).run()
-    await db.prepare('UPDATE asset_history SET from_user = NULL WHERE from_user = ?').bind(id).run()
-    await db.prepare('UPDATE asset_history SET to_user = NULL WHERE to_user = ?').bind(id).run()
+    // 1. NULL-ify FK không có ON DELETE CASCADE / SET NULL
+    await runSafe('UPDATE tasks SET assigned_to = NULL WHERE assigned_to = ?', id)
+    await runSafe('UPDATE tasks SET assigned_by = NULL WHERE assigned_by = ?', id)
+    await runSafe('UPDATE subtasks SET assigned_to = NULL WHERE assigned_to = ?', id)
+    await runSafe('UPDATE subtasks SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE projects SET admin_id = NULL WHERE admin_id = ?', id)
+    await runSafe('UPDATE projects SET leader_id = NULL WHERE leader_id = ?', id)
+    await runSafe('UPDATE projects SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE categories SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE project_costs SET approved_by = NULL WHERE approved_by = ?', id)
+    await runSafe('UPDATE project_costs SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE project_revenues SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE timesheets SET approved_by = NULL WHERE approved_by = ?', id)
+    await runSafe('UPDATE assets SET assigned_to = NULL WHERE assigned_to = ?', id)
+    await runSafe('UPDATE assets SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE asset_history SET from_user = NULL WHERE from_user = ?', id)
+    await runSafe('UPDATE asset_history SET to_user = NULL WHERE to_user = ?', id)
+    await runSafe('UPDATE payment_requests SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE legal_items SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE legal_documents SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE outgoing_letters SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE meeting_minutes SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE weekly_plans SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE weekly_reports SET submitted_by = NULL WHERE submitted_by = ?', id)
+    await runSafe('UPDATE leave_requests SET reviewed_by = NULL WHERE reviewed_by = ?', id)
+    await runSafe('UPDATE leave_balances SET updated_by = NULL WHERE updated_by = ?', id)
+    await runSafe('UPDATE checklist_submissions SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE checklist_submission_items SET updated_by = NULL WHERE updated_by = ?', id)
+    await runSafe('UPDATE checklist_submission_items SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE project_health SET updated_by = NULL WHERE updated_by = ?', id)
+    await runSafe('UPDATE boss_directives SET assignee_id = NULL WHERE assignee_id = ?', id)
+    await runSafe('UPDATE boss_directives SET responded_by = NULL WHERE responded_by = ?', id)
+    await runSafe('UPDATE boss_directives SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE departments SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE shared_costs SET created_by = NULL WHERE created_by = ?', id)
+    await runSafe('UPDATE system_config SET updated_by = NULL WHERE updated_by = ?', id)
+    await runSafe('UPDATE email_logs SET user_id = NULL WHERE user_id = ?', id)
 
-    // 2. Xóa các bản ghi trực tiếp của user này
-    await db.prepare('DELETE FROM timesheets WHERE user_id = ?').bind(id).run()
-    await db.prepare('DELETE FROM project_members WHERE user_id = ?').bind(id).run()
-    await db.prepare('DELETE FROM notifications WHERE user_id = ?').bind(id).run()
-    await db.prepare('DELETE FROM task_history WHERE user_id = ?').bind(id).run()
-    await db.prepare('DELETE FROM asset_history WHERE user_id = ?').bind(id).run()
+    // 2. Xóa bản ghi thuộc về user (hoặc CASCADE-equivalent)
+    await runSafe('DELETE FROM timesheets WHERE user_id = ?', id)
+    await runSafe('DELETE FROM timesheet_tasks WHERE timesheet_id NOT IN (SELECT id FROM timesheets)', id)
+    await runSafe('DELETE FROM project_members WHERE user_id = ?', id)
+    await runSafe('DELETE FROM notifications WHERE user_id = ?', id)
+    await runSafe('DELETE FROM task_history WHERE user_id = ?', id)
+    await runSafe('DELETE FROM asset_history WHERE user_id = ?', id)
+    await runSafe('DELETE FROM email_settings WHERE user_id = ?', id)
+    await runSafe('DELETE FROM push_subscriptions WHERE user_id = ?', id)
+    await runSafe('DELETE FROM leave_requests WHERE user_id = ?', id)
+    await runSafe('DELETE FROM leave_balances WHERE user_id = ?', id)
+    // Chat: attachments trước, rồi messages
+    await runSafe(
+      `DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE sender_id = ?)`,
+      id
+    )
+    await runSafe('DELETE FROM messages WHERE sender_id = ?', id)
 
     // 3. Xóa user
     await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run()
 
-    return c.json({ success: true, message: `Đã xóa tài khoản "${target.full_name}"` })
+    return c.json({ success: true, message: `Đã xóa tài khoản "${target.full_name || target.username}"` })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1640,10 +1674,11 @@ app.get('/api/projects/:id', authMiddleware, async (c) => {
     if (!project) return c.json({ error: 'Project not found' }, 404)
 
     const members = await db.prepare(`
-      SELECT pm.*, u.full_name, u.email, u.role as user_role, u.department
+      SELECT pm.*, u.full_name, u.email, u.role as user_role, u.department, u.is_active
       FROM project_members pm
       JOIN users u ON pm.user_id = u.id
       WHERE pm.project_id = ?
+      ORDER BY u.full_name ASC
     `).bind(id).all()
 
     // Task stats thực tế (không bị lọc RBAC) — dùng cho tiến độ tổng và số trễ hạn
@@ -2412,7 +2447,7 @@ app.get('/api/tasks', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ } = c.req.query()
+    const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ, discipline, phase, priority, category_id } = c.req.query()
     const limit = Math.min(Math.max(parseInt(limitQ || '500', 10) || 500, 1), 1000)
     const offset = Math.max(parseInt(offsetQ || '0', 10) || 0, 0)
     const searchQ = String(search || '').trim().slice(0, 80).replace(/[%_]/g, '')
@@ -2492,21 +2527,61 @@ app.get('/api/tasks', authMiddleware, async (c) => {
 
     if (project_id) { query += ` AND t.project_id = ?`; params.push(parseInt(project_id)) }
     if (status) { query += ` AND t.status = ?`; params.push(status) }
+    if (priority) { query += ` AND t.priority = ?`; params.push(priority) }
+    if (phase) { query += ` AND t.phase = ?`; params.push(phase) }
+    if (discipline) { query += ` AND t.discipline_code = ?`; params.push(discipline) }
+    if (category_id) { query += ` AND t.category_id = ?`; params.push(parseInt(category_id)) }
     if (assigned_to) { query += ` AND t.assigned_to = ?`; params.push(parseInt(assigned_to)) }
     if (overdue === '1') { query += ` AND t.due_date IS NOT NULL AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')` }
     if (searchQ) {
       const like = `%${searchQ}%`
-      query += ` AND (
-        t.title LIKE ? COLLATE NOCASE
-        OR u1.full_name LIKE ? COLLATE NOCASE
-        OR cat.name LIKE ? COLLATE NOCASE
-        OR p.code LIKE ? COLLATE NOCASE
-        OR p.name LIKE ? COLLATE NOCASE
-      )`
-      params.push(like, like, like, like, like)
+      // Khớp phụ trách không dấu: Lượng ≈ Lương (SQLite LIKE phân biệt dấu)
+      const foldVn = (s: string) => String(s || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd')
+        .replace(/Đ/g, 'D')
+        .toLowerCase()
+      const foldQ = foldVn(searchQ)
+      let assigneeIds: number[] = []
+      try {
+        const usersRes = await db.prepare(`SELECT id, full_name FROM users WHERE is_active = 1`).all()
+        assigneeIds = (usersRes.results || [])
+          .filter((u: any) => foldVn(u.full_name).includes(foldQ))
+          .map((u: any) => Number(u.id))
+          .filter((id: number) => Number.isFinite(id))
+      } catch (_) { /* ignore */ }
+
+      if (assigneeIds.length > 0) {
+        const placeholders = assigneeIds.map(() => '?').join(',')
+        query += ` AND (
+          t.title LIKE ? COLLATE NOCASE
+          OR u1.full_name LIKE ? COLLATE NOCASE
+          OR cat.name LIKE ? COLLATE NOCASE
+          OR p.code LIKE ? COLLATE NOCASE
+          OR p.name LIKE ? COLLATE NOCASE
+          OR t.assigned_to IN (${placeholders})
+        )`
+        params.push(like, like, like, like, like, ...assigneeIds)
+      } else {
+        query += ` AND (
+          t.title LIKE ? COLLATE NOCASE
+          OR u1.full_name LIKE ? COLLATE NOCASE
+          OR cat.name LIKE ? COLLATE NOCASE
+          OR p.code LIKE ? COLLATE NOCASE
+          OR p.name LIKE ? COLLATE NOCASE
+        )`
+        params.push(like, like, like, like, like)
+      }
     }
 
-    query += ` ORDER BY t.due_date ASC, t.priority DESC LIMIT ? OFFSET ?`
+    // Khi có filter hẹp (status/discipline/search/…) ưu tiên task mới cập nhật để không “mất” task trong LIMIT
+    const hasNarrowFilter = !!(status || priority || phase || discipline || category_id || searchQ || overdue === '1' || assigned_to)
+    if (hasNarrowFilter) {
+      query += ` ORDER BY t.updated_at DESC, t.due_date ASC LIMIT ? OFFSET ?`
+    } else {
+      query += ` ORDER BY t.due_date ASC, t.priority DESC LIMIT ? OFFSET ?`
+    }
     params.push(limit, offset)
 
     const result = await db.prepare(query).bind(...params).all()

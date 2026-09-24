@@ -1326,14 +1326,14 @@
         <div class="card mb-4">
           <div class="flex flex-wrap gap-3 items-center">
             <input type="text" id="taskSearch" placeholder="🔍 Tìm kiếm task / phụ trách..." class="input-field" style="width:220px" oninput="onTaskSearchInput()">
-            <select id="taskStatusFilter" class="select-field" style="width:140px" onchange="filterTasks()">
+            <select id="taskStatusFilter" class="select-field" style="width:140px" onchange="reloadTaskList()">
               <option value="">Tất cả TT</option>
               <option value="todo">Chờ thực hiện</option>
               <option value="in_progress">Đang làm</option>
               <option value="review">Đang duyệt</option>
               <option value="completed">Hoàn thành</option>
             </select>
-            <select id="taskPriorityFilter" class="select-field" style="width:130px" onchange="filterTasks()">
+            <select id="taskPriorityFilter" class="select-field" style="width:130px" onchange="reloadTaskList()">
               <option value="">Tất cả ưu tiên</option>
               <option value="urgent">Khẩn cấp</option>
               <option value="high">Cao</option>
@@ -1344,7 +1344,7 @@
             <div id="taskProjectCombobox" style="width:220px"></div>
             <!-- Category combobox: only visible when a project is selected -->
             <div id="taskCategoryCombobox" style="display:none;width:200px"></div>
-            <select id="taskPhaseFilter" class="select-field" style="width:140px" onchange="filterTasks()">
+            <select id="taskPhaseFilter" class="select-field" style="width:140px" onchange="reloadTaskList()">
               <option value="">Tất cả giai đoạn</option>
               <option value="basic_design">TKCS - Cơ sở</option>
               <option value="technical_design">TKKT - Kỹ thuật</option>
@@ -6564,7 +6564,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260915d"></script>
+<script src="/static/app.js?v=20260924c"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
