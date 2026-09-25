@@ -14,6 +14,8 @@ const API_BASE = ''
 let currentUser = null
 let authToken = null
 const TASK_LIST_LIMIT = 1000
+/** Fetch theo 1 dự án (chi tiết / Gantt / picker) — cao hơn để tránh cắt task */
+const TASK_PROJECT_LIMIT = 5000
 let _projectDetailFetchCache = { projectId: null, tasks: [], categories: [] }
 
 function _foldVn(s) {
@@ -1676,9 +1678,10 @@ let _lastSeenNotifId = 0   // Track highest notif id seen — detect new arrival
 
 async function loadNotifications() {
   try {
-    const [notifs, unreadChat] = await Promise.all([
+    const [notifs, unreadChat, summary] = await Promise.all([
       api('/notifications'),
-      api('/messages/unread').catch(() => [])
+      api('/messages/unread').catch(() => []),
+      api('/notifications/summary').catch(() => null)
     ])
 
     // ── Detect new notifications & fire browser Notification ──────
@@ -1715,10 +1718,12 @@ async function loadNotifications() {
       _chatUnreadMap[`${r.context_type}_${r.context_id}`] = r.count
     })
 
-    const unread = notifs.filter(n => !n.is_read).length
+    const unread = summary?.unread_count != null
+      ? Number(summary.unread_count)
+      : notifs.filter(n => !n.is_read).length
     const badge = $('notifBadge')
     if (badge) {
-      badge.textContent = unread
+      badge.textContent = unread > 99 ? '99+' : unread
       badge.style.display = unread > 0 ? 'flex' : 'none'
     }
     const list = $('notifList')
@@ -1824,18 +1829,11 @@ async function markChatNotifsRead(contextType, contextId) {
     // Remove from local unread map immediately for instant UI update
     delete _chatUnreadMap[`${contextType}_${contextId}`]
     updateChatUnreadBadges()
-    // Mark on server via read-all for this context (batch via notifications list)
-    const notifs = await api('/notifications')
-    const toRead = notifs.filter(n =>
-      !n.is_read &&
-      (n.type === 'chat_message' || n.type === 'chat_mention') &&
-      n.related_type === contextType &&
-      String(n.related_id) === String(contextId)
-    )
-    if (toRead.length > 0) {
-      await Promise.all(toRead.map(n => api(`/notifications/${n.id}/read`, { method: 'patch' })))
-      loadNotifications()
-    }
+    await api('/notifications/read-context', {
+      method: 'patch',
+      data: { related_type: contextType, related_id: contextId }
+    })
+    loadNotifications()
   } catch (e) { /* silent */ }
 }
 
@@ -2258,7 +2256,7 @@ async function openProjectDetail(id, openChatTab = false) {
     } else {
       ;[categories, tasks] = await Promise.all([
         api(`/projects/${id}/categories`),
-        api(`/tasks?project_id=${id}&limit=${TASK_LIST_LIMIT}`)
+        api(`/tasks?project_id=${id}&limit=${TASK_PROJECT_LIMIT}`)
       ])
       _projectDetailFetchCache = { projectId: pid, categories, tasks }
     }
@@ -6678,8 +6676,8 @@ async function loadTimesheets() {
     const memberId  = canSeeAll ? (_cbGetValue('tsUserFilterCombobox') || '') : ''
     const status    = canSeeAll ? ($('tsStatusFilter')?.value || '') : ''
 
-    // Build API URL
-    let url = '/timesheets?'
+    // Build API URL — limit cao + COUNT KPI server-side (không tin length sau LIMIT)
+    let url = '/timesheets?limit=5000&'
     if (month)     url += `month=${month}&`
     if (year)      url += `year=${year}&`
     if (projectId) url += `project_id=${projectId}&`
@@ -6693,8 +6691,15 @@ async function loadTimesheets() {
     renderTimesheetTable(allTimesheets, apiSummary)
 
     // ------ Summary KPI cards ------
-    const pending  = allTimesheets.filter(t => t.status === 'submitted').length
-    const approved = allTimesheets.filter(t => t.status === 'approved').length
+    const pending  = apiSummary?.pending_count != null
+      ? Number(apiSummary.pending_count)
+      : allTimesheets.filter(t => t.status === 'submitted').length
+    const approved = apiSummary?.approved_count != null
+      ? Number(apiSummary.approved_count)
+      : allTimesheets.filter(t => t.status === 'approved').length
+    const totalRows = apiSummary?.total_count != null
+      ? Number(apiSummary.total_count)
+      : allTimesheets.length
     // Đếm ngày nghỉ: full leave = 1 ngày, half_day = 0.5 ngày
     const leaveDays = allTimesheets.reduce((sum, t) => {
       if (!t.day_type || t.day_type === 'work' || t.day_type === 'business_trip') return sum
@@ -6707,13 +6712,17 @@ async function loadTimesheets() {
                                 : allTimesheets.reduce((s, t) => s + (t.overtime_hours || 0), 0)
     const totalH   = apiSummary ? (apiSummary.total_hours || 0) : totalReg + totalOT
 
-    if ($('tsCardTotal'))       $('tsCardTotal').textContent       = allTimesheets.length
+    if ($('tsCardTotal'))       $('tsCardTotal').textContent       = totalRows
     if ($('tsCardLeave'))       $('tsCardLeave').textContent       = leaveDays
     if ($('tsCardPending'))     $('tsCardPending').textContent     = pending
     if ($('tsCardApproved'))    $('tsCardApproved').textContent    = approved
     if ($('tsCardHours'))       $('tsCardHours').textContent       = totalH + 'h'
     if ($('tsCardHoursDetail')) $('tsCardHoursDetail').textContent = `HC: ${totalReg}h | OT: ${totalOT}h`
-    if ($('tsFilterCount'))     $('tsFilterCount').textContent     = allTimesheets.length
+    if ($('tsFilterCount')) {
+      $('tsFilterCount').textContent = apiSummary?.truncated
+        ? `${allTimesheets.length}/${totalRows}+`
+        : String(allTimesheets.length)
+    }
 
     // Bulk-approve button — chỉ hiện với system_admin và project_admin
     const bulkBtn = $('tsBulkApproveBtn')
@@ -6723,6 +6732,20 @@ async function loadTimesheets() {
         bulkBtn.innerHTML = `<i class="fas fa-check-double mr-1"></i>Duyệt tất cả (${pending})`
       } else {
         bulkBtn.classList.add('hidden')
+      }
+    }
+
+    // Bulk-submit drafts — chỉ timesheet NHÁP CỦA CHÍNH MÌNH (cá nhân tự gửi)
+    const ownDraftCount = allTimesheets.filter(t =>
+      t.status === 'draft' && t.user_id === currentUser.id
+    ).length
+    const submitAllBtn = $('tsBulkSubmitBtn')
+    if (submitAllBtn) {
+      if (ownDraftCount > 0) {
+        submitAllBtn.classList.remove('hidden')
+        submitAllBtn.innerHTML = `<i class="fas fa-paper-plane mr-1 text-blue-500"></i>Gửi tất cả nháp (${ownDraftCount})`
+      } else {
+        submitAllBtn.classList.add('hidden')
       }
     }
 
@@ -7443,12 +7466,20 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
   if (spinner) spinner.style.display = 'inline'
   if (spinnerMulti) spinnerMulti.style.display = 'inline'
   try {
-    const tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_LIST_LIMIT}`)
+    // exclude_done trước LIMIT; hạng mục lọc client trên cache đầy đủ
+    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1`)
     if (token !== null && token !== _tsProjChangeToken) return
-    _tsCachedTasks = Array.isArray(tasks) ? tasks : []
-    // Lọc theo hạng mục nếu đang có category được chọn
+    tasks = Array.isArray(tasks) ? tasks : []
+    // Giữ task đã chọn nếu đã completed (đang sửa timesheet cũ)
+    if (selectedTaskId && !tasks.some(t => String(t.id) === String(selectedTaskId))) {
+      try {
+        const one = await api(`/tasks/${selectedTaskId}`)
+        if (one && one.id) tasks = [one, ...tasks]
+      } catch (_) { /* ignore */ }
+    }
+    _tsCachedTasks = tasks
     const selCatId = parseInt($('tsCategoryHidden')?.value) || null
-    const tasksToShow = selCatId ? _tsCachedTasks.filter(t => t.category_id === selCatId) : _tsCachedTasks
+    const tasksToShow = selCatId ? tasks.filter(t => t.category_id === selCatId) : tasks
     _initTsTaskCombobox(tasksToShow, selectedTaskId, locked)
     // Re-render multi rows với task mới
     _tsRenderMultiRows()
@@ -7590,7 +7621,10 @@ async function openTimesheetModal(tsId = null) {
     $('tsOvertimeHours').value    = ts.overtime_hours ?? 0
     $('tsDescription').value      = ts.description    || ''
     $('tsRegularHours').disabled  = locked
-    $('tsOvertimeHours').disabled = locked
+    if ($('tsOvertimeHours')) {
+      $('tsOvertimeHours').dataset.locked = locked ? '1' : '0'
+      $('tsOvertimeHours').disabled = locked
+    }
     $('tsDescription').disabled   = locked
 
     // Khởi tạo project combobox (set _tsModalLocked = locked)
@@ -7618,6 +7652,8 @@ async function openTimesheetModal(tsId = null) {
       _tsInitMultiRowsFromEntries(ts.task_entries)
     }
 
+    _hideTsWeekCopyRow()
+
   } else {
     // ─── Thêm mới ────────────────────────────────────────────
     $('tsDate').value             = today()
@@ -7637,7 +7673,10 @@ async function openTimesheetModal(tsId = null) {
     $('tsOvertimeHours').value    = 0
     $('tsDescription').value      = ''
     $('tsRegularHours').disabled  = false
-    $('tsOvertimeHours').disabled = false
+    if ($('tsOvertimeHours')) {
+      $('tsOvertimeHours').dataset.locked = '0'
+      $('tsOvertimeHours').disabled = false
+    }
     $('tsDescription').disabled   = false
 
     // Reset về single mode
@@ -7653,17 +7692,23 @@ async function openTimesheetModal(tsId = null) {
     if ($('tsCategoryHidden')) $('tsCategoryHidden').value = ''
 
     openModal('timesheetModal')
+    _resetTsWeekDayState()
+    _rebuildTsWeekCopyCheckboxes(today())
 
     // Hiển thị gợi ý dự án đã khai báo cho ngày hôm nay
     const targetUid = isAdmin ? (parseInt($('tsTargetUserHidden').value) || currentUser.id) : null
     _updateTsDateHint(today(), null, targetUid)
-    // Cập nhật giờ HC mặc định = số giờ còn lại hôm nay
-    const _usedToday = allTimesheets.filter(t =>
-      t.work_date === today() && t.user_id === (targetUid || currentUser.id) &&
-      ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
-    ).reduce((s, t) => s + (t.regular_hours || 0), 0)
-    const _remToday = Math.max(0, 8 - _usedToday)
-    if ($('tsRegularHours')) $('tsRegularHours').value = _remToday
+    // Cập nhật giờ HC mặc định = số giờ còn lại hôm nay (CN → OT)
+    if (_isSundayIso(today())) {
+      _applySundayDefaultsToSingleForm(today())
+    } else {
+      const _usedToday = allTimesheets.filter(t =>
+        t.work_date === today() && t.user_id === (targetUid || currentUser.id) &&
+        ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
+      ).reduce((s, t) => s + (t.regular_hours || 0), 0)
+      const _remToday = Math.max(0, 8 - _usedToday)
+      if ($('tsRegularHours')) $('tsRegularHours').value = _remToday
+    }
   }
 }
 
@@ -7700,11 +7745,20 @@ function tsDayTypeChanged() {
   // Nếu chọn nửa ngày → mặc định giờ HC = 4h, giữ chế độ single/multi bình thường
   if (isHalf) {
     const regEl = $('tsRegularHours')
-    if (regEl && (parseFloat(regEl.value) === 8 || parseFloat(regEl.value) === 0)) regEl.value = '4'
+    if (regEl && (parseFloat(regEl.value) === 8 || parseFloat(regEl.value) === 0 || parseFloat(regEl.value) > 4)) {
+      regEl.value = '4'
+      regEl.max = 4
+    }
   } else if (dayType === 'work') {
     const regEl = $('tsRegularHours')
     if (regEl && parseFloat(regEl.value) === 4) regEl.value = '8'
   }
+  // Refresh gợi ý còn giờ (trừ nghỉ phép / nửa ngày)
+  const editingId = $('tsId')?.value ? parseInt($('tsId').value) : null
+  const targetUid = (currentUser?.role === 'system_admin' && parseInt($('tsTargetUserHidden')?.value))
+    ? parseInt($('tsTargetUserHidden').value) : null
+  _updateTsDateHint($('tsDate')?.value, editingId, targetUid)
+  _syncTsWeekDayEntriesUI()
 }
 
 // ── Chế độ đơn/nhiều task ──────────────────────────────────────────────────
@@ -7920,6 +7974,8 @@ function _tsMultiRowChange(idx, field, val) {
   const row = _tsMultiRows.find(r => r.idx === idx)
   if (row) row[field] = val
   _tsUpdateMultiTotals()
+  // Đổi HC → khóa/mở OT theo đủ hành chính
+  if (field === 'reg' || field === 'ot') _onTsHoursInput()
 }
 
 function _tsUpdateMultiTotals() {
@@ -7960,70 +8016,752 @@ function _getCurrentWeekRange() {
   return { start: fmt(mon), end: fmt(sun) }
 }
 
+/** Tuần T2–CN của một ngày neo (ISO YYYY-MM-DD), không phụ thuộc "hôm nay". */
+function _getWeekRangeForDate(anchorIso) {
+  const raw = String(anchorIso || '').trim() || today()
+  let base = new Date(raw + 'T00:00:00')
+  if (isNaN(base.getTime())) base = new Date()
+  const dow = (base.getDay() + 6) % 7
+  const mon = new Date(base); mon.setDate(base.getDate() - dow); mon.setHours(0,0,0,0)
+  const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  const days = []
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(mon); d.setDate(mon.getDate() + i)
+    days.push(fmt(d))
+  }
+  return { start: fmt(mon), end: fmt(sun), days }
+}
+
+const _TS_WEEK_LABELS = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN']
+
+/**
+ * State khai theo ngày khi N>1:
+ * { [iso]: { lines: [{ lid, project_id, task_id, reg, ot }] } }
+ */
+let _tsWeekDayState = {}
+let _tsWeekDayLoadToken = {}
+let _tsWeekDayLastDatesKey = ''
+let _tsWeekDayLineSeq = 1
+
+function _fmtTsWeekDayLabel(iso) {
+  const [, m, d] = String(iso).split('-')
+  return `${d}/${m}`
+}
+
+function _isSundayIso(iso) {
+  const [y, m, d] = String(iso || '').split('-').map(Number)
+  if (!y || !m || !d) return false
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay() === 0
+}
+
+/** Giờ mặc định theo ngày: CN → OT 8h / HC 0; nửa ngày → HC 4; còn lại HC 8. */
+function _defaultHoursForDate(iso, dayType) {
+  if (_isSundayIso(iso)) return { reg: 0, ot: 8 }
+  if (dayType === 'half_day_am' || dayType === 'half_day_pm') return { reg: 4, ot: 0 }
+  return { reg: 8, ot: 0 }
+}
+
+function _isTsWeekPerDayMode() {
+  if ($('tsId')?.value) return false
+  const dayType = $('tsDayType')?.value || 'work'
+  const isLeave = !['work', 'half_day_am', 'half_day_pm', 'business_trip'].includes(dayType)
+  if (isLeave) return false
+  return _getSelectedWeekDates().length > 1
+}
+
+function _ensureWeekDayState(iso) {
+  if (!_tsWeekDayState[iso]) {
+    const dayType = $('tsDayType')?.value || 'work'
+    const hrs = _defaultHoursForDate(iso, dayType)
+    _tsWeekDayState[iso] = {
+      lines: [{ lid: _tsWeekDayLineSeq++, project_id: '', task_id: '', reg: hrs.reg, ot: hrs.ot }]
+    }
+  }
+  if (!Array.isArray(_tsWeekDayState[iso].lines) || !_tsWeekDayState[iso].lines.length) {
+    const dayType = $('tsDayType')?.value || 'work'
+    const hrs = _defaultHoursForDate(iso, dayType)
+    _tsWeekDayState[iso].lines = [{ lid: _tsWeekDayLineSeq++, project_id: '', task_id: '', reg: hrs.reg, ot: hrs.ot }]
+  }
+  return _tsWeekDayState[iso]
+}
+
+function _captureTsWeekDayStateFromDom() {
+  Object.keys(_tsWeekDayState).forEach(iso => {
+    const st = _tsWeekDayState[iso]
+    if (!st || !Array.isArray(st.lines)) return
+    st.lines.forEach(line => {
+      const regEl = document.getElementById(`tsWeekDayReg_${iso}_${line.lid}`)
+      if (!regEl) return
+      line.project_id = _cbGetValue(`tsWeekDayProj_${iso}_${line.lid}`) || line.project_id || ''
+      line.task_id = _cbGetValue(`tsWeekDayTask_${iso}_${line.lid}`) || line.task_id || ''
+      line.reg = parseFloat(regEl.value) || 0
+      line.ot = parseFloat(document.getElementById(`tsWeekDayOt_${iso}_${line.lid}`)?.value) || 0
+    })
+  })
+}
+
+function _clearTsWeekDayEntries(skipCapture = false) {
+  if (!skipCapture) _captureTsWeekDayStateFromDom()
+  const box = $('tsWeekDayEntries')
+  const list = $('tsWeekDayEntriesList')
+  if (box) box.style.display = 'none'
+  if (list) list.innerHTML = ''
+  Object.keys(_cbState).forEach(k => {
+    if (k.startsWith('tsWeekDayProj_') || k.startsWith('tsWeekDayTask_')) delete _cbState[k]
+  })
+  _tsWeekDayLastDatesKey = ''
+}
+
+function _resetTsWeekDayState() {
+  _clearTsWeekDayEntries(true)
+  _tsWeekDayState = {}
+  _tsWeekDayLoadToken = {}
+  _tsWeekDayLastDatesKey = ''
+  _tsWeekDayLineSeq = 1
+}
+
+function _buildTsWeekDayTaskItems(tasks, selId = '') {
+  const icons = { todo: '⬜', in_progress: '🔵', review: '🟡', completed: '✅', cancelled: '❌' }
+  return (tasks || [])
+    .filter(t => !['completed', 'cancelled'].includes(t.status) || String(t.id) === String(selId))
+    .map(t => {
+      const icon = icons[t.status] || '⬜'
+      const disc = t.discipline_code ? ` [${t.discipline_code}]` : ''
+      return { value: String(t.id), label: `${icon}${disc} ${t.title}` }
+    })
+}
+
+async function _loadTsWeekDayTasks(iso, lid, projectId, selectedTaskId = null) {
+  const taskCbId = `tsWeekDayTask_${iso}_${lid}`
+  const onTaskChange = (val) => {
+    const st = _ensureWeekDayState(iso)
+    const line = st.lines.find(l => l.lid === lid)
+    if (line) line.task_id = val || ''
+  }
+  if (!projectId) {
+    if (_cbState[taskCbId]) delete _cbState[taskCbId]
+    createCombobox(taskCbId, {
+      placeholder: 'Task (tùy chọn)',
+      items: [],
+      fullWidth: true,
+      teleport: true,
+      panelMaxWidth: '420px',
+      onchange: onTaskChange
+    })
+    return
+  }
+  const tokenKey = `${iso}_${lid}`
+  const token = (_tsWeekDayLoadToken[tokenKey] = (_tsWeekDayLoadToken[tokenKey] || 0) + 1)
+  if (_cbState[taskCbId]) delete _cbState[taskCbId]
+  createCombobox(taskCbId, {
+    placeholder: '⏳ Đang tải task...',
+    items: [],
+    fullWidth: true,
+    teleport: true,
+    panelMaxWidth: '420px',
+    onchange: onTaskChange
+  })
+  try {
+    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1`)
+    if (token !== _tsWeekDayLoadToken[tokenKey]) return
+    tasks = Array.isArray(tasks) ? tasks : []
+    const st = _ensureWeekDayState(iso)
+    const line = st.lines.find(l => l.lid === lid) || {}
+    const sel = selectedTaskId != null ? selectedTaskId : (line.task_id || '')
+    if (_cbState[taskCbId]) delete _cbState[taskCbId]
+    createCombobox(taskCbId, {
+      placeholder: tasks.length ? '🔍 Task (tùy chọn)' : '— Không có task —',
+      items: _buildTsWeekDayTaskItems(tasks, sel),
+      value: sel ? String(sel) : '',
+      fullWidth: true,
+      teleport: true,
+      panelMaxWidth: '420px',
+      onchange: onTaskChange
+    })
+  } catch (_) {
+    if (token !== _tsWeekDayLoadToken[tokenKey]) return
+    if (_cbState[taskCbId]) delete _cbState[taskCbId]
+    createCombobox(taskCbId, {
+      placeholder: 'Task (tùy chọn)',
+      items: [],
+      fullWidth: true,
+      teleport: true,
+      panelMaxWidth: '420px',
+      onchange: onTaskChange
+    })
+  }
+}
+
+function _initTsWeekDayLineComboboxes(iso, line) {
+  const lid = line.lid
+  const projCbId = `tsWeekDayProj_${iso}_${lid}`
+  const taskCbId = `tsWeekDayTask_${iso}_${lid}`
+  const projItems = allProjects.map(p => ({
+    value: String(p.id),
+    label: `${p.code} – ${p.name}`
+  }))
+  if (_cbState[projCbId]) delete _cbState[projCbId]
+  if (_cbState[taskCbId]) delete _cbState[taskCbId]
+
+  createCombobox(projCbId, {
+    placeholder: '🔍 Dự án *',
+    items: projItems,
+    value: line.project_id ? String(line.project_id) : '',
+    fullWidth: true,
+    teleport: true,
+    panelMaxWidth: '420px',
+    onchange: async (val) => {
+      line.project_id = val || ''
+      line.task_id = ''
+      await _loadTsWeekDayTasks(iso, lid, val, null)
+    }
+  })
+
+  createCombobox(taskCbId, {
+    placeholder: 'Task (tùy chọn)',
+    items: [],
+    fullWidth: true,
+    teleport: true,
+    panelMaxWidth: '420px',
+    onchange: (val) => { line.task_id = val || '' }
+  })
+  if (line.project_id) _loadTsWeekDayTasks(iso, lid, line.project_id, line.task_id)
+}
+
+function _tsWeekDayHoursChanged(iso, lid) {
+  const st = _ensureWeekDayState(iso)
+  const line = st.lines.find(l => l.lid === lid)
+  if (!line) return
+  line.reg = parseFloat(document.getElementById(`tsWeekDayReg_${iso}_${lid}`)?.value) || 0
+  line.ot = parseFloat(document.getElementById(`tsWeekDayOt_${iso}_${lid}`)?.value) || 0
+  _updateTsWeekDayTotalsBadge(iso)
+}
+
+/** Ngân sách còn lại trong ngày (theo các dòng đang khai). */
+function _weekDayRemainingHours(iso) {
+  const st = _ensureWeekDayState(iso)
+  const dayType = $('tsDayType')?.value || 'work'
+  const isSun = _isSundayIso(iso)
+  const dayCap = isSun ? 0 : ((dayType === 'half_day_am' || dayType === 'half_day_pm') ? 4 : 8)
+  const otCap = 8
+  let usedReg = 0, usedOt = 0
+  ;(st.lines || []).forEach(l => {
+    usedReg += parseFloat(l.reg) || 0
+    usedOt += parseFloat(l.ot) || 0
+  })
+  return {
+    remReg: Math.max(0, +(dayCap - usedReg).toFixed(2)),
+    remOt: Math.max(0, +(otCap - usedOt).toFixed(2)),
+    dayCap, otCap, usedReg: +usedReg.toFixed(2), usedOt: +usedOt.toFixed(2), isSun
+  }
+}
+
+function _updateTsWeekDayTotalsBadge(iso) {
+  const el = document.getElementById(`tsWeekDayTot_${iso}`)
+  if (!el) return
+  const b = _weekDayRemainingHours(iso)
+  const over = b.usedReg > b.dayCap + 0.001 || b.usedOt > b.otCap + 0.001
+  el.textContent = b.isSun
+    ? `OT ${b.usedOt}/${b.otCap}h`
+    : `HC ${b.usedReg}/${b.dayCap}h · OT ${b.usedOt}h`
+  el.className = `text-[10px] font-semibold px-1.5 py-0.5 rounded ${over ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`
+}
+
+function tsWeekDayAddLine(iso) {
+  _captureTsWeekDayStateFromDom()
+  const st = _ensureWeekDayState(iso)
+  const rem = _weekDayRemainingHours(iso)
+  // Dòng mới nhận giờ CÒN LẠI trong ngày — không mặc định thêm 8h HC
+  st.lines.push({
+    lid: _tsWeekDayLineSeq++,
+    project_id: '',
+    task_id: '',
+    reg: rem.isSun ? 0 : rem.remReg,
+    ot: rem.isSun ? rem.remOt : 0
+  })
+  _tsWeekDayLastDatesKey = '' // force re-render
+  _renderTsWeekDayEntries(_getSelectedWeekDates())
+}
+
+function tsWeekDayRemoveLine(iso, lid) {
+  _captureTsWeekDayStateFromDom()
+  const st = _ensureWeekDayState(iso)
+  if (st.lines.length <= 1) {
+    toast('Mỗi ngày cần ít nhất 1 dòng', 'warning')
+    return
+  }
+  st.lines = st.lines.filter(l => l.lid !== lid)
+  _tsWeekDayLastDatesKey = ''
+  _renderTsWeekDayEntries(_getSelectedWeekDates())
+}
+
+function _renderTsWeekDayEntries(dates) {
+  const list = $('tsWeekDayEntriesList')
+  if (!list) return
+
+  _captureTsWeekDayStateFromDom()
+
+  const key = dates.map(d => {
+    const st = _ensureWeekDayState(d)
+    return `${d}:${st.lines.map(l => l.lid).join(',')}`
+  }).join('|')
+  if (key === _tsWeekDayLastDatesKey && list.children.length === dates.length) return
+  _tsWeekDayLastDatesKey = key
+
+  const dayType = $('tsDayType')?.value || 'work'
+  const sharedProj = _cbGetValue('tsProjectCombobox') || $('tsProjectHidden')?.value || ''
+  const sharedTask = _cbGetValue('tsTaskCombobox') || $('tsTaskHidden')?.value || ''
+  const week = _getWeekRangeForDate(dates[0] || $('tsDate')?.value || today())
+
+  dates.forEach(iso => {
+    const st = _ensureWeekDayState(iso)
+    // Seed dòng đầu từ form chung nếu còn trống
+    if (st.lines.length === 1 && !st.lines[0].project_id && sharedProj) {
+      const hrs = _defaultHoursForDate(iso, dayType)
+      st.lines[0].project_id = sharedProj
+      st.lines[0].task_id = sharedTask || ''
+      // Giữ giờ mặc định theo ngày (CN=OT), không copy HC từ form thường
+      st.lines[0].reg = hrs.reg
+      st.lines[0].ot = hrs.ot
+    }
+  })
+
+  Object.keys(_cbState).forEach(k => {
+    if (k.startsWith('tsWeekDayProj_') || k.startsWith('tsWeekDayTask_')) delete _cbState[k]
+  })
+
+  list.innerHTML = dates.map(iso => {
+    const st = _ensureWeekDayState(iso)
+    const dow = week.days.indexOf(iso)
+    const lab = dow >= 0 ? _TS_WEEK_LABELS[dow] : ''
+    const sun = _isSundayIso(iso)
+    const linesHtml = st.lines.map((line, i) => `
+      <div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1.4fr) 64px 64px 28px;gap:6px;align-items:end;margin-top:${i ? '6px' : '0'}">
+        <div>
+          ${i === 0 ? '<label class="text-[10px] font-medium text-gray-500 mb-0.5 block">Dự án *</label>' : ''}
+          <div id="tsWeekDayProj_${iso}_${line.lid}"></div>
+        </div>
+        <div>
+          ${i === 0 ? '<label class="text-[10px] font-medium text-gray-500 mb-0.5 block">Task</label>' : ''}
+          <div id="tsWeekDayTask_${iso}_${line.lid}"></div>
+        </div>
+        <div>
+          ${i === 0 ? '<label class="text-[10px] font-medium text-blue-500 mb-0.5 block text-center">HC</label>' : ''}
+          <input type="number" id="tsWeekDayReg_${iso}_${line.lid}" class="input-field text-sm text-center px-1"
+            min="0" max="8" step="0.5" value="${line.reg}" ${sun ? 'title="Chủ nhật: HC = 0"' : ''}
+            oninput="tsWeekDayHoursChanged('${iso}',${line.lid})">
+        </div>
+        <div>
+          ${i === 0 ? '<label class="text-[10px] font-medium text-orange-500 mb-0.5 block text-center">OT</label>' : ''}
+          <input type="number" id="tsWeekDayOt_${iso}_${line.lid}" class="input-field text-sm text-center px-1"
+            min="0" max="8" step="0.5" value="${line.ot}"
+            oninput="tsWeekDayHoursChanged('${iso}',${line.lid})">
+        </div>
+        <button type="button" class="text-red-400 hover:text-red-600 text-sm pb-1"
+          title="Xóa dòng" onclick="tsWeekDayRemoveLine('${iso}',${line.lid})"
+          ${st.lines.length <= 1 ? 'style="visibility:hidden"' : ''}>
+          <i class="fas fa-times"></i>
+        </button>
+      </div>`).join('')
+
+    return `<div class="rounded-lg border p-2.5" style="border-color:${sun ? '#fdba74' : '#e5e7eb'};background:${sun ? '#fff7ed' : '#fafafa'}" data-week-day="${iso}">
+      <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <div class="text-xs font-semibold text-gray-700 flex items-center gap-1.5 flex-wrap">
+          ${lab} ${_fmtTsWeekDayLabel(iso)}
+          ${sun ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700">CN · OT</span>' : ''}
+          <span id="tsWeekDayTot_${iso}"></span>
+        </div>
+        <button type="button" onclick="tsWeekDayAddLine('${iso}')"
+          class="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-1">
+          <i class="fas fa-plus"></i> Thêm dự án/task
+        </button>
+      </div>
+      ${linesHtml}
+    </div>`
+  }).join('')
+
+  dates.forEach(iso => {
+    _ensureWeekDayState(iso).lines.forEach(line => _initTsWeekDayLineComboboxes(iso, line))
+    _updateTsWeekDayTotalsBadge(iso)
+  })
+}
+
+// Alias HTML oninput
+function tsWeekDayHoursChanged(iso, lid) { _tsWeekDayHoursChanged(iso, lid) }
+
+/** Gom lines theo project → 1 POST/project (multi-task dùng task_entries). */
+function _buildWeekDayPostBodies(iso, dayType, description, userIdExtra) {
+  const st = _ensureWeekDayState(iso)
+  const lines = (st.lines || []).filter(l => l.project_id)
+  const byProj = new Map()
+  lines.forEach(l => {
+    const pid = String(l.project_id)
+    if (!byProj.has(pid)) byProj.set(pid, [])
+    byProj.get(pid).push(l)
+  })
+  const bodies = []
+  for (const [pid, group] of byProj) {
+    const base = {
+      day_type: dayType,
+      project_id: parseInt(pid) || null,
+      work_date: iso,
+      description: description || '',
+      category_id: null
+    }
+    if (userIdExtra) base.user_id = userIdExtra
+    if (group.length === 1) {
+      bodies.push({
+        ...base,
+        task_id: parseInt(group[0].task_id) || null,
+        regular_hours: parseFloat(group[0].reg) || 0,
+        overtime_hours: parseFloat(group[0].ot) || 0
+      })
+    } else {
+      bodies.push({
+        ...base,
+        task_id: null,
+        task_entries: group.map(l => ({
+          task_id: parseInt(l.task_id) || null,
+          regular_hours: parseFloat(l.reg) || 0,
+          overtime_hours: parseFloat(l.ot) || 0
+        }))
+      })
+    }
+  }
+  return bodies
+}
+
+/** Hiện form chung (N=1) hoặc lưới theo ngày (N>1). */
+function _syncTsWeekDayEntriesUI() {
+  const perDay = _isTsWeekPerDayMode()
+  const entries = $('tsWeekDayEntries')
+  const work = $('tsWorkFields')
+  const dayType = $('tsDayType')?.value || 'work'
+  const isLeave = !['work', 'half_day_am', 'half_day_pm', 'business_trip'].includes(dayType)
+  const modalBox = document.querySelector('#timesheetModal .modal')
+
+  if (entries) entries.style.display = perDay ? '' : 'none'
+  if (work) {
+    if (perDay) work.style.display = 'none'
+    else work.style.display = isLeave ? 'none' : ''
+  }
+
+  if (modalBox) {
+    if (perDay) modalBox.style.maxWidth = '820px'
+    else if (document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi') {
+      modalBox.style.maxWidth = '720px'
+    } else {
+      modalBox.style.maxWidth = '560px'
+    }
+  }
+
+  if (perDay) {
+    _renderTsWeekDayEntries(_getSelectedWeekDates())
+  } else {
+    _clearTsWeekDayEntries()
+  }
+  _updateTsSubmitButtonLabel()
+}
+
+/** Rebuild checkbox tuần theo #tsDate; chỉ enable ngày member được phép. */
+function _rebuildTsWeekCopyCheckboxes(anchorIso) {
+  const row = $('tsWeekCopyRow')
+  const box = $('tsWeekCopyDays')
+  if (!row || !box) return
+  if ($('tsId')?.value) {
+    row.style.display = 'none'
+    box.innerHTML = ''
+    _resetTsWeekDayState()
+    return
+  }
+
+  const week = _getWeekRangeForDate(anchorIso || $('tsDate')?.value || today())
+  const isAdmin = currentUser?.role === 'system_admin'
+  const memberWeek = _getCurrentWeekRange()
+  const selected = String(anchorIso || $('tsDate')?.value || today())
+
+  box.innerHTML = week.days.map((iso, i) => {
+    const inMemberWeek = iso >= memberWeek.start && iso <= memberWeek.end
+    const enabled = isAdmin || inMemberWeek
+    const checked = enabled && iso === selected
+    const disabledAttr = enabled ? '' : 'disabled'
+    const checkedAttr = checked ? 'checked' : ''
+    const sun = _isSundayIso(iso)
+    const opacity = enabled ? '' : 'opacity:0.4;cursor:not-allowed'
+    const border = checked ? (sun ? '#fdba74' : '#86efac') : '#e5e7eb'
+    const bg = checked ? (sun ? '#fff7ed' : '#f0fdf4') : '#fff'
+    return `<label class="inline-flex items-center gap-1.5 px-2 py-1 rounded border text-xs cursor-pointer select-none"
+      style="border-color:${border};background:${bg};${opacity}">
+      <input type="checkbox" class="accent-green-600" data-ts-week-date="${iso}"
+        ${checkedAttr} ${disabledAttr} onchange="_onTsWeekCopyChange()">
+      <span class="font-medium ${sun ? 'text-orange-700' : 'text-gray-700'}">${_TS_WEEK_LABELS[i]} ${_fmtTsWeekDayLabel(iso)}${sun ? ' ·OT' : ''}</span>
+    </label>`
+  }).join('')
+
+  row.style.display = ''
+  _syncTsWeekDayEntriesUI()
+}
+
+function _onTsWeekCopyChange() {
+  document.querySelectorAll('#tsWeekCopyDays label').forEach(lab => {
+    const inp = lab.querySelector('input[data-ts-week-date]')
+    if (!inp || inp.disabled) return
+    const on = inp.checked
+    const sun = _isSundayIso(inp.getAttribute('data-ts-week-date'))
+    lab.style.borderColor = on ? (sun ? '#fdba74' : '#86efac') : '#e5e7eb'
+    lab.style.background = on ? (sun ? '#fff7ed' : '#f0fdf4') : '#fff'
+  })
+
+  const checked = _getSelectedWeekDates()
+  const cur = $('tsDate')?.value
+  if (checked.length && cur && !checked.includes(cur)) {
+    $('tsDate').value = checked[0]
+    const uid = currentUser?.role === 'system_admin'
+      ? (parseInt($('tsTargetUserHidden')?.value) || currentUser.id) : null
+    _applySundayDefaultsToSingleForm($('tsDate').value)
+    _updateTsDateHint($('tsDate').value, null, uid)
+  }
+  _syncTsWeekDayEntriesUI()
+}
+
+function _getSelectedWeekDates() {
+  const inputs = document.querySelectorAll('#tsWeekCopyDays input[data-ts-week-date]:checked:not(:disabled)')
+  return Array.from(inputs).map(el => el.getAttribute('data-ts-week-date')).filter(Boolean)
+    .sort()
+}
+
+function _updateTsSubmitButtonLabel(n) {
+  const btn = $('tsSubmitBtn')
+  if (!btn) return
+  const count = n != null ? n : (_getSelectedWeekDates().length || 1)
+  btn.textContent = count > 1 ? `Lưu ${count} ngày` : 'Lưu timesheet'
+}
+
+function _hideTsWeekCopyRow() {
+  const row = $('tsWeekCopyRow')
+  if (row) row.style.display = 'none'
+  const box = $('tsWeekCopyDays')
+  if (box) box.innerHTML = ''
+  _resetTsWeekDayState()
+  _updateTsSubmitButtonLabel(1)
+}
+
+/** Áp mặc định CN=OT cho form đơn ngày (N=1). */
+function _applySundayDefaultsToSingleForm(iso) {
+  if ($('tsId')?.value) return
+  if (!_isSundayIso(iso)) return
+  if ($('tsRegularHours')) $('tsRegularHours').value = 0
+  if ($('tsOvertimeHours')) {
+    $('tsOvertimeHours').value = 8
+    $('tsOvertimeHours').disabled = false
+    $('tsOvertimeHours').dataset.locked = '0'
+  }
+}
+
+/** Preflight tồn tại theo tháng — SSOT skip (không tin allTimesheets đã filter). */
+async function _fetchTimesheetsForWeekSkip(userId, projectId, weekDays) {
+  const months = new Set()
+  weekDays.forEach(d => {
+    const [y, m] = d.split('-')
+    months.add(`${y}-${m}`)
+  })
+  const byKey = new Map()
+  for (const ym of months) {
+    const [year, month] = ym.split('-')
+    let url = `/timesheets?limit=${projectId ? 50 : 200}&year=${year}&month=${month}&user_id=${userId}`
+    if (projectId) url += `&project_id=${projectId}`
+    try {
+      const resp = await api(url)
+      const rows = Array.isArray(resp) ? resp : (resp.timesheets || [])
+      rows.forEach(t => {
+        const isLeaveRow = !t.project_id
+        const key = isLeaveRow
+          ? `leave|${t.work_date}`
+          : `work|${t.project_id}|${t.work_date}`
+        byKey.set(key, t)
+      })
+    } catch (_) { /* ignore — POST vẫn validate */ }
+  }
+  return byKey
+}
+
+function _tsWeekCopyShouldSkip(map, userId, projectId, workDate, isLeaveDay) {
+  if (!map) return false
+  const key = isLeaveDay
+    ? `leave|${workDate}`
+    : `work|${projectId}|${workDate}`
+  const row = map.get(key)
+  if (!row) return false
+  return row.status === 'submitted' || row.status === 'approved'
+}
+
 // ── Cập nhật gợi ý dự án đã khai báo cho ngày được chọn ──
-function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overrideUserId = null) {
+async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overrideUserId = null) {
   const hint      = document.getElementById('tsDateHint')
   const hintProjs = document.getElementById('tsDateHintProjects')
   const hintUsed  = document.getElementById('tsDateHintUsed')
   const hintRemain= document.getElementById('tsDateHintRemain')
   const regInput  = document.getElementById('tsRegularHours')
+  const otInput   = document.getElementById('tsOvertimeHours')
   const regLabel  = document.getElementById('tsRegLabel')
   if (!hint || !hintProjs) return
 
   if (!selectedDate) {
     hint.style.display = 'none'
     if (regInput) { regInput.max = 8; regInput.value = Math.min(parseFloat(regInput.value)||8, 8) }
-    if (regLabel) regLabel.textContent = '(tối đa 8h/ngày)'
+    if (otInput) { otInput.max = 8; otInput.disabled = false }
+    if (regLabel) regLabel.textContent = ''
     return
   }
 
-  // Lọc timesheets cùng ngày, cùng user, loại trừ bản ghi đang sửa
   const userId = overrideUserId || currentUser.id
-  const sameDay = allTimesheets.filter(t =>
-    t.work_date === selectedDate &&
-    t.user_id   === userId &&
-    (excludeTimesheetId == null || t.id !== excludeTimesheetId) &&
-    ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
-  )
+  const dayType = $('tsDayType')?.value || 'work'
+  let remaining = 8
+  let usedReg = 0
+  let dayCap = 8
+  let usedOt = 0
+  let remainingOt = 8
+  let blocked = false
 
-  // Tính tổng giờ HC đã dùng trong ngày (trừ bản ghi đang sửa)
-  const usedReg = sameDay.reduce((s, t) => s + (t.regular_hours || 0), 0)
-  const remaining = Math.max(0, 8 - usedReg)
+  try {
+    let url = `/timesheets/day-budget?work_date=${encodeURIComponent(selectedDate)}&day_type=${encodeURIComponent(dayType)}`
+    if (userId) url += `&user_id=${userId}`
+    if (excludeTimesheetId) url += `&exclude_id=${excludeTimesheetId}`
+    const budget = await api(url)
+    dayCap = Number(budget.day_cap ?? budget.dayCap ?? 8)
+    usedReg = Number(budget.used_reg ?? budget.usedReg ?? 0)
+    remaining = Number(budget.remaining ?? Math.max(0, dayCap - usedReg))
+    usedOt = Number(budget.used_ot ?? budget.usedOt ?? 0)
+    remainingOt = Number(budget.remaining_ot ?? budget.remainingOt ?? Math.max(0, 8 - usedOt))
+    blocked = !!budget.blocked
+  } catch (_) {
+    const sameDay = allTimesheets.filter(t =>
+      t.work_date === selectedDate &&
+      t.user_id   === userId &&
+      (excludeTimesheetId == null || t.id !== excludeTimesheetId) &&
+      ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work') &&
+      t.project_id
+    )
+    usedReg = sameDay.reduce((s, t) => s + (t.regular_hours || 0), 0)
+    usedOt = sameDay.reduce((s, t) => s + (t.overtime_hours || 0), 0)
+    if (_isSundayIso(selectedDate)) {
+      dayCap = 0
+    } else {
+      const isHalf = dayType === 'half_day_am' || dayType === 'half_day_pm'
+      dayCap = isHalf ? 4 : 8
+    }
+    remaining = Math.max(0, dayCap - usedReg)
+    remainingOt = Math.max(0, 8 - usedOt)
+  }
 
-  // Cập nhật max trên input giờ HC
+  // Cap HC trước, rồi mới quyết định có cho OT
   if (regInput) {
-    regInput.max = remaining
-    // Nếu giá trị hiện tại > remaining → auto-cap
+    regInput.max = Math.max(0, remaining)
     const cur = parseFloat(regInput.value) || 0
     if (cur > remaining) regInput.value = remaining
   }
-  if (regLabel) {
-    if (remaining <= 0) {
-      regLabel.innerHTML = '<span class="text-red-500 font-semibold">⛔ Đã đủ 8h HC hôm nay</span>'
+
+  const formReg = parseFloat(regInput?.value) || 0
+  let multiReg = 0
+  if (typeof _tsMultiRows !== 'undefined' && _tsMultiRows.length) {
+    _tsMultiRows.forEach(r => {
+      const el = document.getElementById(`tsMultiReg_${r.idx}`)
+      multiReg += parseFloat(el ? el.value : r.reg) || 0
+    })
+  }
+  const isMultiModeUi = document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
+  const effectiveFormReg = isMultiModeUi ? multiReg : formReg
+  // dayCap=0 (CN): OT được phép ngay
+  const otAllowed = !blocked && (dayCap <= 0 || (usedReg + effectiveFormReg) >= dayCap - 0.001)
+  const formLocked = $('tsOvertimeHours')?.dataset?.locked === '1'
+
+  if (otInput) {
+    if (!otAllowed) {
+      otInput.value = 0
+      otInput.max = 0
+      otInput.disabled = true
+      otInput.title = blocked ? 'Nghỉ phép' : `Cần đủ ${dayCap}h HC`
     } else {
-      regLabel.innerHTML = `<span class="text-green-700">(còn ${remaining}h HC hôm nay)</span>`
+      otInput.max = remainingOt
+      otInput.disabled = !!formLocked
+      otInput.title = dayCap <= 0 ? `Chủ nhật — còn ${remainingOt}h OT` : `Còn ${remainingOt}h OT`
+      const curOt = parseFloat(otInput.value) || 0
+      if (curOt > remainingOt) otInput.value = remainingOt
     }
   }
 
-  if (!sameDay.length) { hint.style.display = 'none'; return }
+  if (typeof _tsMultiRows !== 'undefined') {
+    _tsMultiRows.forEach(r => {
+      const otEl = document.getElementById(`tsMultiOT_${r.idx}`)
+      if (!otEl) return
+      if (!otAllowed) {
+        otEl.value = '0'
+        otEl.max = 0
+        otEl.disabled = true
+        otEl.title = blocked ? 'Nghỉ phép' : `Cần đủ ${dayCap}h HC`
+        r.ot = 0
+      } else {
+        otEl.max = remainingOt
+        otEl.disabled = !!formLocked
+        otEl.title = dayCap <= 0 ? `Chủ nhật — còn ${remainingOt}h OT` : `Còn ${remainingOt}h OT`
+      }
+    })
+    if (typeof _tsUpdateMultiTotals === 'function') _tsUpdateMultiTotals()
+  }
 
-  // Lấy tên dự án
-  const projNames = sameDay.map(t => {
+  // Label ngắn: chỉ "còn Xh HC" / "đủ Xh HC" / "nghỉ phép" / "CN · OT"
+  if (regLabel) {
+    if (blocked) regLabel.textContent = '(nghỉ phép)'
+    else if (dayCap <= 0) regLabel.textContent = '(CN · chỉ OT)'
+    else if (remaining <= 0) regLabel.textContent = `(đủ ${dayCap}h HC)`
+    else regLabel.textContent = `(còn ${remaining}h HC)`
+  }
+
+  const sameDayProjs = allTimesheets.filter(t =>
+    t.work_date === selectedDate &&
+    t.user_id   === userId &&
+    (excludeTimesheetId == null || t.id !== excludeTimesheetId) &&
+    ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work') &&
+    t.project_id
+  )
+
+  // Chỉ hiện hint khi có thông tin giờ / dự án / bị chặn / Chủ nhật
+  if (!sameDayProjs.length && !blocked && dayCap >= 8 && remaining >= 8) {
+    hint.style.display = 'none'
+    return
+  }
+
+  const projNames = sameDayProjs.map(t => {
     const proj = allProjects.find(p => p.id === t.project_id)
     return proj ? (proj.code ? proj.code : proj.name) : (t.project_name || `#${t.project_id}`)
   })
-  hintProjs.textContent = projNames.join(', ')
+  if (hintProjs) hintProjs.textContent = projNames.length ? projNames.join(', ') : ''
 
-  // Hiển thị số giờ HC đã dùng / còn lại
-  if (hintUsed)   hintUsed.textContent   = `⏱ Đã dùng: ${usedReg}h HC`
   if (hintRemain) {
-    if (remaining <= 0) {
-      hintRemain.innerHTML = '<span class="text-red-600 font-bold">⛔ Đã đủ 8h — không thể thêm giờ HC</span>'
+    if (blocked) {
+      hintRemain.innerHTML = '<span class="text-red-600 font-bold">Nghỉ phép</span>'
+    } else if (dayCap <= 0) {
+      hintRemain.textContent = `Chủ nhật · còn ${remainingOt}h OT`
+    } else if (remaining <= 0) {
+      hintRemain.textContent = `Đủ ${dayCap}h HC`
     } else {
-      hintRemain.textContent = `✅ Còn lại: ${remaining}h HC`
+      hintRemain.textContent = `Còn ${remaining}h HC`
     }
   }
+  if (hintUsed) hintUsed.textContent = ''
   hint.style.display = ''
+}
+
+/** Đổi giờ HC/OT trên form → refresh gợi ý còn giờ / quyền OT */
+function _onTsHoursInput() {
+  const editingId = $('tsId')?.value ? parseInt($('tsId').value) : null
+  const targetUid = (currentUser?.role === 'system_admin' && parseInt($('tsTargetUserHidden')?.value))
+    ? parseInt($('tsTargetUserHidden').value) : null
+  clearTimeout(_onTsHoursInput._t)
+  _onTsHoursInput._t = setTimeout(() => {
+    _updateTsDateHint($('tsDate')?.value, editingId, targetUid)
+  }, 200)
 }
 
 // ══════════════════════════════════════════════════
@@ -8253,7 +8991,9 @@ $('tsDate').addEventListener('change', () => {
     const uid = currentUser.role === 'system_admin'
       ? (parseInt($('tsTargetUserHidden').value) || currentUser.id)
       : null
+    _applySundayDefaultsToSingleForm($('tsDate').value)
     _updateTsDateHint($('tsDate').value, null, uid)
+    _rebuildTsWeekCopyCheckboxes($('tsDate').value)
   }
 })
 
@@ -8265,8 +9005,14 @@ $('tsForm').addEventListener('submit', async (e) => {
   // half_day_am / half_day_pm vẫn là ngày làm việc (có dự án/task/giờ)
   const isLeaveDay = !['work','half_day_am','half_day_pm','business_trip'].includes(dayType)
 
-  // Detect multi-task mode
-  const isMultiMode = document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
+  // Ngày đích: checkbox tuần (create-only) hoặc #tsDate
+  let selectedDates = id ? [$('tsDate').value] : _getSelectedWeekDates()
+  if (!selectedDates.length) selectedDates = [$('tsDate').value].filter(Boolean)
+  selectedDates = [...new Set(selectedDates)].sort()
+  const perDayMode = !id && !isLeaveDay && selectedDates.length > 1
+
+  // Detect multi-task mode (chỉ form đơn ngày)
+  const isMultiMode = !perDayMode && document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
 
   // Validate: ngày làm việc phải chọn dự án
   const projId = _cbGetValue('tsProjectCombobox') || $('tsProjectHidden').value
@@ -8275,45 +9021,130 @@ $('tsForm').addEventListener('submit', async (e) => {
   if ($('tsProjectHidden')) $('tsProjectHidden').value = projId || ''
   if ($('tsTaskHidden'))    $('tsTaskHidden').value    = taskId || ''
 
-  if (!isLeaveDay && !projId) {
+  if (perDayMode) {
+    _captureTsWeekDayStateFromDom()
+    for (const d of selectedDates) {
+      const st = _ensureWeekDayState(d)
+      st.lines.forEach(line => {
+        line.project_id = _cbGetValue(`tsWeekDayProj_${d}_${line.lid}`) || line.project_id || ''
+        line.task_id = _cbGetValue(`tsWeekDayTask_${d}_${line.lid}`) || line.task_id || ''
+        line.reg = parseFloat(document.getElementById(`tsWeekDayReg_${d}_${line.lid}`)?.value) || 0
+        line.ot = parseFloat(document.getElementById(`tsWeekDayOt_${d}_${line.lid}`)?.value) || 0
+      })
+      const filled = st.lines.filter(l => l.project_id)
+      if (!filled.length) {
+        toast(`Vui lòng chọn dự án cho ngày ${_fmtTsWeekDayLabel(d)}`, 'warning')
+        return
+      }
+      const bud = _weekDayRemainingHours(d)
+      // Recompute from filled only (empty project rows ignored for post but still in state)
+      const totReg = filled.reduce((s, l) => s + (parseFloat(l.reg) || 0), 0)
+      const totOt = filled.reduce((s, l) => s + (parseFloat(l.ot) || 0), 0)
+      if (totReg > bud.dayCap + 0.001) {
+        toast(`Ngày ${_fmtTsWeekDayLabel(d)}: tổng HC ${totReg}h vượt trần ${bud.dayCap}h — chia giờ giữa các dòng`, 'error')
+        return
+      }
+      if (totOt > bud.otCap + 0.001) {
+        toast(`Ngày ${_fmtTsWeekDayLabel(d)}: tổng OT ${totOt}h vượt trần ${bud.otCap}h`, 'error')
+        return
+      }
+      // CN: không cho HC > 0
+      if (_isSundayIso(d) && totReg > 0.001) {
+        toast(`Chủ nhật ${_fmtTsWeekDayLabel(d)} chỉ khai OT (HC = 0)`, 'warning')
+        return
+      }
+    }
+  } else if (!isLeaveDay && !projId) {
     toast('Vui lòng chọn dự án', 'warning')
     return
   }
 
-  // === Validate tổng giờ HC trong ngày không vượt 8h ===
-  if (!isLeaveDay) {
+  // === Validate nghỉ phép + HC (8h/4h) + OT (chỉ sau đủ HC) ===
+  // Per-day N>1: không N× day-budget client — POST validate từng ngày
+  if (!isLeaveDay && !perDayMode) {
     const workDate = $('tsDate').value
     const editingId = id ? parseInt(id) : null
     const userId = (currentUser.role === 'system_admin' && parseInt($('tsTargetUserHidden')?.value))
       ? parseInt($('tsTargetUserHidden').value)
       : currentUser.id
-    // Tổng giờ HC đã khai trong ngày (trừ bản ghi đang sửa)
-    const usedReg = allTimesheets
-      .filter(t =>
-        t.work_date === workDate &&
-        t.user_id   === userId &&
-        (editingId == null || t.id !== editingId) &&
-        ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
-      )
-      .reduce((s, t) => s + (t.regular_hours || 0), 0)
-    const remaining = Math.max(0, 8 - usedReg)
 
-    // Tính giờ HC sẽ submit
     let submitReg = 0
+    let submitOt = 0
     if (isMultiMode) {
       _tsMultiRows.forEach(r => {
         const regEl = document.getElementById(`tsMultiReg_${r.idx}`)
+        const otEl  = document.getElementById(`tsMultiOT_${r.idx}`)
         submitReg += parseFloat(regEl ? regEl.value : r.reg) || 0
+        submitOt  += parseFloat(otEl  ? otEl.value  : r.ot)  || 0
       })
     } else {
       submitReg = parseFloat($('tsRegularHours')?.value) || 0
+      submitOt  = parseFloat($('tsOvertimeHours')?.value) || 0
     }
 
-    if (submitReg > remaining + 0.001) {
-      toast(`⛔ Tổng giờ HC vượt giới hạn! Ngày ${workDate} đã dùng ${usedReg}h, còn lại ${remaining}h. Bạn đang nhập ${submitReg}h.`, 'error')
-      // Auto-cap
-      if (!isMultiMode && $('tsRegularHours')) $('tsRegularHours').value = remaining
-      return
+    if (submitReg > 0 || submitOt > 0) {
+      let remaining = 8
+      let usedReg = 0
+      let dayCap = 8
+      let remainingOt = 8
+      let usedOt = 0
+      try {
+        let url = `/timesheets/day-budget?work_date=${encodeURIComponent(workDate)}&day_type=${encodeURIComponent(dayType)}&user_id=${userId}`
+        if (editingId) url += `&exclude_id=${editingId}`
+        const budget = await api(url)
+        if (budget.blocked) {
+          toast(budget.blockReason || budget.block_reason || 'Ngày này đã nghỉ phép, không thể khai timesheet công việc/OT.', 'error')
+          return
+        }
+        dayCap = Number(budget.day_cap ?? budget.dayCap ?? 8)
+        usedReg = Number(budget.used_reg ?? budget.usedReg ?? 0)
+        remaining = Number(budget.remaining ?? Math.max(0, dayCap - usedReg))
+        usedOt = Number(budget.used_ot ?? budget.usedOt ?? 0)
+        remainingOt = Number(budget.remaining_ot ?? budget.remainingOt ?? Math.max(0, 8 - usedOt))
+      } catch (_) {
+        usedReg = allTimesheets
+          .filter(t =>
+            t.work_date === workDate &&
+            t.user_id   === userId &&
+            (editingId == null || t.id !== editingId) &&
+            ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work') &&
+            t.project_id
+          )
+          .reduce((s, t) => s + (t.regular_hours || 0), 0)
+        usedOt = allTimesheets
+          .filter(t =>
+            t.work_date === workDate &&
+            t.user_id   === userId &&
+            (editingId == null || t.id !== editingId) &&
+            ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work') &&
+            t.project_id
+          )
+          .reduce((s, t) => s + (t.overtime_hours || 0), 0)
+        if (_isSundayIso(workDate)) dayCap = 0
+        else dayCap = (dayType === 'half_day_am' || dayType === 'half_day_pm') ? 4 : 8
+        remaining = Math.max(0, dayCap - usedReg)
+        remainingOt = Math.max(0, 8 - usedOt)
+      }
+
+      if (submitReg > remaining + 0.001) {
+        const capLabel = dayCap <= 0 ? '0h (Chủ nhật chỉ OT)' : (dayCap < 8 ? `${dayCap}h (đã trừ nghỉ nửa ngày)` : '8h')
+        toast(`⛔ Tổng giờ HC vượt giới hạn ${capLabel}! Ngày ${workDate} đã dùng ${usedReg}h, còn lại ${remaining}h. Bạn đang nhập ${submitReg}h.`, 'error')
+        if (!isMultiMode && $('tsRegularHours')) $('tsRegularHours').value = remaining
+        return
+      }
+      if (submitOt > 0.001) {
+        const hcAfter = usedReg + submitReg
+        if (dayCap > 0 && hcAfter < dayCap - 0.001) {
+          const need = Math.max(0, +(dayCap - hcAfter).toFixed(2))
+          toast(`⛔ Chỉ được khai OT khi đã đủ ${dayCap}h hành chính trong ngày. Hiện còn thiếu ${need}h HC.`, 'error')
+          return
+        }
+        if (submitOt > remainingOt + 0.001) {
+          toast(`⛔ Tổng OT vượt ${8}h/ngày. Đã dùng ${usedOt}h OT, còn ${remainingOt}h. Bạn đang nhập ${submitOt}h.`, 'error')
+          if (!isMultiMode && $('tsOvertimeHours')) $('tsOvertimeHours').value = remainingOt
+          return
+        }
+      }
     }
   }
 
@@ -8342,14 +9173,14 @@ $('tsForm').addEventListener('submit', async (e) => {
     project_id: isLeaveDay ? null : (parseInt(projId) || null),
     work_date: $('tsDate').value,
     description: $('tsDescription').value,
-    category_id: isLeaveDay ? null : (parseInt($('tsCategoryHidden')?.value) || null)
+    category_id: isLeaveDay || perDayMode ? null : (parseInt($('tsCategoryHidden')?.value) || null)
   }
 
   if (isLeaveDay) {
     data.task_id = null
     data.regular_hours = 0
     data.overtime_hours = 0
-  } else if (!isLeaveDay && isMultiMode) {
+  } else if (!perDayMode && isMultiMode) {
     // Multi-task: gửi task_entries, không gửi task_id/hours ở cấp top-level
     // Sync task_id và category_id từ combobox state (phòng trường hợp onchange chưa fire)
     _tsMultiRows.forEach(r => {
@@ -8369,7 +9200,7 @@ $('tsForm').addEventListener('submit', async (e) => {
       regular_hours: parseFloat(r.reg) || 0,
       overtime_hours: parseFloat(r.ot) || 0
     }))
-  } else {
+  } else if (!perDayMode) {
     // Single-task
     data.task_id = parseInt(taskId) || null
     data.regular_hours = parseFloat($('tsRegularHours').value) || 0
@@ -8383,6 +9214,10 @@ $('tsForm').addEventListener('submit', async (e) => {
       data.user_id = targetUid
     }
   }
+
+  const submitBtn = $('tsSubmitBtn')
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.style.opacity = '0.7' }
+
   try {
     let result
     if (id) {
@@ -8429,7 +9264,11 @@ $('tsForm').addEventListener('submit', async (e) => {
           yearSel.value = wYear
         }
       }
-    } else {
+      closeModal('timesheetModal')
+      loadTimesheets()
+    } else if (selectedDates.length <= 1) {
+      // N=1: hành vi cũ (create-or-update)
+      data.work_date = selectedDates[0] || data.work_date
       result = await api('/timesheets', { method: 'post', data })
       // Backend returns action: 'updated' if it auto-updated an existing record
       const leaveLabels = { half_day_am: 'Nghỉ nửa ngày (sáng)', half_day_pm: 'Nghỉ nửa ngày (chiều)', annual_leave: 'Nghỉ phép năm', unpaid_leave: 'Nghỉ không lương', holiday: 'Nghỉ lễ', sick_leave: 'Nghỉ ốm', compensatory: 'Nghỉ bù', business_trip: 'Đi công tác' }
@@ -8459,9 +9298,66 @@ $('tsForm').addEventListener('submit', async (e) => {
           yearSel.value = wYear
         }
       }
+      closeModal('timesheetModal')
+      loadTimesheets()
+    } else {
+      // N>1: POST tuần tự; mỗi ngày có thể nhiều dự án/task
+      const targetUserId = data.user_id || currentUser.id
+      const skipMap = await _fetchTimesheetsForWeekSkip(
+        targetUserId,
+        null,
+        selectedDates
+      )
+      let ok = 0, skipped = 0, failed = 0
+      let lastErr = ''
+
+      for (const workDate of selectedDates) {
+        const bodies = perDayMode
+          ? _buildWeekDayPostBodies(workDate, dayType, data.description || '', data.user_id || null)
+          : [{ ...data, work_date: workDate }]
+
+        for (const body of bodies) {
+          const pid = body.project_id || null
+          if (_tsWeekCopyShouldSkip(skipMap, targetUserId, pid, workDate, isLeaveDay && !perDayMode)) {
+            skipped++
+            continue
+          }
+          try {
+            await api('/timesheets', { method: 'post', data: body })
+            ok++
+          } catch (err) {
+            failed++
+            lastErr = err.response?.data?.error || err.message || 'Lỗi'
+          }
+        }
+      }
+
+      toast(`Lưu ${ok} · bỏ qua ${skipped} · lỗi ${failed}${failed && lastErr ? ` (${lastErr})` : ''}`,
+        failed && !ok ? 'error' : (failed || skipped ? 'warning' : 'success'))
+
+      // Đóng nếu có lưu hoặc chỉ bỏ qua; giữ mở nếu toàn lỗi
+      if (ok > 0 || failed === 0) {
+        const anchor = selectedDates[0]
+        if (anchor) {
+          const [wYear, wMonth] = anchor.split('-')
+          const monthSel = $('tsMonthFilter')
+          const yearSel  = $('tsYearFilter')
+          if (monthSel) monthSel.value = wMonth
+          if (yearSel) {
+            const hasYearOpt = Array.from(yearSel.options).some(o => o.value === wYear)
+            if (!hasYearOpt) {
+              const opt = document.createElement('option')
+              opt.value = wYear
+              opt.textContent = wYear
+              yearSel.appendChild(opt)
+            }
+            yearSel.value = wYear
+          }
+        }
+        closeModal('timesheetModal')
+        loadTimesheets()
+      }
     }
-    closeModal('timesheetModal')
-    loadTimesheets()
   } catch (e) {
     const errMsg = e.response?.data?.error || e.message || 'Lỗi không xác định'
     // 422 week_limit — hiển thị cảnh báo nổi bật
@@ -8472,10 +9368,23 @@ $('tsForm').addEventListener('submit', async (e) => {
       // Auto-cap giờ HC về giờ còn lại
       const rem = e.response?.data?.remaining ?? 0
       if ($('tsRegularHours')) $('tsRegularHours').value = rem
+    } else if (e.response?.status === 422 && (e.response?.data?.ot_requires_hc || e.response?.data?.ot_exceeded)) {
+      toast('⛔ ' + errMsg, 'error')
+      if (e.response?.data?.ot_exceeded && $('tsOvertimeHours')) {
+        $('tsOvertimeHours').value = e.response.data.remaining_ot ?? 0
+      }
+    } else if (e.response?.status === 422 && e.response?.data?.leave_blocked) {
+      toast('🌴 ' + errMsg, 'error')
     } else if (e.response?.status === 409 && e.response?.data?.exists) {
       toast('⚠️ ' + errMsg, 'warning')
     } else {
       toast('Lỗi: ' + errMsg, 'error')
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false
+      submitBtn.style.opacity = ''
+      _updateTsSubmitButtonLabel()
     }
   }
 })
@@ -8485,6 +9394,43 @@ async function submitTimesheet(id) {
   try {
     await api(`/timesheets/${id}`, { method: 'put', data: { status: 'submitted' } })
     toast('Đã gửi timesheet chờ duyệt', 'success')
+    loadTimesheets()
+  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+}
+
+/** Gửi duyệt tất cả timesheet nháp CỦA CHÍNH MÌNH theo bộ lọc (cá nhân tự gửi). */
+async function bulkSubmitDraftTimesheets() {
+  const month     = $('tsMonthFilter')?.value   || ''
+  const year      = $('tsYearFilter')?.value    || ''
+  const projectId = _cbGetValue('tsProjectFilterCombobox')
+  // Luôn lọc theo user hiện tại — không gửi nháp hộ người khác
+  let url = `/timesheets?status=draft&limit=5000&user_id=${currentUser.id}&`
+  if (month)     url += `month=${month}&`
+  if (year)      url += `year=${year}&`
+  if (projectId) url += `project_id=${projectId}&`
+  try {
+    const resp = await api(url)
+    const rows = Array.isArray(resp) ? resp : (resp.timesheets || [])
+    const drafts = rows.filter(t => t.status === 'draft' && t.user_id === currentUser.id)
+    if (!drafts.length) { toast('Bạn không có timesheet nháp để gửi', 'info'); return }
+    if (!confirm(`Gửi duyệt ${drafts.length} timesheet nháp của bạn?`)) return
+
+    let ok = 0, failed = 0
+    let lastErr = ''
+    const btn = $('tsBulkSubmitBtn')
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.7' }
+    for (const t of drafts) {
+      try {
+        await api(`/timesheets/${t.id}`, { method: 'put', data: { status: 'submitted' } })
+        ok++
+      } catch (e) {
+        failed++
+        lastErr = e.response?.data?.error || e.message || 'Lỗi'
+      }
+    }
+    if (btn) { btn.disabled = false; btn.style.opacity = '' }
+    toast(`Đã gửi ${ok} · lỗi ${failed}${failed && lastErr ? ` (${lastErr})` : ''}`,
+      failed && !ok ? 'error' : (failed ? 'warning' : 'success'))
     loadTimesheets()
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 }
@@ -8507,10 +9453,28 @@ async function rejectTimesheet(id) {
 }
 
 async function bulkApproveTimesheets() {
-  const pending = allTimesheets.filter(t => t.status === 'submitted')
-  if (!pending.length) { toast('Không có timesheet nào đang chờ duyệt', 'info'); return }
-  if (!confirm(`Duyệt tất cả ${pending.length} timesheet đang chờ?`)) return
+  // Refetch submitted theo filter hiện tại (không tin allTimesheets đã LIMIT)
+  const month     = $('tsMonthFilter')?.value   || ''
+  const year      = $('tsYearFilter')?.value    || ''
+  const projectId = _cbGetValue('tsProjectFilterCombobox')
+  const canSeeAll = currentUser && ['system_admin', 'project_admin'].includes(currentUser.role)
+  const memberId  = canSeeAll ? (_cbGetValue('tsUserFilterCombobox') || '') : ''
+  let url = '/timesheets?status=submitted&limit=5000&'
+  if (month)     url += `month=${month}&`
+  if (year)      url += `year=${year}&`
+  if (projectId) url += `project_id=${projectId}&`
+  if (memberId)  url += `member_id=${memberId}&`
   try {
+    const resp = await api(url)
+    const rows = Array.isArray(resp) ? resp : (resp.timesheets || [])
+    const pending = rows.filter(t => t.status === 'submitted')
+    if (!pending.length) { toast('Không có timesheet nào đang chờ duyệt', 'info'); return }
+    const totalPending = resp?.summary?.pending_count != null ? Number(resp.summary.pending_count) : pending.length
+    if (resp?.summary?.truncated && totalPending > pending.length) {
+      toast(`Có ${totalPending} chờ duyệt nhưng chỉ tải được ${pending.length}. Thu hẹp tháng/năm rồi thử lại.`, 'warning')
+      return
+    }
+    if (!confirm(`Duyệt tất cả ${pending.length} timesheet đang chờ?`)) return
     const ids = pending.map(t => t.id)
     const result = await api('/timesheets/bulk-approve', { method: 'post', data: { ids } })
     toast(`Đã duyệt ${result.approved}/${pending.length} timesheet`, 'success')
@@ -8561,7 +9525,7 @@ async function renderGantt() {
       categories = _projectDetailFetchCache.categories
     } else {
       ;[tasks, categories] = await Promise.all([
-        api(`/tasks?project_id=${projectId}&limit=${TASK_LIST_LIMIT}`),
+        api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}`),
         api(`/projects/${projectId}/categories`)
       ])
       _projectDetailFetchCache = { projectId: pid, tasks, categories }
