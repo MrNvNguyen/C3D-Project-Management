@@ -8119,6 +8119,8 @@ function _resetTsWeekDayState() {
   _tsWeekDayLoadToken = {}
   _tsWeekDayLastDatesKey = ''
   _tsWeekDayLineSeq = 1
+  _tsWeekSkipHintMap = null
+  _tsWeekSkipHintDatesKey = ''
 }
 
 function _buildTsWeekDayTaskItems(tasks, selId = '') {
@@ -8214,6 +8216,7 @@ function _initTsWeekDayLineComboboxes(iso, line) {
     onchange: async (val) => {
       line.project_id = val || ''
       line.task_id = ''
+      _warnIfWeekLineLocked(iso, val)
       await _loadTsWeekDayTasks(iso, lid, val, null)
     }
   })
@@ -8370,6 +8373,9 @@ function _renderTsWeekDayEntries(dates) {
         <div class="text-xs font-semibold text-gray-700 flex items-center gap-1.5 flex-wrap">
           ${lab} ${_fmtTsWeekDayLabel(iso)}
           ${sun ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700">CN · OT</span>' : ''}
+          ${_tsWeekDayLockedRows(iso).length
+            ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800" title="Có timesheet đã gửi/duyệt — dự án đó sẽ bỏ qua khi lưu">🔒 ${_tsWeekDayLockedRows(iso).length} đã gửi</span>`
+            : ''}
           <span id="tsWeekDayTot_${iso}"></span>
         </div>
         <button type="button" onclick="tsWeekDayAddLine('${iso}')"
@@ -8385,6 +8391,7 @@ function _renderTsWeekDayEntries(dates) {
     _ensureWeekDayState(iso).lines.forEach(line => _initTsWeekDayLineComboboxes(iso, line))
     _updateTsWeekDayTotalsBadge(iso)
   })
+  _annotateTsWeekLockedBadges()
 }
 
 // Alias HTML oninput
@@ -8501,6 +8508,8 @@ function _rebuildTsWeekCopyCheckboxes(anchorIso) {
 
   row.style.display = ''
   _syncTsWeekDayEntriesUI()
+  // W2: badge ngày đã gửi/duyệt từ GET hẹp (không chặn tick — vẫn có thể thêm dự án khác)
+  _refreshTsWeekSkipHints(week.days).catch(() => {})
 }
 
 function _onTsWeekCopyChange() {
@@ -8557,6 +8566,91 @@ function _applySundayDefaultsToSingleForm(iso) {
     $('tsOvertimeHours').disabled = false
     $('tsOvertimeHours').dataset.locked = '0'
   }
+}
+
+/** Cache gợi ý skip UI (GET hẹp) — không thay SSOT submit (submit vẫn refetch). */
+let _tsWeekSkipHintMap = null
+let _tsWeekSkipHintDatesKey = ''
+
+function _tsWeekDayLockedRows(iso, map) {
+  const m = map || _tsWeekSkipHintMap
+  if (!m) return []
+  const out = []
+  m.forEach((row, key) => {
+    if (row.status !== 'submitted' && row.status !== 'approved') return
+    if (key === `leave|${iso}` || (key.startsWith('work|') && key.endsWith(`|${iso}`))) {
+      out.push(row)
+    }
+  })
+  return out
+}
+
+function _tsWeekDateHasLocked(map, iso) {
+  return _tsWeekDayLockedRows(iso, map).length > 0
+}
+
+function _annotateTsWeekLockedBadges() {
+  document.querySelectorAll('#tsWeekCopyDays input[data-ts-week-date]').forEach(inp => {
+    const iso = inp.getAttribute('data-ts-week-date')
+    const lab = inp.closest('label')
+    if (!lab) return
+    let badge = lab.querySelector('[data-ts-locked-badge]')
+    const locked = _tsWeekDateHasLocked(_tsWeekSkipHintMap, iso)
+    if (locked) {
+      if (!badge) {
+        badge = document.createElement('span')
+        badge.setAttribute('data-ts-locked-badge', '1')
+        badge.className = 'text-[9px] font-bold text-amber-600 ml-0.5'
+        badge.title = 'Đã có bản gửi/duyệt — khi lưu ≥2 ngày sẽ bỏ qua dự án đã khóa'
+        badge.textContent = '🔒'
+        lab.appendChild(badge)
+      }
+    } else if (badge) {
+      badge.remove()
+    }
+  })
+}
+
+async function _refreshTsWeekSkipHints(weekDays) {
+  if (!weekDays?.length || !currentUser?.id) return null
+  const key = weekDays.join('|')
+  const uid = currentUser.role === 'system_admin'
+    ? (parseInt($('tsTargetUserHidden')?.value) || currentUser.id)
+    : currentUser.id
+  if (_tsWeekSkipHintDatesKey === key && _tsWeekSkipHintMap) {
+    _annotateTsWeekLockedBadges()
+    if (_isTsWeekPerDayMode()) {
+      _tsWeekDayLastDatesKey = ''
+      _renderTsWeekDayEntries(_getSelectedWeekDates())
+    }
+    return _tsWeekSkipHintMap
+  }
+  try {
+    _tsWeekSkipHintMap = await _fetchTimesheetsForWeekSkip(uid, null, weekDays)
+    _tsWeekSkipHintDatesKey = key
+    _annotateTsWeekLockedBadges()
+    // Refresh card ngày để hiện badge 🔒 (map vừa có)
+    if (_isTsWeekPerDayMode()) {
+      _tsWeekDayLastDatesKey = ''
+      _renderTsWeekDayEntries(_getSelectedWeekDates())
+    }
+  } catch (_) {
+    _tsWeekSkipHintMap = null
+    _tsWeekSkipHintDatesKey = ''
+  }
+  return _tsWeekSkipHintMap
+}
+
+function _warnIfWeekLineLocked(iso, projectId) {
+  if (!projectId || !_tsWeekSkipHintMap) return
+  if (_tsWeekCopyShouldSkip(_tsWeekSkipHintMap, currentUser.id, parseInt(projectId) || null, iso, false)) {
+    toast(`Dự án này ngày ${_fmtTsWeekDayLabel(iso)} đã gửi/duyệt — sẽ bỏ qua khi lưu ≥2 ngày`, 'warning')
+  }
+}
+
+function _clearTsWeekSkipHints() {
+  _tsWeekSkipHintMap = null
+  _tsWeekSkipHintDatesKey = ''
 }
 
 /** Preflight tồn tại theo tháng — SSOT skip (không tin allTimesheets đã filter). */
@@ -9332,7 +9426,7 @@ $('tsForm').addEventListener('submit', async (e) => {
         }
       }
 
-      toast(`Lưu ${ok} · bỏ qua ${skipped} · lỗi ${failed}${failed && lastErr ? ` (${lastErr})` : ''}`,
+      toast(`Lưu ${ok} · bỏ qua ${skipped}${skipped ? ' (đã gửi/duyệt)' : ''} · lỗi ${failed}${failed && lastErr ? ` (${lastErr})` : ''}`,
         failed && !ok ? 'error' : (failed || skipped ? 'warning' : 'success'))
 
       // Đóng nếu có lưu hoặc chỉ bỏ qua; giữ mở nếu toàn lỗi

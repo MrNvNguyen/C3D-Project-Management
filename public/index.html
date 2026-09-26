@@ -3490,10 +3490,10 @@
                   <div class="flex-1">
                     <p class="font-semibold text-gray-800">Điền thông tin timesheet</p>
                     <ul class="mt-2 space-y-1 text-sm text-gray-600 list-none">
-                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Ngày làm việc:</strong> Chọn ngày (mặc định hôm nay). Tick thêm ngày → mỗi ngày khai nhiều dự án/task; <strong>Chủ nhật mặc định OT</strong> (HC=0). Ngày đã gửi/duyệt sẽ bỏ qua.</span></li>
-                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Dự án:</strong> Chọn dự án bạn đã làm trong ngày đó</span></li>
-                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ thường:</strong> Số giờ làm việc bình thường (VD: 8)</span></li>
-                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ OT:</strong> Số giờ làm thêm ngoài giờ (nếu có)</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Ngày làm việc:</strong> Chọn ngày (mặc định hôm nay). Tick thêm ngày → mỗi ngày khai nhiều dự án/task (tổng HC ≤ 8h/ngày). <strong>Chủ nhật = OT</strong> (HC=0). Ngày/dự án đã gửi/duyệt (🔒) bỏ qua khi lưu ≥2 ngày.</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Dự án / task:</strong> Mỗi ngày có thể thêm nhiều dòng; cùng dự án nhiều task → một timesheet; khác dự án → nhiều bản ghi.</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ thường (HC):</strong> Giờ hành chính trong ngày (tối đa 8h; nửa ngày 4h). Khi thêm dòng mới chỉ nhận giờ còn lại.</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ OT:</strong> Tăng ca sau khi đủ HC (Chủ nhật chỉ OT).</span></li>
                       <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Mô tả công việc:</strong> Tóm tắt đã làm gì trong ngày (VD: "Vẽ mặt cắt A-A, kiểm tra bản vẽ kết cấu")</span></li>
                     </ul>
                   </div>
@@ -3511,7 +3511,7 @@
                     <p class="font-semibold text-gray-800">Nhấn nút <i class="fas fa-paper-plane text-blue-500"></i> <strong>Gửi duyệt</strong></p>
                     <p class="text-sm text-gray-500 mt-1">Trong cột <strong>Thao tác</strong>, nhấn nút <span class="inline-flex items-center gap-1 bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded"><i class="fas fa-paper-plane text-xs"></i> Gửi</span> để nộp timesheet cho quản lý xét duyệt. Trạng thái sẽ chuyển từ <span class="badge badge-todo">Nháp</span> → <span class="badge badge-review">Chờ duyệt</span>.</p>
                     <div class="mt-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
-                      <i class="fas fa-info-circle mr-1"></i> Chỉ timesheet ở trạng thái <strong>Nháp</strong> mới có nút Gửi duyệt. Sau khi gửi, bạn không thể sửa cho đến khi quản lý duyệt hoặc từ chối.
+                      <i class="fas fa-info-circle mr-1"></i> Chỉ timesheet <strong>Nháp của chính bạn</strong> mới gửi được. Có thể dùng <strong>Gửi tất cả nháp</strong> để nộp hàng loạt timesheet của mình. Sau khi gửi không sửa được cho đến khi quản lý duyệt/từ chối.
                     </div>
                   </div>
                 </div>
@@ -5437,7 +5437,7 @@
       <div id="tsWeekCopyRow" style="display:none" class="mb-3">
         <label class="label mb-1.5">Ngày trong tuần</label>
         <div id="tsWeekCopyDays" class="flex flex-wrap gap-2"></div>
-        <p class="text-xs text-gray-400 mt-1.5">Tick nhiều ngày → mỗi ngày có thể thêm nhiều dự án/task. Chủ nhật mặc định OT.</p>
+        <p class="text-xs text-gray-400 mt-1.5">Tick nhiều ngày → mỗi ngày thêm nhiều dự án/task. CN = OT. 🔒 = đã gửi/duyệt (bỏ qua khi lưu ≥2 ngày).</p>
       </div>
       <!-- Khai theo ngày (N>1) -->
       <div id="tsWeekDayEntries" style="display:none" class="mb-3">
@@ -6573,7 +6573,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260925i"></script>
+<script src="/static/app.js?v=20260926a"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
@@ -6865,11 +6865,10 @@
               <div class="flex-1">
                 <p class="font-semibold text-gray-800">Điền thông tin timesheet</p>
                 <ul class="mt-2 space-y-1 text-sm text-gray-600 list-none">
-                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Ngày làm việc:</strong> Mặc định hôm nay</span></li>
-                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Dự án:</strong> Chọn dự án đã làm trong ngày</span></li>
-                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ thường:</strong> Giờ làm bình thường (VD: 8)</span></li>
-                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ OT:</strong> Giờ làm thêm ngoài giờ (nếu có)</span></li>
-                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Mô tả:</strong> Tóm tắt đã làm gì (VD: "Vẽ mặt cắt A-A, kiểm tra bản vẽ kết cấu")</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Ngày:</strong> Tick thêm ngày trong tuần; mỗi ngày nhiều dự án/task; CN = OT; 🔒 đã gửi/duyệt bỏ qua khi lưu ≥2 ngày</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Dự án / task:</strong> Thêm nhiều dòng/ngày; tổng HC ≤ 8h</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Giờ HC / OT:</strong> HC hành chính; OT sau đủ HC (CN chỉ OT)</span></li>
+                  <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Mô tả:</strong> Tóm tắt đã làm gì</span></li>
                 </ul>
               </div>
             </div>
@@ -6886,7 +6885,7 @@
                 <p class="font-semibold text-gray-800">Nhấn nút <i class="fas fa-paper-plane text-blue-500"></i> <strong>Gửi duyệt</strong></p>
                 <p class="text-sm text-gray-500 mt-1">Trong cột <strong>Thao tác</strong>, nhấn <span class="inline-flex items-center gap-1 bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded"><i class="fas fa-paper-plane text-xs"></i> Gửi</span> để nộp cho quản lý duyệt. Trạng thái: <span class="badge badge-todo">Nháp</span> → <span class="badge badge-review">Chờ duyệt</span>.</p>
                 <div class="mt-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
-                  <i class="fas fa-info-circle mr-1"></i> Chỉ timesheet <strong>Nháp</strong> mới có nút Gửi duyệt. Sau khi gửi không thể sửa cho đến khi quản lý xử lý.
+                  <i class="fas fa-info-circle mr-1"></i> Chỉ gửi được timesheet <strong>Nháp của bạn</strong>. Có thể dùng <strong>Gửi tất cả nháp</strong>. Sau khi gửi không sửa đến khi quản lý xử lý.
                 </div>
               </div>
             </div>
