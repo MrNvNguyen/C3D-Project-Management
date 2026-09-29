@@ -1,0 +1,61 @@
+﻿{
+  "base": "http://127.0.0.1:8791",
+  "project_id": 5,
+  "fixture": {
+    "description": "QA Wave A sync gate fixture",
+    "request_date": "2026-09-15",
+    "amount": 1100000,
+    "vat_pct": 10,
+    "paid_amount": 0,
+    "currency": "VND"
+  },
+  "steps": {
+    "login": {
+      "role": "system_admin",
+      "user_id": 1
+    },
+    "revenue_audit_pre": {
+      "broken_links": [],
+      "orphan_revenues": [],
+      "formula_mismatches": []
+    },
+    "resync_all": {
+      "success": true,
+      "synced": 26,
+      "total": 26,
+      "errors": []
+    },
+    "revenue_audit_post": {
+      "broken_links": [],
+      "orphan_revenues": [],
+      "formula_mismatches": []
+    },
+    "create_pending": {
+      "id": 27,
+      "revenue_id": null,
+      "success": true
+    },
+    "pending_row": {
+      "id": 27,
+      "status": "pending",
+      "revenue_id": null,
+      "booked_revenue": 700000
+    },
+    "processing_row": {
+      "id": 27,
+      "status": "processing",
+      "revenue_id": 14,
+      "booked_revenue": 700000,
+      "request_date": "2026-09-15"
+    },
+    "revenue_row": {
+      "note": "revenues list unavailable or row not found",
+      "revRowsKeys": null
+    }
+  },
+  "pass": false,
+  "failures": [
+    "project_revenues.amount expected 700000 got undefined",
+    "revenue_date expected 2026-09-15 got undefined"
+  ]
+}

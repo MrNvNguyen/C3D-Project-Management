@@ -1,0 +1,39 @@
+{
+  "schema": "bim-pm-evidence-1",
+  "directive_id": "THEME-LEGAL-EXCEL-G-PAYMENT-SHEET-REFRESH",
+  "wave_id": "G-payment-sheet-refresh",
+  "attempt": "1/3",
+  "qa_tier": "Q1+Q2",
+  "measured_at": "2026-09-26T16:51:12+07:00",
+  "measured_by": "lead-dev",
+  "behavior_change": true,
+  "parent_sha": "ee524242041c623cde0aaa87a424e7d0273390dc",
+  "verify_sha": "9d48e8dca010bbbc93b9fd93443d6ec4fa66ec5d",
+  "metric": "wave_g_payment_sheet_no_full_reload",
+  "lead_log": "Agents Logs/092.lead-dev-theme-legal-excel-g-payment-sheet-refresh-2026-09-26.md",
+  "wave_card": "Agents Logs/091.advisor-strategy-theme-legal-excel-residual-polish-auth-2026-09-26.md",
+  "layer_a": {
+    "npm_test": {
+      "command": "npm test",
+      "result": "PASS",
+      "tests": "38 passed (38)"
+    },
+    "static_grep": {
+      "existing_row_put_no_loadLegalProject": true,
+      "has_debounce_500ms": true,
+      "has_get_payments_refresh": true,
+      "has_row_dom_patch": true,
+      "new_row_post_still_loadLegalProject": true,
+      "forbidden_paths_touched": false
+    }
+  },
+  "product_claim": {
+    "class": "NOT_MEASURED",
+    "note": "Lead-dev static + unit harness only; Q1+Q2 browser handoff qa-agent"
+  },
+  "regenerate": {
+    "npm_test": "npm test",
+    "static": "rg legalPaymentCommitRow|loadLegalProject|legalPaymentCommitDebounced public/static/app.js",
+    "product_q2": "NOT_MEASURED — qa-agent wrangler dev, existing-row blur/status PUT without POST /legal/init; pending→processing DT sổ from GET /api/legal/:id/payments booked_revenue; new-row POST may reload once"
+  }
+}

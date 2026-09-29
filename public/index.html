@@ -2,6 +2,16 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
+  <script>
+    (function () {
+      var key = 'bim_theme';
+      var stored = localStorage.getItem(key);
+      var mode = (stored === 'light' || stored === 'dark')
+        ? stored
+        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', mode);
+    })();
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#00A651">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -67,21 +77,100 @@
       -ms-text-size-adjust: 100%;
       text-size-adjust: 100%;
     }
-    :root { --primary: #00A651; --accent: #0066CC; --warning: #FF6B00; }
+    :root,
+    html[data-theme="light"] {
+      --primary: #00A651;
+      --accent: #0066CC;
+      --warning: #FF6B00;
+      --shell-bg: #f0f4f8;
+      --shell-surface: #ffffff;
+      --shell-topbar-bg: #ffffff;
+      --shell-text: #1f2937;
+      --shell-text-muted: #6b7280;
+      --shell-border: #e5e7eb;
+      --shell-input-bg: #ffffff;
+      --shell-shadow: rgba(0, 0, 0, 0.08);
+      --shell-row-hover: #f9fafb;
+      --shell-scrollbar-track: #f1f1f1;
+      --shell-scrollbar-thumb: #d1d5db;
+      --shell-overlay: rgba(0, 0, 0, 0.5);
+      --shell-btn-secondary-bg: #f3f4f6;
+      --shell-btn-secondary-text: #374151;
+      --money-accent: #00A651;
+      --shell-sidebar-bg: linear-gradient(180deg, #00A651 0%, #006e36 100%);
+      --shell-sidebar-border: rgba(255, 255, 255, 0.12);
+      --shell-sidebar-nav-text: rgba(255, 255, 255, 0.85);
+      --shell-sidebar-nav-muted: rgba(255, 255, 255, 0.55);
+      --shell-sidebar-nav-hover-bg: rgba(255, 255, 255, 0.16);
+      --shell-sidebar-nav-active-bg: rgba(255, 255, 255, 0.22);
+      --shell-sidebar-nav-active-accent: rgba(255, 255, 255, 0.9);
+      --shell-sidebar-brand-sub: #bbf7d0;
+      --shell-sidebar-user-role: #86efac;
+      --shell-sidebar-logout: #86efac;
+      --shell-sidebar-avatar-bg: #bbf7d0;
+      --shell-sidebar-avatar-text: #14532d;
+      --shell-sidebar-toggle-bg: #ffffff;
+      --shell-sidebar-toggle-border: #00A651;
+      --shell-sidebar-toggle-color: #00A651;
+    }
+    html[data-theme="dark"] {
+      --primary: #00A651;
+      --accent: #3385d6;
+      --warning: #FF6B00;
+      --shell-bg: #0f1729;
+      --shell-surface: #1a2332;
+      --shell-topbar-bg: #151d2e;
+      --shell-text: #e2e8f0;
+      --shell-text-muted: #a8b8cc;
+      --shell-text-faint: #8fa3bb;
+      --shell-nav-inactive: #b8c5d6;
+      --shell-border: #3d5068;
+      --shell-border-strong: #4d6380;
+      --shell-table-head-bg: rgba(255, 255, 255, 0.06);
+      --shell-table-head-text: #c5d0de;
+      --shell-table-row-border: #3d5068;
+      --shell-input-bg: #1e293b;
+      --shell-shadow: rgba(0, 0, 0, 0.35);
+      --shell-row-hover: rgba(255, 255, 255, 0.06);
+      --shell-scrollbar-track: #1a2332;
+      --shell-scrollbar-thumb: #475569;
+      --shell-overlay: rgba(0, 0, 0, 0.65);
+      --shell-btn-secondary-bg: #243044;
+      --shell-btn-secondary-text: #e2e8f0;
+      --money-accent: #fbbf24;
+      --shell-sidebar-bg: linear-gradient(180deg, #101820 0%, #0c1219 48%, #0a0f16 100%);
+      --shell-sidebar-border: #243044;
+      --shell-sidebar-nav-text: #c5d0de;
+      --shell-sidebar-nav-muted: #8fa3bb;
+      --shell-sidebar-nav-hover-bg: rgba(255, 255, 255, 0.07);
+      --shell-sidebar-nav-active-bg: rgba(0, 166, 81, 0.22);
+      --shell-sidebar-nav-active-accent: #34d399;
+      --shell-sidebar-brand-sub: #7dd3a0;
+      --shell-sidebar-user-role: #94a3b8;
+      --shell-sidebar-logout: #94a3b8;
+      --shell-sidebar-avatar-bg: rgba(0, 166, 81, 0.35);
+      --shell-sidebar-avatar-text: #ecfdf5;
+      --shell-sidebar-toggle-bg: #1a2332;
+      --shell-sidebar-toggle-border: #3d5068;
+      --shell-sidebar-toggle-color: #47c67e;
+    }
     * { font-family: 'Segoe UI', sans-serif; box-sizing: border-box; }
-    body { background: #f0f4f8; margin: 0; padding: 0; }
+    body { background: var(--shell-bg); color: var(--shell-text); margin: 0; padding: 0; }
 
     /* ================================================================
        SIDEBAR
     ================================================================ */
-    .sidebar { width: 260px; background: linear-gradient(180deg, #00A651 0%, #006e36 100%); min-height: 100vh; position: fixed; left: 0; top: 0; z-index: 100; transition: width 0.25s ease, transform 0.25s ease; overflow: hidden; }
+    .sidebar { width: 260px; background: var(--shell-sidebar-bg); min-height: 100vh; position: fixed; left: 0; top: 0; z-index: 100; transition: width 0.25s ease, transform 0.25s ease; overflow: hidden; box-shadow: inset -1px 0 0 var(--shell-sidebar-border); }
+    html[data-theme="dark"] .sidebar { box-shadow: inset -1px 0 0 var(--shell-sidebar-border), 4px 0 24px rgba(0, 0, 0, 0.25); }
     .sidebar.collapsed { transform: translateX(-260px); }
     .sidebar.mini { width: 64px; }
     .main-content { margin-left: 260px; transition: margin 0.25s ease; min-height: 100vh; }
     .main-content.expanded { margin-left: 0; }
     .main-content.mini-sidebar { margin-left: 64px; }
-    .nav-item { display: flex; align-items: center; padding: 10px 14px; color: rgba(255,255,255,0.8); cursor: pointer; transition: all 0.2s; border-radius: 8px; margin: 2px 8px; font-size: 13px; white-space: nowrap; position: relative; }
-    .nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.2); color: #fff; }
+    .nav-item { display: flex; align-items: center; padding: 10px 14px; color: var(--shell-sidebar-nav-text); cursor: pointer; transition: all 0.2s; border-radius: 8px; margin: 2px 8px; font-size: 13px; white-space: nowrap; position: relative; }
+    .nav-item:hover { background: var(--shell-sidebar-nav-hover-bg); color: #fff; }
+    .nav-item.active { background: var(--shell-sidebar-nav-active-bg); color: #fff; box-shadow: inset 3px 0 0 var(--shell-sidebar-nav-active-accent); }
+    html[data-theme="light"] .nav-item.active { box-shadow: none; }
     .nav-item i { width: 20px; text-align: center; margin-right: 10px; flex-shrink: 0; font-size: 14px; }
     /* Mini mode: nav-item */
     .sidebar.mini .nav-item { padding: 10px; justify-content: center; margin: 2px 6px; }
@@ -108,7 +197,15 @@
     .sidebar.mini .sidebar-logo-full .logo-text { display: none; }
     .sidebar.mini .sidebar-logo-full { justify-content: center; }
     /* Sidebar toggle btn */
-    .sidebar-toggle-btn { position: absolute; bottom: 72px; right: -13px; width: 26px; height: 26px; background: #fff; border: 2px solid #00A651; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 200; box-shadow: 0 2px 8px rgba(0,0,0,0.15); transition: transform 0.25s; color: #00A651; font-size: 11px; }
+    .sidebar-toggle-btn { position: absolute; bottom: 72px; right: -13px; width: 26px; height: 26px; background: var(--shell-sidebar-toggle-bg); border: 2px solid var(--shell-sidebar-toggle-border); border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 200; box-shadow: 0 2px 8px rgba(0,0,0,0.15); transition: transform 0.25s; color: var(--shell-sidebar-toggle-color); font-size: 11px; }
+    .sidebar-header { border-color: var(--shell-sidebar-border) !important; }
+    .sidebar-footer { border-color: var(--shell-sidebar-border) !important; }
+    .sidebar-brand-sub { color: var(--shell-sidebar-brand-sub); }
+    .sidebar-user-name { color: #fff; }
+    .sidebar-user-role { color: var(--shell-sidebar-user-role); }
+    .sidebar-logout-btn { color: var(--shell-sidebar-logout); background: transparent; border: none; cursor: pointer; }
+    .sidebar-logout-btn:hover { color: #fff; }
+    .sidebar-avatar { background: var(--shell-sidebar-avatar-bg); color: var(--shell-sidebar-avatar-text); }
     .sidebar.mini .sidebar-toggle-btn { transform: rotate(180deg); right: -13px; }
     /* User info in mini mode */
     .sidebar.mini .sidebar-user-info { display: none; }
@@ -117,8 +214,25 @@
     /* ================================================================
        CARDS & KPI CARDS — fixed padding in px
     ================================================================ */
-    .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 20px; }
-    .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--primary); min-height: 88px; overflow: hidden; }
+    .card { background: var(--shell-surface); color: var(--shell-text); border-radius: 12px; box-shadow: 0 2px 8px var(--shell-shadow); padding: 20px; border: 1px solid transparent; }
+    html[data-theme="dark"] .card { border-color: var(--shell-border); }
+    .dash-birthday { border-left: 4px solid #ec4899; }
+    .dash-birthday-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .dash-birthday-month {
+      border: 1px solid var(--shell-border); border-radius: 10px; padding: 10px 12px;
+      background: var(--shell-input-bg); min-width: 0;
+    }
+    .dash-birthday-month.is-current { border-color: rgba(236, 72, 153, 0.55); background: rgba(236, 72, 153, 0.1); }
+    .dash-birthday-label { font-size: 12px; font-weight: 700; color: var(--shell-text-muted); }
+    .dash-birthday-count { font-size: 22px; font-weight: 800; line-height: 1.15; color: var(--shell-text); margin: 2px 0 8px; }
+    .dash-birthday-count span { font-size: 12px; font-weight: 600; color: var(--shell-text-muted); margin-left: 4px; }
+    .dash-birthday-people { display: flex; flex-direction: column; gap: 6px; max-height: 168px; overflow: auto; }
+    .dash-birthday-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .dash-birthday-name { font-size: 12px; font-weight: 600; color: var(--shell-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dash-birthday-meta { font-size: 11px; color: var(--shell-text-muted); }
+    .dash-birthday-person.is-today .dash-birthday-name { color: #f472b6; }
+    .dash-birthday-empty { font-size: 12px; color: var(--shell-text-faint); }
+    .kpi-card { background: var(--shell-surface); color: var(--shell-text); border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px var(--shell-shadow); border-left: 4px solid var(--primary); min-height: 88px; overflow: hidden; }
     /* Số liệu trong KPI card: tự co lại khi quá dài, không wrap */
     .kpi-card .kpi-value { font-size: clamp(0.95rem, 1.6vw, 1.25rem); font-weight: 700; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -142,7 +256,7 @@
     ================================================================ */
     .btn-primary { background: #00A651; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; transition: background 0.2s; font-size: 13px; font-weight: 500; }
     .btn-primary:hover { background: #008a43; }
-    .btn-secondary { background: #f3f4f6; color: #374151; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; }
+    .btn-secondary { background: var(--shell-btn-secondary-bg); color: var(--shell-btn-secondary-text); padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; }
     .btn-accent { background: #0066CC; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; }
     .btn-danger { background: #EF4444; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; }
 
@@ -167,7 +281,7 @@
     /* ================================================================
        MISC UI
     ================================================================ */
-    .table-row:hover { background: #f9fafb; }
+    .table-row:hover { background: var(--shell-row-hover); }
     .overdue-row { background: #fff5f5 !important; border-left: 3px solid #ef4444; }
     /* Subtask expand/collapse */
     .subtask-container-row td { padding: 0; }
@@ -181,66 +295,1185 @@
     .subtask-row-legal:last-child { border-bottom: none !important; }
     /* ── Chat UI ──────────────────────────────────── */
     .chat-wrap { display:flex; flex-direction:column; height:500px; }
-    .chat-messages { flex:1; overflow-y:auto; padding:16px; scroll-behavior:smooth; background:#f9fafb; }
+    .chat-messages { flex:1; overflow-y:auto; padding:16px; scroll-behavior:smooth; background:var(--shell-bg); }
     .chat-bubble { max-width:82%; margin-bottom:12px; }
     .chat-bubble.me { margin-left:auto; }
     .chat-bubble .bubble-inner { padding:10px 14px; border-radius:16px; font-size:13px; line-height:1.5; word-break:break-word; }
     .chat-bubble.me .bubble-inner { background:#00A651; color:#fff; border-bottom-right-radius:4px; }
-    .chat-bubble.other .bubble-inner { background:#fff; border:1px solid #e5e7eb; color:#1f2937; border-bottom-left-radius:4px; box-shadow:0 1px 2px rgba(0,0,0,.06); }
-    .chat-bubble .bubble-meta { font-size:11px; color:#9ca3af; margin-bottom:3px; display:flex; align-items:center; gap:6px; }
+    .chat-bubble.other .bubble-inner { background:var(--shell-surface); border:1px solid var(--shell-border); color:var(--shell-text); border-bottom-left-radius:4px; box-shadow:0 1px 2px rgba(0,0,0,.06); }
+    .chat-bubble .bubble-meta { font-size:11px; color:var(--shell-text-faint); margin-bottom:3px; display:flex; align-items:center; gap:6px; }
     .chat-bubble.me .bubble-meta { justify-content:flex-end; }
     .chat-mention { background:#dbeafe; color:#1d4ed8; padding:1px 5px; border-radius:4px; font-weight:600; font-size:12px; }
-    .chat-input-bar { border-top:1px solid #e5e7eb; background:#fff; padding:12px 14px; }
-    .chat-input-area { border:1.5px solid #e5e7eb; border-radius:12px; overflow:hidden; background:#fff; transition:border-color .2s; }
+    .chat-input-bar { border-top:1px solid var(--shell-border); background:var(--shell-surface); padding:12px 14px; }
+    .chat-input-area { border:1.5px solid var(--shell-border); border-radius:12px; overflow:hidden; background:var(--shell-input-bg); transition:border-color .2s; }
     .chat-input-area:focus-within { border-color:#00A651; box-shadow:0 0 0 3px rgba(0,166,81,.1); }
-    .chat-textarea { width:100%; min-height:44px; max-height:120px; resize:none; outline:none; padding:10px 12px; font-size:13px; background:transparent; }
+    .chat-textarea { width:100%; min-height:44px; max-height:120px; resize:none; outline:none; padding:10px 12px; font-size:13px; background:transparent; color:var(--shell-text); }
+    .chat-textarea::placeholder { color:var(--shell-text-faint); }
     .chat-att-preview { display:flex; flex-wrap:wrap; gap:6px; padding:6px 10px 0; }
-    .chat-att-chip { display:flex; align-items:center; gap:6px; background:#f3f4f6; border-radius:8px; padding:4px 8px; font-size:12px; max-width:180px; }
+    .chat-att-chip { display:flex; align-items:center; gap:6px; background:var(--shell-input-bg); color:var(--shell-text); border:1px solid var(--shell-border); border-radius:8px; padding:4px 8px; font-size:12px; max-width:180px; }
     .chat-att-chip img { width:36px; height:36px; object-fit:cover; border-radius:4px; }
     .chat-att-chip .att-remove { cursor:pointer; color:#ef4444; padding:2px; }
     .chat-att-thumb { display:inline-block; margin-top:6px; cursor:pointer; }
     .chat-att-thumb img { max-width:200px; max-height:160px; border-radius:8px; border:1px solid #e5e7eb; }
-    .mention-dropdown { position:absolute; background:#fff; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.12); z-index:9999; min-width:200px; max-height:200px; overflow-y:auto; }
-    .mention-item { padding:8px 12px; cursor:pointer; font-size:13px; display:flex; align-items:center; gap:8px; transition:background .12s; }
-    .mention-item:hover, .mention-item.active { background:#f0fdf4; }
+    .mention-dropdown { position:absolute; background:var(--shell-surface); border:1px solid var(--shell-border); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.12); z-index:9999; min-width:200px; max-height:200px; overflow-y:auto; color:var(--shell-text); }
+    .mention-item { padding:8px 12px; cursor:pointer; font-size:13px; display:flex; align-items:center; gap:8px; transition:background .12s; color:var(--shell-text); }
+    .mention-item:hover, .mention-item.active { background:var(--shell-row-hover); }
     .mention-avatar { width:28px; height:28px; border-radius:50%; background:#d1fae5; color:#065f46; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; }
     .chat-project-wrap { display:flex; flex-direction:column; height:520px; }
     .msg-delete-btn { opacity:0; transition:opacity .15s; cursor:pointer; background:none; border:none; color:#ef4444; padding:2px 6px; border-radius:4px; font-size:11px; }
     .chat-bubble:hover .msg-delete-btn { opacity:1; }
+    #assistantDock { position:fixed; right:20px; bottom:20px; z-index:80; }
+    #assistantFab { width:52px; height:52px; border-radius:999px; border:0; background:#00A651; color:#fff; box-shadow:0 8px 20px rgba(0,166,81,.35); cursor:pointer; font-size:20px; }
+    #assistantPanel { position:absolute; right:0; bottom:64px; width:min(380px, calc(100vw - 32px)); height:min(520px, calc(100vh - 120px)); display:none; flex-direction:column; background:var(--shell-surface); color:var(--shell-text); border:1px solid var(--shell-border); border-radius:16px; box-shadow:0 16px 40px rgba(0,0,0,.18); overflow:hidden; }
+    #assistantPanel.is-open { display:flex; }
+    #assistantHead { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--shell-border); font-weight:700; }
+    #assistantThread { flex:1; overflow:auto; padding:12px; }
+    #assistantComposer { display:flex; gap:8px; padding:10px; border-top:1px solid var(--shell-border); }
+    #assistantInput { flex:1; resize:none; min-height:40px; max-height:96px; }
+    #assistantDocs { border-bottom:1px solid var(--shell-border); max-height:220px; overflow:auto; padding:10px 12px; background:var(--shell-bg, transparent); }
+    .assistant-confirm { margin-top:8px; }
+    @media (max-width: 767px) { #assistantDock { bottom: calc(68px + env(safe-area-inset-bottom, 0px)); right: 12px; z-index: 1100; }
+      #assistantPanel.is-open {
+        position: fixed;
+        left: 8px;
+        right: 8px;
+        bottom: calc(128px + env(safe-area-inset-bottom, 0px));
+        width: auto;
+        height: min(70dvh, 520px);
+        max-height: calc(100dvh - 140px - env(safe-area-inset-bottom, 0px));
+      }
+      #assistantDock.keyboard-hidden { bottom: 12px; }
+      #assistantDock.keyboard-hidden #assistantPanel.is-open {
+        bottom: 72px;
+        height: min(48dvh, 380px);
+      }
+    }
     .chat-unread-badge { display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 5px; background:#ef4444; color:#fff; font-size:10px; font-weight:700; border-radius:9px; line-height:1; }
     .proj-chat-badge { position:absolute; top:10px; right:10px; display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:20px; padding:0 6px; background:#ef4444; color:#fff; font-size:10px; font-weight:700; border-radius:10px; line-height:1; box-shadow:0 1px 3px rgba(0,0,0,.2); pointer-events:none; }
     .progress-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
     .progress-fill { height: 100%; background: linear-gradient(90deg, #00A651, #47c67e); border-radius: 4px; transition: width 0.3s; }
     .progress-fill.danger { background: linear-gradient(90deg, #ef4444, #f87171); }
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; }
-    .modal { background: white; border-radius: 12px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; }
+    .modal-overlay { position: fixed; inset: 0; background: var(--shell-overlay); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .modal { background: var(--shell-surface); color: var(--shell-text); border-radius: 12px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--shell-border); }
+    #modalLegalCopyFrom .legal-copy-dialog { max-width: 460px; padding: 0; overflow: hidden; }
+    #modalLegalCopyFrom .legal-copy-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+      padding: 16px 18px; border-bottom: 1px solid var(--shell-border);
+    }
+    #modalLegalCopyFrom .legal-copy-head h3 { margin: 0; font-size: 16px; font-weight: 700; color: var(--shell-text); }
+    #modalLegalCopyFrom .legal-copy-head p { margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--shell-text-muted); }
+    #modalLegalCopyFrom .legal-copy-x {
+      border: 0; background: transparent; color: var(--shell-text-muted); cursor: pointer;
+      width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+    }
+    #modalLegalCopyFrom .legal-copy-x:hover { background: var(--shell-row-hover); color: var(--shell-text); }
+    #modalLegalCopyFrom .legal-copy-body { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 14px; }
+    #modalLegalCopyFrom .legal-copy-label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--shell-text); }
+    #modalLegalCopyFrom .legal-copy-choices { display: flex; flex-direction: column; gap: 8px; }
+    #modalLegalCopyFrom .legal-copy-choice {
+      display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer;
+      padding: 8px 10px; border-radius: 8px; border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg); color: var(--shell-text); font-size: 13px;
+    }
+    #modalLegalCopyFrom .legal-copy-pkgs {
+      border: 1px solid var(--shell-border); border-radius: 8px; padding: 8px 10px;
+      max-height: 160px; overflow-y: auto; background: var(--shell-input-bg); color: var(--shell-text);
+    }
+    #modalLegalCopyFrom .legal-copy-actions { display: flex; justify-content: flex-end; gap: 8px; }
     .toast { position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px; border-radius: 8px; padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: slideIn 0.3s ease; }
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     @keyframes fadeOut { to { opacity: 0; transform: translateX(100%); } }
     @keyframes slideUp { from { transform: translateX(-50%) translateY(20px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }
     @keyframes cbFadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
-    .input-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color 0.2s; }
+    .input-field { width: 100%; border: 1px solid var(--shell-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color 0.2s; background: var(--shell-input-bg); color: var(--shell-text); }
+    #taskTitle[readonly] { cursor: default; }
     .input-field:focus { border-color: #00A651; box-shadow: 0 0 0 3px rgba(0,166,81,0.1); }
-    .select-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 13px; background: white; outline: none; }
+    .select-field { width: 100%; border: 1px solid var(--shell-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; background: var(--shell-input-bg); color: var(--shell-text); outline: none; }
     .select-field:focus { border-color: #00A651; }
-    .label { display: block; font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 4px; }
-    .sidebar-section { padding: 8px 10px 4px; color: rgba(255,255,255,0.5); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+    .label { display: block; font-size: 12px; font-weight: 600; color: var(--shell-text-muted); margin-bottom: 4px; }
+    .sidebar-section { padding: 8px 10px 4px; color: var(--shell-sidebar-nav-muted); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
     /* Mini divider line between groups */
     .sidebar.mini .sidebar-section-divider { display: block !important; height: 1px; background: rgba(255,255,255,0.15); margin: 6px 10px; }
     .sidebar-section-divider { display: none; }
-    .top-bar { background: white; height: 60px; display: flex; align-items: center; padding: 0 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); position: sticky; top: 0; z-index: 50; }
+    .top-bar { background: var(--shell-topbar-bg); color: var(--shell-text); height: 60px; display: flex; align-items: center; padding: 0 24px; box-shadow: 0 1px 4px var(--shell-shadow); border-bottom: 1px solid var(--shell-border); position: sticky; top: 0; z-index: 50; }
+    #projectDetailNav {
+      position: fixed;
+      top: 72px;
+      right: 24px;
+      z-index: 40;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    #projectDetailNav .proj-nav-label { display: none; }
+    .top-bar #breadcrumb { color: var(--shell-text-muted); }
+    .top-bar #topbarName { color: var(--shell-text); }
+    .top-bar #topbarRole { color: var(--shell-text-muted); }
+    .top-bar .top-bar-icon-btn { color: var(--shell-text-muted); background: transparent; border: none; cursor: pointer; }
+    .top-bar .top-bar-icon-btn:hover { color: var(--shell-text); }
+    .top-bar .top-bar-user-btn:hover { background: var(--shell-row-hover); }
+    .shell-popover { background: var(--shell-surface); color: var(--shell-text); border-color: var(--shell-border) !important; }
+    .shell-popover .shell-popover-title { color: var(--shell-text); }
+    .shell-popover-item:hover { background: var(--shell-row-hover); }
+    .theme-toggle { display: inline-flex; align-items: stretch; border: 1px solid var(--shell-border); border-radius: 8px; overflow: hidden; background: var(--shell-input-bg); }
+    .theme-toggle-btn { padding: 6px 11px; font-size: 12px; font-weight: 600; border: none; background: transparent; color: var(--shell-text-muted); cursor: pointer; line-height: 1.2; min-height: 36px; }
+    .theme-toggle-btn.active { background: var(--primary); color: #fff; }
+    .theme-toggle-btn:not(.active):hover { background: var(--shell-row-hover); color: var(--shell-text); }
     .gantt-bar { height: 24px; border-radius: 4px; position: relative; min-width: 4px; }
     .gantt-today { position: absolute; top: 0; bottom: 0; width: 2px; background: red; z-index: 10; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #f1f1f1; }
-    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+    ::-webkit-scrollbar-track { background: var(--shell-scrollbar-track); }
+    ::-webkit-scrollbar-thumb { background: var(--shell-scrollbar-thumb); border-radius: 3px; }
     .login-bg { background: linear-gradient(135deg, #00A651 0%, #006e36 50%, #003719 100%); }
     .page { display: none; }
     .page.active { display: block; }
     .tab-btn { padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; }
     .tab-btn.active { background: #00A651; color: white; }
-    .tab-btn:not(.active) { color: #6b7280; }
-    .tab-btn:not(.active):hover { background: #f3f4f6; }
+    .tab-btn:not(.active) { color: var(--shell-text-muted); }
+    .tab-btn:not(.active):hover { background: var(--shell-row-hover); }
+    html[data-theme="dark"] { color-scheme: dark; }
+    html[data-theme="dark"] .text-gray-800 { color: var(--shell-text) !important; }
+    html[data-theme="dark"] .text-gray-700 { color: var(--shell-text) !important; }
+    html[data-theme="dark"] .text-gray-600 { color: var(--shell-text-muted) !important; }
+    html[data-theme="dark"] .text-gray-500 { color: var(--shell-text-muted) !important; }
+    html[data-theme="dark"] .border-gray-200,
+    html[data-theme="dark"] .border-gray-100 { border-color: var(--shell-border) !important; }
+    html[data-theme="dark"] .divide-y > :not([hidden]) ~ :not([hidden]) { border-color: var(--shell-border); }
+    html[data-theme="dark"] .bg-white { background-color: var(--shell-surface) !important; }
+    html[data-theme="dark"] .bg-gray-50 { background-color: var(--shell-bg) !important; }
+    html[data-theme="dark"] .hover\:bg-gray-50:hover { background-color: var(--shell-row-hover) !important; }
+    html[data-theme="dark"] .hover\:bg-gray-100:hover { background-color: var(--shell-row-hover) !important; }
+    html[data-theme="dark"] .text-gray-400 { color: var(--shell-text-faint) !important; }
+    html[data-theme="dark"] .text-gray-300 { color: #9fb0c4 !important; }
+
+    /* Dark — secondary nav / tab rows (project, cost, legal, modals) */
+    html[data-theme="dark"] .tab-btn:not(.active) { color: var(--shell-nav-inactive); }
+    html[data-theme="dark"] .tabs-scroll-row.border-b,
+    html[data-theme="dark"] .flex.border-b.bg-gray-50 { background: var(--shell-topbar-bg) !important; border-bottom-color: var(--shell-border-strong) !important; }
+
+    /* Dark — analytics / view toggles (secondary header nav) */
+    html[data-theme="dark"] .analytics-tab { color: var(--shell-nav-inactive); }
+    html[data-theme="dark"] .analytics-tab:hover { background: var(--shell-surface); color: var(--shell-text); box-shadow: 0 1px 4px var(--shell-shadow); }
+    html[data-theme="dark"] .analytics-tab.active { background: var(--shell-surface); color: var(--primary); box-shadow: 0 1px 6px var(--shell-shadow); }
+    html[data-theme="dark"] .view-toggle-btn { color: var(--shell-nav-inactive); }
+    html[data-theme="dark"] .view-toggle-btn:hover:not(.active) { color: var(--shell-text); }
+    html[data-theme="dark"] .view-toggle-btn.active { background: var(--shell-surface); color: var(--primary); box-shadow: 0 1px 3px var(--shell-shadow); }
+
+    /* Dark — data tables on card surfaces */
+    html[data-theme="dark"] table thead th,
+    html[data-theme="dark"] table thead tr.text-gray-500 th,
+    html[data-theme="dark"] table thead tr.text-gray-400 th,
+    html[data-theme="dark"] thead tr.text-gray-500 th,
+    html[data-theme="dark"] thead tr.text-gray-400 th { color: var(--shell-table-head-text) !important; }
+    html[data-theme="dark"] table thead tr { border-color: var(--shell-border-strong); }
+    html[data-theme="dark"] table tbody td,
+    html[data-theme="dark"] table tbody tr { border-color: var(--shell-table-row-border); }
+    html[data-theme="dark"] table .border-b,
+    html[data-theme="dark"] thead .border-b,
+    html[data-theme="dark"] tbody .border-b,
+    html[data-theme="dark"] tr.border-b { border-bottom-color: var(--shell-border-strong) !important; }
+    html[data-theme="dark"] tbody.divide-y > :not([hidden]) ~ :not([hidden]),
+    html[data-theme="dark"] table.divide-y > :not([hidden]) ~ :not([hidden]) { border-color: var(--shell-table-row-border); }
+
+    /* Dark — project list table + muted status pills */
+    html[data-theme="dark"] .proj-table-wrap { background: var(--shell-surface); border-color: var(--shell-border-strong); box-shadow: 0 1px 4px var(--shell-shadow); }
+    html[data-theme="dark"] .proj-table thead tr { background: var(--shell-table-head-bg); }
+    html[data-theme="dark"] .proj-table thead th { color: var(--shell-table-head-text); border-bottom-color: var(--shell-border-strong); }
+    html[data-theme="dark"] .proj-table tbody tr { background: var(--shell-surface); }
+    html[data-theme="dark"] .proj-table tbody tr:hover { background: var(--shell-row-hover); }
+    html[data-theme="dark"] .proj-table tbody td { color: var(--shell-text); border-bottom-color: var(--shell-table-row-border); }
+    html[data-theme="dark"] .proj-tbl-name { color: var(--shell-text); }
+    html[data-theme="dark"] .badge-todo { background: rgba(148, 163, 184, 0.24); color: #dbe4ef; border: 1px solid rgba(148, 163, 184, 0.38); }
+    html[data-theme="dark"] .badge-in_progress { background: rgba(59, 130, 246, 0.22); color: #bfdbfe; border: 1px solid rgba(96, 165, 250, 0.4); }
+    html[data-theme="dark"] .badge-review { background: rgba(251, 191, 36, 0.18); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.38); }
+    html[data-theme="dark"] .badge-completed { background: rgba(52, 211, 153, 0.18); color: #a7f3d0; border: 1px solid rgba(52, 211, 153, 0.38); }
+    html[data-theme="dark"] .badge-cancelled,
+    html[data-theme="dark"] .badge-overdue { background: rgba(248, 113, 113, 0.18); color: #fecaca; border: 1px solid rgba(248, 113, 113, 0.38); }
+    html[data-theme="dark"] .badge-low { background: rgba(52, 211, 153, 0.15); color: #a7f3d0; border: 1px solid rgba(52, 211, 153, 0.32); }
+    html[data-theme="dark"] .badge-medium { background: rgba(59, 130, 246, 0.2); color: #bfdbfe; border: 1px solid rgba(96, 165, 250, 0.35); }
+    html[data-theme="dark"] .badge-high { background: rgba(251, 191, 36, 0.18); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.35); }
+    html[data-theme="dark"] .badge-urgent { background: rgba(248, 113, 113, 0.2); color: #fecaca; border: 1px solid rgba(248, 113, 113, 0.38); }
+    html[data-theme="dark"] .badge-active { background: rgba(0, 166, 81, 0.2); color: #86efac; border: 1px solid rgba(0, 166, 81, 0.4); }
+    html[data-theme="dark"] .badge-planning { background: rgba(59, 130, 246, 0.18); color: #bfdbfe; border: 1px solid rgba(96, 165, 250, 0.35); }
+    html[data-theme="dark"] .badge-on_hold { background: rgba(251, 191, 36, 0.16); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.32); }
+    html[data-theme="dark"] .badge { border: 1px solid transparent; }
+    .task-cat-pill, .task-phase-pill, .task-disc-pill, .task-sub-pill {
+      display: inline-block; max-width: 8rem; padding: 2px 8px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; line-height: 1.35;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
+    }
+    .task-phase-pill, .task-disc-pill, .task-sub-pill { max-width: none; border-radius: 999px; }
+    .task-cat-pill { background: #f1f5f9; color: #334155; }
+    .task-disc-pill { background: #e0f2fe; color: #0369a1; }
+    .task-phase-cs { background: #f0f9ff; color: #0369a1; }
+    .task-phase-kt { background: #fdf4ff; color: #7e22ce; }
+    .task-phase-tc { background: #fff7ed; color: #c2410c; }
+    .task-phase-ab { background: #f0fdf4; color: #15803d; }
+    .task-phase-na { background: #f3f4f6; color: #6b7280; }
+    .task-sub-empty { background: #e5e7eb; color: #6b7280; }
+    .task-sub-partial { background: #fef9c3; color: #92400e; }
+    .task-sub-done { background: #dcfce7; color: #16a34a; }
+    html[data-theme="dark"] .task-cat-pill { background: rgba(148, 163, 184, 0.2); color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.4); }
+    html[data-theme="dark"] .task-disc-pill { background: rgba(14, 165, 233, 0.22); color: #bae6fd; border: 1px solid rgba(56, 189, 248, 0.45); }
+    html[data-theme="dark"] .task-phase-cs { background: rgba(14, 165, 233, 0.22); color: #bae6fd; border: 1px solid rgba(56, 189, 248, 0.4); }
+    html[data-theme="dark"] .task-phase-kt { background: rgba(168, 85, 247, 0.24); color: #e9d5ff; border: 1px solid rgba(192, 132, 252, 0.45); }
+    html[data-theme="dark"] .task-phase-tc { background: rgba(251, 146, 60, 0.24); color: #ffedd5; border: 1px solid rgba(251, 146, 60, 0.45); }
+    html[data-theme="dark"] .task-phase-ab { background: rgba(52, 211, 153, 0.22); color: #bbf7d0; border: 1px solid rgba(52, 211, 153, 0.4); }
+    html[data-theme="dark"] .task-phase-na { background: rgba(148, 163, 184, 0.2); color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.35); }
+    html[data-theme="dark"] .task-sub-empty { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
+    html[data-theme="dark"] .task-sub-partial { background: rgba(251, 191, 36, 0.2); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.4); }
+    html[data-theme="dark"] .task-sub-done { background: rgba(52, 211, 153, 0.2); color: #bbf7d0; border: 1px solid rgba(52, 211, 153, 0.4); }
+    html[data-theme="dark"] .progress-bar { background: rgba(148, 163, 184, 0.28); }
+    .task-update-panel {
+      border: 2px solid #6366f1; border-radius: 12px; padding: 14px 16px 12px;
+      background: linear-gradient(135deg, #f5f3ff 0%, #eff6ff 100%);
+      position: relative; margin-top: 4px;
+    }
+    html[data-theme="dark"] .task-update-panel {
+      background: rgba(99, 102, 241, 0.16);
+      border-color: rgba(165, 180, 252, 0.55);
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] .task-update-panel .text-gray-700 { color: #e2e8f0 !important; }
+    html[data-theme="dark"] .task-update-panel .text-gray-400 { color: #cbd5e1 !important; }
+    html[data-theme="dark"] #taskMemberBanner {
+      background: rgba(99, 102, 241, 0.18) !important;
+      border-color: rgba(165, 180, 252, 0.45) !important;
+      color: #e0e7ff !important;
+    }
+    html[data-theme="dark"] #multiTaskModal .bg-blue-50,
+    html[data-theme="dark"] #importTaskModal .bg-gray-50,
+    html[data-theme="dark"] #importTaskModal .bg-green-50,
+    html[data-theme="dark"] #importTaskModal .bg-blue-50 {
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #importTaskModal .text-gray-600,
+    html[data-theme="dark"] #importTaskModal .text-gray-500,
+    html[data-theme="dark"] #multiTaskModal .text-gray-700,
+    html[data-theme="dark"] #multiTaskModal .text-gray-600 {
+      color: #e2e8f0 !important;
+    }
+    html[data-theme="dark"] #impDropZone {
+      background: rgba(59, 130, 246, 0.08);
+      border-color: rgba(96, 165, 250, 0.55) !important;
+    }
+
+    /* Dark — shell sidebar brand strip (keeps green identity on dark navy) */
+    html[data-theme="dark"] .sidebar-header::before {
+      content: '';
+      display: block;
+      height: 3px;
+      background: linear-gradient(90deg, #00A651, #47c67e 55%, transparent);
+      margin: -16px -16px 12px;
+    }
+    html[data-theme="dark"] .nav-item.pmo-only {
+      background: linear-gradient(135deg, rgba(0, 166, 81, 0.22), rgba(0, 122, 61, 0.12)) !important;
+      border: 1px solid rgba(0, 166, 81, 0.35) !important;
+    }
+
+    /* Dark — horizontal tab rows (project detail, legal, costs card tabs) */
+    html[data-theme="dark"] .tabs-scroll-row .tab-btn {
+      background: transparent;
+      border-radius: 6px 6px 0 0;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      color: var(--shell-nav-inactive);
+    }
+    html[data-theme="dark"] .tabs-scroll-row .tab-btn:hover:not(.active) {
+      background: var(--shell-row-hover);
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] .tabs-scroll-row .tab-btn.active {
+      background: transparent;
+      color: var(--shell-text);
+      border-bottom-color: var(--accent);
+      box-shadow: none;
+    }
+    html[data-theme="dark"] #page-costs .tab-btn,
+    html[data-theme="dark"] #legalTabs .tab-btn {
+      background: var(--shell-btn-secondary-bg);
+      color: var(--shell-nav-inactive);
+      border: 1px solid var(--shell-border);
+    }
+    html[data-theme="dark"] #page-costs .tab-btn.active,
+    html[data-theme="dark"] #legalTabs .tab-btn.active {
+      background: rgba(0, 166, 81, 0.22);
+      color: #ecfdf5;
+      border-color: rgba(0, 166, 81, 0.45);
+    }
+
+    /* Dark — card-embedded data tables (#costTable, tasks, legal) */
+    html[data-theme="dark"] .card table.w-full thead tr,
+    html[data-theme="dark"] #costTable thead tr {
+      background: var(--shell-table-head-bg);
+    }
+    html[data-theme="dark"] .card table.w-full tbody tr {
+      background: var(--shell-surface);
+    }
+    html[data-theme="dark"] .card table.w-full tbody tr:hover,
+    html[data-theme="dark"] #costTable tbody tr:hover {
+      background: var(--shell-row-hover);
+    }
+    html[data-theme="dark"] .card table.w-full tbody td,
+    html[data-theme="dark"] #costTable tbody td {
+      color: var(--shell-text);
+      border-color: var(--shell-table-row-border);
+    }
+    html[data-theme="dark"] .shell-table-group-title { color: var(--money-accent); font-weight: 700; }
+    html[data-theme="dark"] .shell-table-group-sub { color: #fcd34d; font-weight: 600; }
+    html[data-theme="dark"] .shell-money-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.28);
+      color: var(--money-accent);
+      font-weight: 700;
+    }
+    html[data-theme="dark"] .text-primary { color: #47c67e !important; }
+    html[data-theme="dark"] .bg-green-50 { background: rgba(0, 166, 81, 0.12) !important; }
+    html[data-theme="dark"] .border-green-200 { border-color: rgba(0, 166, 81, 0.28) !important; }
+    html[data-theme="dark"] .bg-gray-100 { background-color: rgba(255, 255, 255, 0.06) !important; }
+    html[data-theme="dark"] .bg-gray-100.text-gray-500,
+    html[data-theme="dark"] tr.bg-gray-100 { color: var(--shell-table-head-text) !important; }
+    html[data-theme="dark"] tr[class*="bg-amber-50"] { background: rgba(251, 191, 36, 0.1) !important; }
+    html[data-theme="dark"] tr[class*="bg-green-50"] { background: rgba(0, 166, 81, 0.1) !important; }
+    html[data-theme="dark"] tr.border-amber-200 { border-color: rgba(251, 191, 36, 0.35) !important; }
+    html[data-theme="dark"] tr.border-green-200 { border-color: rgba(0, 166, 81, 0.3) !important; }
+    html[data-theme="dark"] .text-amber-700 { color: #fcd34d !important; }
+    html[data-theme="dark"] .text-green-700 { color: #86efac !important; }
+    html[data-theme="dark"] td.font-bold.text-sm.text-right,
+    html[data-theme="dark"] #costTable td.text-right.font-medium { color: var(--money-accent); }
+
+    /* Dark — overdue / status row tints (beat light-mode !important on .overdue-row) */
+    html[data-theme="dark"] .overdue-row {
+      background: rgba(248, 113, 113, 0.14) !important;
+      border-left-color: #f87171;
+    }
+    html[data-theme="dark"] .overdue-row .text-red-600,
+    html[data-theme="dark"] .overdue-row .text-red-500 { color: #fca5a5 !important; }
+    html[data-theme="dark"] .bg-red-50 { background: rgba(248, 113, 113, 0.12) !important; }
+    html[data-theme="dark"] .bg-pink-50 { background: rgba(236, 72, 153, 0.12) !important; }
+    html[data-theme="dark"] .bg-blue-50 { background: rgba(59, 130, 246, 0.12) !important; }
+    html[data-theme="dark"] #paymentSummaryCards .bg-amber-50 {
+      background: rgba(251, 191, 36, 0.18) !important;
+      border-color: rgba(252, 211, 77, 0.55) !important;
+    }
+    html[data-theme="dark"] #paymentSummaryCards .bg-amber-50 .text-amber-700,
+    html[data-theme="dark"] #paymentSummaryCards .bg-amber-50 .text-amber-500,
+    html[data-theme="dark"] #paymentSummaryCards .bg-amber-50 .text-amber-400 {
+      color: #fde68a !important;
+    }
+    html[data-theme="dark"] #paymentSummaryCards .bg-rose-50 {
+      background: rgba(244, 63, 94, 0.2) !important;
+      border-color: rgba(253, 164, 175, 0.55) !important;
+    }
+    html[data-theme="dark"] #paymentSummaryCards .bg-rose-50 .text-rose-700,
+    html[data-theme="dark"] #paymentSummaryCards .bg-rose-50 .text-rose-500 {
+      color: #ffe4e6 !important;
+    }
+    html[data-theme="dark"] .exec-budget-kpis .bg-indigo-50 {
+      background: rgba(129, 140, 248, 0.18) !important;
+      border-color: rgba(165, 180, 252, 0.5) !important;
+    }
+    html[data-theme="dark"] .exec-budget-kpis .text-indigo-700,
+    html[data-theme="dark"] .exec-budget-kpis .text-indigo-400 { color: #e0e7ff !important; }
+    html[data-theme="dark"] .exec-budget-kpis .bg-teal-50 {
+      background: rgba(20, 184, 166, 0.18) !important;
+      border-color: rgba(94, 234, 212, 0.45) !important;
+    }
+    html[data-theme="dark"] .exec-budget-kpis .text-teal-700,
+    html[data-theme="dark"] .exec-budget-kpis .text-teal-600,
+    html[data-theme="dark"] .exec-budget-kpis .text-teal-500 { color: #ccfbf1 !important; }
+    html[data-theme="dark"] .exec-budget-kpis .bg-orange-50 {
+      background: rgba(249, 115, 22, 0.18) !important;
+      border-color: rgba(253, 186, 116, 0.5) !important;
+    }
+    html[data-theme="dark"] .exec-budget-kpis .text-orange-700,
+    html[data-theme="dark"] .exec-budget-kpis .text-orange-600,
+    html[data-theme="dark"] .exec-budget-kpis .text-orange-400 { color: #ffedd5 !important; }
+    html[data-theme="dark"] .exec-budget-kpis .bg-emerald-50 {
+      background: rgba(16, 185, 129, 0.18) !important;
+      border-color: rgba(110, 231, 183, 0.45) !important;
+    }
+    html[data-theme="dark"] .exec-budget-kpis .text-emerald-700,
+    html[data-theme="dark"] .exec-budget-kpis .text-emerald-500 { color: #d1fae5 !important; }
+    html[data-theme="dark"] .exec-budget-kpis .bg-rose-50 {
+      background: rgba(244, 63, 94, 0.2) !important;
+      border-color: rgba(253, 164, 175, 0.5) !important;
+    }
+    html[data-theme="dark"] .exec-budget-kpis .text-rose-600,
+    html[data-theme="dark"] .exec-budget-kpis .text-rose-500 { color: #ffe4e6 !important; }
+    html[data-theme="dark"] .exec-budget-kpis .text-gray-500 { color: #e2e8f0 !important; }
+    html[data-theme="dark"] .bg-yellow-50 { background: rgba(251, 191, 36, 0.1) !important; }
+    html[data-theme="dark"] .bg-red-100 { background: rgba(248, 113, 113, 0.18) !important; }
+    html[data-theme="dark"] .bg-blue-100 { background: rgba(59, 130, 246, 0.18) !important; }
+    html[data-theme="dark"] .bg-yellow-100 { background: rgba(251, 191, 36, 0.15) !important; }
+    html[data-theme="dark"] .bg-green-100 { background: rgba(52, 211, 153, 0.15) !important; }
+    html[data-theme="dark"] .hover\:bg-red-50:hover { background: rgba(248, 113, 113, 0.14) !important; }
+    html[data-theme="dark"] .subtask-row-legal:hover { background: rgba(129, 140, 248, 0.12) !important; }
+
+    /* Dark — neutralize JS inline light row/cell washes */
+    html[data-theme="dark"] table tbody tr[style*="background:#fff"],
+    html[data-theme="dark"] table tbody tr[style*="background:#ffffff"],
+    html[data-theme="dark"] table tbody tr[style*="background:#fafafa"],
+    html[data-theme="dark"] table tbody tr[style*="background:#f9fafb"],
+    html[data-theme="dark"] table tbody tr[style*="background:#fff5f5"],
+    html[data-theme="dark"] table tbody tr[style*="background:#fff8f0"],
+    html[data-theme="dark"] table tbody tr[style*="background:#f0fdf4"],
+    html[data-theme="dark"] table tbody tr[style*="background:#eff6ff"],
+    html[data-theme="dark"] tr[id^="legal-row-"][style*="background:#fff"],
+    html[data-theme="dark"] tr[id^="legal-row-"][style*="background:#fafafa"],
+    html[data-theme="dark"] tr[id^="legal-row-"][style*="background:#f0fdf4"] {
+      background: var(--shell-surface) !important;
+    }
+    html[data-theme="dark"] tr.an-row-zebra { background: rgba(255, 255, 255, 0.03) !important; }
+    html[data-theme="dark"] tr.an-row-warn { background: rgba(251, 191, 36, 0.1) !important; }
+    html[data-theme="dark"] tr.an-row-over { background: rgba(248, 113, 113, 0.12) !important; }
+    html[data-theme="dark"] tr.legal-tr-done { background: rgba(52, 211, 153, 0.1) !important; }
+    html[data-theme="dark"] tr.legal-tr-child { background: rgba(255, 255, 255, 0.03) !important; }
+    html[data-theme="dark"] tr.legal-tr-default { background: var(--shell-surface) !important; }
+    html[data-theme="dark"] td[style*="background:#fff5f5"] { background: rgba(248, 113, 113, 0.12) !important; }
+    html[data-theme="dark"] td[style*="background:#f0f9ff"] { background: rgba(34, 211, 238, 0.1) !important; }
+    html[data-theme="dark"] td[style*="background:#eff6ff"] { background: rgba(59, 130, 246, 0.12) !important; }
+    html[data-theme="dark"] td[style*="background:#f0fdf4"] { background: rgba(52, 211, 153, 0.1) !important; }
+    html[data-theme="dark"] td[style*="background:#fff5f5"] .text-red-500,
+    html[data-theme="dark"] td[style*="background:#fff5f5"] .font-bold.text-red-500 {
+      color: #fca5a5 !important;
+    }
+
+    /* HSPL — page header + C1 shell (Wave B tokens) */
+    .legal-page-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px 16px;
+      margin-bottom: 14px;
+    }
+    .legal-page-heading { flex: 1 1 240px; min-width: 0; }
+    .legal-page-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex: 0 1 auto;
+    }
+    #page-legal #legalKPIRow { gap: 12px; margin-bottom: 14px !important; }
+    #page-legal #legalKPIRow .kpi-card { padding: 14px 16px; min-height: 76px; }
+    #page-legal #legalKPIRow .text-xs.text-gray-500 { color: var(--shell-text-muted); letter-spacing: 0.01em; }
+    .legal-layout-row { display: flex; gap: 12px; align-items: flex-start; }
+    .legal-left-col { flex-shrink: 0; width: 280px; min-width: 240px; }
+    .legal-right-col { flex: 1; min-width: 0; }
+    .legal-left-panel { padding: 12px; background: var(--shell-surface); border: 1px solid var(--shell-border); border-radius: 12px; box-shadow: 0 1px 4px var(--shell-shadow); }
+    .legal-project-list { max-height: calc(100vh - 220px); overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .legal-project-card { width: 100%; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text); cursor: pointer; transition: background .15s, border-color .15s; }
+    .legal-project-card:hover { background: var(--shell-row-hover); border-color: var(--shell-border-strong); }
+    .legal-project-card.active { border-color: var(--primary); background: rgba(0, 166, 81, 0.1); box-shadow: 0 0 0 1px rgba(0, 166, 81, 0.25); }
+    .legal-project-pkgs { font-size: 11px; color: var(--shell-text-muted); margin-top: 2px; }
+    .legal-info-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    @media (max-width: 800px) { .legal-info-kpis { grid-template-columns: 1fr; } }
+    .legal-info-kpi { border-radius: 12px; padding: 14px 16px; border: 1px solid var(--shell-border); background: var(--shell-surface); }
+    .legal-info-kpi .k { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--shell-text-muted); }
+    .legal-info-kpi .v { font-size: 20px; font-weight: 800; margin-top: 6px; color: var(--shell-text); }
+    .legal-info-kpi.paid .v { color: #34d399; }
+    .legal-info-kpi.costa .v { color: #fbbf24; }
+    .legal-pkg-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--shell-border); border-radius: 12px; margin-bottom: 8px; background: var(--shell-input-bg); }
+    .legal-pkg-row .nm { font-weight: 700; color: var(--shell-text); }
+    .legal-pkg-row .sub { font-size: 12px; color: var(--shell-text-muted); }
+    .legal-pkg-meta { margin-left: auto; display: flex; align-items: center; gap: 16px; text-align: right; }
+    .legal-pkg-meta .val { font-weight: 700; color: var(--shell-text); white-space: nowrap; }
+    .legal-contact-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    @media (max-width: 900px) { .legal-contact-grid { grid-template-columns: 1fr; } }
+    .legal-contact-card { position: relative; border: 1px solid var(--shell-border); border-radius: 12px; padding: 14px; background: var(--shell-input-bg); }
+    .legal-contact-card h4 { font-weight: 700; color: var(--shell-text); }
+    .legal-contact-card .role { color: #a5b4fc; font-size: 12px; font-weight: 600; margin-top: 2px; }
+    .legal-contact-card .meta { color: var(--shell-text-muted); font-size: 12px; margin-top: 8px; }
+    .legal-log-card { border: 1px solid var(--shell-border); border-radius: 12px; padding: 14px; margin-bottom: 8px; background: var(--shell-input-bg); }
+    .legal-project-code { font-size: 11px; font-weight: 700; color: var(--shell-text-muted); letter-spacing: 0.02em; }
+    .legal-project-name { font-size: 13px; font-weight: 600; color: var(--shell-text); margin-top: 2px; line-height: 1.35; }
+    .legal-project-empty { font-size: 12px; color: var(--shell-text-muted); text-align: center; padding: 16px 8px; }
+    .legal-combobox-fallback { display: none !important; }
+    #legalTabs.legal-panel-tabs { gap: 0; border-bottom: 1px solid var(--shell-border); margin-bottom: 16px; padding-bottom: 0; }
+    #legalTabs.legal-panel-tabs .tab-btn { border-radius: 6px 6px 0 0; background: transparent; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    #legalTabs.legal-panel-tabs .tab-btn.active { background: transparent; color: var(--primary); border-bottom-color: var(--primary); box-shadow: none; }
+    .legal-package-subtabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--shell-border); }
+    .legal-package-subtab { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text-muted); cursor: pointer; }
+    .legal-package-subtab.active { background: rgba(0, 166, 81, 0.12); border-color: rgba(0, 166, 81, 0.45); color: var(--primary); }
+    .legal-package-subtab:hover:not(.active) { background: var(--shell-row-hover); color: var(--shell-text); }
+    .legal-payment-package { border: 1px solid var(--shell-border); border-radius: 12px; margin-bottom: 14px; background: var(--shell-surface); overflow: hidden; }
+    .legal-payment-package-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; background: var(--shell-table-head-bg); border-bottom: 1px solid var(--shell-border); }
+    .legal-payment-package-name { font-size: 13px; font-weight: 700; color: var(--shell-text); }
+    .legal-payment-package-total { font-size: 12px; font-weight: 700; color: #059669; background: rgba(16, 185, 129, 0.14); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+    html[data-theme="dark"] .legal-payment-package-total { color: #6ee7b7; }
+    .legal-payment-sheet { overflow-x: auto; border: 1px solid var(--shell-border); border-radius: 10px; background: var(--shell-surface); }
+    .legal-payment-sheet-head,
+    .legal-payment-sheet-row {
+      display: grid;
+      width: 100%;
+      grid-template-columns:
+        40px
+        minmax(160px, 2.4fr)
+        118px
+        158px
+        minmax(112px, 1fr)
+        minmax(112px, 1fr)
+        minmax(108px, 0.9fr)
+        32px;
+      column-gap: 10px;
+      row-gap: 0;
+      align-items: center;
+      padding: 8px 12px;
+    }
+    .legal-payment-sheet-head {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: var(--shell-text-muted);
+      background: var(--shell-table-head-bg);
+      border-bottom: 1px solid var(--shell-border);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      align-items: end;
+      white-space: normal;
+    }
+    .legal-payment-sheet-head > span { line-height: 1.2; }
+    .legal-payment-sheet-head > span:nth-child(1) { text-align: center; }
+    .legal-payment-sheet-head > span:nth-child(n+5):not(:last-child) { text-align: right; }
+    .legal-payment-sheet-row { border-bottom: 1px solid var(--shell-table-row-border); font-size: 12px; }
+    .legal-payment-sheet-row > input[type="hidden"] { display: none; }
+    .legal-payment-sheet-row:last-child { border-bottom: none; }
+    .legal-payment-sheet-row:hover { background: var(--shell-row-hover); }
+    .legal-payment-sheet-row.is-paid { background: #d1fae5; }
+    .legal-payment-sheet-row.is-paid:hover { background: #bbf7d0; }
+    .legal-payment-sheet-row.is-paid .legal-payment-sheet-text,
+    .legal-payment-sheet-row.is-paid .legal-payment-sheet-stt { color: #064e3b; }
+    html[data-theme="dark"] .legal-payment-sheet-row.is-paid { background: rgba(16, 185, 129, 0.28); }
+    html[data-theme="dark"] .legal-payment-sheet-row.is-paid:hover { background: rgba(16, 185, 129, 0.38); }
+    html[data-theme="dark"] .legal-payment-sheet-row.is-paid .legal-payment-sheet-text,
+    html[data-theme="dark"] .legal-payment-sheet-row.is-paid .legal-payment-sheet-stt { color: #ecfdf5; }
+    .legal-payment-sheet-row.is-new { background: rgba(0, 166, 81, 0.04); }
+    html[data-theme="dark"] .legal-payment-sheet-row.is-new { background: rgba(0, 166, 81, 0.08); }
+    .legal-payment-sheet-cell {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 3px;
+      min-width: 0;
+    }
+    .legal-payment-sheet-cell input,
+    .legal-payment-sheet-cell select {
+      width: 100%;
+      box-sizing: border-box;
+      height: 30px;
+      font-size: 12px;
+      padding: 4px 6px;
+      border-radius: 6px;
+      border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+      min-height: 30px;
+      min-width: 0;
+    }
+    .legal-payment-sheet-booked { align-items: flex-end; justify-content: center; text-align: right; min-height: 32px; }
+    .legal-payment-sheet-cell input:focus,
+    .legal-payment-sheet-cell select:focus {
+      outline: 2px solid rgba(0, 166, 81, 0.35);
+      border-color: rgba(0, 166, 81, 0.45);
+    }
+    .legal-payment-sheet-cell input[type="date"] { padding: 3px 2px; min-width: 0; }
+    .legal-payment-sheet-cell input[type="number"] {
+      text-align: center;
+      -moz-appearance: textfield;
+    }
+    .legal-payment-sheet-cell input[type="number"]::-webkit-outer-spin-button,
+    .legal-payment-sheet-cell input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    .legal-payment-sheet-cell input[data-pfield="vat_pct"][readonly] {
+      cursor: default;
+      background: transparent;
+    }
+    .legal-payment-sheet-cell select { font-size: 11px; padding-right: 2px; }
+    .legal-payment-sheet-cell input.legal-payment-money {
+      width: 100%;
+      min-width: 0;
+      max-width: none;
+      text-align: right;
+      field-sizing: fixed;
+    }
+    .legal-payment-sheet-readonly { font-size: 11px; color: var(--shell-text-muted); line-height: 1.35; white-space: normal; }
+    .legal-payment-sheet-readonly strong { color: var(--shell-text); font-weight: 600; }
+    .legal-payment-sheet-actions { display: flex; flex-direction: row; align-items: center; justify-content: center; min-height: 32px; }
+    .legal-payment-sheet-stt { display: flex; align-items: center; justify-content: center; min-height: 32px; font-size: 12px; font-weight: 700; color: var(--shell-text-muted); }
+    .legal-payment-sheet-text { display: flex; align-items: center; min-height: 32px; font-size: 13px; line-height: 1.35; color: var(--shell-text); overflow-wrap: anywhere; border-radius: 6px; }
+    .legal-payment-sheet-text.money { justify-content: flex-end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .legal-payment-sheet-text.is-editable { cursor: pointer; }
+    .legal-payment-sheet-text.is-editable:hover { background: rgba(0, 166, 81, 0.12); }
+    .legal-payment-status-pill {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.2;
+      background: var(--shell-input-bg);
+      border: 1px solid var(--shell-border);
+      white-space: nowrap;
+    }
+    .legal-cost-a-page-total { font-size: 14px; font-weight: 700; color: var(--primary); margin-bottom: 12px; }
+    .legal-cost-a-card { border: 1px solid var(--shell-border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; background: var(--shell-surface); }
+    .legal-cost-a-card-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--shell-table-head-bg); border-bottom: 1px solid var(--shell-border); font-weight: 700; font-size: 13px; }
+    .legal-cost-a-card-total { font-size: 12px; font-weight: 600; color: var(--primary); }
+    .legal-cost-a-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+    .legal-cost-a-table th, .legal-cost-a-table td { padding: 6px 4px; border-bottom: 1px solid var(--shell-table-row-border); text-align: left; vertical-align: middle; overflow: hidden; }
+    .legal-cost-a-table th { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); background: var(--shell-input-bg); line-height: 1.25; white-space: nowrap; vertical-align: bottom; }
+    .legal-cost-a-table th.legal-cost-a-th-wrap { white-space: normal; }
+    .legal-cost-a-table tr:last-child td { border-bottom: none; }
+    .legal-cost-a-table tr.is-spent td { background: #d1fae5; color: #064e3b; }
+    .legal-cost-a-table tr.is-spent:hover td { background: #bbf7d0; }
+    html[data-theme="dark"] .legal-cost-a-table tr.is-spent td { background: rgba(16, 185, 129, 0.28); color: #ecfdf5; }
+    html[data-theme="dark"] .legal-cost-a-table tr.is-spent:hover td { background: rgba(16, 185, 129, 0.38); }
+    .legal-cost-a-table input[type="text"], .legal-cost-a-table select, .legal-cost-a-table textarea {
+      width: 100%; min-width: 0; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--shell-border); border-radius: 6px;
+      background: var(--shell-input-bg); color: var(--shell-text); font-size: 12px;
+    }
+    .legal-cost-a-table textarea { min-height: 32px; resize: vertical; }
+    .legal-cost-a-table input.legal-cost-a-pct {
+      width: 100%; min-width: 0; max-width: none; text-align: center; padding: 4px 0;
+    }
+    .legal-cost-a-table select { padding: 4px 2px 4px 6px; }
+    .legal-cost-a-table input.legal-cost-a-override { text-align: right; }
+    .legal-cost-a-table input.legal-cost-a-override::placeholder { text-align: right; color: var(--shell-text-muted); font-size: 11px; }
+    .legal-cost-a-pct-col { text-align: center; }
+    .legal-cost-a-desc { overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
+    .legal-cost-a-formula { font-size: 10px; color: var(--shell-text-muted); line-height: 1.2; }
+    .legal-cost-a-money { white-space: nowrap; text-align: right; }
+    .legal-cost-a-idx { color: var(--shell-text-muted); text-align: center; }
+    .legal-cost-a-reset { width: 100%; padding: 4px 0; white-space: nowrap; }
+    .legal-cost-a-auto { font-size: 10px; color: var(--shell-text-muted); }
+    .legal-checklist-host { display: flex; flex-direction: column; gap: 14px; }
+    .legal-checklist-stage { border: 1px solid var(--shell-border); border-radius: 10px; overflow: hidden; background: var(--shell-surface); }
+    .legal-checklist-stage-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--shell-table-head-bg); border-bottom: 1px solid var(--shell-border); flex-wrap: wrap; }
+    .legal-checklist-stage-ring { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: #fff; background: var(--stage-color, var(--primary)); }
+    .legal-checklist-stage-title { flex: 1; min-width: 120px; font-size: 13px; font-weight: 700; color: var(--shell-text); }
+    .legal-checklist-rename-input, .legal-package-name-edit input {
+      width: 100%;
+      min-width: 160px;
+      font: inherit;
+      color: inherit;
+      background: var(--shell-input-bg);
+      border: 1px solid var(--primary);
+      border-radius: 6px;
+      padding: 2px 8px;
+    }
+    .legal-checklist-stage-count { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); background: var(--shell-input-bg); border: 1px solid var(--shell-border); border-radius: 999px; padding: 2px 10px; }
+    .legal-checklist-stage-actions { display: flex; gap: 4px; flex-shrink: 0; }
+    .legal-checklist-rows { display: flex; flex-direction: column; }
+    .legal-checklist-row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--shell-table-row-border); cursor: default; background: var(--shell-surface); transition: background .12s; }
+    .legal-checklist-row:last-child { border-bottom: none; }
+    .legal-checklist-row:hover { background: var(--shell-row-hover); }
+    .legal-checklist-row.is-child { padding-left: 28px; }
+    .legal-checklist-row.is-overdue { background: rgba(248, 113, 113, 0.08); }
+    html[data-theme="dark"] .legal-checklist-row.is-overdue { background: rgba(248, 113, 113, 0.12); }
+    .legal-checklist-status-ring {
+      box-sizing: border-box;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      min-width: 26px;
+      min-height: 26px;
+      padding: 0;
+      margin: 0;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      cursor: pointer;
+      position: relative;
+    }
+    .legal-checklist-status-ring::before {
+      content: '';
+      box-sizing: border-box;
+      display: block;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      border: 2px solid var(--shell-text-muted);
+      background: transparent;
+      transition: border-color .12s, background .12s, box-shadow .12s;
+    }
+    .legal-checklist-status-ring:hover::before {
+      border-color: var(--primary);
+      background: rgba(0, 166, 81, 0.08);
+    }
+    .legal-checklist-status-ring:focus-visible {
+      outline: 2px solid rgba(0, 166, 81, 0.45);
+      outline-offset: 1px;
+    }
+    .legal-checklist-status-ring.pending::before {
+      border-color: var(--shell-text-muted);
+      background: transparent;
+    }
+    html[data-theme="dark"] .legal-checklist-status-ring.pending::before {
+      border-color: #94a3b8;
+      background: transparent;
+    }
+    .legal-checklist-status-ring.progress::before {
+      border-color: #2563eb;
+      background: rgba(59, 130, 246, 0.22);
+      box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.15);
+    }
+    html[data-theme="dark"] .legal-checklist-status-ring.progress::before {
+      border-color: #60a5fa;
+      background: rgba(59, 130, 246, 0.28);
+    }
+    .legal-checklist-status-ring.done::before {
+      border-color: var(--primary);
+      background: var(--primary);
+    }
+    .legal-checklist-status-ring.done:hover::before {
+      border-color: var(--primary);
+      background: var(--primary);
+    }
+    .legal-checklist-status-ring.done::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 4px;
+      height: 7px;
+      margin-left: -2.5px;
+      margin-top: -5px;
+      border: solid #fff;
+      border-width: 0 1.5px 1.5px 0;
+      transform: rotate(45deg);
+      pointer-events: none;
+    }
+    .legal-checklist-status-ring.na::before {
+      border-style: dashed;
+      border-color: var(--shell-text-faint);
+      background: rgba(148, 163, 184, 0.12);
+    }
+    html[data-theme="dark"] .legal-checklist-status-ring.na::before {
+      border-color: #64748b;
+      background: rgba(100, 116, 139, 0.2);
+    }
+    .legal-checklist-status-ring.na {
+      opacity: 0.85;
+    }
+    .task-grid-row.is-new { background: rgba(0, 166, 81, 0.06); }
+    html[data-theme="dark"] .task-grid-row.is-new { background: rgba(0, 166, 81, 0.1); }
+    .task-grid-row.is-overdue { background: rgba(248, 113, 113, 0.08); }
+    html[data-theme="dark"] .task-grid-row.is-overdue { background: rgba(248, 113, 113, 0.12); }
+    .task-grid-title-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .task-grid-status-ring { flex-shrink: 0; }
+    .task-grid-inline-input, .task-grid-inline-select {
+      width: 100%; min-width: 64px; padding: 4px 8px; font-size: 12px;
+      border: 1px solid var(--shell-border); border-radius: 6px;
+      background: var(--shell-input-bg); color: var(--shell-text);
+    }
+    .task-grid-title-input { flex: 1; min-width: 120px; font-weight: 500; }
+    .task-grid-progress-input { max-width: 52px; text-align: right; }
+    .task-grid-progress-wrap { display: flex; align-items: center; gap: 2px; }
+    .task-grid-progress-unit { font-size: 11px; font-weight: 700; color: var(--shell-text-muted); flex-shrink: 0; }
+    .task-grid-filename-select { min-width: 120px; max-width: 180px; }
+    .task-grid-due-pill {
+      font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px;
+      border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text);
+      color-scheme: light dark;
+    }
+    .task-grid-due-pill.is-overdue { color: #dc2626; border-color: rgba(248, 113, 113, 0.45); background: rgba(254, 226, 226, 0.45); }
+    html[data-theme="dark"] .task-grid-due-pill.is-overdue { color: #fca5a5; background: rgba(248, 113, 113, 0.15); }
+    .task-grid-priority-select { max-width: 96px; }
+    .task-grid-cb-host { min-width: 100px; max-width: 160px; }
+    .task-grid-detail-btn {
+      flex-shrink: 0; border: none; background: transparent; color: var(--shell-text-muted);
+      padding: 2px 4px; cursor: pointer; border-radius: 4px;
+    }
+    .task-grid-detail-btn:hover { color: var(--primary); background: var(--shell-row-hover); }
+    .task-grid-cde-check { width: 16px; height: 16px; accent-color: #00A651; cursor: pointer; }
+    .ts-project-code { color: var(--shell-text); }
+    .ts-proj-code-pill {
+      background: #f0fdf4; color: #166534; padding: 1px 6px; border-radius: 4px;
+      font-family: ui-monospace, monospace; letter-spacing: 0.02em; font-weight: 700;
+      font-size: 12px; white-space: nowrap; flex-shrink: 0;
+    }
+    html[data-theme="dark"] .ts-proj-code-pill {
+      background: rgba(0, 166, 81, 0.22); color: #bbf7d0;
+      border: 1px solid rgba(134, 239, 172, 0.4);
+    }
+    .task-grid-title-readonly { font-weight: 500; color: var(--shell-text); }
+    .legal-checklist-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--shell-text); line-height: 1.35; }
+    .legal-checklist-row.is-child .legal-checklist-title { font-size: 12px; font-weight: 400; color: var(--shell-text-muted); }
+    .legal-checklist-due { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); padding: 3px 8px; border-radius: 6px; background: var(--shell-input-bg); border: 1px solid var(--shell-border); white-space: nowrap; }
+    .legal-checklist-row.is-overdue .legal-checklist-due { color: #dc2626; border-color: rgba(248, 113, 113, 0.45); background: rgba(254, 226, 226, 0.5); }
+    html[data-theme="dark"] .legal-checklist-row.is-overdue .legal-checklist-due { color: #fca5a5; background: rgba(248, 113, 113, 0.15); }
+    .legal-stages-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; padding: 8px 12px; border-radius: 10px; background: var(--shell-surface); border: 1px solid var(--shell-border); font-size: 12px; font-weight: 500; color: var(--shell-text-muted); }
+    .legal-checklist-title-done { text-decoration: line-through; opacity: 0.75; }
+    .legal-checklist-inline-title { outline: none; border-radius: 4px; padding: 2px 4px; min-width: 80px; cursor: text; }
+    .legal-checklist-inline-title:focus { background: var(--shell-input-bg); outline: 2px solid rgba(0, 166, 81, 0.35); outline-offset: 1px; }
+    .legal-checklist-row.legal-checklist-add-row { cursor: default; background: var(--shell-input-bg); }
+    .legal-checklist-row.legal-checklist-add-row:hover { background: var(--shell-input-bg); }
+    .legal-checklist-inline-add {
+      flex: 1; min-width: 0; font-size: 13px; padding: 6px 10px; border-radius: 6px;
+      border: 1px dashed var(--shell-border); background: transparent; color: var(--shell-text);
+    }
+    .legal-checklist-inline-add::placeholder { color: var(--shell-text-muted); opacity: 0.85; }
+    .legal-checklist-inline-add:focus { outline: 2px solid rgba(0, 166, 81, 0.35); outline-offset: 1px; border-color: rgba(0, 166, 81, 0.45); background: var(--shell-surface); }
+    .legal-checklist-inline-date { font-size: 11px; font-weight: 600; color: var(--shell-text); padding: 5px 8px; border-radius: 6px; background: var(--shell-input-bg); border: 1px solid var(--shell-border); flex-shrink: 0; min-width: 118px; color-scheme: light dark; }
+    .legal-checklist-inline-date:focus { outline: 2px solid rgba(0, 166, 81, 0.35); outline-offset: 1px; border-color: rgba(0, 166, 81, 0.45); }
+    .legal-checklist-row.is-overdue .legal-checklist-inline-date { color: #dc2626; border-color: rgba(248, 113, 113, 0.45); }
+    html[data-theme="dark"] .legal-checklist-row.is-overdue .legal-checklist-inline-date { color: #fca5a5; }
+    .legal-checklist-inline-status {
+      font-size: 11px; font-weight: 600; padding: 5px 28px 5px 10px; border-radius: 6px;
+      border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text);
+      flex-shrink: 0; min-width: 132px; max-width: 168px; cursor: pointer; text-align: left;
+      appearance: none; -webkit-appearance: none; line-height: 1.3;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 8px center;
+    }
+    .legal-checklist-add-btn { flex-shrink: 0; white-space: nowrap; padding: 4px 10px; font-weight: 700; }
+    .legal-status-menu {
+      position: fixed; z-index: 5000; padding: 4px;
+      background: var(--shell-surface); color: var(--shell-text);
+      border: 1px solid var(--shell-border); border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    }
+    .legal-status-menu-opt {
+      display: block; width: 100%; text-align: left; border: 0; background: transparent;
+      color: var(--shell-text); font-size: 12px; font-weight: 600;
+      padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    }
+    .legal-status-menu-opt:hover, .legal-status-menu-opt.is-current { background: var(--shell-row-hover); }
+    .legal-status-menu-opt.is-current { color: var(--primary); }
+    .legal-checklist-inline-status:focus { outline: 2px solid rgba(0, 166, 81, 0.35); outline-offset: 1px; border-color: rgba(0, 166, 81, 0.45); }
+    .legal-checklist-inline-status.legal-status-pending { background-color: #f3f4f6; color: #4b5563; border-color: #e5e7eb; }
+    .legal-checklist-inline-status.legal-status-in_progress { background-color: #dbeafe; color: #1d4ed8; border-color: #bfdbfe; }
+    .legal-checklist-inline-status.legal-status-completed { background-color: #e0e7ff; color: #3730a3; border-color: #c7d2fe; }
+    .legal-checklist-inline-status.legal-status-na { background-color: #fee2e2; color: #991b1b; border-color: #fecaca; }
+    html[data-theme="dark"] .legal-checklist-inline-status {
+      color-scheme: dark;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23a8b8cc' d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E");
+    }
+    html[data-theme="dark"] .legal-checklist-inline-status.legal-status-pending { background-color: rgba(148, 163, 184, 0.22); color: #dbe4ef; border-color: rgba(148, 163, 184, 0.45); }
+    html[data-theme="dark"] .legal-checklist-inline-status.legal-status-in_progress { background-color: rgba(59, 130, 246, 0.22); color: #bfdbfe; border-color: rgba(96, 165, 250, 0.45); }
+    html[data-theme="dark"] .legal-checklist-inline-status.legal-status-completed { background-color: rgba(52, 211, 153, 0.18); color: #a7f3d0; border-color: rgba(52, 211, 153, 0.42); }
+    html[data-theme="dark"] .legal-checklist-inline-status.legal-status-na { background-color: rgba(248, 113, 113, 0.18); color: #fecaca; border-color: rgba(248, 113, 113, 0.42); }
+    html[data-theme="dark"] #page-legal select.legal-checklist-inline-status option,
+    html[data-theme="dark"] #page-legal select.legal-checklist-inline-status optgroup {
+      background-color: #1e293b;
+      color: #e2e8f0;
+    }
+    #page-legal select.legal-checklist-inline-status option,
+    #page-legal select.legal-checklist-inline-status optgroup {
+      background-color: #fff;
+      color: #374151;
+    }
+    .legal-checklist-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+    .legal-checklist-overflow-btn { flex-shrink: 0; opacity: 0.55; padding: 4px 8px; min-width: 32px; }
+    .legal-checklist-row:hover .legal-checklist-overflow-btn { opacity: 1; }
+    .legal-checklist-child-add { flex-shrink: 0; white-space: nowrap; padding: 2px 8px; font-weight: 600; }
+    #page-legal .legal-checklist-colhead,
+    #page-legal .legal-checklist-row {
+      display: grid;
+      grid-template-columns: 28px 28px minmax(0, 1fr) 128px 132px 156px 76px;
+      gap: 8px;
+      align-items: center;
+    }
+    #page-legal .legal-checklist-colhead {
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--shell-border);
+      background: var(--shell-table-head-bg);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--shell-text-muted);
+    }
+    #page-legal .legal-checklist-row.is-child { padding-left: 12px; }
+    #page-legal .legal-checklist-row.is-child .legal-checklist-title { padding-left: 14px; }
+    #page-legal .legal-checklist-row .legal-checklist-drag-handle {
+      min-width: 0;
+      width: 28px;
+      min-height: 28px;
+      margin: 0;
+      padding: 0;
+      justify-self: center;
+    }
+    #page-legal .legal-checklist-inline-date,
+    #page-legal .legal-checklist-inline-status,
+    #page-legal .legal-checklist-child-add {
+      width: 100%;
+      max-width: none;
+      min-width: 0;
+      box-sizing: border-box;
+      white-space: nowrap;
+    }
+    #page-legal .legal-checklist-child-tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      box-sizing: border-box;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--shell-text-muted);
+      background: var(--shell-input-bg);
+      border: 1px solid var(--shell-border);
+      border-radius: 999px;
+      padding: 4px 6px;
+      white-space: nowrap;
+    }
+    #page-legal .legal-checklist-title-done { text-decoration: none; opacity: 1; }
+    #page-legal .legal-checklist-row.is-done { background: #d1fae5; }
+    #page-legal .legal-checklist-row.is-done:hover { background: #bbf7d0; }
+    #page-legal .legal-checklist-row.is-done .legal-checklist-title,
+    #page-legal .legal-checklist-row.is-done.is-child .legal-checklist-title {
+      color: #064e3b;
+      font-weight: 600;
+    }
+    html[data-theme="dark"] #page-legal .legal-checklist-row.is-done { background: rgba(16, 185, 129, 0.28); }
+    html[data-theme="dark"] #page-legal .legal-checklist-row.is-done:hover { background: rgba(16, 185, 129, 0.38); }
+    html[data-theme="dark"] #page-legal .legal-checklist-row.is-done .legal-checklist-title,
+    html[data-theme="dark"] #page-legal .legal-checklist-row.is-done.is-child .legal-checklist-title {
+      color: #ecfdf5;
+    }
+    #page-legal .legal-checklist-stage-toggle {
+      width: 28px; height: 28px; flex-shrink: 0; border: 0; border-radius: 6px;
+      background: transparent; color: var(--shell-text); cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    #page-legal .legal-checklist-stage-toggle:hover { background: var(--shell-row-hover); }
+    #page-legal .legal-checklist-stage-toggle i { transition: transform .15s; }
+    #page-legal .legal-checklist-stage.is-collapsed .legal-checklist-stage-toggle i { transform: rotate(-90deg); }
+    #page-legal .legal-checklist-stage.is-collapsed .legal-checklist-colhead,
+    #page-legal .legal-checklist-stage.is-collapsed .legal-checklist-rows { display: none; }
+    #page-legal .legal-checklist-add-row .legal-checklist-inline-add { grid-column: 1 / 5; }
+    #page-legal .legal-checklist-add-row .legal-checklist-add-btn { grid-column: 7; justify-self: end; }
+    /* Wave F — Executive PMO shell tokens (scoped) */
+    .exec-shell-card {
+      background: var(--shell-surface);
+      border: 1px solid var(--shell-border);
+      color: var(--shell-text);
+    }
+    .exec-shell-text { color: var(--shell-text); }
+    .exec-shell-muted { color: var(--shell-text-muted); }
+    .exec-shell-tab-bar { border-color: var(--shell-border) !important; }
+    .exec-main-tab { color: var(--shell-text-muted); }
+    .exec-main-tab:hover { color: var(--shell-text); background: var(--shell-row-hover); }
+    .exec-main-tab-active { background: rgba(0, 166, 81, 0.08) !important; }
+    html[data-theme="dark"] .exec-main-tab-active { background: rgba(0, 166, 81, 0.14) !important; }
+    .exec-proj-item.exec-proj-active { background: rgba(0, 166, 81, 0.08); }
+    html[data-theme="dark"] .exec-proj-item.exec-proj-active { background: rgba(0, 166, 81, 0.14); }
+    .exec-legal-subtab-bar { border-bottom: 1.5px solid var(--shell-border); }
+    .exec-legal-subtab {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+      border: none; border-bottom: 2.5px solid transparent;
+      background: transparent; color: var(--shell-text-muted);
+      border-radius: 8px 8px 0 0; transition: all .15s; white-space: nowrap;
+    }
+    .exec-legal-subtab:hover { background: var(--shell-row-hover); color: var(--shell-text); }
+    .exec-legal-subtab-active {
+      border-bottom-color: var(--exec-subtab-accent, var(--primary));
+      background: var(--shell-input-bg);
+      color: var(--exec-subtab-accent, var(--primary));
+    }
+    .exec-legal-stage-head-toggle { cursor: pointer; }
+    .exec-legal-stage-pct { font-size: 12px; font-weight: 700; margin-left: auto; flex-shrink: 0; }
+    .exec-legal-pct-good { color: #16a34a; }
+    .exec-legal-pct-mid { color: #ca8a04; }
+    .exec-legal-pct-low { color: #dc2626; }
+    html[data-theme="dark"] .exec-legal-pct-good { color: #4ade80; }
+    html[data-theme="dark"] .exec-legal-pct-mid { color: #facc15; }
+    html[data-theme="dark"] .exec-legal-pct-low { color: #f87171; }
+    #exec-tab-body .legal-checklist-host,
+    #exec-legal-panel-items .legal-checklist-stage { max-width: 100%; }
+    #exec-tab-body .legal-checklist-colhead,
+    #exec-tab-body .legal-checklist-row {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) 128px 132px 156px;
+      gap: 8px;
+      align-items: center;
+    }
+    #exec-tab-body .legal-checklist-colhead {
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--shell-border);
+      background: var(--shell-table-head-bg);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--shell-text-muted);
+    }
+    #exec-tab-body .legal-checklist-row.is-child { padding-left: 12px; }
+    #exec-tab-body .legal-checklist-row.is-child .legal-checklist-title { padding-left: 14px; }
+    #exec-tab-body .legal-checklist-due,
+    #exec-tab-body .legal-checklist-inline-status,
+    #exec-tab-body .legal-checklist-child-tag {
+      width: 100%;
+      max-width: none;
+      min-width: 0;
+      box-sizing: border-box;
+      white-space: nowrap;
+    }
+    #exec-tab-body .legal-checklist-child-tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--shell-text-muted);
+      background: var(--shell-input-bg);
+      border: 1px solid var(--shell-border);
+      border-radius: 999px;
+      padding: 4px 6px;
+    }
+    #exec-tab-body .legal-checklist-status-ring { cursor: default; pointer-events: none; }
+    #exec-tab-body .exec-legal-status-ro {
+      cursor: default;
+      pointer-events: none;
+      background-image: none;
+      padding-right: 10px;
+      text-align: center;
+    }
+    #exec-tab-body .legal-checklist-title-done { text-decoration: none; opacity: 1; }
+    #exec-tab-body .legal-checklist-row.is-done { background: #d1fae5; }
+    #exec-tab-body .legal-checklist-row.is-done:hover { background: #bbf7d0; }
+    #exec-tab-body .legal-checklist-row.is-done .legal-checklist-title,
+    #exec-tab-body .legal-checklist-row.is-done.is-child .legal-checklist-title {
+      color: #064e3b;
+      font-weight: 600;
+    }
+    html[data-theme="dark"] #exec-tab-body .legal-checklist-row.is-done { background: rgba(16, 185, 129, 0.28); }
+    html[data-theme="dark"] #exec-tab-body .legal-checklist-row.is-done:hover { background: rgba(16, 185, 129, 0.38); }
+    html[data-theme="dark"] #exec-tab-body .legal-checklist-row.is-done .legal-checklist-title,
+    html[data-theme="dark"] #exec-tab-body .legal-checklist-row.is-done.is-child .legal-checklist-title {
+      color: #ecfdf5;
+    }
+    .legal-checklist-drag-handle {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      min-height: 44px;
+      padding: 0 8px;
+      margin: -6px 0;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--shell-text-faint);
+      cursor: grab;
+      touch-action: none;
+    }
+    .legal-checklist-drag-handle:active { cursor: grabbing; }
+    .legal-checklist-drag-handle:hover,
+    .legal-checklist-drag-handle:focus-visible {
+      background: var(--shell-input-bg);
+      color: var(--shell-text-muted);
+      outline: 2px solid rgba(0, 166, 81, 0.35);
+      outline-offset: 1px;
+    }
+    .legal-checklist-row.is-dragging { opacity: 0.55; background: var(--shell-row-hover); }
+    .legal-checklist-row.is-drop-before { box-shadow: inset 0 3px 0 0 var(--primary); }
+    .legal-checklist-stage-head.is-drop-stage { box-shadow: inset 0 0 0 2px rgba(0, 166, 81, 0.45); background: var(--shell-row-hover); }
+    html[data-theme="dark"] #legalTabs.legal-panel-tabs .tab-btn {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--shell-nav-inactive);
+    }
+    html[data-theme="dark"] #legalTabs.legal-panel-tabs .tab-btn.active {
+      background: transparent;
+      color: var(--primary);
+      border-color: transparent;
+      border-bottom-color: var(--primary);
+    }
+    /* Dark — analytics / finance semantic text on shell surfaces */
+    html[data-theme="dark"] .text-indigo-700 { color: #a5b4fc !important; }
+    html[data-theme="dark"] .text-cyan-700 { color: #67e8f9 !important; }
+    html[data-theme="dark"] .text-emerald-700 { color: #6ee7b7 !important; }
+    html[data-theme="dark"] .text-blue-700 { color: #93c5fd !important; }
+    html[data-theme="dark"] .text-red-700 { color: #fca5a5 !important; }
+    html[data-theme="dark"] .text-red-600 { color: #fca5a5 !important; }
+    html[data-theme="dark"] .text-orange-600 { color: #fdba74 !important; }
+    html[data-theme="dark"] .text-yellow-600 { color: #fcd34d !important; }
+
+    /* Dark — cost types + generic card tables without thead bg class */
+    html[data-theme="dark"] #page-cost-types table thead tr,
+    html[data-theme="dark"] #page-cost-types table thead th {
+      background: var(--shell-table-head-bg);
+      color: var(--shell-table-head-text) !important;
+      border-color: var(--shell-border-strong);
+    }
+    html[data-theme="dark"] #page-cost-types table tbody tr { background: var(--shell-surface); }
+    html[data-theme="dark"] #page-cost-types table tbody tr:hover { background: var(--shell-row-hover); }
+
+    /* Dark — leave list card (inline gradients on thead / pagination) */
+    html[data-theme="dark"] #page-leave .bg-white.rounded-2xl { background: var(--shell-surface) !important; border-color: var(--shell-border) !important; }
+    html[data-theme="dark"] #leaveTable thead tr {
+      background: var(--shell-table-head-bg) !important;
+      border-bottom-color: var(--shell-border-strong) !important;
+    }
+    html[data-theme="dark"] #leaveTable tbody tr.leave-row-even,
+    html[data-theme="dark"] #leaveTable tbody tr.leave-row-odd {
+      background: var(--shell-surface) !important;
+      border-bottom-color: var(--shell-table-row-border) !important;
+    }
+    html[data-theme="dark"] #leaveTable tbody tr.leave-row-odd { background: rgba(255, 255, 255, 0.02) !important; }
+    html[data-theme="dark"] #leaveTable tbody tr:hover {
+      background: var(--shell-row-hover) !important;
+      box-shadow: inset 3px 0 0 var(--primary), 0 2px 8px var(--shell-shadow);
+    }
+    html[data-theme="dark"] #leavePagination { background: var(--shell-bg) !important; border-color: var(--shell-border) !important; }
+    html[data-theme="dark"] #page-leave [style*="background:linear-gradient(90deg,#f8faff"] {
+      background: var(--shell-table-head-bg) !important;
+    }
+    html[data-theme="dark"] .leave-action-btn.btn-review {
+      background: rgba(0, 166, 81, 0.2); color: #86efac; border-color: rgba(0, 166, 81, 0.35);
+    }
+    html[data-theme="dark"] .leave-action-btn.btn-edit {
+      background: rgba(59, 130, 246, 0.18); color: #93c5fd; border-color: rgba(96, 165, 250, 0.35);
+    }
+    html[data-theme="dark"] .leave-action-btn.btn-del {
+      background: rgba(248, 113, 113, 0.15); color: #fca5a5; border-color: rgba(248, 113, 113, 0.35);
+    }
+
+    /* Dark — legal package checklist (inline stage/table chrome) */
+    html[data-theme="dark"] #legalStagesContainer [style*="background:#fafafa"],
+    html[data-theme="dark"] #legalStagesContainer [style*="background:#f9fafb"] {
+      background: var(--shell-surface) !important;
+    }
+    html[data-theme="dark"] #legalStagesContainer table thead tr[style*="background"] {
+      background: var(--shell-table-head-bg) !important;
+    }
+    html[data-theme="dark"] #legalStagesContainer [style*="color:#1e293b"],
+    html[data-theme="dark"] #legalStagesContainer [style*="color:#374151"] {
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #legalStagesContainer th.text-gray-600,
+    html[data-theme="dark"] #legalStagesContainer td { color: var(--shell-text); }
+
+    /* Dark — phone bottom nav */
+    html[data-theme="dark"] #mobileBottomNav { background: var(--shell-topbar-bg); border-top-color: var(--shell-border-strong); box-shadow: 0 -4px 16px var(--shell-shadow); }
+    html[data-theme="dark"] .mobile-tab { color: var(--shell-nav-inactive); }
+    html[data-theme="dark"] .mobile-tab:active { background: var(--shell-row-hover); }
+    html[data-theme="dark"] .mobile-list-card { background: var(--shell-surface); border-color: var(--shell-border); }
+    html[data-theme="dark"] .mobile-list-card .mlc-title { color: var(--shell-text); }
+    html[data-theme="dark"] .mobile-list-card .mlc-meta { color: var(--shell-text-muted); }
+    html[data-theme="dark"] #finFilterSheet { background: var(--shell-surface); border-color: var(--shell-border); }
+
+    .shell-money { color: var(--money-accent); font-weight: 600; }
 
     /* ================================================================
        RESPONSIVE — chart height adjustments only
@@ -316,7 +1549,28 @@
       .chart-container-sm { height: 180px; }
       .kpi-card { padding: 14px; }
       .card { padding: 14px; }
-      .top-bar { padding-top: env(safe-area-inset-top, 0px); }
+      .top-bar { padding: env(safe-area-inset-top, 0px) 8px 0; gap: 4px; }
+      #projectDetailNav {
+        top: auto;
+        left: 12px;
+        right: 76px;
+        bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+        justify-content: space-between;
+        padding: 4px;
+        border-radius: 999px;
+        background: var(--shell-surface, #fff);
+        border: 1px solid var(--shell-border, #e5e7eb);
+        box-shadow: 0 8px 20px rgba(0,0,0,.16);
+      }
+      #projectDetailNav.keyboard-hidden { display: none !important; }
+      #projectDetailNav button { min-width: 44px; min-height: 44px; border-radius: 999px; }
+      #projectDetailNav .proj-nav-label { display: inline; margin-left: 6px; font-size: 13px; font-weight: 700; }
+      #page-project-detail { padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
+      .top-bar .mr-4 { margin-right: 0; }
+      #breadcrumb { max-width: 26vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .theme-toggle-btn { padding: 6px 8px; font-size: 11px; }
+      .top-bar .gap-4 { gap: 4px; }
+      .top-bar-user-btn .fa-chevron-down { display: none; }
       #mobileBottomNav { display: flex !important; }
       #mobileNavScrim.mobile-open { display: block !important; }
     }
@@ -533,7 +1787,7 @@
         position: sticky;
         left: 0;
         z-index: 2;
-        background: #fff;
+        background: var(--shell-surface, #fff);
         box-shadow: 2px 0 6px rgba(0,0,0,0.06);
       }
       /* Work-summary table (min-width 980): sticky name col on phone */
@@ -574,6 +1828,16 @@
       }
       #finFilterSheetToggle { display: flex !important; }
       #finFilterSheet.fin-sheet-collapsed #finFilterBar { display: none; }
+
+      .legal-layout-row { flex-direction: column; }
+      .legal-left-col { width: 100%; min-width: 0; }
+      .legal-project-list { max-height: 28vh; }
+      .legal-page-heading h2 { font-size: 1.15rem; }
+      .legal-page-actions { width: 100%; justify-content: flex-start; }
+      .legal-pkg-row { flex-wrap: wrap; align-items: flex-start; }
+      .legal-pkg-meta { margin-left: 0; width: 100%; justify-content: space-between; }
+      #page-dashboard .grid,
+      #page-tasks .grid { min-width: 0; }
     }
     @media (min-width: 768px) {
       #finFilterSheetToggle { display: none !important; }
@@ -741,12 +2005,12 @@
   <!-- Sidebar -->
   <div class="sidebar" id="sidebar">
     <!-- Header -->
-    <div class="p-4 border-b border-green-700" style="min-height:72px">
+    <div class="p-4 border-b sidebar-header" style="min-height:72px">
       <div class="sidebar-logo-full">
         <img src="https://onecadvn.com/Upload/images/logo/logo.png" alt="OneCad" class="h-10 filter brightness-0 invert flex-shrink-0" onerror="this.style.display='none'">
         <div class="logo-text">
           <div class="text-white font-bold text-lg leading-tight">OneCad BIM</div>
-          <div class="text-green-200 text-xs">Project Management</div>
+          <div class="sidebar-brand-sub text-xs">Project Management</div>
         </div>
       </div>
     </div>
@@ -841,21 +2105,21 @@
     </nav>
 
     <!-- User footer -->
-    <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-green-700" style="height:68px">
+    <div class="absolute bottom-0 left-0 right-0 p-4 border-t sidebar-footer" style="height:68px">
       <!-- Full mode: name + role + logout -->
       <div class="flex items-center gap-3 sidebar-user-info">
-        <div class="w-9 h-9 rounded-full bg-green-200 flex items-center justify-center text-green-800 font-bold text-sm flex-shrink-0" id="sidebarAvatar">A</div>
+        <div class="w-9 h-9 rounded-full sidebar-avatar flex items-center justify-center font-bold text-sm flex-shrink-0" id="sidebarAvatar">A</div>
         <div class="flex-1 min-w-0">
-          <div class="text-white text-sm font-medium truncate" id="sidebarName">Admin</div>
-          <div class="text-green-300 text-xs" id="sidebarRole">System Admin</div>
+          <div class="sidebar-user-name text-sm font-medium truncate" id="sidebarName">Admin</div>
+          <div class="sidebar-user-role text-xs" id="sidebarRole">System Admin</div>
         </div>
-        <button onclick="logout()" class="text-green-300 hover:text-white" title="Đăng xuất">
+        <button onclick="logout()" class="sidebar-logout-btn" title="Đăng xuất">
           <i class="fas fa-sign-out-alt"></i>
         </button>
       </div>
       <!-- Mini mode: just avatar centered -->
       <div class="justify-center sidebar-user-mini" style="display:none" title="Đăng xuất" onclick="logout()">
-        <div class="w-9 h-9 rounded-full bg-green-200 flex items-center justify-center text-green-800 font-bold text-sm cursor-pointer" id="sidebarAvatarMini">A</div>
+        <div class="w-9 h-9 rounded-full sidebar-avatar flex items-center justify-center font-bold text-sm cursor-pointer" id="sidebarAvatarMini">A</div>
       </div>
     </div>
 
@@ -869,22 +2133,26 @@
   <div class="main-content" id="mainContent">
     <!-- Top Bar -->
     <div class="top-bar">
-      <button onclick="toggleSidebar()" class="text-gray-600 hover:text-gray-800 mr-4">
+      <button type="button" onclick="toggleSidebar()" class="top-bar-icon-btn mr-4 p-2" aria-label="Menu">
         <i class="fas fa-bars text-xl"></i>
       </button>
       <div class="flex-1">
         <div class="text-sm text-gray-500" id="breadcrumb">Dashboard</div>
       </div>
       <div class="flex items-center gap-4">
+        <div class="theme-toggle" id="themeToggle" role="group" aria-label="Giao diện sáng tối">
+          <button type="button" class="theme-toggle-btn" data-theme-choice="light" onclick="setBimTheme('light')" aria-pressed="false">Sáng</button>
+          <button type="button" class="theme-toggle-btn" data-theme-choice="dark" onclick="setBimTheme('dark')" aria-pressed="false">Tối</button>
+        </div>
         <!-- Notifications -->
         <div class="relative">
-          <button onclick="toggleNotifications()" class="relative text-gray-600 hover:text-gray-800 p-2">
+          <button type="button" onclick="toggleNotifications()" class="relative top-bar-icon-btn p-2" aria-label="Thông báo">
             <i class="fas fa-bell text-xl"></i>
             <span id="notifBadge" class="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs" style="display:none">0</span>
           </button>
-          <div id="notifDropdown" style="display:none" class="absolute right-0 top-12 w-80 bg-white rounded-xl shadow-xl border z-50 max-h-96 overflow-y-auto">
+          <div id="notifDropdown" style="display:none" class="shell-popover absolute right-0 top-12 w-80 rounded-xl shadow-xl border z-50 max-h-96 overflow-y-auto">
             <div class="p-3 border-b flex justify-between items-center">
-              <span class="font-semibold text-gray-800">Thông báo</span>
+              <span class="font-semibold shell-popover-title">Thông báo</span>
               <button onclick="markAllRead()" class="text-xs text-primary hover:underline">Đọc tất cả</button>
             </div>
             <div id="notifList" class="divide-y"></div>
@@ -892,7 +2160,7 @@
         </div>
         <!-- User Menu -->
         <div class="relative">
-          <button onclick="toggleUserMenu()" class="flex items-center gap-2 hover:bg-gray-100 rounded-lg p-2">
+          <button type="button" onclick="toggleUserMenu()" class="top-bar-user-btn flex items-center gap-2 rounded-lg p-2 border-0 cursor-pointer bg-transparent">
             <div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white font-bold text-sm" id="topbarAvatar">A</div>
             <div class="hidden md:block text-left">
               <div class="text-sm font-medium text-gray-800" id="topbarName">Admin</div>
@@ -900,13 +2168,13 @@
             </div>
             <i class="fas fa-chevron-down text-gray-400 text-xs"></i>
           </button>
-          <div id="userMenu" style="display:none" class="absolute right-0 top-12 w-48 bg-white rounded-xl shadow-xl border z-50">
+          <div id="userMenu" style="display:none" class="shell-popover absolute right-0 top-12 w-48 rounded-xl shadow-xl border z-50">
             <div class="py-1">
-              <button onclick="navigate('profile'); closeUserMenu()" class="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2">
+              <button type="button" onclick="navigate('profile'); closeUserMenu()" class="shell-popover-item w-full text-left px-4 py-2 text-sm flex items-center gap-2 border-0 bg-transparent cursor-pointer">
                 <i class="fas fa-user text-gray-400"></i>Hồ sơ cá nhân
               </button>
               <hr>
-              <button onclick="logout()" class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
+              <button type="button" onclick="logout()" class="shell-popover-item w-full text-left px-4 py-2 text-sm text-red-600 flex items-center gap-2 border-0 bg-transparent cursor-pointer">
                 <i class="fas fa-sign-out-alt"></i>Đăng xuất
               </button>
             </div>
@@ -1171,14 +2439,14 @@
 
         </div>
 
-        <!-- Birthday Widget — Sinh nhật tháng này -->
-        <div class="card mb-4" id="dashBirthdayWidget" style="border-left:4px solid #ec4899;background:linear-gradient(135deg,#fff,#fdf2f8);">
+        <!-- Birthday Widget — 3 tháng gần nhất -->
+        <div class="card mb-4 dash-birthday" id="dashBirthdayWidget">
           <div class="flex items-center justify-between mb-3">
             <div class="flex items-center gap-2">
               <span class="text-2xl">🎂</span>
               <div>
-                <h3 class="font-bold text-gray-800 text-sm">Sinh nhật tháng này</h3>
-                <p class="text-xs text-gray-400" id="birthdaySubtitle">Đang tải...</p>
+                <h3 class="font-bold text-sm">Sinh nhật</h3>
+                <p class="text-xs" id="birthdaySubtitle" style="color:var(--shell-text-muted)">3 tháng gần nhất</p>
               </div>
             </div>
             <button id="btnSendBirthdayEmails" onclick="sendBirthdayEmailsToday()"
@@ -1187,8 +2455,8 @@
               <i class="fas fa-envelope-open-text"></i> Gửi lời chúc hôm nay
             </button>
           </div>
-          <div id="birthdayList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-            <div class="text-xs text-gray-400 text-center py-3 col-span-full">Đang tải...</div>
+          <div id="birthdayList" class="dash-birthday-grid">
+            <div class="dash-birthday-empty col-span-full">Đang tải...</div>
           </div>
         </div>
 
@@ -1304,6 +2572,10 @@
           <div>
             <h1 class="text-2xl font-bold text-gray-800" id="projectDetailName">Chi tiết dự án</h1>
             <p class="text-gray-500 text-sm" id="projectDetailCode"></p>
+          </div>
+          <div id="projectDetailNav" class="flex items-center gap-1">
+            <button type="button" id="projPrevBtn" onclick="openAdjacentProject(-1)" class="btn-secondary text-xs px-3 py-1.5" title="Dự án trước" disabled><i class="fas fa-chevron-left"></i><span class="proj-nav-label">Trước</span></button>
+            <button type="button" id="projNextBtn" onclick="openAdjacentProject(1)" class="btn-secondary text-xs px-3 py-1.5" title="Dự án tiếp theo" disabled><span class="proj-nav-label">Tiếp</span><i class="fas fa-chevron-right"></i></button>
           </div>
           <span id="projectDetailStatus" class="badge ml-auto"></span>
         </div>
@@ -4317,19 +5589,20 @@
 
       <!-- ========== HỒ SƠ PHÁP LÝ PAGE ========== -->
       <div id="page-legal" class="page">
-        <!-- Header -->
-        <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
-          <div>
+        <div class="legal-page-top">
+          <div class="legal-page-heading">
             <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-file-contract text-primary mr-2"></i>Hồ Sơ Pháp Lý Dự Án</h2>
             <p class="text-gray-500 text-sm mt-0.5">Theo dõi hợp đồng, phụ lục, nghiệm thu, thanh toán và văn bản gửi đi</p>
           </div>
-          <div class="flex items-center gap-2 flex-wrap">
-            <div id="legalProjectSelectCombobox" style="min-width:240px"></div>
+          <div class="legal-page-actions" id="legalPanelActions">
             <button onclick="openLegalLetterModal()" id="btnAddLetter" class="btn-accent hidden" style="display:none">
               <i class="fas fa-paper-plane mr-1"></i>Gửi văn bản
             </button>
             <button onclick="openLegalDocModal()" id="btnAddDoc" class="btn-primary hidden" style="display:none">
               <i class="fas fa-file-plus mr-1"></i>Thêm tài liệu
+            </button>
+            <button onclick="openLegalCopyFromModal()" id="btnCopyFromLegal" class="btn-secondary" title="Sao chép gói thầu từ dự án khác" style="display:none">
+              <i class="fas fa-copy mr-1"></i>Sao chép từ dự án…
             </button>
             <button onclick="openImportExcelModal()" id="btnImportExcel" class="btn-secondary" title="Import từ file Excel" style="display:none">
               <i class="fas fa-file-excel mr-1" style="color:#1d6f42"></i>Import Excel
@@ -4339,6 +5612,25 @@
             </button>
           </div>
         </div>
+
+        <div class="legal-layout-row">
+          <div class="legal-left-col">
+            <div class="legal-left-panel">
+              <input type="text" id="legalProjectSearch" class="input-field" placeholder="🔍 Tìm dự án…" oninput="legalOnProjectSearch(this.value)" autocomplete="off">
+              <div id="legalProjectList" class="legal-project-list">
+                <div class="legal-project-empty"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải…</div>
+              </div>
+            </div>
+            <div id="legalProjectSelectCombobox" class="legal-combobox-fallback" aria-hidden="true"></div>
+          </div>
+
+          <div class="legal-right-col">
+            <div id="legalPickProjectHint" class="card text-center py-16 text-gray-400">
+              <i class="fas fa-hand-pointer text-4xl mb-4 opacity-30"></i>
+              <p class="font-medium">Chọn dự án ở danh sách bên trái để xem hồ sơ pháp lý</p>
+            </div>
+
+            <div id="legalRightContent" style="display:none">
 
         <!-- KPI Summary -->
         <div id="legalKPIRow" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5" style="display:none">
@@ -4361,13 +5653,20 @@
         </div>
 
         <!-- Tabs -->
-        <div id="legalTabs" class="flex gap-2 mb-4 tabs-scroll-row" style="display:none">
+        <div id="legalTabs" class="flex gap-2 mb-4 tabs-scroll-row legal-panel-tabs" style="display:none">
+          <button class="tab-btn" id="ltab-info" onclick="switchLegalTab('info')"><i class="fas fa-info-circle mr-1"></i>Thông tin dự án</button>
           <button class="tab-btn active" id="ltab-stages" onclick="switchLegalTab('stages')"><i class="fas fa-list-ol mr-1"></i>Theo dõi hồ sơ</button>
+          <button class="tab-btn" id="ltab-payments" onclick="switchLegalTab('payments')"><i class="fas fa-money-check-alt mr-1"></i>Tình trạng thanh toán</button>
+          <button class="tab-btn" id="ltab-cost-a" onclick="switchLegalTab('cost-a')"><i class="fas fa-calculator mr-1"></i>Chi phí A</button>
+          <button class="tab-btn" id="ltab-contacts" onclick="switchLegalTab('contacts')"><i class="fas fa-address-book mr-1"></i>Contact Liên Hệ</button>
           <button class="tab-btn" id="ltab-letters" onclick="switchLegalTab('letters')"><i class="fas fa-paper-plane mr-1"></i>Văn bản gửi đi</button>
           <button class="tab-btn" id="ltab-minutes" onclick="switchLegalTab('minutes')"><i class="fas fa-clipboard-list mr-1"></i>Biên bản họp</button>
           <button class="tab-btn" id="ltab-docs" onclick="switchLegalTab('docs')"><i class="fas fa-paperclip mr-1"></i>Tài liệu đính kèm</button>
-          <button class="tab-btn" id="ltab-payments" onclick="switchLegalTab('payments')"><i class="fas fa-money-check-alt mr-1"></i>Tình trạng thanh toán</button>
-          <button class="tab-btn" id="ltab-completed" onclick="switchLegalTab('completed')" style="border-color:#10b981;color:#065f46;background:#f0fdf4"><i class="fas fa-calendar-check mr-1 text-green-600"></i>Theo dõi hoàn thành</button>
+        </div>
+
+        <!-- Tab: Thông tin dự án / gói thầu -->
+        <div id="legalTabInfo" style="display:none">
+          <div id="legalProjectInfo"></div>
         </div>
 
         <!-- Tab: Stages / Items -->
@@ -4421,25 +5720,42 @@
 
         <!-- Tab: E. Tình trạng thanh toán -->
         <div id="legalTabPayments" style="display:none">
-          <div class="card">
-            <div class="flex items-center justify-between mb-4">
+          <div class="card legal-payment-card">
+            <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
               <h3 class="font-semibold text-gray-700"><i class="fas fa-money-check-alt text-emerald-600 mr-2"></i>E. Tình trạng thanh toán</h3>
-              <button onclick="openPaymentModal()" class="btn-primary text-sm"><i class="fas fa-plus mr-1"></i>Thêm đợt thanh toán</button>
+              <button type="button" onclick="openPaymentModal()" class="btn-secondary text-xs" title="Form đầy đủ (tuỳ chọn)"><i class="fas fa-window-restore mr-1"></i>Form chi tiết</button>
             </div>
-            <!-- Summary cards -->
             <div id="paymentSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
-            <div id="legalPaymentsTable">
+            <div id="legalPaymentsTable" class="legal-payment-sheet-wrap">
               <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
             </div>
           </div>
         </div>
 
-        <!-- Tab: Theo dõi hoàn thành -->
-        <div id="legalTabCompleted" style="display:none">
-          <div id="legalCompletedContainer">
+        <!-- Tab: Chi phí A (system_admin) -->
+        <div id="legalTabCostA" style="display:none">
+          <div class="card legal-payment-card">
+            <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-calculator text-indigo-600 mr-2"></i>Chi phí A</h3>
+              <span class="text-xs text-gray-500" id="legalCostAFormulaHint"></span>
+            </div>
+            <div id="legalCostAPageTotal" class="legal-cost-a-page-total"></div>
+            <div id="legalCostAContainer">
+              <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Contact liên hệ -->
+        <div id="legalTabContacts" style="display:none">
+          <div id="legalContactsContainer">
             <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
           </div>
         </div>
+
+            </div><!-- #legalRightContent -->
+          </div><!-- .legal-right-col -->
+        </div><!-- .legal-layout-row -->
       </div>
       <!-- ========== END HỒ SƠ PHÁP LÝ PAGE ========== -->
 
@@ -4837,7 +6153,7 @@
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="label">Ngày đề nghị</label>
+          <label class="label">Ngày nghiệm thu</label>
           <input type="date" id="paymentRequestDate" class="input-field">
         </div>
         <div>
@@ -5167,8 +6483,14 @@
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div id="contractValueRow">
-          <label class="label">Giá trị hợp đồng (VNĐ)</label>
-          <input type="text" id="projectContractValue" class="input-field" placeholder="0" inputmode="numeric" oninput="moneyInputFmt(this); updateProjectBudgetPreview()">
+          <label class="label">Giá trị hợp đồng trước VAT (VNĐ)</label>
+          <input type="text" id="projectContractValue" class="input-field" placeholder="0" inputmode="numeric" readonly tabindex="-1">
+          <p id="projectContractHint" class="text-xs text-gray-400 mt-1">Khóa theo tổng giá trị các gói thầu ở Hồ sơ pháp lý.</p>
+          <label class="label mt-3">% VAT hợp đồng</label>
+          <div class="flex items-center gap-2">
+            <input type="number" id="projectVatPct" class="input-field" placeholder="0" min="0" max="100" step="0.1" oninput="refreshProjectContractPreview()">
+            <span class="text-gray-500 text-sm font-medium">%</span>
+          </div>
         </div>
         <div>
           <label class="label">Trạng thái</label>
@@ -5234,12 +6556,13 @@
       <!-- ── PHẦN THÔNG TIN CHUNG (admin tạo/sửa, member chỉ đọc) ── -->
       <div id="taskAdminSection">
         <div>
-          <label class="label">Tên công việc *</label>
-          <input type="text" id="taskTitle" class="input-field" placeholder="Mô tả ngắn về công việc" required>
+          <label class="label">Tên công việc</label>
+          <input type="text" id="taskTitle" class="input-field" readonly tabindex="-1" placeholder="Tên được ghép tự động khi chọn dự án, giai đoạn, bộ môn, loại và hạng mục">
+          <p class="text-xs text-gray-400 mt-1">Ô này khóa. Tên ghép từ số hiệu văn bản dự án, mã giai đoạn, mã bộ môn, loại (M3, RP, Oth), hạng mục và mô tả. Task cũ chỉ nhận tên mới nếu tên hiện tại đã theo dạng mã; tên viết tay được giữ.</p>
         </div>
         <div class="mt-3">
           <label class="label">Mô tả chi tiết</label>
-          <textarea id="taskDesc" class="input-field" rows="2" placeholder="Yêu cầu, tiêu chí nghiệm thu..."></textarea>
+          <textarea id="taskDesc" class="input-field" rows="2" placeholder="Yêu cầu, tiêu chí nghiệm thu..." oninput="syncTaskTitle()"></textarea>
         </div>
         <div class="grid grid-cols-2 gap-4 mt-3">
           <div>
@@ -5276,7 +6599,7 @@
           </div>
           <div>
             <label class="label">Giai đoạn</label>
-            <select id="taskPhase" class="select-field">
+            <select id="taskPhase" class="select-field" onchange="syncTaskTitle()">
               <option value="basic_design">Thiết kế cơ sở</option>
               <option value="technical_design">Thiết kế kỹ thuật</option>
               <option value="construction_design">Thiết kế thi công</option>
@@ -5312,8 +6635,7 @@
       </div>
 
       <!-- ── DIVIDER + PHẦN MEMBER CẬP NHẬT ── -->
-      <div id="taskMemberSection"
-        style="border:2px solid #6366f1;border-radius:12px;padding:14px 16px 12px;background:linear-gradient(135deg,#f5f3ff 0%,#eff6ff 100%);position:relative;margin-top:4px">
+      <div id="taskMemberSection" class="task-update-panel">
         <div style="position:absolute;top:-11px;left:16px;background:#6366f1;color:#fff;font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;letter-spacing:.4px">
           <i class="fas fa-pencil-alt mr-1"></i>Thông tin cập nhật
         </div>
@@ -6115,6 +7437,50 @@
   </div>
 </div>
 
+<!-- Legal package contract modal -->
+<div id="legalPackageModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6" style="max-width:640px">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="legalPackageModalTitle">Thêm gói thầu</h3>
+      <button type="button" onclick="closeModal('legalPackageModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="legalPackageForm" class="space-y-4" onsubmit="submitLegalPackageForm(event)">
+      <input type="hidden" id="legalPkgId">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Tên gói thầu *</label>
+          <input type="text" id="legalPkgName" class="input-field" required placeholder="VD: TV09 (TKCS)">
+        </div>
+        <div>
+          <label class="label">Mã gói</label>
+          <input type="text" id="legalPkgCode" class="input-field" placeholder="VD: GT-03">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ngày ký</label>
+          <input type="date" id="legalPkgStart" class="input-field">
+        </div>
+        <div>
+          <label class="label">Ngày kết thúc</label>
+          <input type="date" id="legalPkgEnd" class="input-field">
+        </div>
+      </div>
+      <div>
+        <label class="label">Giá trị hợp đồng (VNĐ)</label>
+        <input type="text" id="legalPkgValue" class="input-field" inputmode="numeric" placeholder="0" oninput="moneyInputFmt(this)">
+      </div>
+      <div id="legalPkgSeedWrap">
+        <p class="text-xs text-gray-400">Gói mới để trống. Tự nhập hồ sơ ở tab Theo dõi hồ sơ, hoặc sao chép từ dự án khác.</p>
+      </div>
+      <div class="flex justify-end gap-3">
+        <button type="button" onclick="closeModal('legalPackageModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary">Lưu gói thầu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Category Modal -->
 <div id="categoryModal" class="modal-overlay" style="display:none">
   <div class="modal p-6" style="max-width:780px;width:95vw">
@@ -6572,8 +7938,25 @@
   </div>
 </div>
 
+<div id="assistantDock" class="hidden" hidden>
+  <div id="assistantPanel" class="hidden" hidden>
+    <div id="assistantHead">
+      <span>Tra cứu</span>
+      <button type="button" id="assistantDocsBtn" class="btn-secondary text-xs hidden" hidden onclick="toggleAssistantDocs()">Tài liệu</button>
+      <button type="button" class="ml-auto text-gray-400 px-2" onclick="closeAssistantPanel()" aria-label="Đóng">×</button>
+    </div>
+    <div id="assistantDocs" class="hidden" hidden></div>
+    <div id="assistantThread"></div>
+    <form id="assistantComposer" onsubmit="submitAssistantAsk(event)">
+      <textarea id="assistantInput" class="input-field" rows="2" placeholder="Hỏi dự án, task, chấm công, hồ sơ theo quyền của bạn"></textarea>
+      <button type="submit" class="btn-primary" aria-label="Gửi"><i class="fas fa-paper-plane"></i></button>
+    </form>
+  </div>
+  <button type="button" id="assistantFab" onclick="toggleAssistantPanel()" aria-label="Tra cứu"><i class="fas fa-comment-dots"></i></button>
+</div>
+
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260926a"></script>
+<script src="/static/app.js?v=20260929aa"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
@@ -6581,7 +7964,7 @@
     if (window._execDashLoaded) return Promise.resolve();
     return new Promise(function (resolve, reject) {
       var s = document.createElement('script');
-      s.src = '/static/executive-dashboard.js?v=20260831d';
+      s.src = '/static/executive-dashboard.js?v=20260929g';
       s.onload = function () { window._execDashLoaded = true; resolve(); };
       s.onerror = reject;
       document.body.appendChild(s);
@@ -7049,7 +8432,22 @@
 
   /* ── Timesheet weekend row highlight ── */
   /* Thứ 7: nền cam nhạt (250,192,144) */
-  tr.ts-sat td { background-color: rgb(250,192,144) !important; }
+  tr.ts-sat td { background-color: rgb(250,192,144) !important; color: #1a1a1a !important; }
+  tr.ts-sat td .text-orange-500,
+  tr.ts-sat td .text-primary,
+  tr.ts-sat td .text-gray-700,
+  tr.ts-sat td .text-gray-600,
+  tr.ts-sat td .text-gray-500,
+  tr.ts-sat td .text-gray-400,
+  tr.ts-sat td .text-gray-300,
+  tr.ts-sat td .text-sm,
+  tr.ts-sat td .text-xs,
+  tr.ts-sat td .ts-project-code { color: #1a1a1a !important; }
+  tr.ts-sat td .text-green-600,
+  tr.ts-sat td .text-indigo-600 { color: #1a1a1a !important; }
+  tr.ts-sat td font,
+  tr.ts-sat td b,
+  tr.ts-sat td span { color: #1a1a1a !important; }
   /* Chủ nhật: nền cam đậm (228,108,10), chữ trắng */
   tr.ts-sun td { background-color: rgb(228,108,10) !important; color: #1a1a1a !important; }
   tr.ts-sun td .badge,
@@ -7069,6 +8467,45 @@
   tr.ts-sun td font,
   tr.ts-sun td b,
   tr.ts-sun td span { color: #1a1a1a !important; }
+  /* Dark: weekend wash stays distinct, project code and row text stay light on it */
+  html[data-theme="dark"] tr.ts-sat td {
+    background-color: rgba(251, 146, 60, 0.28) !important;
+    color: #ffedd5 !important;
+  }
+  html[data-theme="dark"] tr.ts-sat td .text-orange-500,
+  html[data-theme="dark"] tr.ts-sat td .text-primary,
+  html[data-theme="dark"] tr.ts-sat td .text-gray-700,
+  html[data-theme="dark"] tr.ts-sat td .text-gray-600,
+  html[data-theme="dark"] tr.ts-sat td .text-gray-500,
+  html[data-theme="dark"] tr.ts-sat td .text-gray-400,
+  html[data-theme="dark"] tr.ts-sat td .text-gray-300,
+  html[data-theme="dark"] tr.ts-sat td .text-sm,
+  html[data-theme="dark"] tr.ts-sat td .text-xs,
+  html[data-theme="dark"] tr.ts-sat td .ts-project-code,
+  html[data-theme="dark"] tr.ts-sat td .text-green-600,
+  html[data-theme="dark"] tr.ts-sat td .text-indigo-600,
+  html[data-theme="dark"] tr.ts-sat td font,
+  html[data-theme="dark"] tr.ts-sat td b,
+  html[data-theme="dark"] tr.ts-sat td span { color: #ffedd5 !important; }
+  html[data-theme="dark"] tr.ts-sun td {
+    background-color: rgba(234, 88, 12, 0.55) !important;
+    color: #fff7ed !important;
+  }
+  html[data-theme="dark"] tr.ts-sun td .text-orange-500,
+  html[data-theme="dark"] tr.ts-sun td .text-primary,
+  html[data-theme="dark"] tr.ts-sun td .text-gray-700,
+  html[data-theme="dark"] tr.ts-sun td .text-gray-600,
+  html[data-theme="dark"] tr.ts-sun td .text-gray-500,
+  html[data-theme="dark"] tr.ts-sun td .text-gray-400,
+  html[data-theme="dark"] tr.ts-sun td .text-gray-300,
+  html[data-theme="dark"] tr.ts-sun td .text-sm,
+  html[data-theme="dark"] tr.ts-sun td .text-xs,
+  html[data-theme="dark"] tr.ts-sun td .ts-project-code,
+  html[data-theme="dark"] tr.ts-sun td .text-green-600,
+  html[data-theme="dark"] tr.ts-sun td .text-indigo-600,
+  html[data-theme="dark"] tr.ts-sun td font,
+  html[data-theme="dark"] tr.ts-sun td b,
+  html[data-theme="dark"] tr.ts-sun td span { color: #fff7ed !important; }
 </style>
 
 <script>
@@ -7114,6 +8551,50 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeGuideModal();
 });
 </script>
+
+<!-- ============================================================
+     MODAL: Sao chép HSPL từ dự án khác
+     ============================================================ -->
+<div id="modalLegalCopyFrom" class="modal-overlay hidden" style="z-index:1100">
+  <div class="modal legal-copy-dialog">
+    <div class="legal-copy-head">
+      <div>
+        <h3><i class="fas fa-copy" style="color:var(--primary);margin-right:8px"></i>Sao chép từ dự án khác</h3>
+        <p>Chỉ sao chép gói thầu, giai đoạn và hạng mục. Không sao chép thanh toán, tài liệu hay task.</p>
+      </div>
+      <button type="button" class="legal-copy-x" onclick="closeLegalCopyFromModal()" aria-label="Đóng"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="legal-copy-body">
+      <div>
+        <label class="legal-copy-label" for="legalCopyFromSource">Dự án nguồn</label>
+        <select id="legalCopyFromSource" class="input-field" onchange="onLegalCopyFromSourceChange()"></select>
+      </div>
+      <div id="legalCopyFromPkgWrap" style="display:none">
+        <label class="legal-copy-label">Gói thầu cần sao chép</label>
+        <p style="margin:-2px 0 6px;font-size:12px;color:var(--shell-text-muted)">Không chọn ô nào nghĩa là sao chép tất cả.</p>
+        <div id="legalCopyFromPkgList" class="legal-copy-pkgs space-y-2"></div>
+      </div>
+      <div>
+        <span class="legal-copy-label">Khi trùng tên gói trên dự án đích</span>
+        <div class="legal-copy-choices">
+          <label class="legal-copy-choice">
+            <input type="radio" name="legalCopyNameConflict" value="skip" checked> Bỏ qua gói trùng tên
+          </label>
+          <label class="legal-copy-choice">
+            <input type="radio" name="legalCopyNameConflict" value="overwrite"> Ghi đè gói trùng tên
+          </label>
+        </div>
+      </div>
+      <div id="legalCopyFromResult" class="text-sm hidden"></div>
+      <div class="legal-copy-actions">
+        <button type="button" class="btn-secondary" onclick="closeLegalCopyFromModal()">Hủy</button>
+        <button type="button" class="btn-primary" id="btnLegalCopyFromSubmit" onclick="executeLegalCopyFrom()">
+          <i class="fas fa-copy mr-1"></i>Sao chép
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ============================================================
      MODAL: Import Excel - Hồ Sơ Pháp Lý
@@ -7630,7 +9111,7 @@ document.addEventListener('keydown', function(e) {
         </div>
         <div>
           <label class="label text-xs">Giai đoạn</label>
-          <select id="impPhase" class="select-field text-sm">
+          <select id="impPhase" class="select-field text-sm" onchange="refreshImportTaskTitles()">
             <option value="basic_design">Thiết kế cơ sở</option>
             <option value="technical_design">Thiết kế kỹ thuật</option>
             <option value="construction_design">Thiết kế thi công</option>
@@ -7639,7 +9120,7 @@ document.addEventListener('keydown', function(e) {
         </div>
         <div>
           <label class="label text-xs">Loại task mặc định</label>
-          <select id="impTaskType" class="select-field text-sm">
+          <select id="impTaskType" class="select-field text-sm" onchange="refreshImportTaskTitles()">
             <option value="model">🏗️ Mô hình</option>
             <option value="check_hs">🔍 Kiểm tra hồ sơ</option>
             <option value="other">📋 Khác</option>
@@ -7658,7 +9139,7 @@ document.addEventListener('keydown', function(e) {
         <button onclick="downloadTaskTemplate()" class="btn-secondary text-sm">
           <i class="fas fa-download mr-1.5 text-green-600"></i>Tải file mẫu (.xlsx)
         </button>
-        <span class="text-xs text-gray-500">File mẫu gồm các cột: Tên công việc, Mô tả, Bộ môn, Filename, Phụ trách, Ưu tiên, Ngày bắt đầu, Ngày hết hạn, Giờ dự kiến, Ghi chú, HSTK</span>
+        <span class="text-xs text-gray-500">Mỗi dòng có cột Dự án, Giai đoạn, Bộ môn, Loại task, Hạng mục và Mô tả. Tên ghép từ các cột đó. Ô để trống thì lấy giá trị ở bước 1.</span>
       </div>
     </div>
 

@@ -30,11 +30,16 @@ Mở trình duyệt: **http://localhost:8788/preview**
 - Trang `/preview` **chỉ hiện trên localhost** — không có trên production.
 - Chỉ dùng **D1 local** (không `--remote`).
 
-## Dev nhanh (Vite HMR)
+## Dev nhanh (Vite HMR + API/D1 local)
+
+`vite.config.ts` gắn `@hono/vite-dev-server` — **không cần proxy riêng**; `/api/*` chạy cùng cổng Vite.
 
 ```bash
+npm run db:migrate:local   # lần đầu hoặc khi có migration mới
 npm run dev
 ```
+
+Mở **http://localhost:5173** (hoặc http://127.0.0.1:5173 sau khi `server.host` bật). Nếu chỉ cần stack giống production: `npm run preview:watch` → **http://localhost:8788**.
 
 ## Test
 

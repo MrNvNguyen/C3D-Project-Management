@@ -1,0 +1,17 @@
+{
+  "wave": "H-hspl-input-methods",
+  "date": "2026-09-26",
+  "runtime": {
+    "serve": "npm run build && wrangler pages dev dist --d1=bim-management-production --local --port 8794 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "url": "http://127.0.0.1:8794/#/legal",
+    "auth": "admin / Admin@123456 (system_admin)"
+  },
+  "root_cause": "Inline HTML handlers embedded JSON.stringify(item); fragile titles broke onclick/onchange",
+  "checks": {
+    "checklist_add_enter": { "pass": true, "note": "legal-checklist-inline-add POST + row insert" },
+    "checklist_title_ring_status": { "pass": true },
+    "payment_chung_enter": { "pass": true, "overview_count_after": 1 },
+    "npm_test_38": { "pass": true }
+  },
+  "not_run": ["import-excel", "copy-from", "cost-a row edit (no fixture rows)"]
+}

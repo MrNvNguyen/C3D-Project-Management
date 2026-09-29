@@ -1,0 +1,29 @@
+        <div id="projPanel-tasks" class="p-4">
+          <div class="flex justify-between items-center mb-3">
+            <span class="text-xs text-gray-500">Tổng ${tasks.length} task • ${done} hoàn thành • ${overdue > 0 ? `<span class="text-red-500">${overdue} trễ hạn</span>` : '0 trễ hạn'}</span>
+            <button type="button" onclick="taskGridFocusNewRow('project')" class="btn-primary text-xs px-3 py-1.5"><i class="fas fa-plus mr-1"></i>Tạo task</button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+              <thead><tr class="text-left text-gray-400 border-b">
+                <th class="pb-2 pr-3">Tên task</th>
+                <th class="pb-2 pr-3">Hạng mục</th>
+                <th class="pb-2 pr-3">Loại</th>
+                <th class="pb-2 pr-3">Filename</th>
+                <th class="pb-2 pr-3">Bộ môn</th>
+                <th class="pb-2 pr-3">Giai đoạn</th>
+                <th class="pb-2 pr-3">Ưu tiên</th>
+                <th class="pb-2 pr-3">Phụ trách</th>
+                <th class="pb-2 pr-3">Bắt đầu</th>
+                <th class="pb-2 pr-3">Hạn</th>
+                <th class="pb-2 pr-3" title="Phần trăm hoàn thành">% hoàn thành</th>
+                <th class="pb-2 pr-3">TT</th>
+                <th class="pb-2 pr-3">HSTK</th>
+                <th class="pb-2 pr-3">Ghi chú</th>
+                <th class="pb-2 pr-3">CDE</th>
+              </tr></thead>
+              <tbody id="projTasksTbody" class="divide-y"></tbody>
+            </table>
+          </div>
+          <div id="projTasksPagination" class="mt-3"></div>
+        </div>

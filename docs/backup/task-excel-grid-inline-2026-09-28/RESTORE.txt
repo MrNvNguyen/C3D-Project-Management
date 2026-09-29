@@ -1,0 +1,12 @@
+Backup phương án lưới Excel tạo/sửa task ngay trên bảng.
+Ngày: 2026-09-28. Nguồn: public/static/app.js và public/index.html trước khi trả về dialog.
+
+Gồm:
+- grid-engine.js — helper lưới (vẫn nằm trong app.js, không bị xóa)
+- render-proj-task-rows.js — render bảng task trong Chi tiết dự án
+- render-task-rows.js — render bảng Quản lý Công việc
+- tasks-page-button-and-thead.html — nút Tạo task mới + header bảng Công việc
+- project-task-panel.js-template.txt — nút Tạo task + header bảng trong dự án
+
+Để bật lại: thay renderProjTaskRows, renderTaskRows, hai nút tạo task và hai header bằng các file này.
+Nút tạo task của phương án này gọi taskGridFocusNewRow.

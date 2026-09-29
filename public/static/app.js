@@ -113,6 +113,101 @@ let allDisciplines = []
 let currentCostTab = 'costs'
 let charts = {}
 
+// ── Theme (Wave B): bim_theme light|dark ─────────────────────────────────────
+const BIM_THEME_STORAGE_KEY = 'bim_theme'
+
+function resolveBimTheme() {
+  const stored = localStorage.getItem(BIM_THEME_STORAGE_KEY)
+  if (stored === 'light' || stored === 'dark') return stored
+  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark'
+  return 'light'
+}
+
+function getBimTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'
+}
+
+function updateThemeToggleUI(mode) {
+  document.querySelectorAll('.theme-toggle-btn').forEach((btn) => {
+    const active = btn.dataset.themeChoice === mode
+    btn.classList.toggle('active', active)
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false')
+  })
+}
+
+function getChartThemeColors() {
+  const dark = getBimTheme() === 'dark'
+  return {
+    grid: dark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(0, 0, 0, 0.06)',
+    tick: dark ? '#94a3b8' : '#6b7280',
+    legend: dark ? '#e2e8f0' : '#374151',
+  }
+}
+
+function mergeChartThemeOptions(options) {
+  const c = getChartThemeColors()
+  const o = options ? { ...options } : {}
+  o.plugins = { ...(o.plugins || {}) }
+  o.plugins.legend = { ...(o.plugins.legend || {}) }
+  o.plugins.legend.labels = { ...(o.plugins.legend.labels || {}), color: c.legend }
+  if (o.scales && typeof o.scales === 'object') {
+    o.scales = { ...o.scales }
+    Object.keys(o.scales).forEach((axisKey) => {
+      const scale = o.scales[axisKey]
+      if (!scale || typeof scale !== 'object') return
+      o.scales[axisKey] = {
+        ...scale,
+        grid: { ...(scale.grid || {}), color: c.grid },
+        ticks: { ...(scale.ticks || {}), color: c.tick },
+      }
+    })
+  }
+  return o
+}
+
+function refreshChartsForTheme() {
+  const c = getChartThemeColors()
+  Object.values(charts).forEach((ch) => {
+    if (!ch?.options) return
+    try {
+      if (ch.options.plugins?.legend?.labels) ch.options.plugins.legend.labels.color = c.legend
+      if (ch.options.scales) {
+        Object.keys(ch.options.scales).forEach((axisKey) => {
+          const scale = ch.options.scales[axisKey]
+          if (!scale) return
+          if (scale.grid) scale.grid.color = c.grid
+          if (scale.ticks) scale.ticks.color = c.tick
+        })
+      }
+      ch.update('none')
+    } catch (_) { /* ignore stale chart refs */ }
+  })
+}
+
+function applyBimTheme(mode, persist) {
+  const m = mode === 'dark' ? 'dark' : 'light'
+  document.documentElement.setAttribute('data-theme', m)
+  if (persist) localStorage.setItem(BIM_THEME_STORAGE_KEY, m)
+  updateThemeToggleUI(m)
+  const metaTheme = document.querySelector('meta[name="theme-color"]')
+  if (metaTheme) metaTheme.setAttribute('content', m === 'dark' ? '#0f1729' : '#00A651')
+  refreshChartsForTheme()
+}
+
+function setBimTheme(mode) {
+  applyBimTheme(mode, true)
+}
+
+function initBimTheme() {
+  applyBimTheme(resolveBimTheme(), false)
+}
+
+window.setBimTheme = setBimTheme
+
+document.addEventListener('DOMContentLoaded', () => {
+  initBimTheme()
+})
+
 // ── Chart.js global safety wrapper ──────────────────────────────────────────
 // Intercept every new Chart() call to auto-destroy existing instance on same canvas
 // This prevents "Canvas is already in use" errors when re-rendering charts
@@ -140,7 +235,10 @@ function safeChart(ctx, config) {
       const existing = Chart.getChart(canvasEl)
       if (existing) { try { existing.destroy() } catch(e){} }
     }
-    return new Chart(ctx, config)
+    const cfg = config
+      ? { ...config, options: mergeChartThemeOptions(config.options) }
+      : config
+    return new Chart(ctx, cfg)
   } catch(e) {
     console.error('safeChart error:', e)
     return null
@@ -211,6 +309,13 @@ function api(endpoint, options = {}) {
     headers,
     ...options
   }).then(r => r.data).catch(err => {
+    if (!err.response && (err.message === 'Network Error' || err.code === 'ERR_NETWORK')) {
+      const hint = new Error(
+        'Không kết nối được server API — dùng http://localhost:5173 (npm run dev) hoặc npm run preview:watch (port 8788)'
+      )
+      hint.cause = err
+      throw hint
+    }
     throw err
   })
 }
@@ -623,6 +728,16 @@ function getPhaseName(p) {
   return m[p] || p
 }
 
+function taskPhasePillClass(phase) {
+  const map = {
+    basic_design: 'task-phase-cs',
+    technical_design: 'task-phase-kt',
+    construction_design: 'task-phase-tc',
+    as_built: 'task-phase-ab',
+  }
+  return 'task-phase-pill ' + (map[phase] || 'task-phase-na')
+}
+
 function getAssetCategoryName(c) {
   const m = { computer: 'Máy tính', laptop: 'Laptop', software: 'Phần mềm', equipment: 'Thiết bị', furniture: 'Nội thất', vehicle: 'Phương tiện', other: 'Khác' }
   return m[c] || c
@@ -704,6 +819,8 @@ function logout() {
   localStorage.removeItem('bim_user')
   $('mainApp').style.display = 'none'
   $('loginPage').style.display = 'flex'
+  const dock = $('assistantDock')
+  if (dock) { dock.classList.add('hidden'); dock.hidden = true }
   toast('Đã đăng xuất thành công', 'info')
 }
 
@@ -948,6 +1065,10 @@ function setupMobileViewportGuards() {
     if (!nav || window.innerWidth >= 768) return
     const shrunk = window.visualViewport.height < window.innerHeight * 0.75
     nav.classList.toggle('keyboard-hidden', shrunk)
+    const dock = $('assistantDock')
+    if (dock) dock.classList.toggle('keyboard-hidden', shrunk)
+    const projNav = $('projectDetailNav')
+    if (projNav) projNav.classList.toggle('keyboard-hidden', shrunk)
   }
   window.visualViewport.addEventListener('resize', sync)
   window.visualViewport.addEventListener('scroll', sync)
@@ -1047,6 +1168,7 @@ document.addEventListener('click', (e) => {
 async function initApp() {
   $('loginPage').style.display = 'none'
   $('mainApp').style.display = 'block'
+  mountAssistant()
 
   // Update UI with user info
   const initials = currentUser.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
@@ -1185,7 +1307,7 @@ async function loadDashboard() {
   try {
     const data = await api('/dashboard/stats')
     const { stats, monthly_hours, project_progress, discipline_breakdown, member_productivity,
-            task_status_breakdown, projects_near_deadline, birthdays_this_month } = data
+            task_status_breakdown, projects_near_deadline, birthdays_this_month, birthdays_forecast } = data
 
     // KPI row – tất cả role hiển thị giống nhau (layout member)
     $('kpiProjects').textContent = stats.total_projects
@@ -1248,14 +1370,14 @@ async function loadDashboard() {
     renderHoursChart(monthly_hours)
     renderProjectProgressList(project_progress)
     renderRecentTasksTable(project_progress, data.overdue_tasks_list || [])
-    renderBirthdayWidget(birthdays_this_month || [])
+    renderBirthdayWidget(birthdays_this_month || [], birthdays_forecast || [])
   } catch (e) {
     console.error('Dashboard error:', e)
   }
 }
 
 // ── Birthday widget ───────────────────────────────────────────────────────────
-function renderBirthdayWidget(birthdays) {
+function renderBirthdayWidget(birthdays, forecast) {
   const listEl     = $('birthdayList')
   const subtitleEl = $('birthdaySubtitle')
   if (!listEl) return
@@ -1265,28 +1387,35 @@ function renderBirthdayWidget(birthdays) {
   const todayDD = String(today.getDate()).padStart(2, '0')
   const monthNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6',
                       'Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
-  const monthName = monthNames[today.getMonth()]
 
-  if (!birthdays || birthdays.length === 0) {
-    if (subtitleEl) subtitleEl.textContent = `${monthName} — Không có sinh nhật`
-    listEl.innerHTML = `<div class="text-xs text-gray-400 text-center py-4 col-span-full">
-      <i class="fas fa-calendar-times mr-1"></i>Không có nhân sự nào có sinh nhật trong ${monthName}
-    </div>`
-    return
-  }
+  const slots = (Array.isArray(forecast) && forecast.length)
+    ? forecast.slice(0, 3)
+    : [0, 1, 2].map(offset => {
+        const d = new Date(today.getFullYear(), today.getMonth() + offset, 1)
+        const monthKey = String(d.getMonth() + 1).padStart(2, '0')
+        const people = offset === 0 ? (birthdays || []) : []
+        return {
+          year: d.getFullYear(),
+          month: d.getMonth() + 1,
+          month_key: monthKey,
+          label: monthNames[d.getMonth()],
+          is_current: offset === 0,
+          count: people.length,
+          people,
+        }
+      })
 
-  const todayBirths = birthdays.filter(u => {
+  const current = slots.find(s => s.is_current) || slots[0]
+  const todayCount = (current?.people || []).filter(u => {
     if (!u.birthday) return false
-    const mm = u.birthday.substring(5, 7)
-    const dd = u.birthday.substring(8, 10)
-    return mm === todayMM && dd === todayDD
-  })
+    return u.birthday.substring(5, 7) === todayMM && u.birthday.substring(8, 10) === todayDD
+  }).length
+  const total = slots.reduce((n, s) => n + (Number(s.count) || (s.people || []).length || 0), 0)
 
   if (subtitleEl) {
-    subtitleEl.textContent = `${monthName} — ${birthdays.length} người${todayBirths.length > 0 ? ` · 🎉 ${todayBirths.length} người sinh nhật hôm nay!` : ''}`
+    subtitleEl.textContent = `3 tháng gần nhất — ${total} người${todayCount > 0 ? ` · ${todayCount} người hôm nay` : ''}`
   }
 
-  // Hiện/ẩn nút "Gửi lời chúc" dựa trên role — chỉ admin mới có quyền gọi API
   const sendBtn = $('btnSendBirthdayEmails')
   if (sendBtn) {
     const role = currentUser?.role
@@ -1294,43 +1423,33 @@ function renderBirthdayWidget(birthdays) {
     sendBtn.style.display = canSend ? '' : 'none'
   }
 
-  listEl.innerHTML = birthdays.map(u => {
-    if (!u.birthday) return ''
-    const mm = u.birthday.substring(5, 7)
-    const dd = u.birthday.substring(8, 10)
-    const yyyy = u.birthday.substring(0, 4)
-    const isToday = mm === todayMM && dd === todayDD
-    const age = parseInt(yyyy) > 1900 ? today.getFullYear() - parseInt(yyyy) : null
-
-    // Avatar initials
-    const initials = (u.full_name || '?').split(' ').slice(-2).map(w => w[0]).join('').toUpperCase()
-    const avatarBg = isToday
-      ? 'background:linear-gradient(135deg,#ec4899,#f43f5e)'
-      : 'background:linear-gradient(135deg,#8b5cf6,#6366f1)'
-
-    return `
-      <div class="flex items-center gap-2 p-2.5 rounded-xl border transition-all ${isToday
-        ? 'border-pink-200 bg-pink-50 shadow-sm ring-2 ring-pink-300 ring-offset-1'
-        : 'border-gray-100 bg-white hover:border-pink-100 hover:bg-pink-50/30'
-      }">
-        <div class="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
-          style="${avatarBg}">
-          ${u.avatar
-            ? `<img src="${authedFileUrl(u.avatar)}" class="w-9 h-9 rounded-full object-cover" alt="${u.full_name}">`
-            : initials}
+  listEl.innerHTML = slots.map(slot => {
+    const people = slot.people || []
+    const count = Number.isFinite(Number(slot.count)) ? Number(slot.count) : people.length
+    const rows = people.map(u => {
+      if (!u.birthday) return ''
+      const mm = u.birthday.substring(5, 7)
+      const dd = u.birthday.substring(8, 10)
+      const yyyy = u.birthday.substring(0, 4)
+      const isToday = slot.is_current && mm === todayMM && dd === todayDD
+      const age = parseInt(yyyy) > 1900 ? slot.year - parseInt(yyyy) : null
+      const initials = (u.full_name || '?').split(' ').slice(-2).map(w => w[0]).join('').toUpperCase()
+      return `<div class="dash-birthday-person${isToday ? ' is-today' : ''}">
+        <div class="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0" style="background:${isToday ? 'linear-gradient(135deg,#ec4899,#f43f5e)' : 'linear-gradient(135deg,#8b5cf6,#6366f1)'}">
+          ${u.avatar ? `<img src="${authedFileUrl(u.avatar)}" class="w-7 h-7 rounded-full object-cover" alt="">` : escHtml(initials)}
         </div>
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-1">
-            <p class="text-xs font-semibold text-gray-800 truncate">${u.full_name}</p>
-            ${isToday ? '<span class="text-base flex-shrink-0">🎉</span>' : ''}
-          </div>
-          <p class="text-xs text-gray-400 truncate">${u.department || u.job_title || ''}</p>
-          <p class="text-xs font-medium ${isToday ? 'text-pink-600' : 'text-purple-600'}">
-            ${isToday ? '🎂 Sinh nhật hôm nay' : `${dd}/${mm}`}${age ? ` · ${age} tuổi` : ''}
-          </p>
+        <div class="min-w-0">
+          <p class="dash-birthday-name">${escHtml(u.full_name || '')}${isToday ? ' 🎂' : ''}</p>
+          <p class="dash-birthday-meta">${dd}/${mm}${age ? ` · ${age} tuổi` : ''}</p>
         </div>
       </div>`
-  }).filter(Boolean).join('')
+    }).filter(Boolean).join('')
+    return `<div class="dash-birthday-month${slot.is_current ? ' is-current' : ''}">
+      <div class="dash-birthday-label">${escHtml(slot.label || '')}</div>
+      <div class="dash-birthday-count">${count}<span>người</span></div>
+      ${rows ? `<div class="dash-birthday-people">${rows}</div>` : '<div class="dash-birthday-empty">Không có</div>'}
+    </div>`
+  }).join('')
 }
 
 async function sendBirthdayEmailsToday() {
@@ -2168,6 +2287,673 @@ function filterProjects() {
   renderProjectsGrid(filtered)
 }
 
+// ── Task grid (Wave E — HSPL Excel contract, shared project + global) ──
+let _taskGridInlineBusy = false
+
+function _taskGridStatusRingClass(status) {
+  const s = status === 'done' ? 'completed' : (status || 'todo')
+  if (s === 'in_progress') return 'progress'
+  if (s === 'completed' || s === 'review') return 'done'
+  if (s === 'cancelled') return 'na'
+  return 'pending'
+}
+
+function _taskGridStatusRingHtml(status, title) {
+  const ring = _taskGridStatusRingClass(status)
+  const tip = title || status || ''
+  return `<span class="task-grid-status-ring legal-checklist-status-ring ${ring}" title="${escHtml(tip)}" aria-hidden="true"></span>`
+}
+
+function _taskGridDueInputClass(task, dueVal) {
+  const d = dueVal ?? task?.due_date
+  const st = task?.status
+  const od = d && d < today() && !['completed', 'review', 'cancelled'].includes(st)
+  return od ? 'task-grid-due-pill is-overdue' : 'task-grid-due-pill'
+}
+
+function _taskGridPermissions(task, projectId) {
+  const pid = task?.project_id || projectId
+  const isAssigned = task ? task.assigned_to === currentUser?.id : false
+  const isCreatedByMe = task ? task.assigned_by === currentUser?.id : true
+  const effForTask = getEffectiveRoleForProject(pid)
+  const isAdminOrLeader = ['system_admin', 'project_admin', 'project_leader'].includes(effForTask)
+  const canEdit = !task || isAdminOrLeader || isAssigned || isCreatedByMe
+  const isMember = !['system_admin', 'project_admin', 'project_leader'].includes(
+    getEffectiveRoleForProject(pid)
+  )
+  const isLimitedEdit = !!task && isMember && !isCreatedByMe
+  return { canEdit, isLimitedEdit, isMember, isAdminOrLeader }
+}
+
+function buildTaskPayloadFromGrid(taskBase, gridFields, opts = {}) {
+  const isNew = !!opts.isNew
+  const projId = parseInt(gridFields.project_id || taskBase?.project_id, 10)
+  const titleRaw = (gridFields.title != null ? gridFields.title : taskBase?.title) || ''
+  const title = String(titleRaw).trim()
+  if (isNew && !title) return null
+
+  const pick = (key, fallback) =>
+    gridFields[key] !== undefined && gridFields[key] !== null && gridFields[key] !== ''
+      ? gridFields[key]
+      : fallback
+
+  const payload = {
+    project_id: projId,
+    category_id: parseInt(pick('category_id', taskBase?.category_id), 10) || null,
+    title: title || taskBase?.title,
+    description: pick('description', taskBase?.description ?? '') ?? '',
+    discipline_code: (pick('discipline_code', taskBase?.discipline_code) || '').trim() || null,
+    phase: pick('phase', taskBase?.phase || 'basic_design'),
+    priority: pick('priority', taskBase?.priority || 'medium'),
+    status: pick('status', taskBase?.status || 'todo'),
+    assigned_to:
+      gridFields.assigned_to !== undefined && gridFields.assigned_to !== ''
+        ? parseInt(gridFields.assigned_to, 10) || null
+        : taskBase?.assigned_to ?? null,
+    start_date: pick('start_date', taskBase?.start_date || (isNew ? today() : null)) || null,
+    due_date: (pick('due_date', taskBase?.due_date) || '').trim() || null,
+    estimated_hours: parseFloat(pick('estimated_hours', taskBase?.estimated_hours)) || 0,
+    progress: parseInt(pick('progress', taskBase?.progress), 10) || 0,
+    work_notes: (pick('work_notes', taskBase?.work_notes) ? String(pick('work_notes', taskBase?.work_notes)).trim() : null) || null,
+    cde_report:
+      gridFields.cde_report !== undefined
+        ? gridFields.cde_report
+        : taskBase?.cde_report
+          ? 1
+          : 0,
+    hstk_date: (pick('hstk_date', taskBase?.hstk_date) ? String(pick('hstk_date', taskBase?.hstk_date)).trim() : null) || null,
+    task_type: pick('task_type', taskBase?.task_type || 'model'),
+    model_filename: pick('model_filename', taskBase?.model_filename ?? null) || null,
+  }
+
+  const eff = getEffectiveRoleForProject(projId)
+  const isMember = !['system_admin', 'project_admin', 'project_leader'].includes(eff)
+  if (isNew && isMember) payload.assigned_to = currentUser?.id ?? null
+
+  return payload
+}
+
+function _taskGridReadRow(row) {
+  const o = {}
+  row.querySelectorAll('[data-tfield]').forEach(el => {
+    if (el.type === 'checkbox') o[el.dataset.tfield] = el.checked ? 1 : 0
+    else o[el.dataset.tfield] = el.value
+  })
+  row.querySelectorAll('[data-tfield-cb]').forEach(el => {
+    o[el.dataset.tfieldCb] = _cbGetValue(el.id) || ''
+  })
+  if (row.dataset.projectId) o.project_id = row.dataset.projectId
+  return o
+}
+
+function _taskGridPayloadUnchanged(task, payload) {
+  const norm = (k, v) => {
+    if (k === 'category_id' || k === 'assigned_to' || k === 'project_id') return v == null || v === '' ? null : Number(v)
+    if (k === 'progress') return parseInt(v, 10) || 0
+    if (k === 'cde_report') return v ? 1 : 0
+    return v == null ? '' : String(v)
+  }
+  for (const k of [
+    'title', 'project_id', 'category_id', 'task_type', 'model_filename', 'discipline_code', 'phase', 'priority',
+    'status', 'assigned_to', 'start_date', 'due_date', 'estimated_hours', 'progress',
+    'work_notes', 'hstk_date', 'cde_report',
+  ]) {
+    if (norm(k, task[k]) !== norm(k, payload[k])) return false
+  }
+  return true
+}
+
+function taskGridSyncFilenameVisibility(selectEl) {
+  const row = selectEl?.closest?.('.task-grid-row')
+  if (!row) return
+  const isModel = selectEl.value === 'model'
+  row.querySelectorAll('.task-grid-filename-cell').forEach(cell => {
+    cell.classList.toggle('task-grid-filename-skip', !isModel)
+    const inp = cell.querySelector('[data-tfield="model_filename"]')
+    if (inp) inp.disabled = !isModel
+  })
+}
+
+function _taskGridFocusableInRow(row) {
+  const out = []
+  row.querySelectorAll('.task-grid-cell').forEach(cell => {
+    if (cell.classList.contains('task-grid-filename-skip')) return
+    const cb = cell.querySelector('[data-cb-trigger]')
+    if (cb && !cb.closest('[style*="pointer-events: none"]')) {
+      out.push(cb)
+      return
+    }
+    const el = cell.querySelector('[data-tfield]:not([disabled])')
+    if (el) out.push(el)
+  })
+  return out
+}
+
+function _taskGridTabNavigate(ev) {
+  const row = ev.target.closest('.task-grid-row')
+  if (!row) return
+  _cbCloseAll()
+  const fields = _taskGridFocusableInRow(row)
+  let active = ev.target.closest('[data-tfield], [data-cb-trigger]')
+  if (!active) return
+  let idx = fields.indexOf(active)
+  if (idx < 0) idx = fields.findIndex(f => f.contains(active))
+  const next = ev.shiftKey ? idx - 1 : idx + 1
+  if (next >= 0 && next < fields.length) {
+    ev.preventDefault()
+    fields[next].focus()
+    if (fields[next].matches('[data-cb-trigger]')) fields[next].click()
+  } else if (!ev.shiftKey && row.classList.contains('is-new')) {
+    const title = row.querySelector('[data-tfield="title"]')?.value?.trim()
+    if (title) {
+      ev.preventDefault()
+      const ctx = row.dataset.gridContext || 'project'
+      taskGridCommitRow(ev, null, ctx).then(() => taskGridFocusNewRow(ctx))
+    }
+  }
+}
+
+function taskGridCancelCell(ev) {
+  const el = ev.target
+  const snap = el.dataset.taskGridOrig
+  if (snap != null) el.value = snap
+  else if (el.hasAttribute('contenteditable')) el.innerText = el.dataset.taskGridOrig || ''
+  el.blur()
+}
+
+function taskGridCellKeydown(ev, taskId, context) {
+  if (ev.key === 'Escape') {
+    ev.preventDefault()
+    taskGridCancelCell(ev)
+    return
+  }
+  if (ev.key === 'Tab') {
+    _taskGridTabNavigate(ev)
+    return
+  }
+  if (ev.key === 'Enter') {
+    ev.preventDefault()
+    taskGridCommitRow(ev, taskId || null, context)
+  }
+}
+
+async function taskGridTitlePaste(ev, taskId, context) {
+  const row = ev.target.closest('.task-grid-row')
+  if (!row || !row.classList.contains('is-new')) return
+  const text = ev.clipboardData?.getData('text') || ''
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  if (lines.length <= 1) return
+  ev.preventDefault()
+  for (let i = 0; i < lines.length; i++) {
+    const titleEl = row.querySelector('[data-tfield="title"]')
+    if (titleEl) titleEl.value = lines[i]
+    await taskGridCommitRow({ target: titleEl || ev.target, preventDefault() {} }, null, context)
+    if (i < lines.length - 1) {
+      await new Promise(r => setTimeout(r, 50))
+      const newRow = document.querySelector(`.task-grid-row.is-new[data-grid-context="${context}"]`)
+      if (!newRow) break
+    }
+  }
+}
+
+async function _taskGridReloadProjectTasks(projectId) {
+  const pid = parseInt(projectId, 10)
+  const prevCats = _projectDetailFetchCache.projectId === pid ? _projectDetailFetchCache.categories : []
+  _invalidateProjectDetailCache()
+  const tasks = await api(`/tasks?project_id=${pid}&limit=${TASK_PROJECT_LIMIT}`)
+  _projectDetailFetchCache = { projectId: pid, tasks, categories: prevCats }
+  _projTaskAllData = tasks
+  renderProjTaskRows()
+  renderProjTaskPagination()
+}
+
+async function taskGridCommitRow(ev, taskId, context) {
+  if (_taskGridInlineBusy) return
+  const row = ev?.target?.closest?.('.task-grid-row')
+  if (!row) return
+  const isNew = !taskId || row.classList.contains('is-new')
+  const gridFields = _taskGridReadRow(row)
+  const taskBase = isNew
+    ? {}
+    : (_projTaskAllData.find(t => t.id === taskId) || allTasks.find(t => t.id === taskId) || {})
+
+  const payload = buildTaskPayloadFromGrid(taskBase, gridFields, { isNew })
+  if (!payload) return
+  if (!payload.project_id) {
+    toast('Vui lòng chọn dự án', 'warning')
+    return
+  }
+  if (!payload.title) {
+    if (isNew) return
+    toast('Tên task không được để trống', 'error')
+    return
+  }
+  if (!isNew && _taskGridPayloadUnchanged(taskBase, payload)) return
+
+  _taskGridInlineBusy = true
+  try {
+    if (isNew) await api('/tasks', { method: 'post', data: payload })
+    else await api(`/tasks/${taskId}`, { method: 'put', data: payload })
+    toast(isNew ? 'Tạo task thành công' : 'Cập nhật task thành công')
+    if (context === 'project' && window._currentProjectDetailId) {
+      await _taskGridReloadProjectTasks(window._currentProjectDetailId)
+    } else {
+      await loadTasks()
+    }
+  } catch (e) {
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+  } finally {
+    _taskGridInlineBusy = false
+  }
+}
+
+function taskGridFocusNewRow(context) {
+  const row = document.querySelector(`.task-grid-row.is-new[data-grid-context="${context}"]`)
+  if (!row) return
+  const title = row.querySelector('[data-tfield="title"]')
+  if (title) {
+    title.focus()
+    title.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }
+}
+
+function _taskGridStatusSelectHtml(status, disabled, taskId, ctx) {
+  const opts = [
+    ['todo', 'Chờ làm'],
+    ['in_progress', 'Đang làm'],
+    ['review', 'Đang duyệt'],
+    ['completed', 'Hoàn thành'],
+    ['cancelled', 'Đã hủy'],
+  ]
+  const cur = status === 'done' ? 'completed' : (status || 'todo')
+  const idArg = taskId ? taskId : 'null'
+  return `<select data-tfield="status" class="task-grid-inline-select" ${disabled ? 'disabled' : ''} onblur="taskGridCommitRow(event, ${idArg}, '${ctx}')" onkeydown="taskGridCellKeydown(event, ${idArg}, '${ctx}')">${opts.map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`
+}
+
+function _taskGridPrioritySelectHtml(priority, disabled) {
+  const opts = [['urgent', 'Khẩn'], ['high', 'Cao'], ['medium', 'TB'], ['low', 'Thấp']]
+  const cur = priority || 'medium'
+  return `<select data-tfield="priority" class="task-grid-inline-select task-grid-priority-select" ${disabled ? 'disabled' : ''} onblur="taskGridCommitRow(event, this.closest('.task-grid-row').dataset.taskId, this.closest('.task-grid-row').dataset.gridContext)" onkeydown="taskGridCellKeydown(event, this.closest('.task-grid-row').dataset.taskId, this.closest('.task-grid-row').dataset.gridContext)">${opts.map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`
+}
+
+function _taskGridDisciplineSelectHtml(code, disabled) {
+  const items = (allDisciplines || []).map(d => d.code)
+  return `<select data-tfield="discipline_code" class="task-grid-inline-select" ${disabled ? 'disabled' : ''} onblur="taskGridCommitRow(event, this.closest('.task-grid-row').dataset.taskId, this.closest('.task-grid-row').dataset.gridContext)" onkeydown="taskGridCellKeydown(event, this.closest('.task-grid-row').dataset.taskId, this.closest('.task-grid-row').dataset.gridContext)"><option value="">—</option>${items.map(c => `<option value="${c}"${c === code ? ' selected' : ''}>${c}</option>`).join('')}</select>`
+}
+
+function _taskGridTypeSelectHtml(taskType, disabled, taskId, ctx) {
+  const opts = [
+    ['model', 'Mô hình'],
+    ['check_hs', 'Kiểm HS'],
+    ['other', 'Khác'],
+  ]
+  const cur = taskType || 'model'
+  const idArg = taskId ? taskId : 'null'
+  const dis = disabled ? 'disabled' : ''
+  const commit = `onblur="taskGridCommitRow(event, ${idArg}, '${ctx}')" onkeydown="taskGridCellKeydown(event, ${idArg}, '${ctx}')"`
+  return `<select data-tfield="task_type" class="task-grid-inline-select" ${dis} onchange="taskGridSyncFilenameVisibility(this)" ${commit}>${opts.map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`
+}
+
+function _taskGridPhaseSelectHtml(phase, disabled, taskId, ctx) {
+  const opts = [
+    ['basic_design', 'TKCS'],
+    ['technical_design', 'TKKT'],
+    ['construction_design', 'TKTC'],
+    ['as_built', 'Hoàn công'],
+  ]
+  const cur = phase || 'basic_design'
+  const idArg = taskId ? taskId : 'null'
+  const dis = disabled ? 'disabled' : ''
+  const commit = `onblur="taskGridCommitRow(event, ${idArg}, '${ctx}')" onkeydown="taskGridCellKeydown(event, ${idArg}, '${ctx}')"`
+  return `<select data-tfield="phase" class="task-grid-inline-select" ${dis} ${commit}>${opts.map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`
+}
+
+function _taskGridFilenameOptionsHtml(projectId, selected) {
+  const items = _taskFilenameCache[projectId] || []
+  const val = selected || ''
+  const known = items.some(i => i.value === val)
+  let html = '<option value="">—</option>'
+  if (val && !known) html += `<option value="${escHtml(val)}" selected>${escHtml(val)}</option>`
+  html += items.map(i => `<option value="${escHtml(i.value)}"${i.value === val ? ' selected' : ''}>${escHtml(i.label)}</option>`).join('')
+  return html
+}
+
+function _taskGridApplyModelOptions(row) {
+  const sel = row?.querySelector?.('select[data-tfield="model_filename"]')
+  if (!sel) return
+  const cur = sel.value
+  sel.innerHTML = _taskGridFilenameOptionsHtml(row.dataset.projectId, cur)
+}
+
+async function _taskGridLoadModelCache(projectId) {
+  if (!projectId || _taskFilenameCache[projectId]) return
+  try {
+    const models = await api(`/projects/${projectId}/models`)
+    _taskFilenameCache[projectId] = (models || []).map(m => ({ value: m.name, label: m.name }))
+  } catch (_) {
+    _taskFilenameCache[projectId] = []
+  }
+}
+
+function _taskGridFilenameCellHtml(t, canEdit, isLimitedEdit, disAll, commitAttr, py = 'py-1.5') {
+  const isModel = (t?.task_type || 'model') === 'model'
+  const skip = isModel ? '' : ' task-grid-filename-skip'
+  const val = t?.model_filename || ''
+  if (!canEdit || isLimitedEdit) {
+    return `<td class="task-grid-cell ${py} pr-3 task-grid-filename-cell${skip}"><span class="text-xs">${isModel ? escHtml(val || '—') : '—'}</span></td>`
+  }
+  const dis = disAll || !isModel ? 'disabled' : ''
+  return `<td class="task-grid-cell ${py} pr-3 task-grid-filename-cell${skip}"><select data-tfield="model_filename" class="task-grid-inline-select task-grid-filename-select" title="Chọn từ Danh sách model" ${dis} ${commitAttr}>${_taskGridFilenameOptionsHtml(t?.project_id, val)}</select></td>`
+}
+
+function _taskGridFilenameCellHtmlGlobal(t, canEdit, isLimitedEdit, disAll, commitAttr) {
+  return _taskGridFilenameCellHtml(t, canEdit, isLimitedEdit, disAll, commitAttr, 'py-2')
+}
+
+function _taskGridFilenameNewCellHtml(projectId, commitAttr, py) {
+  return `<td class="task-grid-cell ${py} pr-3 task-grid-filename-cell"><select data-tfield="model_filename" class="task-grid-inline-select task-grid-filename-select" title="Chọn từ Danh sách model" ${commitAttr}>${_taskGridFilenameOptionsHtml(projectId, '')}</select></td>`
+}
+
+function _taskGridProgressCellHtml(value, disabled, commitAttr, py) {
+  const dis = disabled ? 'disabled' : ''
+  return `<td class="task-grid-cell ${py} pr-3"><div class="task-grid-progress-wrap"><input type="number" min="0" max="100" data-tfield="progress" class="task-grid-inline-input task-grid-progress-input" value="${value || 0}" title="% hoàn thành" ${dis} ${commitAttr}><span class="task-grid-progress-unit">%</span></div></td>`
+}
+
+function _taskGridAssigneeItems(projectId, isNew) {
+  const eff = getEffectiveRoleForProject(projectId)
+  const isMember = !['system_admin', 'project_admin', 'project_leader'].includes(eff)
+  if (isMember && isNew) {
+    return [{ value: String(currentUser.id), label: currentUser.full_name }]
+  }
+  const mems = window._currentProjectDetailMembers || []
+  if (mems.length) {
+    return mems
+      .filter(m => m.user_id)
+      .map(m => ({ value: String(m.user_id), label: m.full_name || m.name || `#${m.user_id}` }))
+  }
+  return (allUsers || [])
+    .filter(u => u.is_active !== 0)
+    .map(u => ({ value: String(u.id), label: u.full_name }))
+}
+
+async function _taskGridInitRowComboboxes(row) {
+  const taskId = row.dataset.taskId || 'new'
+  const projectId = parseInt(row.dataset.projectId, 10)
+  const isNew = row.classList.contains('is-new')
+  const { isLimitedEdit, isMember } = _taskGridPermissions(isNew ? null : { project_id: projectId }, projectId)
+
+  const catHost = row.querySelector(`[id^="taskGridCat_"]`)
+  if (catHost) {
+    let catItems = []
+    if (projectId && _projectDetailFetchCache.projectId === projectId) {
+      catItems = (_projectDetailFetchCache.categories || []).map(c => ({ value: String(c.id), label: c.name }))
+    } else if (projectId) {
+      try {
+        const cats = await api(`/projects/${projectId}/categories`)
+        catItems = (cats || []).map(c => ({ value: String(c.id), label: c.name }))
+      } catch (_) {}
+    }
+    const catId = row.dataset.categoryId || ''
+    createCombobox(catHost.id, {
+      placeholder: 'Hạng mục',
+      items: catItems,
+      value: catId,
+      fullWidth: true,
+      teleport: true,
+      onchange: () => taskGridCommitRow({ target: catHost }, taskId === 'new' ? null : parseInt(taskId, 10), row.dataset.gridContext),
+    })
+    if (isLimitedEdit) _applyComboboxLock(catHost.id)
+  }
+
+  const asgHost = row.querySelector(`[id^="taskGridAsg_"]`)
+  if (asgHost) {
+    const items = _taskGridAssigneeItems(projectId, isNew)
+    const val = row.dataset.assignedTo || (isNew && isMember ? String(currentUser.id) : '')
+    createCombobox(asgHost.id, {
+      placeholder: 'Phụ trách',
+      items,
+      value: val,
+      fullWidth: true,
+      teleport: true,
+      onchange: () => taskGridCommitRow({ target: asgHost }, taskId === 'new' ? null : parseInt(taskId, 10), row.dataset.gridContext),
+    })
+    if (isLimitedEdit || (isNew && isMember)) _applyComboboxLock(asgHost.id)
+  }
+
+  const modelProjectId = row.dataset.projectId
+  if (modelProjectId && row.querySelector('select[data-tfield="model_filename"]')) {
+    _taskGridLoadModelCache(modelProjectId).then(() => { if (row.isConnected) _taskGridApplyModelOptions(row) })
+  }
+
+  const projHost = row.querySelector(`[id^="taskGridProj_"]`)
+  if (projHost) {
+    const items = (allProjects || []).map(p => ({ value: String(p.id), label: `${p.code} - ${p.name}` }))
+    const filt = isNew
+      ? (_cbGetValue('taskProjectCombobox') || row.dataset.projectId || '')
+      : String(row.dataset.projectId || '')
+    createCombobox(projHost.id, {
+      placeholder: 'Dự án *',
+      items,
+      value: filt,
+      fullWidth: true,
+      teleport: true,
+      onchange: (val) => {
+        row.dataset.projectId = val || ''
+        _taskGridLoadModelCache(val).then(() => { if (row.isConnected) _taskGridApplyModelOptions(row) })
+        if (!isNew) {
+          taskGridCommitRow({ target: projHost }, parseInt(taskId, 10), row.dataset.gridContext)
+        }
+      },
+    })
+  }
+}
+
+function _taskGridBindCellFocus(row) {
+  row.querySelectorAll('[data-tfield]').forEach(el => {
+    el.addEventListener('focus', () => {
+      el.dataset.taskGridOrig = el.value
+    })
+  })
+}
+
+function _taskGridRenderProjectDataRow(t) {
+  const { canEdit, isLimitedEdit } = _taskGridPermissions(t, t.project_id)
+  const od = isOverdue(t)
+  const disLimited = isLimitedEdit ? 'disabled' : ''
+  const disAll = !canEdit ? 'disabled' : ''
+  const ctx = 'project'
+  const commitAttr = (f) =>
+    `onblur="taskGridCommitRow(event, ${t.id}, '${ctx}')" onkeydown="taskGridCellKeydown(event, ${t.id}, '${ctx}')"`
+
+  const catReadonly = t.category_name
+    ? `<span class="text-xs font-medium">${escHtml(t.category_name)}</span>`
+    : '<span class="text-xs text-gray-300">—</span>'
+  const typeLabel = { model: 'Mô hình', check_hs: 'Kiểm HS', other: 'Khác' }[t.task_type] || t.task_type || '—'
+
+  if (!canEdit) {
+    return `
+    <tr class="task-grid-row table-row ${od ? 'overdue-row is-overdue' : ''}" data-task-id="${t.id}" data-grid-context="${ctx}" data-project-id="${t.project_id}">
+      <td class="task-grid-cell py-1.5 pr-3">
+        <div class="task-grid-title-wrap">${_taskGridStatusRingHtml(t.status)}<span class="task-grid-title-readonly">${escHtml(t.title)}</span></div>
+      </td>
+      <td class="py-1.5 pr-3">${catReadonly}</td>
+      <td class="py-1.5 pr-3 text-xs">${escHtml(typeLabel)}</td>
+      ${_taskGridFilenameCellHtml(t, false, true, true, '')}
+      <td class="py-1.5 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${escHtml(t.discipline_code || '—')}</span></td>
+      <td class="py-1.5 pr-3 text-xs">${escHtml(getPhaseName(t.phase) || '—')}</td>
+      <td class="py-1.5 pr-3">${getPriorityBadge(t.priority)}</td>
+      <td class="py-1.5 pr-3">${escHtml(t.assigned_to_name || 'Chưa giao')}</td>
+      <td class="py-1.5 pr-3 text-xs">${fmtDate(t.start_date)}</td>
+      <td class="py-1.5 pr-3"><span class="${_taskGridDueInputClass(t)}">${fmtDate(t.due_date)}</span></td>
+      <td class="py-1.5 pr-3"><span class="text-xs">${t.progress || 0}%</span></td>
+      <td class="py-1.5 pr-3">${getStatusBadge(t.status)}</td>
+      <td class="py-1.5 pr-3 text-xs max-w-[120px] truncate" title="${escHtml(t.hstk_date || '')}">${escHtml(t.hstk_date || '—')}</td>
+      <td class="py-1.5 pr-3 text-xs max-w-[100px] truncate" title="${escHtml(t.work_notes || '')}">${escHtml(t.work_notes || '—')}</td>
+      <td class="py-1.5 pr-3 text-center">${t.cde_report ? '✓' : '—'}</td>
+    </tr>`
+  }
+
+  const cdeCommit = `onchange="taskGridCommitRow(event, ${t.id}, '${ctx}')"`
+  return `
+    <tr class="task-grid-row table-row ${od ? 'overdue-row is-overdue' : ''}" data-task-id="${t.id}" data-grid-context="${ctx}" data-project-id="${t.project_id}" data-category-id="${t.category_id || ''}" data-assigned-to="${t.assigned_to || ''}" data-needs-cb="1">
+      <td class="task-grid-cell py-1.5 pr-3">
+        <div class="task-grid-title-wrap">
+          ${_taskGridStatusRingHtml(t.status, getStatusBadge(t.status).replace(/<[^>]+>/g, ''))}
+          <input type="text" data-tfield="title" class="task-grid-inline-input task-grid-title-input" value="${escHtml(t.title)}" ${disLimited || disAll} ${commitAttr('title')}>
+          <button type="button" class="task-grid-detail-btn" title="Chi tiết" onclick="openTaskDetail(${t.id})"><i class="fas fa-external-link-alt text-xs"></i></button>
+        </div>
+      </td>
+      <td class="task-grid-cell py-1.5 pr-3">${isLimitedEdit ? catReadonly : `<div id="taskGridCat_${ctx}_${t.id}" data-tfield-cb="category_id" class="task-grid-cb-host"></div>`}</td>
+      <td class="task-grid-cell py-1.5 pr-3">${isLimitedEdit ? `<span class="text-xs">${escHtml(typeLabel)}</span>` : _taskGridTypeSelectHtml(t.task_type, false, t.id, ctx)}</td>
+      ${_taskGridFilenameCellHtml(t, true, isLimitedEdit, disAll, commitAttr())}
+      <td class="task-grid-cell py-1.5 pr-3">${isLimitedEdit ? `<span class="badge" style="background:#e0f2fe;color:#0369a1">${escHtml(t.discipline_code || '—')}</span>` : _taskGridDisciplineSelectHtml(t.discipline_code, false)}</td>
+      <td class="task-grid-cell py-1.5 pr-3">${isLimitedEdit ? `<span class="text-xs">${escHtml(getPhaseName(t.phase) || '—')}</span>` : _taskGridPhaseSelectHtml(t.phase, false, t.id, ctx)}</td>
+      <td class="task-grid-cell py-1.5 pr-3">${isLimitedEdit ? getPriorityBadge(t.priority) : _taskGridPrioritySelectHtml(t.priority, false)}</td>
+      <td class="task-grid-cell py-1.5 pr-3">${isLimitedEdit ? `<span>${escHtml(t.assigned_to_name || 'Chưa giao')}</span>` : `<div id="taskGridAsg_${ctx}_${t.id}" data-tfield-cb="assigned_to" class="task-grid-cb-host"></div>`}</td>
+      <td class="task-grid-cell py-1.5 pr-3"><input type="date" data-tfield="start_date" class="task-grid-due-pill" value="${escHtml(t.start_date || '')}" ${disLimited || disAll} ${commitAttr()}></td>
+      <td class="task-grid-cell py-1.5 pr-3"><input type="date" data-tfield="due_date" class="${_taskGridDueInputClass(t)}" value="${escHtml(t.due_date || '')}" ${disLimited || disAll} ${commitAttr()}></td>
+      ${_taskGridProgressCellHtml(t.progress, !!disAll, commitAttr(), 'py-1.5')}
+      <td class="task-grid-cell py-1.5 pr-3">${_taskGridStatusSelectHtml(t.status, !!disAll, t.id, ctx)}</td>
+      <td class="task-grid-cell py-1.5 pr-3"><input type="text" data-tfield="hstk_date" class="task-grid-inline-input" value="${escHtml(t.hstk_date || '')}" placeholder="Theo HSTK…" ${disLimited || disAll} ${commitAttr()}></td>
+      <td class="task-grid-cell py-1.5 pr-3"><input type="text" data-tfield="work_notes" class="task-grid-inline-input" value="${escHtml(t.work_notes || '')}" placeholder="Ghi chú…" ${disAll} ${commitAttr()}></td>
+      <td class="task-grid-cell py-1.5 pr-3 text-center"><input type="checkbox" data-tfield="cde_report" class="task-grid-cde-check" ${t.cde_report ? 'checked' : ''} ${disAll} ${cdeCommit} onkeydown="taskGridCellKeydown(event, ${t.id}, '${ctx}')"></td>
+    </tr>`
+}
+
+function _taskGridRenderGlobalDataRow(t) {
+  const { canEdit, isLimitedEdit } = _taskGridPermissions(t, t.project_id)
+  const od = isOverdue(t)
+  const ctx = 'global'
+  const disLimited = isLimitedEdit ? 'disabled' : ''
+  const disAll = !canEdit ? 'disabled' : ''
+  const commitAttr = `onblur="taskGridCommitRow(event, ${t.id}, '${ctx}')" onkeydown="taskGridCellKeydown(event, ${t.id}, '${ctx}')"`
+  const subCount = t.subtask_count || 0
+  const subDone = t.subtask_done_count || 0
+  const hasSubtasks = subCount > 0
+  const subBadgeColor = subCount === 0 ? '#e5e7eb' : subDone === subCount ? '#dcfce7' : '#fef9c3'
+  const subTextColor = subCount === 0 ? '#9ca3af' : subDone === subCount ? '#16a34a' : '#92400e'
+  const canDeleteThisTask =
+    ['system_admin', 'project_admin'].includes(currentUser?.role) ||
+    getEffectiveRoleForProject(t.project_id) === 'project_admin'
+
+  const titleCell = !canEdit
+    ? `<span class="font-medium text-gray-800 text-sm cursor-pointer hover:text-primary" onclick="openTaskDetail(${t.id})">${escHtml(t.title)}</span>`
+    : `<div class="task-grid-title-wrap">${_taskGridStatusRingHtml(t.status)}<input type="text" data-tfield="title" class="task-grid-inline-input task-grid-title-input" value="${escHtml(t.title)}" ${disLimited} ${commitAttr}><button type="button" class="task-grid-detail-btn" title="Chi tiết" onclick="openTaskDetail(${t.id})"><i class="fas fa-external-link-alt text-xs"></i></button></div>`
+
+  const catCell = !canEdit || isLimitedEdit
+    ? (t.category_name
+      ? `<span class="text-xs text-gray-700 font-medium bg-slate-100 px-2 py-0.5 rounded max-w-32 truncate block">${escHtml(t.category_name)}</span>`
+      : '<span class="text-xs text-gray-300">—</span>')
+    : `<div id="taskGridCat_${ctx}_${t.id}" data-tfield-cb="category_id" class="task-grid-cb-host"></div>`
+
+  const asgCell =
+    !canEdit || isLimitedEdit
+      ? `<span class="text-sm text-gray-600">${escHtml(t.assigned_to_name || 'Chưa giao')}</span>`
+      : `<div id="taskGridAsg_${ctx}_${t.id}" data-tfield-cb="assigned_to" class="task-grid-cb-host"></div>`
+
+  return `
+    <tr class="task-grid-row task-main-row table-row ${od ? 'overdue-row is-overdue' : ''}" data-task-id="${t.id}" data-grid-context="${ctx}" data-project-id="${t.project_id}" data-category-id="${t.category_id || ''}" data-assigned-to="${t.assigned_to || ''}" data-needs-cb="${canEdit && !isLimitedEdit ? '1' : ''}">
+      <td class="py-2 pl-2 pr-1" style="width:32px">
+        ${hasSubtasks
+          ? `<button onclick="toggleSubtasks(${t.id}, this)" class="subtask-toggle w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 text-gray-400 transition-transform" title="Mở rộng/thu gọn subtask"><i class="fas fa-chevron-right text-xs"></i></button>`
+          : `<button onclick="openSubtaskModal(${t.id})" class="w-6 h-6 flex items-center justify-center rounded hover:bg-indigo-50 text-gray-300 hover:text-indigo-400 transition-colors" title="Thêm subtask"><i class="fas fa-plus text-xs"></i></button>`}
+      </td>
+      <td class="task-grid-cell py-2 pr-3">
+        <div class="task-name-wrap flex items-center gap-1.5 flex-wrap">
+          ${titleCell}
+          ${(_chatUnreadMap[`task_${t.id}`] || 0) > 0 ? `<span class="chat-unread-badge">${_chatUnreadMap[`task_${t.id}`]}</span>` : ''}
+        </div>
+        ${od ? '<span class="badge badge-overdue text-xs">Trễ hạn!</span>' : ''}
+        ${hasSubtasks ? `<span class="subtask-badge inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full mt-0.5" style="background:${subBadgeColor};color:${subTextColor}"><i class="fas fa-list-check" style="font-size:9px"></i>${subDone}/${subCount}</span>` : ''}
+      </td>
+      <td class="${canEdit && !isLimitedEdit ? 'task-grid-cell ' : ''}py-2 pr-3 text-sm">${canEdit && !isLimitedEdit ? `<div id="taskGridProj_${ctx}_${t.id}" data-tfield-cb="project_id" class="task-grid-cb-host" style="min-width:140px"></div>` : escHtml(t.project_code || '—')}</td>
+      <td class="task-grid-cell py-2 pr-3">${catCell}</td>
+      <td class="task-grid-cell py-2 pr-3">${!canEdit || isLimitedEdit ? `<span class="text-xs">${escHtml(({ model: 'Mô hình', check_hs: 'Kiểm HS', other: 'Khác' }[t.task_type] || t.task_type || '—'))}</span>` : _taskGridTypeSelectHtml(t.task_type, false, t.id, ctx)}</td>
+      ${_taskGridFilenameCellHtmlGlobal(t, canEdit, isLimitedEdit, disAll, commitAttr)}
+      <td class="task-grid-cell py-2 pr-3">${isLimitedEdit ? `<span class="badge text-xs" style="background:#e0f2fe;color:#0369a1">${escHtml(t.discipline_code || '—')}</span>` : canEdit ? _taskGridDisciplineSelectHtml(t.discipline_code, false) : `<span class="badge text-xs" style="background:#e0f2fe;color:#0369a1">${escHtml(t.discipline_code || '—')}</span>`}</td>
+      <td class="task-grid-cell py-2 pr-3">${!canEdit || isLimitedEdit ? `<span class="text-xs">${escHtml(getPhaseName(t.phase) || '—')}</span>` : _taskGridPhaseSelectHtml(t.phase, false, t.id, ctx)}</td>
+      <td class="task-grid-cell py-2 pr-3">${isLimitedEdit ? getPriorityBadge(t.priority) : canEdit ? _taskGridPrioritySelectHtml(t.priority, false) : getPriorityBadge(t.priority)}</td>
+      <td class="task-grid-cell py-2 pr-3">${asgCell}</td>
+      <td class="task-grid-cell py-2 pr-3">${canEdit ? `<input type="date" data-tfield="start_date" class="task-grid-due-pill" value="${escHtml(t.start_date || '')}" ${disLimited || disAll} ${commitAttr}>` : `<span class="text-xs">${fmtDate(t.start_date)}</span>`}</td>
+      <td class="task-grid-cell py-2 pr-3"><input type="date" data-tfield="due_date" class="${_taskGridDueInputClass(t)}" value="${escHtml(t.due_date || '')}" ${disLimited || disAll} ${commitAttr}></td>
+      ${_taskGridProgressCellHtml(t.progress, !!disAll, commitAttr, 'py-2')}
+      <td class="task-grid-cell py-2 pr-3">${canEdit ? _taskGridStatusSelectHtml(t.status, false, t.id, ctx) : getStatusBadge(t.status)}</td>
+      <td class="task-grid-cell py-2 pr-3">${canEdit ? `<input type="text" data-tfield="hstk_date" class="task-grid-inline-input" value="${escHtml(t.hstk_date || '')}" placeholder="Theo HSTK…" ${disLimited || disAll} ${commitAttr}>` : `<span class="text-xs max-w-[120px] truncate block">${escHtml(t.hstk_date || '—')}</span>`}</td>
+      <td class="task-grid-cell py-2 pr-3">${canEdit ? `<input type="text" data-tfield="work_notes" class="task-grid-inline-input" value="${escHtml(t.work_notes || '')}" placeholder="Ghi chú…" ${disAll} ${commitAttr}>` : `<span class="text-xs max-w-[100px] truncate block">${escHtml(t.work_notes || '—')}</span>`}</td>
+      <td class="task-grid-cell py-2 pr-3 text-center">${canEdit ? `<input type="checkbox" data-tfield="cde_report" class="task-grid-cde-check" ${t.cde_report ? 'checked' : ''} ${disAll} onchange="taskGridCommitRow(event, ${t.id}, '${ctx}')" onkeydown="taskGridCellKeydown(event, ${t.id}, '${ctx}')">` : (t.cde_report ? '✓' : '—')}</td>
+      <td class="py-2">
+        <div class="flex gap-1">
+          ${canEdit ? `<button type="button" onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Mở rộng / subtask / đính kèm"><i class="fas fa-ellipsis-h"></i></button>` : ''}
+          ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${String(t.title).replace(/'/g, "\\'")}' )" class="text-red-400 hover:text-red-600 px-2 py-1 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
+        </div>
+      </td>
+    </tr>
+    <tr id="subtask-rows-${t.id}" class="subtask-container-row" style="display:none">
+      <td colspan="18" class="p-0"><div id="subtask-panel-${t.id}" class="subtask-panel"></div></td>
+    </tr>`
+}
+
+function _taskGridRenderGlobalNewRow() {
+  const ctx = 'global'
+  const filtProj = _cbGetValue('taskProjectCombobox') || ''
+  const commitAttr = `onblur="taskGridCommitRow(event, null, '${ctx}')" onkeydown="taskGridCellKeydown(event, null, '${ctx}')"`
+  const projCell = filtProj
+    ? `<input type="hidden" data-tfield="project_id" value="${escHtml(filtProj)}">`
+    : `<div id="taskGridProj_${ctx}_new" data-tfield-cb="project_id" class="task-grid-cb-host" style="min-width:140px"></div>`
+  return `
+    <tr class="task-grid-row is-new task-main-row" data-task-id="" data-grid-context="${ctx}" data-project-id="${filtProj || ''}" data-needs-cb="1">
+      <td class="py-2 pl-2 pr-1"></td>
+      <td class="task-grid-cell py-2 pr-3">
+        <div class="task-grid-title-wrap">${_taskGridStatusRingHtml('todo', 'Hàng mới')}<input type="text" data-tfield="title" class="task-grid-inline-input task-grid-title-input" placeholder="Tên task…" ${commitAttr} onpaste="taskGridTitlePaste(event, null, '${ctx}')"></div>
+      </td>
+      <td class="task-grid-cell py-2 pr-3">${projCell}</td>
+      <td class="task-grid-cell py-2 pr-3"><div id="taskGridCat_${ctx}_new" data-tfield-cb="category_id" class="task-grid-cb-host"></div></td>
+      <td class="task-grid-cell py-2 pr-3">${_taskGridTypeSelectHtml('model', false, null, ctx)}</td>
+      ${_taskGridFilenameNewCellHtml(filtProj, commitAttr, 'py-2')}
+      <td class="task-grid-cell py-2 pr-3">${_taskGridDisciplineSelectHtml('', false)}</td>
+      <td class="task-grid-cell py-2 pr-3">${_taskGridPhaseSelectHtml('basic_design', false, null, ctx)}</td>
+      <td class="task-grid-cell py-2 pr-3">${_taskGridPrioritySelectHtml('medium', false)}</td>
+      <td class="task-grid-cell py-2 pr-3"><div id="taskGridAsg_${ctx}_new" data-tfield-cb="assigned_to" class="task-grid-cb-host"></div></td>
+      <td class="task-grid-cell py-2 pr-3"><input type="date" data-tfield="start_date" class="task-grid-due-pill" ${commitAttr}></td>
+      <td class="task-grid-cell py-2 pr-3"><input type="date" data-tfield="due_date" class="task-grid-due-pill" ${commitAttr}></td>
+      ${_taskGridProgressCellHtml(0, false, commitAttr, 'py-2')}
+      <td class="task-grid-cell py-2 pr-3">${_taskGridStatusSelectHtml('todo', false, null, ctx)}</td>
+      <td class="task-grid-cell py-2 pr-3"><input type="text" data-tfield="hstk_date" class="task-grid-inline-input" placeholder="Theo HSTK…" ${commitAttr}></td>
+      <td class="task-grid-cell py-2 pr-3"><input type="text" data-tfield="work_notes" class="task-grid-inline-input" placeholder="Ghi chú…" ${commitAttr}></td>
+      <td class="task-grid-cell py-2 pr-3 text-center"><input type="checkbox" data-tfield="cde_report" class="task-grid-cde-check" onchange="taskGridCommitRow(event, null, '${ctx}')" onkeydown="taskGridCellKeydown(event, null, '${ctx}')"></td>
+      <td class="py-2"></td>
+    </tr>`
+}
+
+function _taskGridRenderProjectNewRow(projectId) {
+  const ctx = 'project'
+  const { isMember } = _taskGridPermissions(null, projectId)
+  const commitAttr = `onblur="taskGridCommitRow(event, null, '${ctx}')" onkeydown="taskGridCellKeydown(event, null, '${ctx}')"`
+  return `
+    <tr class="task-grid-row is-new" data-task-id="" data-grid-context="${ctx}" data-project-id="${projectId}" data-needs-cb="1">
+      <td class="task-grid-cell py-1.5 pr-3">
+        <div class="task-grid-title-wrap">
+          ${_taskGridStatusRingHtml('todo', 'Hàng mới')}
+          <input type="text" data-tfield="title" class="task-grid-inline-input task-grid-title-input" placeholder="Tên task (Enter lưu, Esc huỷ)…" ${commitAttr} onpaste="taskGridTitlePaste(event, null, '${ctx}')">
+        </div>
+      </td>
+      <td class="task-grid-cell py-1.5 pr-3"><div id="taskGridCat_${ctx}_new" data-tfield-cb="category_id" class="task-grid-cb-host"></div></td>
+      <td class="task-grid-cell py-1.5 pr-3">${_taskGridTypeSelectHtml('model', false, null, ctx)}</td>
+      ${_taskGridFilenameNewCellHtml(projectId, commitAttr, 'py-1.5')}
+      <td class="task-grid-cell py-1.5 pr-3">${_taskGridDisciplineSelectHtml('', false)}</td>
+      <td class="task-grid-cell py-1.5 pr-3">${_taskGridPhaseSelectHtml('basic_design', false, null, ctx)}</td>
+      <td class="task-grid-cell py-1.5 pr-3">${_taskGridPrioritySelectHtml('medium', false)}</td>
+      <td class="task-grid-cell py-1.5 pr-3"><div id="taskGridAsg_${ctx}_new" data-tfield-cb="assigned_to" class="task-grid-cb-host"></div></td>
+      <td class="task-grid-cell py-1.5 pr-3"><input type="date" data-tfield="start_date" class="task-grid-due-pill" ${commitAttr}></td>
+      <td class="task-grid-cell py-1.5 pr-3"><input type="date" data-tfield="due_date" class="task-grid-due-pill" ${commitAttr}></td>
+      ${_taskGridProgressCellHtml(0, false, commitAttr, 'py-1.5')}
+      <td class="task-grid-cell py-1.5 pr-3">${_taskGridStatusSelectHtml('todo', false, null, ctx)}</td>
+      <td class="task-grid-cell py-1.5 pr-3"><input type="text" data-tfield="hstk_date" class="task-grid-inline-input" placeholder="Theo HSTK…" ${commitAttr}></td>
+      <td class="task-grid-cell py-1.5 pr-3"><input type="text" data-tfield="work_notes" class="task-grid-inline-input" placeholder="Ghi chú…" ${commitAttr}></td>
+      <td class="task-grid-cell py-1.5 pr-3 text-center"><input type="checkbox" data-tfield="cde_report" class="task-grid-cde-check" onchange="taskGridCommitRow(event, null, '${ctx}')" onkeydown="taskGridCellKeydown(event, null, '${ctx}')"></td>
+    </tr>`
+}
+
 // ── Project detail task pagination ──────────────────────────────
 const PROJ_TASK_PAGE_SIZE = 20
 let _projTaskPage = 1
@@ -2189,7 +2975,7 @@ function renderProjTaskRows() {
   tbody.innerHTML = data.map(t => `
     <tr class="${isOverdue(t) ? 'overdue-row' : 'table-row'}" onclick="openTaskDetail(${t.id})" style="cursor:pointer">
       <td class="py-1.5 pr-3 font-medium text-gray-800">${t.title}</td>
-      <td class="py-1.5 pr-3"><span class="badge" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
+      <td class="py-1.5 pr-3"><span class="task-disc-pill">${t.discipline_code||'-'}</span></td>
       <td class="py-1.5 pr-3">${getPriorityBadge(t.priority)}</td>
       <td class="py-1.5 pr-3 text-gray-600">${t.assigned_to_name||'<span class="text-gray-300">Chưa giao</span>'}</td>
       <td class="py-1.5 pr-3 ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
@@ -2245,23 +3031,69 @@ function projTaskGoPage(page) {
   if (el) el.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+function projectNavList() {
+  return [...(allProjects || [])].sort((a, b) =>
+    String(a.code || '').localeCompare(String(b.code || ''), 'vi', { numeric: true })
+  )
+}
+
+function updateProjectNavButtons(projectId) {
+  const list = projectNavList()
+  const idx = list.findIndex(p => Number(p.id) === Number(projectId))
+  const prev = idx > 0 ? list[idx - 1] : null
+  const next = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null
+  const prevBtn = $('projPrevBtn')
+  const nextBtn = $('projNextBtn')
+  if (prevBtn) {
+    prevBtn.disabled = !prev
+    prevBtn.style.opacity = prev ? '1' : '0.35'
+    prevBtn.title = prev ? `Dự án trước: ${prev.code} — ${prev.name}` : 'Dự án trước'
+  }
+  if (nextBtn) {
+    nextBtn.disabled = !next
+    nextBtn.style.opacity = next ? '1' : '0.35'
+    nextBtn.title = next ? `Dự án tiếp theo: ${next.code} — ${next.name}` : 'Dự án tiếp theo'
+  }
+}
+
+let _projectNavBusy = false
+async function openAdjacentProject(dir) {
+  if (_projectNavBusy) return
+  const id = window._currentProjectDetailId
+  if (!id) return
+  if (!allProjects?.length) {
+    try { await fetchProjectsCached(false, 'slim') } catch (_) { return }
+  }
+  const list = projectNavList()
+  const idx = list.findIndex(p => Number(p.id) === Number(id))
+  const target = list[idx + dir]
+  if (!target) return
+  _projectNavBusy = true
+  try { await openProjectDetail(target.id) } finally { _projectNavBusy = false }
+}
+
 async function openProjectDetail(id, openChatTab = false) {
   try {
+    const listPromise = allProjects?.length ? null : fetchProjectsCached(false, 'slim').catch(() => [])
     const project = await api(`/projects/${id}`)
+    if (listPromise) await listPromise
+    updateProjectNavButtons(project.id)
     const pid = parseInt(id)
-    let categories, tasks
+    const modelsPromise = api(`/projects/${id}/models`).catch(() => [])
+    let categories, tasks, projectModels
     if (_projectDetailFetchCache.projectId === pid) {
       categories = _projectDetailFetchCache.categories
       tasks = _projectDetailFetchCache.tasks
+      projectModels = await modelsPromise
     } else {
-      ;[categories, tasks] = await Promise.all([
+      ;[categories, tasks, projectModels] = await Promise.all([
         api(`/projects/${id}/categories`),
-        api(`/tasks?project_id=${id}&limit=${TASK_PROJECT_LIMIT}`)
+        api(`/tasks?project_id=${id}&limit=${TASK_PROJECT_LIMIT}`),
+        modelsPromise
       ])
       _projectDetailFetchCache = { projectId: pid, categories, tasks }
     }
-    let projectModels = []
-    try { projectModels = await api(`/projects/${id}/models`) } catch(_) {}
+    _taskFilenameCache[id] = (projectModels || []).map(m => ({ value: m.name, label: m.name }))
 
     $('projectDetailName').textContent = project.name
     $('projectDetailCode').textContent = `${project.code} • ${getProjectTypeName(project.project_type)}`
@@ -2395,9 +3227,9 @@ async function openProjectDetail(id, openChatTab = false) {
           <div class="space-y-2 max-h-48 overflow-y-auto">
             ${categories.map(cat => `
               <div class="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg">
-                <div>
+                <div class="flex items-center gap-2 min-w-0">
+                  ${cat.code ? `<span class="badge text-xs" style="background:#f3f4f6;color:#6b7280">${cat.code}</span>` : ''}
                   <span class="text-xs font-medium text-gray-800">${cat.name}</span>
-                  ${cat.code ? `<span class="badge ml-1 text-xs" style="background:#f3f4f6;color:#6b7280">${cat.code}</span>` : ''}
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-400">${cat.completed_tasks||0}/${cat.task_count||0}</span>
@@ -2514,6 +3346,7 @@ async function openProjectDetail(id, openChatTab = false) {
 
     // Store current project id for chat tab switching
     window._currentProjectDetailId = project.id
+    window._currentProjectDetailMembers = project.members || []
 
     navigate('project-detail')
 
@@ -2544,10 +3377,55 @@ function confirmDeleteProject(id, name) {
     `<p>Bạn có chắc muốn xóa dự án <strong>"${name}"</strong>?</p><p class="text-red-600 mt-1 text-xs font-bold">⚠️ Tất cả task, hạng mục, timesheet, chi phí và doanh thu của dự án sẽ bị xóa vĩnh viễn!</p>`,
     async () => {
       await api(`/projects/${id}`, { method: 'delete' })
+      allProjects = (allProjects || []).filter(p => String(p.id) !== String(id))
+      _projectsCacheAt = 0
+      if ($('projectsGrid')) renderProjectsGrid(allProjects)
       toast('Đã xóa dự án và tất cả dữ liệu liên quan')
       navigate('projects')
     }
   )
+}
+
+let _projectPackageGross = 0
+
+function refreshProjectContractPreview() {
+  const hint = $('projectContractHint')
+  const vat = parseFloat($('projectVatPct')?.value) || 0
+  const gross = _projectPackageGross || 0
+  const before = vat > 0 ? Math.round(gross / (1 + vat / 100)) : Math.round(gross)
+  setMoneyInput('projectContractValue', before)
+  if (hint) {
+    const grossText = new Intl.NumberFormat('vi-VN').format(gross)
+    hint.textContent = vat > 0
+      ? `= ${grossText} ÷ (1+${vat}% VAT) — khóa theo tổng gói thầu`
+      : `= ${grossText} — chưa khai VAT, bằng tổng gói thầu`
+  }
+  updateProjectBudgetPreview()
+}
+
+async function refreshProjectContractFromPackages(projectId) {
+  const input = $('projectContractValue')
+  if (input) input.readOnly = true
+  if (!projectId) {
+    _projectPackageGross = 0
+    refreshProjectContractPreview()
+    return
+  }
+  try {
+    const data = await api(`/legal/${projectId}/packages`)
+    _projectPackageGross = (data.packages || []).reduce((s, p) => s + (Number(p.contract_value) || 0), 0)
+  } catch (_) {
+    _projectPackageGross = parseMoneyVal('projectContractValue') || 0
+  }
+  refreshProjectContractPreview()
+}
+
+function _applyProjectContractSync(projectId, payload) {
+  if (!payload || payload.contract_value == null || !projectId) return
+  const p = (allProjects || []).find(x => Number(x.id) === Number(projectId))
+  if (!p) return
+  p.contract_value = payload.contract_value
+  if (payload.vat_pct != null) p.vat_pct = payload.vat_pct
 }
 
 function updateProjectBudgetPreview() {
@@ -2598,6 +3476,9 @@ function openProjectModal(project = null) {
   $('projectStartDate').value = project?.start_date || ''
   $('projectEndDate').value = project?.end_date || ''
   setMoneyInput('projectContractValue', project?.contract_value || 0)
+  const vatEl = $('projectVatPct')
+  if (vatEl) vatEl.value = project?.vat_pct != null ? project.vat_pct : 0
+  refreshProjectContractFromPackages(project?.id)
   // Show/hide contract value & management fee fields based on role
   const contractRow = document.getElementById('contractValueRow')
   if (contractRow) contractRow.style.display = isAdmin ? '' : 'none'
@@ -2631,7 +3512,7 @@ $('projectForm').addEventListener('submit', async (e) => {
     description: $('projectDesc').value, client: $('projectClient').value,
     project_type: $('projectType').value, status: $('projectStatus').value,
     start_date: $('projectStartDate').value, end_date: $('projectEndDate').value,
-    contract_value: currentUser?.role === 'system_admin' ? (parseMoneyVal('projectContractValue') || 0) : undefined,
+    vat_pct: currentUser?.role === 'system_admin' ? (parseFloat($('projectVatPct')?.value) || 0) : undefined,
     management_fee_pct: currentUser?.role === 'system_admin' ? (parseFloat($('projectMgmtFeePct')?.value) || 0) : undefined,
     location: $('projectLocation').value,
     admin_id: parseInt($('projectAdmin').value) || null,
@@ -2786,9 +3667,11 @@ async function reloadModelCard(projectId) {
       if (h3) h3.innerHTML = `<i class="fas fa-cube text-purple-500 mr-2"></i>Danh sách model (${models.length})`
     }
     // Also refresh combobox if task modal is open
+    _taskFilenameCache[projectId] = (models || []).map(m => ({ value: m.name, label: m.name }))
     if (!document.getElementById('taskModal')?.classList.contains('hidden')) {
       _reloadTaskFilenameCombobox(projectId, models)
     }
+    document.querySelectorAll(`.task-grid-row[data-project-id="${projectId}"]`).forEach(row => _taskGridApplyModelOptions(row))
   } catch(e) { console.error('reloadModelCard', e) }
 }
 
@@ -2958,6 +3841,7 @@ $('categoryForm').addEventListener('submit', async (e) => {
     if (id) await api(`/categories/${id}`, { method: 'put', data })
     else await api('/categories', { method: 'post', data })
     closeModal('categoryModal')
+    _invalidateProjectDetailCache()
     toast('Lưu hạng mục thành công')
     openProjectDetail(data.project_id)
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
@@ -2971,7 +3855,9 @@ function confirmDeleteCategory(id, name, taskCount) {
   showConfirmDelete('Xóa Hạng mục', `Xóa hạng mục "<strong>${name}</strong>"?`,
     async () => {
       await api(`/categories/${id}`, { method: 'delete' })
+      _invalidateProjectDetailCache()
       toast('Đã xóa hạng mục')
+      if (window._currentProjectDetailId) openProjectDetail(window._currentProjectDetailId)
     }
   )
 }
@@ -3085,6 +3971,7 @@ async function submitCatBulk() {
       ? `Đã tạo ${res.created} hạng mục (${res.failed} lỗi)`
       : `Đã tạo ${res.created} hạng mục thành công`
     toast(msg, res.failed > 0 ? 'warning' : 'success')
+    _invalidateProjectDetailCache()
     openProjectDetail(projectId)
   } catch (e) {
     toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
@@ -3204,6 +4091,7 @@ async function submitCatImport() {
       ? `Đã import ${res.created}/${categories.length} hạng mục (${res.failed} lỗi)`
       : `✅ Đã import ${res.created} hạng mục thành công`
     toast(msg, res.failed > 0 ? 'warning' : 'success')
+    _invalidateProjectDetailCache()
     openProjectDetail(projectId)
   } catch (e) {
     toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
@@ -3361,25 +4249,36 @@ function _cbLabelFor(items, value, placeholder) {
 function _cbSetValue(id, value) {
   const state = _cbState[id]
   if (!state) return
+  if (String(state.value ?? '') === String(value ?? '')) return
   const label = value ? _cbLabelFor(state.items || [], value, state.placeholder) : state.placeholder
   _cbSelect(id, value, label)
+}
+
+function _cbAssignValue(id, value) {
+  const state = _cbState[id]
+  if (!state) return
+  const next = value == null ? '' : String(value)
+  state.value = next
+  state.label = next ? _cbLabelFor(state.items || [], next, state.placeholder) : state.placeholder
+  _cbUpdateTrigger(id)
+  _cbRenderOptions(id, '')
 }
 
 function _cbHTML(id, placeholder, minWidth, fullWidth, panelMaxWidth, dropdownMaxHeight) {
   panelMaxWidth     = panelMaxWidth     || '360px'
   dropdownMaxHeight = dropdownMaxHeight || '220px'
-  const triggerStyle = 'display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid #d1d5db;border-radius:8px;padding:6px 10px;background:#fff;cursor:pointer;font-size:13px;color:#374151;min-height:36px;user-select:none;box-sizing:border-box;width:100%'
-  const panelStyle = 'display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:100%;width:max-content;max-width:' + panelMaxWidth + ';background:#fff;border:1px solid #d1d5db;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:9999;overflow:hidden'
-  const searchStyle = 'width:100%;border:1px solid #e5e7eb;border-radius:6px;padding:7px 10px 7px 30px;font-size:13px;outline:none;color:#374151;background:#f9fafb;box-sizing:border-box;transition:border-color .15s'
+  const triggerStyle = 'display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid var(--shell-border);border-radius:8px;padding:6px 10px;background:var(--shell-input-bg);cursor:pointer;font-size:13px;color:var(--shell-text);min-height:36px;user-select:none;box-sizing:border-box;width:100%'
+  const panelStyle = 'display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:100%;width:max-content;max-width:' + panelMaxWidth + ';background:var(--shell-surface);border:1px solid var(--shell-border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:9999;overflow:hidden'
+  const searchStyle = 'width:100%;border:1px solid var(--shell-border);border-radius:6px;padding:7px 10px 7px 30px;font-size:13px;outline:none;color:var(--shell-text);background:var(--shell-input-bg);box-sizing:border-box;transition:border-color .15s'
   const optsStyle = 'max-height:' + dropdownMaxHeight + ';overflow-y:auto;padding:4px 0'
   const wrapStyle = fullWidth ? 'position:relative;width:100%;display:block' : ('position:relative;min-width:' + minWidth + ';display:inline-block')
   return '<div id="' + id + '_wrap" style="' + wrapStyle + '">'
-    + '<div style="' + triggerStyle + '" onclick="_cbToggle(\'' + id + '\')">'
-    + '<span id="' + id + '_label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9ca3af">' + placeholder + '</span>'
-    + '<span id="' + id + '_arrow" style="flex-shrink:0;font-size:10px;color:#9ca3af">&#9660;</span>'
+    + '<div style="' + triggerStyle + '" data-cb-trigger tabindex="0" onclick="_cbToggle(\'' + id + '\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();_cbToggle(\'' + id + '\')}">'
+    + '<span id="' + id + '_label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--shell-text-faint)">' + placeholder + '</span>'
+    + '<span id="' + id + '_arrow" style="flex-shrink:0;font-size:10px;color:var(--shell-text-faint)">&#9660;</span>'
     + '</div>'
     + '<div id="' + id + '_panel" style="' + panelStyle + '">'
-    + '<div style="padding:8px 10px 7px;border-bottom:1px solid #e5e7eb;position:relative">'
+    + '<div style="padding:8px 10px 7px;border-bottom:1px solid var(--shell-border);position:relative">'
     + '<span style="position:absolute;left:18px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none">🔍</span>'
     + '<input id="' + id + '_search" type="text" placeholder="T\u00ecm ki\u1EBFm..." style="' + searchStyle + '" oninput="_cbFilter(\'' + id + '\',this.value)" onclick="event.stopPropagation()" autocomplete="off">'
     + '</div>'
@@ -3400,18 +4299,18 @@ function _cbRenderOptions(id, query) {
   const itemPad = isTeleport ? '9px 14px' : '7px 12px'
   const itemFs  = isTeleport ? '13px' : '13px'
   if (!filtered.length) {
-    opts.innerHTML = '<div style="padding:12px 14px;font-size:13px;color:#9ca3af;font-style:italic">Kh\u00f4ng t\u00ecm th\u1EA5y k\u1EBFt qu\u1EA3</div>'
+    opts.innerHTML = '<div style="padding:12px 14px;font-size:13px;color:var(--shell-text-faint);font-style:italic">Kh\u00f4ng t\u00ecm th\u1EA5y k\u1EBFt qu\u1EA3</div>'
     return
   }
   opts.innerHTML = filtered.map(i => {
     const isSel = String(i.value) === String(state.value)
-    const bg = isSel ? '#f0fdf4' : 'transparent'
-    const col = isSel ? '#00A651' : '#374151'
+    const bg = isSel ? 'rgba(0,166,81,0.12)' : 'transparent'
+    const col = isSel ? '#00A651' : 'var(--shell-text)'
     const fw = isSel ? '600' : '400'
     const sv = String(i.value).replace(/'/g, '&#39;')
     const sl = i.label.replace(/'/g, '&#39;')
     return '<div style="padding:' + itemPad + ';font-size:' + itemFs + ';cursor:pointer;display:flex;align-items:center;gap:6px;background:' + bg + ';color:' + col + ';font-weight:' + fw + ';line-height:1.4"'
-      + ' onmouseenter="this.style.background=\'#eff6ff\';this.style.color=\'#1d4ed8\'"'
+      + ' onmouseenter="if(!' + isSel + '){this.style.background=\'var(--shell-row-hover)\';this.style.color=\'var(--shell-text)\'}"'
       + ' onmouseleave="this.style.background=\'' + bg + '\';this.style.color=\'' + col + '\'"'
       + ' onclick="_cbSelect(\'' + id + '\',\'' + sv + '\',\'' + sl + '\')">'
       + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + i.label + '</span>'
@@ -3428,11 +4327,11 @@ function _cbUpdateTrigger(id) {
   const trigger = lbl.parentElement
   if (!state.value) {
     lbl.textContent = state.placeholder
-    lbl.style.color = '#9ca3af'
-    if (trigger) { trigger.style.borderColor = '#d1d5db'; trigger.style.boxShadow = '' }
+    lbl.style.color = 'var(--shell-text-faint)'
+    if (trigger) { trigger.style.borderColor = 'var(--shell-border)'; trigger.style.boxShadow = '' }
   } else {
     lbl.textContent = state.label
-    lbl.style.color = '#374151'
+    lbl.style.color = 'var(--shell-text)'
     if (trigger) { trigger.style.borderColor = '#00A651'; trigger.style.boxShadow = '0 0 0 2px rgba(0,166,81,0.10)' }
   }
 }
@@ -3534,8 +4433,8 @@ function _cbToggle(id) {
           `left:${leftPos}px`,
           `width:${panelW}px`,
           `z-index:99999`,
-          'background:#fff',
-          'border:1px solid #c7d2fe',
+          'background:var(--shell-surface)',
+          'border:1px solid var(--shell-border)',
           'border-radius:12px',
           'box-shadow:0 20px 60px rgba(0,0,0,.25)',
           'overflow:hidden',
@@ -3547,7 +4446,7 @@ function _cbToggle(id) {
         // Update search input style for better visibility
         const srEl = document.getElementById(id + '_search')
         if (srEl) {
-          srEl.style.cssText = 'width:100%;border:1.5px solid #a5b4fc;border-radius:8px;padding:8px 10px 8px 32px;font-size:14px;outline:none;color:#374151;background:#f8faff;box-sizing:border-box'
+          srEl.style.cssText = 'width:100%;border:1.5px solid var(--shell-border);border-radius:8px;padding:8px 10px 8px 32px;font-size:14px;outline:none;color:var(--shell-text);background:var(--shell-input-bg);box-sizing:border-box'
         }
         document.body.appendChild(panel)
         _cbShowBackdrop()
@@ -3906,17 +4805,7 @@ function renderTaskRows() {
     const hasSubtasks = subCount > 0
 
     // Subtask badge color
-    const subBadgeColor = subCount === 0 ? '#e5e7eb' : subDone === subCount ? '#dcfce7' : '#fef9c3'
-    const subTextColor  = subCount === 0 ? '#9ca3af' : subDone === subCount ? '#16a34a' : '#92400e'
-
-    // Phase badge
-    const phaseColors = {
-      basic_design:        { bg:'#f0f9ff', text:'#0369a1' },
-      technical_design:    { bg:'#fdf4ff', text:'#7e22ce' },
-      construction_design: { bg:'#fff7ed', text:'#c2410c' },
-      as_built:            { bg:'#f0fdf4', text:'#15803d' }
-    }
-    const pc = phaseColors[t.phase] || { bg:'#f3f4f6', text:'#6b7280' }
+    const subPill = subCount === 0 ? 'task-sub-empty' : subDone === subCount ? 'task-sub-done' : 'task-sub-partial'
 
     return `
     <tr class="task-main-row table-row ${isOverdue(t) ? 'overdue-row' : ''}" data-task-id="${t.id}">
@@ -3935,22 +4824,22 @@ function renderTaskRows() {
           ${(_chatUnreadMap[`task_${t.id}`] || 0) > 0 ? `<span class="chat-unread-badge">${_chatUnreadMap[`task_${t.id}`]}</span>` : ''}
         </div>
         ${isOverdue(t) ? '<span class="badge badge-overdue text-xs">Trễ hạn!</span>' : ''}
-        ${hasSubtasks ? `<span class="subtask-badge inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full mt-0.5" style="background:${subBadgeColor};color:${subTextColor}">
+        ${hasSubtasks ? `<span class="task-sub-pill ${subPill} inline-flex items-center gap-1 mt-0.5">
           <i class="fas fa-list-check" style="font-size:9px"></i>${subDone}/${subCount}
         </span>` : ''}
       </td>
       <td class="py-2 pr-3 text-sm text-gray-600">${t.project_code || '-'}</td>
       <td class="py-2 pr-3">
         ${t.category_name
-          ? `<span class="text-xs text-gray-700 font-medium bg-slate-100 px-2 py-0.5 rounded max-w-32 truncate block" title="${t.category_name}">${t.category_name}</span>`
+          ? `<span class="task-cat-pill" title="${escHtml(t.category_name)}">${escHtml(t.category_name)}</span>`
           : '<span class="text-xs text-gray-300">—</span>'}
       </td>
       <td class="py-2 pr-3">
         ${t.phase
-          ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap" style="background:${pc.bg};color:${pc.text}">${getPhaseName(t.phase)}</span>`
+          ? `<span class="${taskPhasePillClass(t.phase)}">${getPhaseName(t.phase)}</span>`
           : '<span class="text-xs text-gray-300">—</span>'}
       </td>
-      <td class="py-2 pr-3"><span class="badge text-xs" style="background:#e0f2fe;color:#0369a1">${t.discipline_code||'-'}</span></td>
+      <td class="py-2 pr-3"><span class="task-disc-pill">${t.discipline_code||'-'}</span></td>
       <td class="py-2 pr-3">${getPriorityBadge(t.priority)}</td>
       <td class="py-2 pr-3 text-sm text-gray-600">${t.assigned_to_name || '<span class="text-gray-300 text-xs">Chưa giao</span>'}</td>
       <td class="py-2 pr-3 text-sm ${isOverdue(t) ? 'text-red-600 font-bold' : 'text-gray-500'}">${fmtDate(t.due_date)}</td>
@@ -4307,6 +5196,7 @@ function updateTaskTypeUI() {
   const hstkGrp     = $('taskHstkGroup')
   if (filenameGrp) filenameGrp.style.display = isModel ? '' : 'none'
   if (hstkGrp)     hstkGrp.style.display     = isModel ? '' : 'none'
+  syncTaskTitle()
 }
 
 // ── Task Filename Combobox helpers ──────────────────────────
@@ -4365,6 +5255,86 @@ function _reloadTaskFilenameCombobox(projectId, models) {
   _initTaskFilenameCombobox(items, currentVal)
 }
 
+let _taskTitleAuto = ''
+let _taskTitleLegacy = false
+
+function taskTypeCode(type) {
+  return { model: 'M3', check_hs: 'RP', other: 'Oth' }[type] || ''
+}
+
+function taskPhaseCode(phase) {
+  return {
+    basic_design: 'TKCS',
+    technical_design: 'TKKT',
+    construction_design: 'TKTC',
+    as_built: 'HC',
+  }[phase] || ''
+}
+
+function composeTaskTitle() {
+  const projId = _cbGetValue('taskProjectComboboxModal') || $('taskProject')?.value
+  const proj = (allProjects || []).find(p => String(p.id) === String(projId))
+  const docNo = (proj?.project_code_letter || proj?.code || '').trim()
+  const phase = taskPhaseCode($('taskPhase')?.value)
+  const disc = ($('taskDiscipline')?.value || '').trim()
+  const type = taskTypeCode($('taskType')?.value)
+  const catState = _cbState['taskCategoryComboboxModal']
+  let catName = ''
+  if (catState?.value) {
+    const item = (catState.items || []).find(i => String(i.value) === String(catState.value))
+    catName = (item?.label || '').trim()
+  }
+  const desc = ($('taskDesc')?.value || '').replace(/\s+/g, ' ').trim()
+  return [docNo, phase, disc, type, catName, desc].filter(Boolean).join('-')
+}
+
+async function hydrateProjectDocNo(projId) {
+  if (!projId) return
+  const proj = (allProjects || []).find(p => String(p.id) === String(projId))
+  if (!proj || proj.project_code_letter) return
+  try {
+    const full = await api(`/projects/${projId}`)
+    proj.project_code_letter = full?.project_code_letter || ''
+  } catch (_) {}
+}
+
+function canRefreshTaskTitle(stored, composed) {
+  const current = String(stored || '').trim()
+  const next = String(composed || '').trim()
+  if (!current) return !!next
+  if (!next || current === next) return !!next
+  const known = new Set(['TKCS', 'TKKT', 'TKTC', 'HC', 'M3', 'RP', 'Oth'])
+  const nextParts = next.split('-').map(s => s.trim()).filter(Boolean)
+  const curParts = current.split('-').map(s => s.trim()).filter(Boolean)
+  if (curParts.length < 2 || !curParts.some(p => known.has(p))) return false
+  let from = 0
+  for (const part of curParts) {
+    const at = nextParts.findIndex((p, idx) => idx >= from && p === part)
+    if (at < 0) return false
+    from = at + 1
+  }
+  return true
+}
+
+function applyTaskTitleMode(storedTitle) {
+  const composed = composeTaskTitle()
+  _taskTitleLegacy = !canRefreshTaskTitle(storedTitle, composed)
+  const input = $('taskTitle')
+  if (!input) return
+  input.readOnly = true
+  input.value = _taskTitleLegacy ? (storedTitle || '') : (composed || storedTitle || '')
+  _taskTitleAuto = composed
+}
+
+function syncTaskTitle() {
+  if (_taskModalInitializing || _taskTitleLegacy) return
+  const input = $('taskTitle')
+  if (!input) return
+  const title = composeTaskTitle()
+  _taskTitleAuto = title
+  if (title) input.value = title
+}
+
 async function openTaskModal(taskId = null, projectId = null) {
   // Luôn tải lại projects/users để nhân sự mới hiện trong dropdown
   try { allProjects = await api('/projects'); refreshProjectRoleCache() } catch (_) {
@@ -4374,6 +5344,9 @@ async function openTaskModal(taskId = null, projectId = null) {
     if (!allUsers.length) allUsers = await api('/users')
   }
 
+  _taskModalInitializing = true
+  _taskTitleLegacy = false
+  _taskTitleAuto = ''
   $('taskModalTitle').textContent = taskId ? 'Chỉnh sửa Task' : 'Tạo Task mới'
   $('taskId').value = taskId || ''
 
@@ -4396,7 +5369,7 @@ async function openTaskModal(taskId = null, projectId = null) {
       fullWidth: true,
       teleport: true,
       dropdownMaxHeight: '280px',
-      onchange: (val) => { $('taskDiscipline').value = val || '' }
+      onchange: (val) => { $('taskDiscipline').value = val || ''; syncTaskTitle() }
     })
   }
 
@@ -4428,7 +5401,7 @@ async function openTaskModal(taskId = null, projectId = null) {
   const adminSection = $('taskAdminSection')
   const memberSection = $('taskMemberSection')
   if (adminSection) { adminSection.style.opacity = ''; adminSection.style.pointerEvents = ''; adminSection.style.filter = '' }
-  if (memberSection) { memberSection.style.borderColor = '#6366f1'; memberSection.style.background = 'linear-gradient(135deg,#f5f3ff 0%,#eff6ff 100%)' }
+  if (memberSection) { memberSection.style.borderColor = ''; memberSection.style.background = '' }
 
   // Tất cả fields đều được chỉnh sửa mặc định - sẽ điều chỉnh sau khi biết task
   const allFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours','taskWorkNotes','taskCdeReport','taskHstkDate','taskType','taskFilename']
@@ -4516,11 +5489,14 @@ async function openTaskModal(taskId = null, projectId = null) {
       await _loadAndInitTaskCategoryCombobox(task.project_id, task.category_id, isLimitedEdit)
       await updateTaskAssigneeByProject(task.project_id, task.assigned_to)
       await _loadAndInitTaskFilenameCombobox(task.project_id, task.model_filename || '')
-      _taskModalPreserveAssignee = null  // Xóa flag sau khi đã load xong
-      _taskModalInitializing    = false  // Mở lại onchange
+      _taskModalPreserveAssignee = null
+      await hydrateProjectDocNo(task.project_id)
+      applyTaskTitleMode(task.title)
+      _taskModalInitializing = false
     } catch (e) {
       const msg = e?.response?.data?.error || e?.message || 'Không xác định'
       toast('Lỗi tải task: ' + msg, 'error')
+      _taskModalInitializing = false
       return
     }
   } else {
@@ -4557,6 +5533,12 @@ async function openTaskModal(taskId = null, projectId = null) {
     }
   }
 
+  _taskModalInitializing = false
+  if (!taskId) {
+    const projId = _cbGetValue('taskProjectComboboxModal') || $('taskProject')?.value
+    await hydrateProjectDocNo(projId)
+    syncTaskTitle()
+  }
   openModal('taskModal')
 }
 
@@ -4581,6 +5563,8 @@ function _initTaskProjectCombobox(items, locked) {
         await _loadAndInitTaskCategoryCombobox(parseInt(val), null, locked)
         await updateTaskAssigneeByProject(parseInt(val))
         await _loadAndInitTaskFilenameCombobox(parseInt(val), '')
+        await hydrateProjectDocNo(val)
+        syncTaskTitle()
 
         // Re-evaluate role sau khi chọn project — quan trọng với QLDA/Leader
         const newRole = getEffectiveRoleForProject(parseInt(val))
@@ -4636,7 +5620,7 @@ function _initTaskCategoryCombobox(items, locked, selectedId) {
     items,
     value: selectedId ? String(selectedId) : '',
     fullWidth: true,
-    onchange: (val) => { $('taskCategory').value = val || '' }
+    onchange: (val) => { $('taskCategory').value = val || ''; syncTaskTitle() }
   })
   if (selectedId) $('taskCategory').value = String(selectedId)
   if (locked) _applyComboboxLock('taskCategoryComboboxModal')
@@ -4683,27 +5667,31 @@ $('taskForm').addEventListener('submit', async (e) => {
   const catVal  = _cbGetValue('taskCategoryComboboxModal') || $('taskCategory').value
 
   if (!projVal) { toast('Vui lòng chọn dự án', 'warning'); return }
+  if (!_taskTitleLegacy) syncTaskTitle()
+  const title = ($('taskTitle')?.value || '').trim()
+  if (!title) { toast('Chưa ghép được tên công việc. Hãy chọn dự án, giai đoạn và loại task.', 'warning'); return }
 
-  const data = {
-    project_id:       parseInt(projVal),
-    category_id:      parseInt(catVal) || null,
-    title:            $('taskTitle').value,
-    description:      $('taskDesc').value,
-    discipline_code:  $('taskDiscipline').value || null,
-    phase:            $('taskPhase').value,
-    priority:         $('taskPriority').value,
-    status:           $('taskStatus').value,
-    assigned_to:      parseInt($('taskAssignee').value) || null,
-    start_date:       $('taskStartDate').value || null,
-    due_date:         $('taskDueDate').value || null,
-    estimated_hours:  parseFloat($('taskEstHours').value) || 0,
-    progress:         parseInt($('taskProgress').value) || 0,
-    work_notes:       ($('taskWorkNotes') ? $('taskWorkNotes').value.trim() : null) || null,
-    cde_report:       ($('taskCdeReport') && $('taskCdeReport').checked) ? 1 : 0,
-    hstk_date:        ($('taskHstkDate') ? $('taskHstkDate').value.trim() : null) || null,
-    task_type:        $('taskType') ? $('taskType').value : 'model',
-    model_filename:   (_cbGetValue('taskFilenameCombobox') || ($('taskFilename') ? $('taskFilename').value.trim() : null)) || null
+  const gridFields = {
+    project_id: projVal,
+    category_id: catVal,
+    title,
+    description: $('taskDesc').value,
+    discipline_code: $('taskDiscipline').value || null,
+    phase: $('taskPhase').value,
+    priority: $('taskPriority').value,
+    status: $('taskStatus').value,
+    assigned_to: $('taskAssignee').value,
+    start_date: $('taskStartDate').value || null,
+    due_date: $('taskDueDate').value || null,
+    estimated_hours: $('taskEstHours').value,
+    progress: $('taskProgress').value,
+    work_notes: $('taskWorkNotes') ? $('taskWorkNotes').value.trim() : null,
+    cde_report: ($('taskCdeReport') && $('taskCdeReport').checked) ? 1 : 0,
+    hstk_date: $('taskHstkDate') ? $('taskHstkDate').value.trim() : null,
+    task_type: $('taskType') ? $('taskType').value : 'model',
+    model_filename: (_cbGetValue('taskFilenameCombobox') || ($('taskFilename') ? $('taskFilename').value.trim() : null)) || null,
   }
+  const data = buildTaskPayloadFromGrid({}, gridFields, { isNew: !id })
   try {
     if (id) await api(`/tasks/${id}`, { method: 'put', data })
     else await api('/tasks', { method: 'post', data })
@@ -4783,8 +5771,8 @@ async function openTaskDetail(id, openChatTab = false) {
       <div class="space-y-4">
         <div class="flex flex-wrap gap-2">
           ${getStatusBadge(task.status)} ${getPriorityBadge(task.priority)}
-          ${task.discipline_code ? `<span class="badge" style="background:#e0f2fe;color:#0369a1">${task.discipline_code}</span>` : ''}
-          ${task.phase ? `<span class="badge" style="background:#f0fdf4;color:#15803d">${getPhaseName(task.phase)}</span>` : ''}
+          ${task.discipline_code ? `<span class="task-disc-pill">${task.discipline_code}</span>` : ''}
+          ${task.phase ? `<span class="${taskPhasePillClass(task.phase)}">${getPhaseName(task.phase)}</span>` : ''}
           ${overdue ? '<span class="badge badge-overdue">Trễ hạn!</span>' : ''}
         </div>
         ${task.description ? `<p class="text-gray-600 text-sm">${task.description}</p>` : ''}
@@ -6823,9 +7811,7 @@ async function loadTimesheets() {
                    class="hover:bg-gray-50 rounded last:border-0"
                    onclick="filterTsByProject('${p.project_id}')">
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0">
-                  <span class="font-semibold text-gray-800 text-xs whitespace-nowrap flex-shrink-0"
-                        style="background:#f0fdf4;color:#166534;padding:1px 6px;border-radius:4px;font-family:monospace;letter-spacing:0.02em"
-                        title="${p.code}">${p.code}</span>
+                  <span class="ts-proj-code-pill" title="${p.code}">${p.code}</span>
                   <div class="text-right text-xs whitespace-nowrap flex-shrink-0">
                     <span class="font-bold text-accent">${p.total_hours}h</span>
                     <span class="text-gray-400 ml-1">${p.member_count} người</span>
@@ -7118,7 +8104,7 @@ function renderTsRows() {
       <td class="py-2 pr-3">
         <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium ${dt.cls}" title="${dt.label}">${dt.icon} ${dt.label}</span>
       </td>
-      <td class="py-2 pr-3 text-sm text-gray-600">${isFullLeaveRow ? '<span class="text-gray-300">—</span>' : (t.project_code || '-')}</td>
+      <td class="py-2 pr-3 text-sm ts-project-code">${isFullLeaveRow ? '<span class="text-gray-300">—</span>' : (t.project_code || '-')}</td>
       <td class="py-2 pr-3 text-xs text-gray-600">${(() => {
         if (isFullLeaveRow) return '<span class="text-gray-300">—</span>'
         // Multi-task: gom danh sách hạng mục duy nhất từ task_entries
@@ -10017,8 +11003,11 @@ async function loadCosts() {
       try { allCostTypes = await api('/cost-types') } catch(e) {}
     }
 
-    allCosts = await api(costUrl)
-    allRevenues = await api(revUrl)
+    const [costRes, revRes] = await Promise.allSettled([api(costUrl), api(revUrl)])
+    if (costRes.status === 'fulfilled') allCosts = costRes.value
+    else console.error(costRes.reason)
+    if (revRes.status === 'fulfilled') allRevenues = revRes.value
+    else console.error(revRes.reason)
     _costPage = 1          // Reset về trang 1 khi load dữ liệu mới
     _costTypeFilter = ''   // Reset filter
     const sel = $('costTypeFilterSel'); if (sel) sel.value = ''
@@ -10583,11 +11572,12 @@ function renderCostTable() {
     const payColors  = { pending: 'badge-todo', processing: 'badge-in_progress', partial: 'badge-in_progress', paid: 'badge-completed', rejected: 'badge-canceled' }
     const payLabels  = { pending: '⏳ Chờ TT', processing: '🔄 Đang xử lý', partial: '💰 TT một phần', paid: '✅ Đã TT', rejected: '❌ Từ chối' }
 
-    // Hiển thị tất cả trạng thái — pending (chờ TT) cũng được hiển thị với màu amber
-    const displayRevenues = allRevenues
+    // Chờ thanh toán không vào sổ. API đã loại; lọc lại để tổng trên màn không cộng phiếu pending.
+    const displayRevenues = allRevenues.filter(r => r.payment_status !== 'pending')
 
     // Tính tổng theo trạng thái — NT & dòng tiền = trước VAT; DT NS = booked
     const revPending            = displayRevenues.filter(r => r.payment_status === 'pending')
+    const revProcessing         = displayRevenues.filter(r => r.payment_status === 'processing')
     const revCollected          = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status))
     const revNt = (r) => r.amount_before_vat != null
       ? Number(r.amount_before_vat)
@@ -10600,8 +11590,10 @@ function renderCostTable() {
     const revTotalCollected    = revCollected.reduce((s, r) => s + revNs(r), 0)
     const revTotalAll          = displayRevenues.reduce((s, r) => s + revNs(r), 0)
     const revTotalPending      = revPending.reduce((s, r) => s + revNs(r), 0)
+    const revTotalProcessing   = revProcessing.reduce((s, r) => s + revNs(r), 0)
     const revTotalOrigCollected = revCollected.reduce((s, r) => s + revNt(r), 0)
     const revTotalOrigPending   = revPending.reduce((s, r) => s + revNt(r), 0)
+    const revTotalOrigProcessing = revProcessing.reduce((s, r) => s + revNt(r), 0)
     const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + revNt(r), 0)
     const revTotalCashCollected = revCollected.reduce((s, r) => s + revCash(r), 0)
     const revTotalCashAll       = displayRevenues.reduce((s, r) => s + revCash(r), 0)
@@ -10654,7 +11646,7 @@ function renderCostTable() {
         ? `<div class="text-xs text-gray-400 mt-0.5">${cashDiffPct}% nghiệm thu</div>` : ''
 
       return `
-      <tr class="table-row ${r.payment_status === 'pending' ? 'bg-amber-50/40' : ''}">
+      <tr class="table-row ${r.payment_status === 'pending' ? 'bg-amber-50/40' : r.payment_status === 'processing' ? 'bg-sky-50/50' : ''}">
         <td class="py-2 pr-3 text-sm font-medium">${r.project_code || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-700">${r.description}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
@@ -10686,7 +11678,19 @@ function renderCostTable() {
     if (revTfoot) {
       const countCollected = revCollected.length
       const countPending   = revPending.length
+      const countProcessing = revProcessing.length
       revTfoot.innerHTML = `
+        ${countProcessing > 0 ? `
+        <tr class="border-t border-sky-200 bg-sky-50/70">
+          <td colspan="5" class="py-2 px-0 font-semibold text-sky-800 text-xs">
+            <i class="fas fa-sync-alt mr-1 text-sky-600"></i>
+            Đang xử lý (đã ghi sổ) — ${countProcessing} khoản
+          </td>
+          <td class="py-2 pr-3 text-right font-bold text-sky-800 text-sm whitespace-nowrap">${fmt(revTotalOrigProcessing)}</td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-300 text-sm whitespace-nowrap">—</td>
+          <td class="py-2 pr-3 text-right font-bold text-sky-800 text-sm whitespace-nowrap">${fmt(revTotalProcessing)}</td>
+          <td></td>
+        </tr>` : ''}
         ${countPending > 0 ? `
         <tr class="border-t border-amber-200 bg-amber-50/60">
           <td colspan="5" class="py-2 px-0 font-semibold text-amber-700 text-xs">
@@ -16945,7 +17949,12 @@ async function renderTeamTab(force = false) {
     const year = getAnalyticsYear()
     const data = await api(`/analytics/team-productivity?year=${year}`)
     const members = data.members || []
-    if (!members.length) { el.innerHTML = `<div class="text-center py-16 text-gray-400"><p>Chưa có dữ liệu</p></div>`; return }
+    const usersHost = currentUser?.role === 'system_admin' ? '<div id="systemUsersHost" class="mt-6"></div>' : ''
+    if (!members.length) {
+      el.innerHTML = `<div class="text-center py-16 text-gray-400"><p>Chưa có dữ liệu năng suất</p></div>${usersHost}`
+      if (usersHost) loadSystemUsersTable()
+      return
+    }
 
     const totalHours = members.reduce((s,m)=>s+(m.total_hours||0),0)
     const totalOT = members.reduce((s,m)=>s+(m.overtime_hours||0),0)
@@ -16997,12 +18006,14 @@ async function renderTeamTab(force = false) {
           <div class="flex items-center gap-1" id="teamProdPageBtns"></div>
         </div>
       </div>
+      ${currentUser?.role === 'system_admin' ? '<div id="systemUsersHost" class="mt-6"></div>' : ''}
     `
 
     // ── Pagination for detail table ──────────────────────────────────
     // Populate global data array, then call the global renderProdTable
     _teamProdData = members.slice().sort((a,b)=>(b.assigned_tasks||0)-(a.assigned_tasks||0))
     renderProdTable(1)
+    if (currentUser?.role === 'system_admin') loadSystemUsersTable()
 
     destroyAnalyticsChart('teamTopHours'); destroyAnalyticsChart('teamTaskRate')
     // Top 10 by hours (chart trái)
@@ -17095,9 +18106,8 @@ function renderTsTaskPage(page) {
     const diff = (t.ts_actual_hours||0) - (t.planned_hours||0)
     const diffColor = t.planned_hours > 0 ? (diff > 0 ? '#ef4444' : '#00A651') : '#9ca3af'
     const diffText  = t.planned_hours > 0 ? `${diff >= 0 ? '+' : ''}${diff.toFixed(1)}h` : '—'
-    const rowBg = t.pct_used > 120 ? 'background:#fff5f5' : t.pct_used > 100 ? 'background:#fff8f0' : ''
-    const rowAlt = (start + idx) % 2 === 1 ? 'background:#f9fafb' : ''
-    return `<tr class="border-b border-gray-100 hover:bg-gray-50 transition" style="${rowBg || rowAlt}">
+    const rowTint = t.pct_used > 120 ? 'an-row-over' : t.pct_used > 100 ? 'an-row-warn' : ((start + idx) % 2 === 1 ? 'an-row-zebra' : '')
+    return `<tr class="border-b border-gray-100 hover:bg-gray-50 transition ${rowTint}">
       <td class="py-2 px-3">
         <div class="font-medium text-gray-800" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(t.task_title||'').replace(/"/g,'&quot;')}">${t.task_title||'—'}</div>
         ${t.discipline_code ? `<span class="text-gray-400">[${t.discipline_code}]</span>` : ''}
@@ -18431,8 +19441,402 @@ function exportAnalyticsPDF() {
 
 let _legalCurrentProjectId = null
 let _legalOverviewData = null
-let _legalCurrentTab = 'stages'
+let _legalCostAData = null
+let _legalCurrentTab = 'info'
+let _legalPackageCounts = {}
 let _legalTabSetByUser = false
+let _legalProjectSearch = ''
+let _legalActivePackageId = null
+let _legalPaymentActivePackageId = null
+let _legalPaymentInlineBusy = false
+let _legalPaymentItemPackageMap = null
+
+function _legalPaymentNormPackageKey(key) {
+  if (key === null || key === undefined || key === '') return 0
+  const n = Number(key)
+  return Number.isFinite(n) ? n : 0
+}
+
+function _legalPackageIdEq(a, b) {
+  return _legalPaymentNormPackageKey(a) === _legalPaymentNormPackageKey(b)
+}
+
+/** Resolve checklist item from overview (avoids fragile inline JSON in HTML handlers). */
+function _legalFindItemInOverview(itemId) {
+  const id = Number(itemId)
+  if (!Number.isFinite(id) || !_legalOverviewData) return null
+  const scanItems = (items) => {
+    for (const it of items || []) {
+      if (Number(it.id) === id) return it
+      for (const ch of it.children || []) {
+        if (Number(ch.id) === id) return ch
+      }
+    }
+    return null
+  }
+  for (const pkg of _legalOverviewData.packages || []) {
+    for (const stage of pkg.stages || []) {
+      const hit = scanItems(stage.items)
+      if (hit) return hit
+    }
+  }
+  for (const stage of _legalOverviewData.stages || []) {
+    const hit = scanItems(stage.items)
+    if (hit) return hit
+  }
+  return null
+}
+
+function _legalParseItemArg(item) {
+  if (item == null) return null
+  if (typeof item === 'object') return item
+  if (typeof item === 'string') {
+    try {
+      return JSON.parse(item.replace(/&quot;/g, '"'))
+    } catch (_) {
+      return null
+    }
+  }
+  return null
+}
+
+let _legalImeComposing = false
+let _legalImeGuardUntil = 0
+
+function _legalImeCompositionStart() {
+  _legalImeComposing = true
+}
+
+function _legalImeCompositionEnd(ev) {
+  _legalImeComposing = false
+  _legalImeGuardUntil = Date.now() + 100
+  const el = ev?.target
+  if (!el?.classList?.contains('legal-checklist-inline-add')) return
+  if (el.dataset.commitAfterIme !== '1' && el.dataset.blurCommit !== '1') return
+  const keepOpen = el.dataset.commitAfterIme === '1'
+  delete el.dataset.commitAfterIme
+  delete el.dataset.blurCommit
+  const stageId = Number(el.dataset.stageId)
+  const parentRaw = el.dataset.parentId
+  const parentId = parentRaw ? Number(parentRaw) : null
+  setTimeout(() => {
+    if (el.isConnected) legalChecklistInlineAddCommit(stageId, parentId, el, keepOpen)
+  }, 0)
+}
+
+function _legalInstallImeGuards() {
+  if (window._legalImeGuardsInstalled) return
+  window._legalImeGuardsInstalled = true
+  const inLegalAdd = (ev) => !!ev.target?.closest?.('.legal-checklist-host, .legal-payment-sheet')
+  document.addEventListener('compositionstart', (ev) => {
+    if (inLegalAdd(ev)) _legalImeCompositionStart()
+  }, true)
+  document.addEventListener('compositionend', (ev) => {
+    if (inLegalAdd(ev)) _legalImeCompositionEnd(ev)
+  }, true)
+}
+
+function _legalImeBlocksEnter(ev) {
+  if (!ev) return false
+  if (ev.isComposing || ev.keyCode === 229 || _legalImeComposing) return true
+  return Date.now() < _legalImeGuardUntil
+}
+
+_legalInstallImeGuards()
+
+function _legalDateOnly(v) {
+  if (!v) return ''
+  const m = String(v).match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : ''
+}
+
+function _legalTodayISO() {
+  const d = new Date()
+  const z = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`
+}
+
+/** Hạn thực hiện: ngày đã lưu, không có thì ngày tạo hồ sơ. */
+function _legalDueInputValue(item) {
+  return _legalDateOnly(item?.due_date) || _legalDateOnly(item?.created_at)
+}
+
+let _legalChecklistAddBusy = false
+
+function _legalPushOverviewItem(stageId, parentId, item) {
+  if (!_legalOverviewData || !item) return
+  const sid = Number(stageId)
+  const pid = parentId != null && parentId !== '' ? Number(parentId) : null
+  const inject = (stages) => {
+    for (const st of stages || []) {
+      if (Number(st.id) !== sid) continue
+      st.items = st.items || []
+      if (!pid) {
+        st.items.push(item)
+        return true
+      }
+      for (const it of st.items) {
+        if (Number(it.id) === pid) {
+          it.children = it.children || []
+          it.children.push(item)
+          return true
+        }
+      }
+    }
+    return false
+  }
+  const pkgStages = (_legalOverviewData.packages || []).flatMap(p => p.stages || [])
+  if (inject(pkgStages)) return
+  inject(_legalOverviewData.stages || [])
+}
+
+function _legalChecklistStageRowsEl(stageId) {
+  const sid = String(stageId)
+  const add = document.querySelector(`.legal-checklist-add-row[data-stage-id="${sid}"]`)
+  if (add?.parentElement?.classList?.contains('legal-checklist-rows')) return add.parentElement
+  const host = document.querySelector('.legal-checklist-host')
+  if (!host) return null
+  for (const stageEl of host.querySelectorAll('.legal-checklist-stage')) {
+    const head = stageEl.querySelector(`[data-legal-stage-drop="${sid}"]`)
+    if (head) return stageEl.querySelector('.legal-checklist-rows')
+  }
+  return null
+}
+
+function _legalBumpStageCountUI(stageId, delta) {
+  const sid = String(stageId)
+  const host = document.querySelector('.legal-checklist-host')
+  if (!host || !delta) return
+  for (const stageEl of host.querySelectorAll('.legal-checklist-stage')) {
+    const head = stageEl.querySelector(`[data-legal-stage-drop="${sid}"]`)
+    if (!head) continue
+    const countEl = stageEl.querySelector('.legal-checklist-stage-count')
+    if (!countEl) return
+    const m = countEl.textContent.match(/(\d+)/)
+    const n = (m ? parseInt(m[1], 10) : 0) + delta
+    countEl.textContent = `${Math.max(0, n)} hạng mục`
+    return
+  }
+}
+
+function renderLegalChecklistStageInlineAdd(stage, parentId) {
+  const pid = parentId != null && parentId !== '' ? Number(parentId) : null
+  const stageName = escHtml(stage.name || stage.code || 'giai đoạn')
+  const ph = pid
+    ? `+ Thêm công việc con… (Enter)`
+    : `+ Thêm vào ${stageName}… (Enter)`
+  const parentAttr = pid != null ? String(pid) : ''
+  return `
+    <div class="legal-checklist-row legal-checklist-add-row${pid ? ' is-child' : ''}" data-stage-id="${stage.id}" data-parent-id="${parentAttr}"
+         onclick="legalChecklistAddRowFocus(event)">
+      <input type="text" class="legal-checklist-inline-add"
+        placeholder="${ph}"
+        data-stage-id="${stage.id}"
+        data-parent-id="${parentAttr}"
+        aria-label="Thêm hạng mục"
+        autocomplete="off"
+        onkeydown="legalChecklistInlineAddKeydown(event, ${stage.id}, ${pid != null ? pid : 'null'})"
+        onblur="legalChecklistInlineAddBlur(event, ${stage.id}, ${pid != null ? pid : 'null'})" />
+      <button type="button" class="btn-secondary text-xs legal-checklist-add-btn"
+        onclick="event.stopPropagation(); legalChecklistInlineAddFromButton(this)">Thêm</button>
+    </div>`
+}
+
+function legalChecklistAddRowFocus(ev) {
+  if (ev.target.closest('button, input')) return
+  ev.currentTarget.querySelector('.legal-checklist-inline-add')?.focus()
+}
+
+function legalChecklistInlineAddFromButton(btn) {
+  const input = btn.closest('.legal-checklist-add-row')?.querySelector('.legal-checklist-inline-add')
+  if (!input) return
+  const stageId = Number(input.dataset.stageId)
+  const parentRaw = input.dataset.parentId
+  const parentId = parentRaw ? Number(parentRaw) : null
+  legalChecklistInlineAddCommit(stageId, parentId, input, true)
+}
+
+function legalChecklistInlineAddKeydown(ev, stageId, parentId) {
+  if (ev.key === 'Escape') {
+    ev.preventDefault()
+    ev.target.value = ''
+    delete ev.target.dataset.commitAfterIme
+    return
+  }
+  if (ev.key !== 'Enter') return
+  if (ev.isComposing || ev.keyCode === 229 || _legalImeComposing) {
+    ev.target.dataset.commitAfterIme = '1'
+    return
+  }
+  if (_legalImeBlocksEnter(ev)) return
+  ev.preventDefault()
+  legalChecklistInlineAddCommit(stageId, parentId, ev.target, true)
+}
+
+function legalChecklistInlineAddBlur(ev, stageId, parentId) {
+  const row = ev.target.closest?.('.legal-checklist-add-row')
+  const next = ev.relatedTarget
+  if (next && row?.contains(next)) return
+  if (_legalImeComposing || ev.target.dataset.commitAfterIme === '1') {
+    ev.target.dataset.blurCommit = '1'
+    return
+  }
+  const title = (ev.target.value || '').trim()
+  if (!title && parentId) {
+    if (_legalChecklistAddBusy) return
+    row?.remove()
+    return
+  }
+  legalChecklistInlineAddCommit(stageId, parentId, ev.target, false)
+}
+
+function _legalChecklistAddParentAttr(parentId) {
+  if (parentId == null || parentId === '' || parentId === 'null') return ''
+  const n = Number(parentId)
+  return Number.isFinite(n) && n > 0 ? String(n) : ''
+}
+
+function _legalChecklistAddRowEl(stageId, parentId) {
+  const rowsEl = _legalChecklistStageRowsEl(stageId)
+  if (!rowsEl) return null
+  const parentAttr = _legalChecklistAddParentAttr(parentId)
+  return rowsEl.querySelector(`.legal-checklist-add-row[data-stage-id="${Number(stageId)}"][data-parent-id="${parentAttr}"]`)
+}
+
+function _legalFocusChecklistAdd(stageId, parentId) {
+  const input = _legalChecklistAddRowEl(stageId, parentId)?.querySelector('.legal-checklist-inline-add')
+  if (input) input.focus()
+}
+
+function legalChecklistFocusStageAdd(stageId) {
+  _legalFocusChecklistAdd(stageId, null)
+}
+
+function _legalFindStage(stageId) {
+  const sid = Number(stageId)
+  if (!_legalOverviewData || !Number.isFinite(sid)) return null
+  for (const pkg of _legalOverviewData.packages || []) {
+    for (const st of pkg.stages || []) {
+      if (Number(st.id) === sid) return st
+    }
+  }
+  for (const st of _legalOverviewData.stages || []) {
+    if (Number(st.id) === sid) return st
+  }
+  return null
+}
+
+function legalChecklistShowChildAdd(stageId, parentId) {
+  const pid = Number(parentId)
+  const sid = Number(stageId)
+  if (!Number.isFinite(pid) || !Number.isFinite(sid)) return
+  const rowsEl = _legalChecklistStageRowsEl(sid)
+  if (!rowsEl) return
+  const existing = _legalChecklistAddRowEl(sid, pid)
+  if (existing) {
+    existing.querySelector('.legal-checklist-inline-add')?.focus()
+    return
+  }
+  const stage = _legalFindStage(sid) || { id: sid, name: '' }
+  const html = renderLegalChecklistStageInlineAdd(stage, pid)
+  const children = rowsEl.querySelectorAll(`.legal-checklist-row.is-child[data-parent-id="${pid}"]`)
+  const anchor = children.length
+    ? children[children.length - 1]
+    : rowsEl.querySelector(`.legal-checklist-row[data-legal-item-id="${pid}"]`)
+  if (anchor) anchor.insertAdjacentHTML('afterend', html)
+  else rowsEl.insertAdjacentHTML('beforeend', html)
+  _legalFocusChecklistAdd(sid, pid)
+}
+
+async function legalChecklistInlineAddCommit(stageId, parentId, inputEl, keepOpen = true) {
+  if (_legalChecklistAddBusy || !inputEl) return
+  const title = (inputEl.value || '').trim()
+  if (!title) return
+  const projectId = _legalCurrentProjectId
+  if (!projectId) {
+    toast('Vui lòng chọn dự án trước', 'warning')
+    return
+  }
+  inputEl.value = ''
+  _legalChecklistAddBusy = true
+  inputEl.disabled = true
+  try {
+    const res = await api(`/legal/${projectId}/items`, {
+      method: 'POST',
+      data: {
+        stage_id: stageId,
+        parent_id: parentId || null,
+        title,
+        item_type: 'task',
+        due_date: _legalTodayISO(),
+        actual_completion_date: null,
+        status: 'pending',
+        notes: null,
+      }
+    })
+    const newItem = {
+      id: res.id,
+      stt: res.stt,
+      stage_id: stageId,
+      parent_id: parentId || null,
+      title,
+      item_type: 'task',
+      status: 'pending',
+      due_date: _legalTodayISO(),
+      created_at: _legalTodayISO(),
+      actual_completion_date: null,
+      notes: null,
+      children: [],
+    }
+    _legalPushOverviewItem(stageId, parentId, newItem)
+    const addRow = _legalChecklistAddRowEl(stageId, parentId)
+    const rowsEl = addRow?.parentElement
+    if (rowsEl && addRow) {
+      addRow.insertAdjacentHTML('beforebegin', renderLegalChecklistDisplayRow(newItem, stageId, !!parentId))
+      _legalBumpStageCountUI(stageId, 1)
+    } else {
+      await loadLegalProject(projectId)
+    }
+    inputEl.value = ''
+    toast(`✓ Đã thêm: ${title}`, 'success', 2500)
+    if (parentId && !keepOpen && addRow?.isConnected) addRow.remove()
+  } catch (err) {
+    inputEl.value = title
+    toast('Lỗi thêm hạng mục: ' + err.message, 'error')
+  } finally {
+    _legalChecklistAddBusy = false
+    if (!inputEl.isConnected) return
+    inputEl.disabled = false
+    if (keepOpen) inputEl.focus()
+  }
+}
+
+function _legalPaymentRebuildItemPackageMap() {
+  const map = new Map()
+  if (!_legalOverviewData) {
+    _legalPaymentItemPackageMap = map
+    return
+  }
+  const walkItems = (items, packageId) => {
+    const pkgKey = _legalPaymentNormPackageKey(packageId)
+    for (const item of items || []) {
+      const itemId = Number(item.id)
+      if (Number.isFinite(itemId) && itemId > 0) map.set(itemId, pkgKey)
+      walkItems(item.children, pkgKey)
+    }
+  }
+  for (const pkg of _legalOverviewData.packages || []) {
+    const pkgKey = _legalPaymentNormPackageKey(pkg.id)
+    for (const stage of pkg.stages || []) {
+      walkItems(stage.items, pkgKey)
+    }
+  }
+  for (const stage of _legalOverviewData.stages || []) {
+    if (stage.package_id == null) continue
+    walkItems(stage.items, stage.package_id)
+  }
+  _legalPaymentItemPackageMap = map
+}
 
 const LEGAL_STATUS_LABELS = {
   pending: 'Chưa thực hiện',
@@ -18501,26 +19905,107 @@ const PAYMENT_STATUS_COLORS = {
 }
 
 // ── Navigate to Legal page ───────────────────────────────────────────────────
+function legalOnProjectSearch(q) {
+  _legalProjectSearch = (q || '').trim().toLowerCase()
+  renderLegalProjectList()
+}
+
+function renderLegalProjectList() {
+  const el = $('legalProjectList')
+  if (!el) return
+  const q = _legalProjectSearch
+  const filtered = (allProjects || []).filter(p => {
+    if (!q) return true
+    const hay = `${p.code || ''} ${p.name || ''}`.toLowerCase()
+    return hay.includes(q)
+  })
+  if (!filtered.length) {
+    el.innerHTML = '<div class="legal-project-empty">Không tìm thấy dự án</div>'
+    return
+  }
+  el.innerHTML = filtered.map(p => {
+    const active = Number(_legalCurrentProjectId) === Number(p.id)
+    const n = _legalPackageCounts[String(p.id)]
+    const pkgLine = n == null ? '' : `<div class="legal-project-pkgs">${n} gói thầu</div>`
+    return `<button type="button" class="legal-project-card${active ? ' active' : ''}" onclick="selectLegalProject(${p.id})">
+      <div class="legal-project-code">${escHtml(p.code || '—')}</div>
+      <div class="legal-project-name">${escHtml(p.name || '')}</div>
+      ${pkgLine}
+    </button>`
+  }).join('')
+}
+
+function _legalShowProjectShell(show) {
+  const hint = $('legalPickProjectHint')
+  const content = $('legalRightContent')
+  if (hint) hint.style.display = show ? 'none' : ''
+  if (content) content.style.display = show ? '' : 'none'
+}
+
+const LEGAL_PROJECT_STORAGE_KEY = 'bim.legal.projectId'
+
+function _legalRememberProject(projectId) {
+  try { sessionStorage.setItem(LEGAL_PROJECT_STORAGE_KEY, String(projectId)) } catch (e) {}
+}
+
+function _legalPickDefaultProjectId() {
+  const list = allProjects || []
+  if (!list.length) return null
+  let saved = null
+  try { saved = sessionStorage.getItem(LEGAL_PROJECT_STORAGE_KEY) } catch (e) {}
+  if (saved && list.some(p => String(p.id) === String(saved))) return Number(saved)
+  return list[0].id
+}
+
+async function selectLegalProject(projectId) {
+  const id = Number(projectId)
+  if (!Number.isFinite(id) || id <= 0) return
+  _legalRememberProject(id)
+  if (Number(_legalCurrentProjectId) === id && _legalOverviewData) {
+    renderLegalProjectList()
+    return
+  }
+  _legalCurrentProjectId = id
+  renderLegalProjectList()
+  await loadLegalProject(id)
+  if (Number(_legalCurrentProjectId) === id) renderLegalProjectList()
+}
+
+async function loadLegalPackageCounts() {
+  try {
+    const data = await api('/legal/package-counts')
+    _legalPackageCounts = data?.counts || {}
+  } catch (_) { _legalPackageCounts = {} }
+}
+
 async function loadLegal() {
-  // Load projects if needed
   if (allProjects.length === 0) {
     try { allProjects = (await api('/projects')).projects || [] } catch(e) {}
   }
+  await loadLegalPackageCounts()
+  if (!_legalCurrentProjectId) _legalCurrentProjectId = _legalPickDefaultProjectId()
 
-  // Build searchable combobox for project selection
+  renderLegalProjectList()
+
   const items = allProjects.map(p => ({ value: String(p.id), label: `[${p.code}] ${p.name}` }))
   const currentVal = _legalCurrentProjectId ? String(_legalCurrentProjectId) : ''
-  createCombobox('legalProjectSelectCombobox', {
-    placeholder: '-- Chọn dự án --',
-    items,
-    value: currentVal,
-    minWidth: '240px',
-    onchange: (val) => _onLegalProjectComboChange(val)
-  })
+  if ($('legalProjectSelectCombobox')) {
+    createCombobox('legalProjectSelectCombobox', {
+      placeholder: '-- Chọn dự án --',
+      items,
+      value: currentVal,
+      minWidth: '240px',
+      onchange: (val) => _onLegalProjectComboChange(val)
+    })
+  }
 
-  // If project already selected, reload
   if (_legalCurrentProjectId) {
     await loadLegalProject(_legalCurrentProjectId)
+  } else {
+    _legalShowProjectShell(false)
+    $('legalKPIRow').style.display = 'none'
+    $('legalTabs').style.display = 'none'
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal'].forEach(id => { if($(id)) $(id).style.display='none' })
   }
 }
 
@@ -18528,16 +20013,14 @@ async function _onLegalProjectComboChange(val) {
   const projectId = parseInt(val)
   if (!projectId) {
     _legalCurrentProjectId = null
-    $('legalStagesContainer').innerHTML = `<div class="card text-center py-16 text-gray-400">
-      <i class="fas fa-file-contract text-5xl mb-4 opacity-30"></i>
-      <p class="font-medium">Chọn dự án để xem hồ sơ pháp lý</p>
-    </div>`
+    _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal'].forEach(id => { if($(id)) $(id).style.display='none' })
+    renderLegalProjectList()
     return
   }
-  await loadLegalProject(projectId)
+  await selectLegalProject(projectId)
 }
 
 // Keep backward compat if any inline onchange still references this
@@ -18546,21 +20029,49 @@ async function onLegalProjectChange() {
   await _onLegalProjectComboChange(val)
 }
 
+let _legalProjectLoadSeq = 0
+
 async function loadLegalProject(projectId) {
-  _legalCurrentProjectId = projectId
+  const seq = ++_legalProjectLoadSeq
+  const requestedId = Number(projectId)
+  const prevLegalProjectId = _legalCurrentProjectId
+  _legalCurrentProjectId = requestedId
+  _legalRememberProject(requestedId)
+  _legalShowProjectShell(true)
   try {
-    // Auto-init if first time
-    await api(`/legal/init/${projectId}`, { method: 'POST' })
-    // Load overview
-    const data = await api(`/legal/${projectId}/overview`)
+    const data = await api(`/legal/${requestedId}/overview?view=shell`)
+    if (seq !== _legalProjectLoadSeq) return
     _legalOverviewData = data
+    _legalPaymentRebuildItemPackageMap()
+    const pkgs = data.packages || []
+    const keepChecklistPkg = Number(prevLegalProjectId) === requestedId
+      && pkgs.some(p => _legalPackageIdEq(p.id, _legalActivePackageId))
+    if (!keepChecklistPkg) {
+      _legalActivePackageId = pkgs[0] ? pkgs[0].id : null
+    }
+    if (prevLegalProjectId !== projectId) _legalPaymentActivePackageId = null
+    const payKeys = new Set(pkgs.map(p => _legalPaymentNormPackageKey(p.id)))
+    const payKey = _legalPaymentNormPackageKey(_legalPaymentActivePackageId)
+    if (_legalPaymentActivePackageId === null || !payKeys.has(payKey)) {
+      _legalPaymentActivePackageId = _legalPaymentPickDefaultPackageId(data.payments, data.packages)
+    } else {
+      _legalPaymentActivePackageId = payKey
+    }
+
+    if ($('legalProjectSelectCombobox') && typeof _cbAssignValue === 'function') {
+      try { _cbAssignValue('legalProjectSelectCombobox', String(requestedId)) } catch (_) {}
+    }
 
     // ── Kiểm tra quyền của user trong dự án này ──
     // Member chỉ được xem + tạo văn bản gửi đi
     // Project Leader trở lên: toàn quyền
-    const effRole = getEffectiveRoleForProject(projectId)
+    const effRole = getEffectiveRoleForProject(requestedId)
     // Kiểm tra quyền: chỉ system_admin mới có full quyền
     const isSystemAdmin = effRole === 'system_admin'
+    const isDestLegalAdmin = ['system_admin', 'project_admin'].includes(effRole)
+    if ($('btnCopyFromLegal')) {
+      $('btnCopyFromLegal').style.display = isDestLegalAdmin ? '' : 'none'
+    }
 
     // Show KPI row
     $('legalKPIRow').style.display = ''
@@ -18569,7 +20080,7 @@ async function loadLegalProject(projectId) {
     if (!isSystemAdmin) {
       // Member / Project Leader / Project Admin: chỉ hiện Văn bản gửi đi, Biên bản họp, Tài liệu đính kèm
       $('legalTabs').style.display = ''
-      ;['stages', 'payments', 'completed'].forEach(t => {
+      ;['stages', 'payments', 'cost-a', 'info'].forEach(t => {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = 'none'
       })
@@ -18580,8 +20091,8 @@ async function loadLegalProject(projectId) {
       if (btnLetters) btnLetters.style.display = ''
       if (btnMinutes) btnMinutes.style.display = ''
       if (btnDocs) btnDocs.style.display = ''
-      // Force tab vào một trong 3 tab được phép
-      if (!['letters', 'minutes', 'docs'].includes(_legalCurrentTab)) {
+      if ($('ltab-contacts')) $('ltab-contacts').style.display = ''
+      if (!['letters', 'minutes', 'docs', 'contacts'].includes(_legalCurrentTab)) {
         _legalCurrentTab = 'letters'
       }
       // Nút header: hiện Gửi văn bản và Thêm tài liệu, ẩn các nút admin
@@ -18600,7 +20111,7 @@ async function loadLegalProject(projectId) {
     } else {
       // System Admin: toàn quyền tất cả tabs
       $('legalTabs').style.display = ''
-      ;['stages', 'letters', 'minutes', 'docs', 'payments'].forEach(t => {
+      ;['info', 'stages', 'payments', 'cost-a', 'contacts', 'letters', 'minutes', 'docs'].forEach(t => {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = ''
       })
@@ -18616,9 +20127,10 @@ async function loadLegalProject(projectId) {
 
     // Render KPI — tính tổng qua packages → stages → items
     let totalItems = 0, doneItems = 0
-    const allStages = (data.packages || []).flatMap(pkg => pkg.stages || [])
+    let allStages = (data.packages || []).flatMap(pkg => pkg.stages || [])
+    if (!allStages.length && (data.stages || []).length) allStages = data.stages
     allStages.forEach(stage => {
-      stage.items.forEach(item => {
+      ;(stage.items || []).forEach(item => {
         totalItems++
         if (item.status === 'completed') doneItems++
         ;(item.children || []).forEach(ch => {
@@ -18629,398 +20141,1119 @@ async function loadLegalProject(projectId) {
     })
     $('legalKpiTotal').textContent = totalItems
     $('legalKpiDone').textContent = doneItems
-    $('legalKpiLetters').textContent = (data.letters || []).length
-    $('legalKpiDocs').textContent = (data.documents || []).length
+    $('legalKpiLetters').textContent = data.letter_count ?? (data.letters || []).length
+    $('legalKpiDocs').textContent = data.document_count ?? (data.documents || []).length
 
     // Sync tab UI rồi render
     switchLegalTab(_legalCurrentTab)
 
   } catch(e) {
+    if (seq !== _legalProjectLoadSeq) return
     toast('Lỗi tải dữ liệu pháp lý: ' + e.message, 'error')
   }
 }
 
+function _legalTabPanelEl(tab) {
+  if (tab === 'cost-a') return $('legalTabCostA')
+  return $('legalTab' + tab.charAt(0).toUpperCase() + tab.slice(1))
+}
+
 function switchLegalTab(tab) {
+  if (tab === 'completed') tab = 'contacts'
+  if (tab === 'cost-a' && currentUser?.role !== 'system_admin') {
+    tab = 'letters'
+  }
   // Nếu gọi từ onclick của người dùng → đánh dấu
   _legalCurrentTab = tab
   _legalTabSetByUser = true
-  ;['stages','letters','minutes','docs','payments','completed'].forEach(t => {
+  ;['info','stages','payments','cost-a','contacts','letters','minutes','docs'].forEach(t => {
     const btn = $('ltab-' + t)
-    const panel = $('legalTab' + t.charAt(0).toUpperCase() + t.slice(1))
+    const panel = _legalTabPanelEl(t)
     if (btn) btn.classList.toggle('active', t === tab)
     if (panel) panel.style.display = t === tab ? '' : 'none'
   })
   renderLegalTab(tab)
 }
 
-function renderLegalTab(tab) {
-  if (!_legalOverviewData) return
-  if (tab === 'stages') renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
-  else if (tab === 'letters') renderLegalLetters(_legalOverviewData.letters || [])
-  else if (tab === 'minutes') renderMeetingMinutes(_legalOverviewData.minutes || [])
-  else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
-  else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
-  else if (tab === 'completed') renderCompletedItemsTab()
-}
-
-
-// ── Render "Theo dõi hoàn thành" Tab ─────────────────────────────────────────
-function renderCompletedItemsTab() {
-  const container = $('legalCompletedContainer')
-  if (!container) return
-  if (!_legalOverviewData) {
-    container.innerHTML = '<div class="text-center py-10 text-gray-400">Chưa có dữ liệu</div>'
-    return
-  }
-
+function renderLegalProjectInfo() {
+  const el = $('legalProjectInfo')
+  if (!el || !_legalOverviewData) return
+  const proj = (allProjects || []).find(p => Number(p.id) === Number(_legalCurrentProjectId)) || {}
+  const apiProj = _legalOverviewData.project || {}
   const packages = _legalOverviewData.packages || []
-  const flatStages = _legalOverviewData.stages || []
-
-  const PKG_COLORS = [
-    { bg:'#eff6ff', border:'#3b82f6', text:'#1d4ed8', badgeBg:'#dbeafe', icon:'fa-building' },
-    { bg:'#fdf4ff', border:'#a855f7', text:'#7e22ce', badgeBg:'#f3e8ff', icon:'fa-drafting-compass' },
-    { bg:'#fff7ed', border:'#f97316', text:'#c2410c', badgeBg:'#ffedd5', icon:'fa-hard-hat' },
-    { bg:'#f0fdf4', border:'#22c55e', text:'#15803d', badgeBg:'#dcfce7', icon:'fa-check-double' },
-    { bg:'#fefce8', border:'#eab308', text:'#a16207', badgeBg:'#fef9c3', icon:'fa-star' },
-  ]
-  const STAGE_COLORS = {
-    A:{ bg:'#eff6ff', border:'#3b82f6', text:'#1e40af' },
-    B:{ bg:'#fdf4ff', border:'#a855f7', text:'#6b21a8' },
-    C:{ bg:'#fff7ed', border:'#f97316', text:'#9a3412' },
-    D:{ bg:'#f0fdf4', border:'#22c55e', text:'#166534' },
-    E:{ bg:'#fefce8', border:'#eab308', text:'#854d0e' },
+  const contractTotal = packages.reduce((s, p) => s + (Number(p.contract_value) || 0), 0)
+  const paidTotal = Array.isArray(_legalOverviewData.payments)
+    ? _legalOverviewData.payments
+      .filter(p => _legalPaymentResolvePackageId(p) && (p.status === 'paid' || p.status === 'partial'))
+      .reduce((s, p) => s + (Number(p.paid_amount) || 0), 0)
+    : (Number(_legalOverviewData.paid_on_package) || 0)
+  const dong = (n) => fmt(n) + ' đ'
+  const rows = packages.map(pkg => {
+    const start = pkg.start_date ? fmtDate(pkg.start_date) : 'Chưa chọn'
+    const end = pkg.end_date ? fmtDate(pkg.end_date) : 'Chưa chọn'
+    const code = pkg.code ? `<div class="sub">${escHtml(pkg.code)}</div>` : ''
+    return `<div class="legal-pkg-row">
+      <div style="min-width:0">
+        <div class="nm">${escHtml(pkg.name || '')}</div>
+        ${code}
+      </div>
+      <div class="legal-pkg-meta">
+        <div class="sub">Ngày ký: ${escHtml(start)}<br>Kết thúc: ${escHtml(end)}</div>
+        <div class="val">${dong(pkg.contract_value || 0)}</div>
+        <button type="button" class="text-blue-400 hover:text-blue-300" title="Sửa" onclick="openLegalPackageForm(${pkg.id})"><i class="fas fa-pen"></i></button>
+        <button type="button" class="text-red-400 hover:text-red-300" title="Xóa" onclick="confirmDeleteLegalPackage(${pkg.id})"><i class="fas fa-trash"></i></button>
+      </div>
+    </div>`
+  }).join('')
+  const client = proj.client || apiProj.client || ''
+  const desc = proj.description || ''
+  el.innerHTML = `
+    <div class="card mb-4">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <div class="text-xs uppercase tracking-wide text-gray-400 mb-1">Tổng quan hợp đồng dự án</div>
+          <h3 class="text-xl font-bold text-gray-800">${escHtml(proj.name || apiProj.name || '')}</h3>
+          <p class="text-sm text-gray-400 mt-1">${escHtml([client, desc].filter(Boolean).join(' · ') || proj.code || '')}</p>
+        </div>
+        <div>${getStatusBadge(proj.status || 'active')}</div>
+      </div>
+      <div class="legal-info-kpis">
+        <div class="legal-info-kpi">
+          <div class="k">Tổng giá trị dự án (${packages.length} gói)</div>
+          <div class="v">${dong(contractTotal)}</div>
+        </div>
+        <div class="legal-info-kpi paid">
+          <div class="k">Đã thanh toán</div>
+          <div class="v">${dong(paidTotal)}</div>
+        </div>
+        <div class="legal-info-kpi costa">
+          <div class="k">Tổng chi phí A</div>
+          <div class="v" id="legalInfoCostA">—</div>
+        </div>
+      </div>
+      <div class="flex items-center justify-between mb-3">
+        <h4 class="font-bold text-gray-800"><i class="fas fa-file-contract mr-2 text-primary"></i>Danh sách gói thầu / hợp đồng (${packages.length} gói)</h4>
+        <button type="button" class="btn-primary text-sm" onclick="openLegalPackageForm()"><i class="fas fa-plus mr-1"></i>Thêm gói thầu</button>
+      </div>
+      ${rows || '<p class="text-sm text-gray-400 text-center py-6">Chưa có gói thầu. Thêm gói ở đây để tab Theo dõi hồ sơ dùng chung danh sách này.</p>'}
+    </div>`
+  if (currentUser?.role === 'system_admin' && _legalCurrentProjectId) {
+    api(`/legal/${_legalCurrentProjectId}/cost-a`).then(data => {
+      const node = $('legalInfoCostA')
+      if (node) node.textContent = dong(data?.page_total || 0)
+    }).catch(() => {})
   }
+}
 
-  // Helper: collect completed items from a stage → [{item, stageCode, stageName}]
-  function stageCompletedItems(stage) {
-    const result = []
-    ;(stage.items || []).forEach(item => {
-      if (item.actual_completion_date) result.push(item)
-      ;(item.children || []).forEach(child => {
-        if (child.actual_completion_date) result.push(child)
-      })
-    })
-    return result
+function openLegalContactJournal(projectId) {
+  const id = Number(projectId)
+  if (!Number.isFinite(id) || id <= 0) return
+  _legalRememberProject(id)
+  _legalCurrentProjectId = id
+  _legalCurrentTab = 'contacts'
+  _legalTabSetByUser = true
+  _legalFocusContactJournal = true
+  navigate('legal')
+}
+
+function openLegalPackageForm(pkgId) {
+  const pkg = pkgId
+    ? (_legalOverviewData?.packages || []).find(p => _legalPackageIdEq(p.id, pkgId))
+    : null
+  $('legalPackageModalTitle').textContent = pkg ? 'Sửa gói thầu' : 'Thêm gói thầu'
+  $('legalPkgId').value = pkg?.id || ''
+  $('legalPkgName').value = pkg?.name || ''
+  $('legalPkgCode').value = pkg?.code || ''
+  $('legalPkgStart').value = pkg?.start_date || ''
+  $('legalPkgEnd').value = pkg?.end_date || ''
+  const val = $('legalPkgValue')
+  if (val) {
+    val.value = pkg?.contract_value ? _legalPaymentMoneyInputValue(pkg.contract_value) : ''
   }
+  const seedWrap = $('legalPkgSeedWrap')
+  if (seedWrap) seedWrap.style.display = pkg ? 'none' : ''
+  openModal('legalPackageModal')
+}
 
-  // Build package-level structure: [{pkg, pc, stages:[{stage, completedItems:[]}]}]
-  // Support both packages mode and flat stages mode
-  let pkgList = []
-  if (packages.length > 0) {
-    packages.forEach((pkg, pi) => {
-      const pc = PKG_COLORS[pi % PKG_COLORS.length]
-      const stagesWithItems = (pkg.stages || []).map(stage => ({
-        stage,
-        completedItems: stageCompletedItems(stage)
-      })).filter(s => s.completedItems.length > 0)
-      if (stagesWithItems.length > 0) {
-        pkgList.push({ pkg, pc, stagesWithItems })
-      }
-    })
-  } else if (flatStages.length > 0) {
-    // Wrap flat stages as a pseudo-package
-    const stagesWithItems = flatStages.map(stage => ({
-      stage,
-      completedItems: stageCompletedItems(stage)
-    })).filter(s => s.completedItems.length > 0)
-    if (stagesWithItems.length > 0) {
-      pkgList.push({ pkg: { id: 0, name: null }, pc: PKG_COLORS[0], stagesWithItems })
+async function submitLegalPackageForm(ev) {
+  ev.preventDefault()
+  const id = $('legalPkgId').value
+  const name = $('legalPkgName').value.trim()
+  if (!name) { toast('Vui lòng nhập tên gói thầu', 'warning'); return }
+  const data = {
+    name,
+    code: $('legalPkgCode').value.trim(),
+    start_date: $('legalPkgStart').value,
+    end_date: $('legalPkgEnd').value,
+    contract_value: parseMoneyVal('legalPkgValue') || 0,
+    package_type: 'blank',
+  }
+  try {
+    let saved
+    if (id) saved = await api(`/legal/packages/${id}`, { method: 'PUT', data })
+    else saved = await api(`/legal/${_legalCurrentProjectId}/packages`, { method: 'POST', data })
+    _applyProjectContractSync(_legalCurrentProjectId, saved)
+    closeModal('legalPackageModal')
+    toast(id
+      ? 'Đã cập nhật gói thầu'
+      : 'Đã thêm gói trống. Hãy tự nhập hồ sơ hoặc sao chép từ dự án khác.')
+    await loadLegalPackageCounts()
+    renderLegalProjectList()
+    await loadLegalProject(_legalCurrentProjectId)
+  } catch (e) {
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
+function confirmDeleteLegalPackage(pkgId) {
+  const pkg = (_legalOverviewData?.packages || []).find(p => _legalPackageIdEq(p.id, pkgId))
+  showConfirmDelete(
+    'Xóa gói thầu',
+    `<p>Xóa gói <strong>${escHtml(pkg?.name || '')}</strong>? Giai đoạn và hạng mục trong gói cũng bị xóa. Tab Theo dõi hồ sơ sẽ không còn gói này.</p>`,
+    async () => {
+      const saved = await api(`/legal/packages/${pkgId}`, { method: 'DELETE' })
+      _applyProjectContractSync(_legalCurrentProjectId, saved)
+      toast('Đã xóa gói thầu')
+      await loadLegalPackageCounts()
+      renderLegalProjectList()
+      await loadLegalProject(_legalCurrentProjectId)
     }
+  )
+}
+
+let _legalContactBook = { projectId: null, contacts: [], contactLogs: [] }
+let _legalFocusContactJournal = false
+
+async function loadLegalContacts() {
+  const el = $('legalContactsContainer')
+  if (!el || !_legalCurrentProjectId) return
+  try {
+    const data = await api(`/legal/${_legalCurrentProjectId}/contacts`)
+    _legalContactBook = {
+      projectId: Number(_legalCurrentProjectId),
+      contacts: data.contacts || [],
+      contactLogs: data.contactLogs || [],
+    }
+    renderLegalContacts()
+  } catch (e) {
+    el.innerHTML = `<div class="text-center py-8 text-red-500">${escHtml(e.message || 'Lỗi tải contact')}</div>`
   }
+}
 
-  // All completed flat list for stats & timeline
-  const allCompleted = []
-  pkgList.forEach(({ pkg, pc, stagesWithItems }) => {
-    stagesWithItems.forEach(({ stage, completedItems }) => {
-      completedItems.forEach(item => {
-        allCompleted.push({ item, stage, pkg, pc })
-      })
-    })
+function renderLegalContacts() {
+  const el = $('legalContactsContainer')
+  if (!el) return
+  const contacts = _legalContactBook.contacts || []
+  const logs = _legalContactBook.contactLogs || []
+  const cards = contacts.length
+    ? `<div class="legal-contact-grid">${contacts.map(c => `
+        <div class="legal-contact-card">
+          <button type="button" class="text-red-400 hover:text-red-300" title="Xóa" style="position:absolute;top:10px;right:10px" onclick="deleteLegalContact('${escHtml(c.id)}')"><i class="fas fa-trash"></i></button>
+          <h4>${escHtml(c.name)}</h4>
+          ${c.role ? `<div class="role">${escHtml(c.role)}</div>` : ''}
+          <div class="meta">
+            ${c.phone ? `<div><i class="fas fa-phone mr-1"></i>${escHtml(c.phone)}</div>` : ''}
+            ${c.email ? `<div><i class="fas fa-envelope mr-1"></i>${escHtml(c.email)}</div>` : ''}
+          </div>
+        </div>`).join('')}</div>`
+    : `<p class="text-sm text-gray-400 text-center py-6">Chưa có contact liên hệ nào.</p>`
+  const logRows = logs.length
+    ? logs.map(log => `
+        <div class="legal-log-card">
+          <div class="flex items-center justify-between gap-2 mb-2">
+            <div class="text-sm">
+              <span class="font-mono text-xs px-2 py-0.5 rounded" style="color:#a5b4fc;border:1px solid rgba(165,180,252,.35)">${escHtml(log.date || '')}</span>
+              <span class="ml-2">Người làm việc: <strong>${escHtml(log.person || log.contactPerson || '')}</strong></span>
+            </div>
+            <button type="button" class="text-red-400 hover:text-red-300" title="Xóa" onclick="deleteLegalContactLog('${escHtml(log.id)}')"><i class="fas fa-trash"></i></button>
+          </div>
+          <p class="text-sm whitespace-pre-wrap">${escHtml(log.content || '')}</p>
+        </div>`).join('')
+    : `<p class="text-sm text-gray-400 text-center py-6">Chưa có mốc trao đổi nào được ghi lại.</p>`
+  el.innerHTML = `
+    <div class="card mb-4">
+      <h3 class="font-bold mb-3"><i class="fas fa-address-book mr-2" style="color:#a5b4fc"></i>Danh bạ người liên hệ dự án</h3>
+      <form class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4" onsubmit="submitLegalContact(event)">
+        <input id="legalContactName" class="input-field" placeholder="Họ và tên *" required>
+        <input id="legalContactRole" class="input-field" placeholder="Chức vụ / Vai trò">
+        <input id="legalContactPhone" class="input-field" placeholder="Số điện thoại">
+        <div class="flex gap-2">
+          <input id="legalContactEmail" type="email" class="input-field" placeholder="Email">
+          <button type="submit" class="btn-primary shrink-0">Thêm</button>
+        </div>
+      </form>
+      ${cards}
+    </div>
+    <div class="card" id="legalContactJournal">
+      <h3 class="font-bold mb-3"><i class="fas fa-comment-dots mr-2" style="color:#a5b4fc"></i>Ghi chú và nhật ký lần trao đổi gần nhất</h3>
+      <form class="space-y-3 mb-4" onsubmit="submitLegalContactLog(event)">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label class="label">Ngày trao đổi</label>
+            <input id="legalLogDate" type="date" class="input-field" value="${today()}">
+          </div>
+          <div>
+            <label class="label">Trao đổi với ai *</label>
+            <input id="legalLogPerson" class="input-field" required placeholder="Ví dụ: Anh Nam (Giám đốc dự án), Chị Hương (Kế toán)...">
+          </div>
+        </div>
+        <div>
+          <label class="label">Nội dung trao đổi chi tiết *</label>
+          <textarea id="legalLogContent" class="input-field" rows="3" required placeholder="Ghi lại thống nhất hợp đồng, thỏa thuận tiến độ, yêu cầu bổ sung..."></textarea>
+        </div>
+        <div class="flex justify-end">
+          <button type="submit" class="btn-primary"><i class="fas fa-plus mr-1"></i>Lưu lịch sử trao đổi</button>
+        </div>
+      </form>
+      ${logRows}
+    </div>`
+  if (_legalFocusContactJournal) {
+    _legalFocusContactJournal = false
+    const journal = $('legalContactJournal')
+    if (journal) journal.scrollIntoView({ block: 'start' })
+  }
+}
+
+async function saveLegalContactBook() {
+  const data = await api(`/legal/${_legalCurrentProjectId}/contacts`, {
+    method: 'PUT',
+    data: {
+      contacts: _legalContactBook.contacts,
+      contactLogs: _legalContactBook.contactLogs,
+    },
   })
+  _legalContactBook.contacts = data.contacts || []
+  _legalContactBook.contactLogs = data.contactLogs || []
+  renderLegalContacts()
+}
 
-  if (allCompleted.length === 0) {
-    container.innerHTML = `
-      <div class="card text-center py-12 text-gray-400">
-        <i class="fas fa-calendar-check text-5xl mb-4 block" style="color:#d1fae5"></i>
-        <div class="font-semibold text-gray-500 mb-1">Chưa có hạng mục nào ghi nhận ngày hoàn thành</div>
-        <div class="text-sm">Hãy điền "Ngày hoàn thành thực tế" vào các hạng mục đã thực hiện xong</div>
-      </div>`
+async function submitLegalContact(ev) {
+  ev.preventDefault()
+  const name = $('legalContactName')?.value?.trim()
+  if (!name) return
+  _legalContactBook.contacts = [...(_legalContactBook.contacts || []), {
+    id: 'ct-' + Date.now(),
+    name,
+    role: $('legalContactRole')?.value?.trim() || '',
+    phone: $('legalContactPhone')?.value?.trim() || '',
+    email: $('legalContactEmail')?.value?.trim() || '',
+  }]
+  try {
+    await saveLegalContactBook()
+    toast('Đã thêm liên hệ')
+  } catch (e) {
+    toast('Lỗi: ' + (e.message || ''), 'error')
+    await loadLegalContacts()
+  }
+}
+
+async function deleteLegalContact(id) {
+  _legalContactBook.contacts = (_legalContactBook.contacts || []).filter(c => String(c.id) !== String(id))
+  try { await saveLegalContactBook() } catch (e) { toast('Lỗi: ' + (e.message || ''), 'error') }
+}
+
+async function submitLegalContactLog(ev) {
+  ev.preventDefault()
+  const person = $('legalLogPerson')?.value?.trim()
+  const content = $('legalLogContent')?.value?.trim()
+  if (!person || !content) return
+  const row = {
+    id: 'log-' + Date.now(),
+    date: $('legalLogDate')?.value || today(),
+    person,
+    contactPerson: person,
+    content,
+    createdAt: new Date().toISOString(),
+  }
+  _legalContactBook.contactLogs = [row, ...(_legalContactBook.contactLogs || [])]
+  try {
+    await saveLegalContactBook()
+    toast('Đã lưu lịch sử trao đổi')
+  } catch (e) {
+    toast('Lỗi: ' + (e.message || ''), 'error')
+    await loadLegalContacts()
+  }
+}
+
+async function deleteLegalContactLog(id) {
+  _legalContactBook.contactLogs = (_legalContactBook.contactLogs || []).filter(l => String(l.id) !== String(id))
+  try { await saveLegalContactBook() } catch (e) { toast('Lỗi: ' + (e.message || ''), 'error') }
+}
+
+function renderLegalTab(tab) {
+  if (tab === 'cost-a') {
+    loadLegalCostA()
     return
   }
+  if (!_legalOverviewData) return
+  if (tab === 'info') { renderLegalProjectInfo(); return }
+  if (tab === 'stages') {
+    renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
+    return
+  }
+  if (tab === 'contacts') { loadLegalContacts(); return }
+  ensureLegalSlice(tab).then(() => {
+    if (!_legalOverviewData || _legalSliceSeq !== _legalProjectLoadSeq) return
+    if (tab === 'letters') renderLegalLetters(_legalOverviewData.letters || [])
+    else if (tab === 'minutes') renderMeetingMinutes(_legalOverviewData.minutes || [])
+    else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
+    else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
+  })
+}
 
-  // Stats
-  const totalCompleted = allCompleted.length
-  const thisMonth = new Date()
-  const ym = `${thisMonth.getFullYear()}-${String(thisMonth.getMonth()+1).padStart(2,'0')}`
-  const thisMonthCount = allCompleted.filter(e => (e.item.actual_completion_date||'').startsWith(ym)).length
-  const lastDate = [...allCompleted].sort((a,b) => (b.item.actual_completion_date||'') > (a.item.actual_completion_date||'') ? 1 : -1)[0]?.item.actual_completion_date
+let _legalSliceSeq = 0
+const _legalSliceJobs = {}
 
-  let html = `
-  <div class="card" style="margin-bottom:16px;padding:16px 20px">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
-      <div>
-        <h3 style="font-size:15px;font-weight:700;color:#065f46;margin:0 0 4px"><i class="fas fa-calendar-check mr-2 text-green-500"></i>Theo dõi hoàn thành thực tế</h3>
-        <p style="font-size:12px;color:#64748b;margin:0">Tổng hợp hạng mục đã hoàn thành · phân theo gói thầu → giai đoạn · đồng bộ từ tab Theo dõi hồ sơ</p>
-      </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <div style="background:#f0fdf4;border:1.5px solid #6ee7b7;border-radius:10px;padding:8px 16px;text-align:center;min-width:90px">
-          <div style="font-size:22px;font-weight:800;color:#059669;line-height:1">${totalCompleted}</div>
-          <div style="font-size:11px;color:#6b7280;font-weight:500">Tổng hoàn thành</div>
-        </div>
-        <div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:8px 16px;text-align:center;min-width:90px">
-          <div style="font-size:22px;font-weight:800;color:#2563eb;line-height:1">${thisMonthCount}</div>
-          <div style="font-size:11px;color:#6b7280;font-weight:500">Tháng này</div>
-        </div>
-        <div style="background:#fefce8;border:1.5px solid #fcd34d;border-radius:10px;padding:8px 16px;text-align:center;min-width:120px">
-          <div style="font-size:13px;font-weight:700;color:#d97706;line-height:1.3">${lastDate ? fmtDate(lastDate) : '—'}</div>
-          <div style="font-size:11px;color:#6b7280;font-weight:500">Mới nhất</div>
-        </div>
-      </div>
-    </div>
-  </div>`
-
-  // ── Render: Package → Stages ─────────────────────────────────────────────────
-  pkgList.forEach(({ pkg, pc, stagesWithItems }, pkgIdx) => {
-    const pkgTotalCompleted = stagesWithItems.reduce((s, x) => s + x.completedItems.length, 0)
-    const pkgIsOpen = _pkgCollapseState['completed_' + pkg.id] !== false
-
-    // Package header (giống renderLegalPackages)
-    if (pkg.name) {
-      html += `
-      <div class="card" style="margin-bottom:14px;padding:0;overflow:hidden;border:2px solid ${pc.border}">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:11px 16px;background:${pc.bg};cursor:pointer"
-             onclick="_toggleCompletedPkg(${pkg.id})">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="width:32px;height:32px;border-radius:8px;background:${pc.border};color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">
-              <i class="fas ${pc.icon}"></i>
-            </span>
-            <div>
-              <div style="font-size:14px;font-weight:700;color:${pc.text}">${pkg.name}</div>
-              <div style="font-size:11px;color:#64748b">${stagesWithItems.length} giai đoạn · ${pkgTotalCompleted} hạng mục hoàn thành</div>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span style="font-size:12px;font-weight:600;background:#fff;color:${pc.text};border:1.5px solid ${pc.border};border-radius:12px;padding:3px 12px">
-              <i class="fas fa-check-circle mr-1"></i>${pkgTotalCompleted}
-            </span>
-            <i class="fas fa-chevron-${pkgIsOpen?'up':'down'}" style="color:${pc.text};font-size:12px"></i>
-          </div>
-        </div>
-        <div id="completedPkg_${pkg.id}" style="display:${pkgIsOpen?'block':'none'}">`
-    } else {
-      html += `<div>`  // flat stages wrapper
+function ensureLegalSlice(tab) {
+  const data = _legalOverviewData
+  const projectId = _legalCurrentProjectId
+  const seq = _legalProjectLoadSeq
+  _legalSliceSeq = seq
+  if (!data || !projectId) return Promise.resolve()
+  const field = tab === 'letters' ? 'letters' : tab === 'docs' ? 'documents' : tab === 'payments' ? 'payments' : tab === 'minutes' ? 'minutes' : ''
+  if (!field || data[field]) return Promise.resolve()
+  const key = projectId + ':' + field
+  if (_legalSliceJobs[key]) return _legalSliceJobs[key]
+  const job = (async () => {
+    try {
+    if (tab === 'letters') {
+      const res = await api(`/legal/${projectId}/letters`)
+      if (seq !== _legalProjectLoadSeq) return
+      data.letters = res.letters || []
+      if ($('legalKpiLetters')) $('legalKpiLetters').textContent = data.letters.length
+    } else if (tab === 'docs') {
+      const res = await api(`/legal/${projectId}/documents`)
+      if (seq !== _legalProjectLoadSeq) return
+      data.documents = res.documents || []
+      if ($('legalKpiDocs')) $('legalKpiDocs').textContent = data.documents.length
+    } else if (tab === 'payments') {
+      const res = await api(`/legal/${projectId}/payments`)
+      if (seq !== _legalProjectLoadSeq) return
+      data.payments = res.payments || []
+    } else if (tab === 'minutes') {
+      const res = await api(`/meeting-minutes/${projectId}`)
+      if (seq !== _legalProjectLoadSeq) return
+      data.minutes = Array.isArray(res) ? res : (res.minutes || [])
     }
+    } catch (e) {
+      if (seq === _legalProjectLoadSeq) toast(e.response?.data?.error || e.message || 'Không tải được', 'error')
+    }
+  })().finally(() => { delete _legalSliceJobs[key] })
+  _legalSliceJobs[key] = job
+  return job
+}
 
-    // ── Stages inside this package ──────────────────────────────────────────
-    stagesWithItems.forEach(({ stage, completedItems }) => {
-      const sc = STAGE_COLORS[stage.code] || STAGE_COLORS['A']
-      const stageIsOpen = _pkgCollapseState['completed_stage_' + stage.id] !== false
+async function loadLegalCostA() {
+  const container = $('legalCostAContainer')
+  if (!container || !_legalCurrentProjectId) return
+  if (currentUser?.role !== 'system_admin') {
+    switchLegalTab('letters')
+    return
+  }
+  container.innerHTML = '<div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>'
+  try {
+    const data = await api(`/legal/${_legalCurrentProjectId}/cost-a`)
+    _legalCostAData = data
+    renderLegalCostA(data)
+  } catch (e) {
+    container.innerHTML = `<div class="text-center py-8 text-red-500">${escHtml(e.message || 'Lỗi tải Chi phí A')}</div>`
+  }
+}
 
-      html += `
-        <div style="margin:${pkg.name ? '10px 12px' : '0 0 14px'};border:1.5px solid ${sc.border};border-radius:10px;overflow:hidden">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:${sc.bg};cursor:pointer;border-bottom:1px solid ${sc.border}"
-               onclick="_toggleCompletedStage(${stage.id})">
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="background:${sc.border};color:#fff;font-weight:700;font-size:12px;border-radius:6px;padding:2px 9px">${stage.code || '?'}</span>
-              <span style="font-size:13px;font-weight:600;color:${sc.text}">${stage.name || stage.code}</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <span style="font-size:11px;font-weight:600;color:${sc.text};background:#fff;border:1px solid ${sc.border};border-radius:10px;padding:1px 9px">
-                <i class="fas fa-check-circle mr-1"></i>${completedItems.length} hạng mục
-              </span>
-              <i class="fas fa-chevron-${stageIsOpen?'up':'down'}" style="color:${sc.text};font-size:11px"></i>
-            </div>
-          </div>
-          <div id="completedStage_${stage.id}" style="display:${stageIsOpen?'block':'none'}">
-            <table class="w-full" style="font-size:13px">
-              <thead>
-                <tr style="background:${sc.bg}">
-                  <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
-                  <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-                  <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:105px">Hạn thực hiện</th>
-                  <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:135px;color:#065f46"><i class="fas fa-calendar-check mr-1"></i>Ngày HT thực tế</th>
-                  <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
-                  <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:150px">Ghi chú</th>
-                  <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:48px">Sửa</th>
-                </tr>
-              </thead>
-              <tbody>`
+function renderLegalCostA(data) {
+  const container = $('legalCostAContainer')
+  const totalEl = $('legalCostAPageTotal')
+  const hintEl = $('legalCostAFormulaHint')
+  if (!container) return
+  if (!data || !(data.groups || []).length) {
+    if (totalEl) totalEl.textContent = 'Tổng trang: ' + fmtMoney(0)
+    if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Giá trị cộng mọi phiếu trong gói.'
+    container.innerHTML = '<div class="text-center py-10 text-gray-400">Chưa có phiếu thanh toán phù hợp</div>'
+    return
+  }
+  if (totalEl) totalEl.textContent = 'Tổng trang: ' + fmtMoney(data.page_total || 0)
+  if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Giá trị cộng mọi phiếu trong gói.'
 
-      completedItems.forEach((item, idx) => {
-        const isOverdue = item.due_date && item.actual_completion_date && item.actual_completion_date > item.due_date
-        const isOnTime  = item.due_date && item.actual_completion_date && item.actual_completion_date <= item.due_date
-        const timingBadge = isOverdue
-          ? `<span style="font-size:10px;background:#fef2f2;color:#dc2626;border:1px solid #fca5a5;border-radius:4px;padding:1px 5px;margin-left:3px">Trễ</span>`
-          : isOnTime
-            ? `<span style="font-size:10px;background:#f0fdf4;color:#16a34a;border:1px solid #86efac;border-radius:4px;padding:1px 5px;margin-left:3px">Đúng hạn</span>`
-            : ''
-        const isChild = item.parent_id != null
-        const rowBg = idx % 2 === 0 ? '#fff' : '#f9fafb'
-        const dueDateStr = item.due_date
-          ? `<span class="text-xs ${isOverdue ? 'text-red-500 font-medium' : 'text-gray-500'}">${fmtDate(item.due_date)}</span>`
-          : `<span class="text-gray-300 text-xs">—</span>`
-        const typeIcon = item.item_type === 'document'
-          ? `<i class="fas fa-file-alt text-blue-400 mr-1 text-xs"></i>`
-          : `<i class="fas fa-tasks text-gray-400 mr-1 text-xs"></i>`
-
-        html += `
-                <tr style="background:${rowBg};border-bottom:1px solid #f3f4f6">
-                  <td class="py-2 px-3 text-xs" style="${isChild ? 'color:#9ca3af;padding-left:22px' : 'font-weight:700;color:#374151'}">${item.stt || ''}</td>
-                  <td class="py-2 px-3" style="${isChild ? 'padding-left:26px' : 'font-weight:600'}">
-                    <div class="flex items-center gap-1">
-                      <i class="fas fa-check-circle text-green-500 text-xs"></i>
-                      ${typeIcon}
-                      <span class="${isChild ? 'text-sm text-gray-700' : 'text-gray-800'}">${item.title}</span>
-                    </div>
-                  </td>
-                  <td class="py-2 px-3 text-center">${dueDateStr}</td>
-                  <td class="py-2 px-3 text-center">
-                    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
-                      <span style="font-size:12px;font-weight:600;color:#059669;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:6px;padding:2px 8px">
-                        <i class="fas fa-calendar-check mr-1" style="font-size:10px"></i>${fmtDate(item.actual_completion_date)}
-                      </span>
-                      ${timingBadge}
-                    </div>
-                  </td>
-                  <td class="py-2 px-3 text-center">
-                    <span class="badge ${LEGAL_STATUS_COLORS[item.status]||'badge-todo'}">${LEGAL_STATUS_LABELS[item.status]||item.status}</span>
-                  </td>
-                  <td class="py-2 px-3 text-xs text-gray-500">
-                    ${item.notes ? `<span title="${item.notes}">${item.notes.length > 38 ? item.notes.substring(0,38)+'…' : item.notes}</span>` : '<span class="text-gray-300">—</span>'}
-                  </td>
-                  <td class="py-2 px-3 text-center">
-                    <button onclick="openEditLegalItem(${JSON.stringify(item).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
-                  </td>
-                </tr>`
-      })
-
-      html += `</tbody></table></div></div>`  // close stage collapse div + stage card
+  container.innerHTML = (data.groups || []).map(grp => {
+    const rows = [...(grp.rows || [])].sort((a, b) => {
+      const d = _legalPaymentPhaseRank(a.payment_phase) - _legalPaymentPhaseRank(b.payment_phase)
+      if (d) return d
+      return (Number(a.payment_request_id) || 0) - (Number(b.payment_request_id) || 0)
     })
+    const rowsHtml = rows.map((r, idx) => {
+      const overrideDisplay = r.amount_override != null ? fmt(Math.round(r.amount_override)) : ''
+      const ref = [r.payment_phase, r.description].filter(Boolean).join(' — ') || `#${r.payment_request_id}`
+      const pctVal = r.cost_a_pct == null || r.cost_a_pct === '' ? '30' : String(r.cost_a_pct)
+      return `<tr${r.spend_status === 'spent' ? ' class="is-spent"' : ''} data-cost-a-id="${r.payment_request_id}"
+        data-override-active="${r.amount_override != null ? '1' : '0'}"
+        data-override-value="${r.amount_override != null ? Math.round(r.amount_override) : ''}">
+        <td class="legal-cost-a-idx">${idx + 1}</td>
+        <td>
+          <select class="legal-cost-a-spend" onchange="legalCostASpendChange(${r.payment_request_id}, this)">
+            <option value="unspent" ${r.spend_status === 'unspent' ? 'selected' : ''}>Chưa chi</option>
+            <option value="spent" ${r.spend_status === 'spent' ? 'selected' : ''}>Đã chi</option>
+          </select>
+        </td>
+        <td class="legal-cost-a-desc">${escHtml(ref)}</td>
+        <td class="legal-cost-a-money">${fmtMoney(r.amount || 0)}</td>
+        <td class="legal-cost-a-pct-col"><input type="text" class="legal-cost-a-pct" inputmode="decimal" data-pct="${escHtml(pctVal)}" value="${escHtml(pctVal)}" placeholder="30"></td>
+        <td class="legal-cost-a-money">
+          <div class="legal-cost-a-formula">${escHtml(r.formula_label || '')}</div>
+          <strong>${fmtMoney(r.formula_amount)}</strong>
+        </td>
+        <td class="legal-cost-a-money">
+          <input type="text" class="legal-cost-a-override" data-raw="${r.amount_override != null ? Math.round(r.amount_override) : ''}"
+            value="${escHtml(overrideDisplay)}" placeholder="tự động" title="Để trống = theo công thức">
+        </td>
+        <td class="legal-cost-a-money"><strong>${fmtMoney(r.amount_in_use)}</strong></td>
+        <td>
+          <button type="button" class="btn-secondary text-xs legal-cost-a-reset" onclick="legalCostAReset(${r.payment_request_id})">Reset</button>
+        </td>
+        <td><textarea class="legal-cost-a-note" rows="1" placeholder="Ghi chú">${escHtml(r.note || '')}</textarea></td>
+      </tr>`
+    }).join('')
+    return `<div class="legal-cost-a-card">
+      <div class="legal-cost-a-card-head">
+        <span><i class="fas fa-box mr-2"></i>${escHtml(grp.package_name || 'Chung')}</span>
+        <span class="legal-cost-a-card-total">Tổng Chi phí A: ${fmtMoney(grp.group_total || 0)}</span>
+      </div>
+      <table class="legal-cost-a-table">
+        <colgroup>
+          <col style="width:4%"><col style="width:14%"><col style="width:15%"><col style="width:12%"><col style="width:5%">
+          <col style="width:11%"><col style="width:11%"><col style="width:13%"><col style="width:6%"><col style="width:9%">
+        </colgroup>
+        <thead><tr>
+          <th class="legal-cost-a-idx">#</th><th>Trạng thái</th><th>Nội dung</th><th class="legal-cost-a-money">Số tiền gốc</th><th class="legal-cost-a-pct-col">%</th><th class="legal-cost-a-money">Công thức</th><th class="legal-cost-a-money">Giá trị Chi</th><th class="legal-cost-a-money legal-cost-a-th-wrap">Giá trị<br>chi phí A</th><th></th><th>Ghi chú</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`
+  }).join('')
 
-    // Close package wrapper
-    if (pkg.name) {
-      html += `</div></div>`  // close completedPkg_{id} + package card
-    } else {
-      html += `</div>`
+  container.querySelectorAll('.legal-cost-a-pct').forEach(inp => {
+    inp.addEventListener('blur', legalCostAPctBlur)
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); inp.blur() } })
+  })
+  container.querySelectorAll('.legal-cost-a-override').forEach(inp => {
+    inp.addEventListener('blur', legalCostAOverrideBlur)
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); inp.blur() } })
+    inp.addEventListener('input', legalCostAOverrideInputFormat)
+  })
+  container.querySelectorAll('.legal-cost-a-note').forEach(ta => {
+    ta.addEventListener('blur', legalCostANoteBlur)
+  })
+}
+
+function _legalCostARowEl(paymentId) {
+  return document.querySelector(`tr[data-cost-a-id="${paymentId}"]`)
+}
+
+function _legalCostAPatchPayload(paymentId, fromOverrideField) {
+  const row = _legalCostARowEl(paymentId)
+  if (!row) return null
+  const overrideInp = row.querySelector('.legal-cost-a-override')
+  const spendSel = row.querySelector('.legal-cost-a-spend')
+  const noteTa = row.querySelector('.legal-cost-a-note')
+  const pctInp = row.querySelector('.legal-cost-a-pct')
+  let amountOverride = null
+  if (fromOverrideField && overrideInp) {
+    const raw = overrideInp.dataset.raw
+    if (raw !== undefined && raw !== '') amountOverride = Math.round(Number(raw) || 0)
+    else if (overrideInp.value.trim() !== '') {
+      const parsed = parseInt(String(overrideInp.value).replace(/\D/g, ''), 10)
+      if (!Number.isNaN(parsed)) amountOverride = parsed
     }
-  })
+    row.dataset.overrideActive = amountOverride != null ? '1' : '0'
+    row.dataset.overrideValue = amountOverride != null ? String(amountOverride) : ''
+  } else if (row.dataset.overrideActive === '1') {
+    amountOverride = Math.round(Number(row.dataset.overrideValue) || 0)
+  }
+  return {
+    amount_override: amountOverride,
+    cost_a_pct: pctInp ? _legalCostAParsePct(pctInp.value) : null,
+    spend_status: spendSel?.value || 'unspent',
+    note: noteTa ? (noteTa.value.trim() || null) : null,
+  }
+}
 
-  // ── Timeline theo tháng ───────────────────────────────────────────────────
-  allCompleted.sort((a, b) => {
-    const da = a.item.actual_completion_date || ''
-    const db = b.item.actual_completion_date || ''
-    return da < db ? -1 : da > db ? 1 : 0
-  })
+function _legalCostAParsePct(raw) {
+  const s = String(raw ?? '').trim().replace('%', '').replace(',', '.')
+  if (!s) return null
+  const n = Number(s)
+  if (!Number.isFinite(n) || n < 0) return null
+  return Math.round(n * 100) / 100
+}
 
-  const byMonth = {}
-  allCompleted.forEach(entry => {
-    const m = (entry.item.actual_completion_date || '').substring(0, 7)
-    if (m) {
-      if (!byMonth[m]) byMonth[m] = []
-      byMonth[m].push(entry)
-    }
-  })
+function legalCostAPctBlur(ev) {
+  const inp = ev.target
+  const next = _legalCostAParsePct(inp.value)
+  const prevRaw = inp.dataset.pct
+  const prev = prevRaw === '' || prevRaw == null ? null : Number(prevRaw)
+  if (next === prev || (next == null && prev == null)) return
+  legalCostAPatchRow(Number(inp.closest('tr')?.dataset?.costAId), false)
+}
 
-  const sortedMonths = Object.keys(byMonth).sort()
-  if (sortedMonths.length > 0) {
-    html += `
-    <div class="card" style="margin-top:10px;padding:16px 20px">
-      <h4 style="font-size:13px;font-weight:700;color:#374151;margin:0 0 14px"><i class="fas fa-stream mr-2 text-indigo-500"></i>Timeline theo tháng hoàn thành</h4>
-      <div style="position:relative;padding-left:20px">`
+async function legalCostAPatchRow(paymentId, fromOverrideField) {
+  const body = _legalCostAPatchPayload(paymentId, fromOverrideField)
+  if (!body) return
+  try {
+    await api(`/legal/payments/${paymentId}/cost-a`, { method: 'PATCH', data: body })
+    await loadLegalCostA()
+  } catch (e) {
+    toast('Lỗi lưu Chi phí A: ' + e.message, 'error')
+  }
+}
 
-    sortedMonths.forEach((month, mi) => {
-      const entries = byMonth[month]
-      const [yr, mo] = month.split('-')
-      const monthName = new Date(parseInt(yr), parseInt(mo)-1, 1).toLocaleDateString('vi-VN', { month: 'long', year: 'numeric' })
-      const isLast = mi === sortedMonths.length - 1
+function legalCostAOverrideInputFormat(ev) {
+  const el = ev.target
+  const raw = parseInt(String(el.value).replace(/\D/g, ''), 10)
+  el.dataset.raw = Number.isNaN(raw) ? '' : String(raw)
+  el.value = el.dataset.raw ? fmt(Number(el.dataset.raw)) : ''
+}
 
-      html += `
-        <div style="display:flex;gap:14px;margin-bottom:${isLast?'0':'22px'}">
-          <div style="display:flex;flex-direction:column;align-items:center;min-width:12px">
-            <div style="width:12px;height:12px;border-radius:50%;background:#10b981;border:2.5px solid #fff;box-shadow:0 0 0 2px #10b981;margin-top:3px;flex-shrink:0"></div>
-            ${!isLast ? `<div style="width:2px;flex:1;background:linear-gradient(to bottom,#10b981,#d1d5db);margin-top:4px;min-height:20px"></div>` : ''}
-          </div>
-          <div style="flex:1">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-              <span style="font-size:13px;font-weight:700;color:#065f46">${monthName}</span>
-              <span style="font-size:11px;background:#d1fae5;color:#065f46;border-radius:10px;padding:1px 8px;font-weight:600">${entries.length} hạng mục</span>
-            </div>
-            <div style="display:flex;flex-wrap:wrap;gap:6px">`
+function legalCostAOverrideBlur(ev) {
+  legalCostAPatchRow(Number(ev.target.closest('tr')?.dataset?.costAId), true)
+}
 
-      entries.forEach(entry => {
-        const sc = STAGE_COLORS[entry.stage.code] || STAGE_COLORS['A']
-        const isOverdue = entry.item.due_date && entry.item.actual_completion_date > entry.item.due_date
-        const pkgLabel = entry.pkg.name ? `${entry.pkg.name} · ` : ''
-        html += `
-          <div style="background:#fff;border:1.5px solid #e5e7eb;border-left:3.5px solid ${sc.border};border-radius:8px;padding:6px 12px;max-width:300px;cursor:pointer"
-               onclick="openEditLegalItem(${JSON.stringify(entry.item).replace(/"/g,'&quot;')})"
-               title="Click để chỉnh sửa">
-            <div style="font-size:11px;color:${sc.text};font-weight:600;margin-bottom:2px">
-              [${entry.stage.code}] ${pkgLabel}${entry.stage.name || entry.stage.code}
-            </div>
-            <div style="font-size:12px;color:#374151;font-weight:500;display:flex;align-items:center;gap:4px">
-              <i class="fas fa-check-circle text-green-500" style="font-size:10px"></i>
-              ${entry.item.title.length > 42 ? entry.item.title.substring(0,42)+'…' : entry.item.title}
-              ${isOverdue ? `<span style="font-size:9px;background:#fef2f2;color:#dc2626;border-radius:3px;padding:0 4px">Trễ</span>` : ''}
-            </div>
-            <div style="font-size:11px;color:#059669;margin-top:3px">
-              <i class="fas fa-calendar-check mr-1" style="font-size:9px"></i>${fmtDate(entry.item.actual_completion_date)}
-            </div>
-          </div>`
-      })
+function legalCostANoteBlur(ev) {
+  legalCostAPatchRow(Number(ev.target.closest('tr')?.dataset?.costAId), false)
+}
 
-      html += `</div></div></div>`
+function legalCostASpendChange(paymentId, sel) {
+  const row = sel?.closest('tr')
+  if (row) row.classList.toggle('is-spent', sel.value === 'spent')
+  legalCostAPatchRow(paymentId, false)
+}
+
+async function legalCostAReset(paymentId) {
+  try {
+    const row = _legalCostARowEl(paymentId)
+    const spendSel = row?.querySelector('.legal-cost-a-spend')
+    const noteTa = row?.querySelector('.legal-cost-a-note')
+    await api(`/legal/payments/${paymentId}/cost-a`, {
+      method: 'PATCH',
+      data: {
+        amount_override: null,
+        cost_a_pct: _legalCostAParsePct(row?.querySelector('.legal-cost-a-pct')?.value),
+        spend_status: spendSel?.value || 'unspent',
+        note: noteTa ? (noteTa.value.trim() || null) : null,
+      },
     })
-
-    html += `</div></div>`
-  }
-
-  container.innerHTML = html
-}
-
-// Toggle collapse cho package trong tab hoàn thành
-function _toggleCompletedPkg(pkgId) {
-  const key = 'completed_' + pkgId
-  const el = $('completedPkg_' + pkgId)
-  if (!el) return
-  const isOpen = el.style.display !== 'none'
-  _pkgCollapseState[key] = !isOpen
-  el.style.display = isOpen ? 'none' : 'block'
-  // Flip chevron
-  const header = el.previousElementSibling
-  if (header) {
-    const icon = header.querySelector('.fa-chevron-up, .fa-chevron-down')
-    if (icon) { icon.classList.toggle('fa-chevron-up', !isOpen); icon.classList.toggle('fa-chevron-down', isOpen) }
+    await loadLegalCostA()
+  } catch (e) {
+    toast('Lỗi Reset Chi phí A: ' + e.message, 'error')
   }
 }
-
-// Toggle collapse cho stage trong tab hoàn thành
-function _toggleCompletedStage(stageId) {
-  const key = 'completed_stage_' + stageId
-  const el = $('completedStage_' + stageId)
-  if (!el) return
-  const isOpen = el.style.display !== 'none'
-  _pkgCollapseState[key] = !isOpen
-  el.style.display = isOpen ? 'none' : 'block'
-  // Flip chevron
-  const header = el.previousElementSibling
-  if (header) {
-    const icon = header.querySelector('.fa-chevron-up, .fa-chevron-down')
-    if (icon) { icon.classList.toggle('fa-chevron-up', !isOpen); icon.classList.toggle('fa-chevron-down', isOpen) }
-  }
-}
-
 
 
 // ── Package collapse state ────────────────────────────────────────────────────
 const _pkgCollapseState = {}
 
-// ── Render Packages (3-level: Package → Stage A-D → Items) ───────────────────
+function switchLegalPackageTab(pkgId) {
+  _legalActivePackageId = _legalPaymentNormPackageKey(pkgId)
+  if (_legalOverviewData) {
+    renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
+  }
+}
+
+function canReorderLegalChecklist() {
+  if (!_legalCurrentProjectId || !currentUser) return false
+  const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
+  return ['system_admin', 'project_admin'].includes(eff)
+}
+
+function canDeleteLegalChecklist() {
+  if (!_legalCurrentProjectId || !currentUser) return false
+  const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
+  return ['system_admin', 'project_admin', 'project_leader'].includes(eff)
+}
+
+let _legalDndActive = null
+let _legalDndBoundHost = null
+
+function _legalDndRowBlock(rowEl) {
+  if (!rowEl || rowEl.dataset.isChild === '1') return [rowEl]
+  const itemId = rowEl.dataset.legalItemId
+  const rows = rowEl.parentElement ? [...rowEl.parentElement.querySelectorAll('.legal-checklist-row')] : []
+  const block = [rowEl]
+  for (const r of rows) {
+    if (r === rowEl) continue
+    if (r.dataset.isChild === '1' && r.dataset.parentId === itemId) block.push(r)
+    else if (block.length > 1 && r.dataset.isChild !== '1') break
+  }
+  return block
+}
+
+function _legalDndSnapshot(block) {
+  return block.map(el => ({ el, parent: el.parentNode, next: el.nextSibling }))
+}
+
+function _legalDndRevert(snapshot) {
+  if (!snapshot) return
+  for (const { el, parent, next } of snapshot) {
+    if (!parent) continue
+    if (next && next.parentNode === parent) parent.insertBefore(el, next)
+    else parent.appendChild(el)
+  }
+}
+
+function _legalDndTopLevelRows(container, stageId) {
+  return [...container.querySelectorAll('.legal-checklist-row')].filter(r =>
+    String(r.dataset.stageId) === String(stageId) && (r.dataset.parentId || '') === '' && r.dataset.isChild !== '1'
+  )
+}
+
+function _legalDndClearMarks(host) {
+  host.querySelectorAll('.is-drop-before, .is-drop-stage, .is-dragging').forEach(el => {
+    el.classList.remove('is-drop-before', 'is-drop-stage', 'is-dragging')
+  })
+}
+
+function initLegalChecklistDnD() {
+  const host = document.querySelector('.legal-checklist-host')
+  if (!host || !canReorderLegalChecklist()) return
+  if (_legalDndBoundHost === host) return
+  _legalDndBoundHost = host
+
+  host.addEventListener('dragstart', (e) => {
+    const handle = e.target.closest('.legal-checklist-drag-handle')
+    if (!handle) return
+    const row = handle.closest('.legal-checklist-row')
+    if (!row) return
+    e.stopPropagation()
+    const block = _legalDndRowBlock(row)
+    _legalDndActive = {
+      itemId: parseInt(row.dataset.legalItemId, 10),
+      stageId: parseInt(row.dataset.stageId, 10),
+      parentId: row.dataset.parentId ? parseInt(row.dataset.parentId, 10) : null,
+      isChild: row.dataset.isChild === '1',
+      block,
+      snapshot: _legalDndSnapshot(block),
+    }
+    block.forEach(el => el.classList.add('is-dragging'))
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', String(_legalDndActive.itemId))
+    }
+  })
+
+  host.addEventListener('dragend', () => {
+    _legalDndClearMarks(host)
+    _legalDndActive = null
+  })
+
+  host.addEventListener('dragover', (e) => {
+    if (!_legalDndActive) return
+    e.preventDefault()
+    _legalDndClearMarks(host)
+    const stageHead = e.target.closest('[data-legal-stage-drop]')
+    if (stageHead && !e.target.closest('.legal-checklist-row')) {
+      stageHead.classList.add('is-drop-stage')
+      return
+    }
+    const row = e.target.closest('.legal-checklist-row')
+    if (row && !_legalDndActive.block.includes(row)) {
+      row.classList.add('is-drop-before')
+    }
+  })
+
+  host.addEventListener('drop', async (e) => {
+    if (!_legalDndActive) return
+    e.preventDefault()
+    const drag = _legalDndActive
+    _legalDndClearMarks(host)
+
+    let targetStageId = drag.stageId
+    let targetParentId = drag.parentId
+    let toIndex = 0
+    let rowsContainer = null
+    let insertBeforeEl = null
+
+    const stageHead = e.target.closest('[data-legal-stage-drop]')
+    const targetRow = e.target.closest('.legal-checklist-row')
+    const dropOnStageHead = stageHead && (!targetRow || e.target.closest('[data-legal-stage-drop]') === stageHead)
+
+    if (dropOnStageHead) {
+      if (drag.isChild) return
+      targetStageId = parseInt(stageHead.dataset.legalStageDrop, 10)
+      targetParentId = null
+      rowsContainer = stageHead.nextElementSibling
+      insertBeforeEl = rowsContainer?.querySelector('.legal-checklist-row') || null
+      toIndex = 0
+    } else if (targetRow && !drag.block.includes(targetRow)) {
+      targetStageId = parseInt(targetRow.dataset.stageId, 10)
+      rowsContainer = targetRow.closest('.legal-checklist-rows')
+      insertBeforeEl = targetRow
+      const targetIsChild = targetRow.dataset.isChild === '1'
+      const targetItemId = parseInt(targetRow.dataset.legalItemId, 10)
+
+      if (drag.isChild && !targetIsChild) {
+        targetParentId = targetItemId
+        const childSibs = rowsContainer
+          ? [...rowsContainer.querySelectorAll('.legal-checklist-row')].filter(r =>
+            r.dataset.isChild === '1' && String(r.dataset.parentId) === String(targetParentId)
+          )
+          : []
+        toIndex = childSibs.length
+        insertBeforeEl = null
+        const lastChild = childSibs[childSibs.length - 1]
+        if (lastChild && lastChild.nextSibling) insertBeforeEl = lastChild.nextSibling
+        else if (!lastChild) {
+          const parentRow = rowsContainer.querySelector(`.legal-checklist-row[data-legal-item-id="${targetParentId}"]`)
+          insertBeforeEl = parentRow?.nextSibling || targetRow.nextSibling
+        }
+      } else if (targetIsChild) {
+        if (!drag.isChild) {
+          const parentRow = rowsContainer?.querySelector(
+            `.legal-checklist-row[data-legal-item-id="${targetRow.dataset.parentId}"]`
+          )
+          targetParentId = null
+          const topSibs = rowsContainer ? _legalDndTopLevelRows(rowsContainer, targetStageId) : []
+          toIndex = parentRow ? Math.max(0, topSibs.indexOf(parentRow) + 1) : 0
+          insertBeforeEl = parentRow ? parentRow.nextSibling : targetRow
+        } else {
+          targetParentId = parseInt(targetRow.dataset.parentId, 10)
+          const childSibs = rowsContainer
+            ? [...rowsContainer.querySelectorAll('.legal-checklist-row')].filter(r =>
+              r.dataset.isChild === '1' && String(r.dataset.parentId) === String(targetParentId)
+            )
+            : []
+          toIndex = Math.max(0, childSibs.indexOf(targetRow))
+        }
+      } else {
+        targetParentId = null
+        const topSibs = rowsContainer ? _legalDndTopLevelRows(rowsContainer, targetStageId) : []
+        toIndex = Math.max(0, topSibs.indexOf(targetRow))
+      }
+    } else {
+      return
+    }
+
+    if (rowsContainer && drag.block.length) {
+      drag.block.forEach(el => {
+        if (insertBeforeEl) rowsContainer.insertBefore(el, insertBeforeEl)
+        else rowsContainer.appendChild(el)
+      })
+    }
+
+    try {
+      await api(`/legal/items/${drag.itemId}/reorder`, {
+        method: 'POST',
+        data: {
+          to_index: toIndex,
+          stage_id: targetStageId,
+          parent_id: targetParentId,
+        },
+      })
+      drag.block.forEach(el => el.classList.remove('is-dragging'))
+      await loadLegalProject(_legalCurrentProjectId)
+    } catch (err) {
+      _legalDndRevert(drag.snapshot)
+      drag.block.forEach(el => el.classList.remove('is-dragging'))
+      toast('Lỗi đổi thứ tự: ' + err.message, 'error')
+    } finally {
+      _legalDndActive = null
+    }
+  })
+}
+
+/** Checklist status ring: tick toggles toward completed (not full status cycle). */
+function legalChecklistRingNextStatus(status) {
+  const s = status || 'pending'
+  if (s === 'completed') return 'pending'
+  if (s === 'na') return 'pending'
+  return 'completed'
+}
+
+function legalChecklistApplyRowStatusUI(row, status) {
+  if (!row) return
+  const isDone = status === 'completed'
+  const isInprog = status === 'in_progress'
+  const isNa = status === 'na'
+  const ringClass = isDone ? 'done' : isInprog ? 'progress' : isNa ? 'na' : 'pending'
+  const ring = row.querySelector('.legal-checklist-status-ring')
+  if (ring) {
+    ring.className = `legal-checklist-status-ring ${ringClass}`
+    ring.setAttribute('aria-pressed', isDone ? 'true' : 'false')
+    const label = isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'
+    ring.setAttribute('aria-label', label)
+    ring.title = label
+  }
+  const titleEl = row.querySelector('.legal-checklist-inline-title')
+  if (titleEl) titleEl.classList.toggle('legal-checklist-title-done', isDone)
+  row.classList.toggle('is-done', isDone)
+  const sel = row.querySelector('.legal-checklist-inline-status')
+  if (sel) {
+    sel.dataset.status = status
+    sel.textContent = LEGAL_STATUS_LABELS[status] || status
+    sel.className = `legal-checklist-inline-status legal-status-${status}`
+  }
+  const dueInput = row.querySelector('.legal-checklist-inline-date')
+  const dueOverdue = dueInput?.value && new Date(dueInput.value) < new Date() && !isDone
+  row.classList.toggle('is-overdue', !!dueOverdue)
+}
+
+function legalChecklistTitleBeginEdit(ev, itemId) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  const el = ev.currentTarget
+  if (!el || el.getAttribute('contenteditable') === 'true') return
+  const item = _legalFindItemInOverview(itemId)
+  el.dataset.origTitle = (item?.title || el.innerText || '').trim()
+  el.setAttribute('contenteditable', 'true')
+  el.focus()
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  const sel = window.getSelection()
+  if (sel) {
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+}
+
+function legalChecklistTitleBlur(ev, itemId) {
+  const el = ev?.target
+  if (!el) return
+  legalInlineSaveFlush(itemId, 'title', (el.innerText || '').trim())
+  el.setAttribute('contenteditable', 'false')
+}
+
+let _legalStatusMenuEl = null
+let _legalStatusMenuItemId = null
+
+function legalChecklistStatusMenuClose() {
+  document.removeEventListener('mousedown', _legalStatusMenuOutside, true)
+  window.removeEventListener('scroll', legalChecklistStatusMenuClose, true)
+  _legalStatusMenuEl?.remove()
+  _legalStatusMenuEl = null
+  _legalStatusMenuItemId = null
+}
+
+function _legalStatusMenuOutside(e) {
+  if (!_legalStatusMenuEl) return
+  if (_legalStatusMenuEl.contains(e.target)) return
+  if (e.target.closest?.('.legal-checklist-inline-status')) return
+  legalChecklistStatusMenuClose()
+}
+
+function legalChecklistStatusMenuToggle(ev, itemId) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  const btn = ev.currentTarget
+  if (_legalStatusMenuEl && _legalStatusMenuItemId === itemId) {
+    legalChecklistStatusMenuClose()
+    return
+  }
+  legalChecklistStatusMenuClose()
+  const item = _legalFindItemInOverview(itemId)
+  const current = item?.status || btn?.dataset?.status || 'pending'
+  const menu = document.createElement('div')
+  menu.className = 'legal-status-menu'
+  menu.setAttribute('role', 'listbox')
+  Object.keys(LEGAL_STATUS_LABELS).forEach((k) => {
+    const opt = document.createElement('button')
+    opt.type = 'button'
+    opt.className = 'legal-status-menu-opt' + (k === current ? ' is-current' : '')
+    opt.setAttribute('role', 'option')
+    opt.dataset.status = k
+    opt.textContent = LEGAL_STATUS_LABELS[k]
+    opt.addEventListener('mousedown', (e) => e.preventDefault())
+    opt.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      legalChecklistStatusMenuClose()
+      legalInlineSaveStatus(itemId, k)
+    })
+    menu.appendChild(opt)
+  })
+  document.body.appendChild(menu)
+  const rect = btn.getBoundingClientRect()
+  const menuHeight = menu.offsetHeight || 148
+  let top = rect.bottom + 4
+  if (top + menuHeight > window.innerHeight - 8) top = Math.max(8, rect.top - menuHeight - 4)
+  menu.style.top = `${top}px`
+  menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`
+  menu.style.minWidth = `${Math.max(rect.width, 168)}px`
+  _legalStatusMenuEl = menu
+  _legalStatusMenuItemId = itemId
+  setTimeout(() => {
+    document.addEventListener('mousedown', _legalStatusMenuOutside, true)
+    window.addEventListener('scroll', legalChecklistStatusMenuClose, true)
+  }, 0)
+}
+
+async function legalChecklistStatusRingClick(e, id, item) {
+  e.preventDefault()
+  e.stopPropagation()
+  item = _legalParseItemArg(item) || _legalFindItemInOverview(id)
+  if (!item) return
+  const cur = item.status || 'pending'
+  const next = legalChecklistRingNextStatus(cur)
+  if (next === cur) return
+  const ringEl = e.currentTarget?.closest?.('.legal-checklist-status-ring') || e.target?.closest?.('.legal-checklist-status-ring')
+  const row = ringEl?.closest?.('.legal-checklist-row') || e.target?.closest?.('.legal-checklist-row')
+  legalChecklistApplyRowStatusUI(row, next)
+  await legalInlineSaveStatus(id, next, item)
+}
+
+function renderLegalChecklistDisplayRow(item, stageId, isChild) {
+  const isDone = item.status === 'completed'
+  const isInprog = item.status === 'in_progress'
+  const isNa = item.status === 'na'
+  const ringClass = isDone ? 'done' : isInprog ? 'progress' : isNa ? 'na' : 'pending'
+  const ringLabel = isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'
+  const dueShown = _legalDueInputValue(item)
+  const dueOverdue = dueShown && new Date(dueShown) < new Date() && !isDone
+  const statusKey = item.status && LEGAL_STATUS_LABELS[item.status] ? item.status : 'pending'
+  const statusClass = `legal-status-${statusKey}`
+  const titleClass = isDone ? ' legal-checklist-title-done' : ''
+  const parentAttr = item.parent_id != null ? String(item.parent_id) : ''
+  const dragCell = canReorderLegalChecklist()
+    ? `<button type="button" class="legal-checklist-drag-handle" draggable="true"
+         onclick="event.stopPropagation()" aria-label="Kéo để sắp xếp" title="Kéo để sắp xếp">
+         <i class="fas fa-grip-vertical" aria-hidden="true"></i></button>`
+    : `<span class="legal-checklist-drag-slot" aria-hidden="true"></span>`
+  const childCell = isChild
+    ? `<span class="legal-checklist-child-slot" aria-hidden="true"></span>`
+    : `<button type="button" class="btn-secondary text-xs legal-checklist-child-add"
+        onclick="event.stopPropagation();legalChecklistShowChildAdd(${stageId}, ${item.id})"
+        title="Thêm công việc con">Công việc con</button>`
+  return `
+    <div class="legal-checklist-row${isChild ? ' is-child' : ''}${dueOverdue ? ' is-overdue' : ''}${isDone ? ' is-done' : ''}"
+         data-legal-item-id="${item.id}"
+         data-stage-id="${stageId}"
+         data-parent-id="${parentAttr}"
+         data-is-child="${isChild ? '1' : '0'}">
+      ${dragCell}
+      <button type="button" class="legal-checklist-status-ring ${ringClass}"
+        aria-label="${escHtml(ringLabel)}" aria-pressed="${isDone ? 'true' : 'false'}"
+        title="${escHtml(ringLabel)}"
+        onclick="legalChecklistStatusRingClick(event, ${item.id})"></button>
+      <span class="legal-checklist-title legal-checklist-inline-title${titleClass}"
+            contenteditable="false"
+            spellcheck="false"
+            data-field="title"
+            data-item-id="${item.id}"
+            title="Nhấp đúp để sửa tên"
+            onclick="event.stopPropagation()"
+            ondblclick="legalChecklistTitleBeginEdit(event, ${item.id})"
+            onkeydown="legalChecklistTitleKeydown(event, ${item.id})"
+            oninput="legalInlineSaveDebounced(${item.id}, 'title', this.innerText.trim())"
+            onblur="legalChecklistTitleBlur(event, ${item.id})"
+            role="textbox"
+            aria-label="Tên hạng mục">${escHtml(item.title || '')}</span>
+      ${childCell}
+      <input type="date"
+        class="legal-checklist-inline-date"
+        value="${escHtml(_legalDueInputValue(item))}"
+        onclick="event.stopPropagation()"
+        onchange="legalInlineSave(${item.id}, 'due_date', this.value)"
+        title="Hạn thực hiện"
+        aria-label="Hạn thực hiện" />
+      <button type="button" class="legal-checklist-inline-status ${statusClass}"
+        data-status="${statusKey}"
+        onclick="event.stopPropagation(); legalChecklistStatusMenuToggle(event, ${item.id})"
+        aria-haspopup="listbox"
+        aria-label="Trạng thái">${escHtml(LEGAL_STATUS_LABELS[statusKey])}</button>
+      <span class="legal-checklist-row-actions">
+        <button type="button" class="btn-secondary text-xs legal-checklist-overflow-btn"
+          onclick="event.stopPropagation();openEditLegalItemById(${item.id})"
+          title="Chỉnh sửa hạng mục"><i class="fas fa-pen"></i></button>
+        ${canDeleteLegalChecklist() ? `<button type="button" class="btn-secondary text-xs legal-checklist-overflow-btn"
+          onclick="event.stopPropagation();deleteLegalItem(${item.id})"
+          title="Xóa hồ sơ"><i class="fas fa-trash text-red-500"></i></button>` : ''}
+      </span>
+    </div>`
+}
+
+const LEGAL_STAGE_COLLAPSE_KEY = 'bim.legal.collapsedStages'
+
+function _legalCollapsedStageSet() {
+  try {
+    const raw = sessionStorage.getItem(LEGAL_STAGE_COLLAPSE_KEY)
+    const arr = raw ? JSON.parse(raw) : []
+    return new Set((Array.isArray(arr) ? arr : []).map(String))
+  } catch (e) {
+    return new Set()
+  }
+}
+
+function _legalStageIsCollapsed(stageId) {
+  return _legalCollapsedStageSet().has(String(stageId))
+}
+
+function legalChecklistToggleStage(stageId, ev) {
+  if (ev) {
+    ev.preventDefault()
+    ev.stopPropagation()
+  }
+  const stageEl = document.querySelector(`.legal-checklist-stage[data-stage-id="${stageId}"]`)
+  if (!stageEl) return
+  const collapsed = !stageEl.classList.contains('is-collapsed')
+  stageEl.classList.toggle('is-collapsed', collapsed)
+  const btn = stageEl.querySelector('.legal-checklist-stage-toggle')
+  if (btn) {
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true')
+    btn.title = collapsed ? 'Mở rộng' : 'Thu nhỏ'
+  }
+  const set = _legalCollapsedStageSet()
+  const key = String(stageId)
+  if (collapsed) set.add(key)
+  else set.delete(key)
+  try { sessionStorage.setItem(LEGAL_STAGE_COLLAPSE_KEY, JSON.stringify([...set])) } catch (e) {}
+}
+
+function renderLegalChecklistStageGroup(stage, packageName) {
+  const sc = STAGE_COLORS[stage.code] || { bg:'#f9fafb', border:'#6b7280', text:'#374151', icon:'fa-folder' }
+  const items = stage.items || []
+  const totalCount = items.reduce((a, it) => a + 1 + (it.children?.length || 0), 0)
+  const stageName = (stage.name || stage.code || '').replace(/'/g, '\\&apos;')
+  const packageLabel = packageName ? `${escHtml(packageName)} · ` : ''
+
+  let rows = ''
+  items.forEach(item => {
+    rows += renderLegalChecklistDisplayRow(item, stage.id, false)
+    ;(item.children || []).forEach(child => {
+      rows += renderLegalChecklistDisplayRow(child, stage.id, true)
+    })
+  })
+  rows += renderLegalChecklistStageInlineAdd(stage, null)
+  const collapsed = _legalStageIsCollapsed(stage.id)
+
+  return `
+    <div class="legal-checklist-stage${collapsed ? ' is-collapsed' : ''}" data-stage-id="${stage.id}">
+      <div class="legal-checklist-stage-head" data-legal-stage-drop="${stage.id}">
+        <button type="button" class="legal-checklist-stage-toggle" aria-expanded="${collapsed ? 'false' : 'true'}"
+          title="${collapsed ? 'Mở rộng' : 'Thu nhỏ'}"
+          onclick="legalChecklistToggleStage(${stage.id}, event)"><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
+        <span class="legal-checklist-stage-ring" style="--stage-color:${sc.border}">${escHtml(stage.code || '?')}</span>
+        <span class="legal-checklist-stage-title">${escHtml(stage.name || stage.code || '')}</span>
+        <span class="legal-checklist-stage-count">${packageLabel}${totalCount} hạng mục</span>
+        <div class="legal-checklist-stage-actions">
+          <button type="button" onclick="event.stopPropagation();legalChecklistFocusStageAdd(${stage.id})" class="btn-secondary text-xs" title="Thêm hạng mục"><i class="fas fa-plus"></i></button>
+          <button type="button" onclick="event.stopPropagation();legalBeginRenameStage(${stage.id})" class="btn-secondary text-xs" title="Đổi tên"><i class="fas fa-pen"></i></button>
+          <button type="button" onclick="event.stopPropagation();confirmDeleteStage(${stage.id}, '${stageName}', ${totalCount})" class="btn-secondary text-xs" title="Xóa giai đoạn"><i class="fas fa-trash text-red-500"></i></button>
+        </div>
+      </div>
+      <div class="legal-checklist-colhead" aria-hidden="true">
+        <span></span><span></span><span>Hạng mục</span><span>Công việc con</span><span>Hạn</span><span>Trạng thái</span><span></span>
+      </div>
+      <div class="legal-checklist-rows">${rows}</div>
+    </div>`
+}
+
+function renderLegalChecklistForStages(stages, packageName) {
+  const body = (!stages || !stages.length)
+    ? '<div class="text-center py-8 text-gray-400">Gói thầu chưa có giai đoạn. Bấm Thêm giai đoạn để tự khai báo.</div>'
+    : stages.map(s => renderLegalChecklistStageGroup(s, packageName)).join('')
+  return `<div class="legal-checklist-host">${body}</div>`
+}
+
+// ── Render Packages — C1: sub-tabs + checklist display face ───────────────────
 function renderLegalPackages(packages, flatStages) {
   const container = $('legalStagesContainer')
   if (!container) return
 
-  // If no packages yet, fall back to flat stages view
   if (!packages || packages.length === 0) {
     if (flatStages && flatStages.length > 0) {
       renderLegalStages(flatStages)
@@ -19030,7 +21263,7 @@ function renderLegalPackages(packages, flatStages) {
       <div class="card text-center py-10 text-gray-400">
         <i class="fas fa-folder-open text-4xl mb-3 block text-gray-300"></i>
         <div class="font-semibold mb-1">Chưa có gói thầu nào</div>
-        <div class="text-sm mb-4">Tạo gói thầu để bắt đầu theo dõi hồ sơ dự án</div>
+        <div class="text-sm mb-4">Tạo gói trống rồi tự nhập hồ sơ, hoặc sao chép từ dự án khác</div>
         <button onclick="openAddPackageModal()" class="btn-accent text-sm mx-auto" style="width:auto;padding:6px 20px">
           <i class="fas fa-plus mr-1"></i> Tạo gói thầu mới
         </button>
@@ -19038,122 +21271,40 @@ function renderLegalPackages(packages, flatStages) {
     return
   }
 
-  // Colors for packages
-  const PKG_COLORS = [
-    { bg:'#eff6ff', border:'#3b82f6', text:'#1d4ed8', icon:'fa-building' },
-    { bg:'#fdf4ff', border:'#a855f7', text:'#7e22ce', icon:'fa-drafting-compass' },
-    { bg:'#fff7ed', border:'#f97316', text:'#c2410c', icon:'fa-hard-hat' },
-    { bg:'#f0fdf4', border:'#22c55e', text:'#15803d', icon:'fa-check-double' },
-    { bg:'#fefce8', border:'#eab308', text:'#a16207', icon:'fa-star' },
-  ]
+  const activePkg = packages.find(p => _legalPackageIdEq(p.id, _legalActivePackageId)) || packages[0]
+  _legalActivePackageId = activePkg.id
+  const activeStages = activePkg.stages || []
+  const activeItemCount = activeStages.reduce((n, s) => {
+    return n + (s.items || []).reduce((a, it) => a + 1 + ((it.children || []).length), 0)
+  }, 0)
 
   let html = `
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-    <div style="font-size:13px;color:#64748b;font-weight:500">
-      <i class="fas fa-layer-group mr-1 text-indigo-500"></i>
-      ${packages.length} gói thầu · ${packages.reduce((a,p)=>a+(p.stages||[]).length,0)} giai đoạn
-    </div>
-    <div style="display:flex;gap:6px">
-      <button onclick="collapseAllPackages()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:4px 12px;cursor:pointer">
-        <i class="fas fa-compress-alt" style="font-size:10px"></i> Thu gọn
-      </button>
-      <button onclick="expandAllPackages()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 12px;cursor:pointer">
-        <i class="fas fa-expand-alt" style="font-size:10px"></i> Mở rộng
-      </button>
-      <button onclick="openAddPackageModal()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px solid #6ee7b7;border-radius:6px;padding:4px 12px;cursor:pointer">
-        <i class="fas fa-plus" style="font-size:10px"></i> Thêm gói thầu
-      </button>
-    </div>
-  </div>`
-
-  packages.forEach((pkg, pkgIdx) => {
-    const pc = PKG_COLORS[pkgIdx % PKG_COLORS.length]
-    const stages = pkg.stages || []
-    const isOpen = _pkgCollapseState[pkg.id] !== false
-    const pkgBodyId = `pkgBody_${pkg.id}`
-    const pkgChevId = `pkgChev_${pkg.id}`
-
-    // Compute package totals
-    let pkgTotal = 0, pkgDone = 0
-    stages.forEach(s => {
-      ;(s.items || []).forEach(it => {
-        pkgTotal++; if (it.status === 'completed') pkgDone++
-        ;(it.children||[]).forEach(ch => {
-          pkgTotal++; if (ch.status === 'completed') pkgDone++
-        })
-      })
-    })
-    const pkgPct = pkgTotal > 0 ? Math.round(pkgDone/pkgTotal*100) : 0
-    const pkgBarCol = pkgPct === 100 ? '#10b981' : pkgPct >= 50 ? '#6366f1' : pc.border
-
-    html += `
-    <!-- ═══════ PACKAGE CARD ═══════ -->
-    <div class="mb-5" style="border-radius:14px;border:2px solid ${pc.border}55;background:#fff;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
-
-      <!-- Package Header -->
-      <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;background:${pc.bg};cursor:pointer;user-select:none;border-bottom:2px solid ${pc.border}33"
-           onclick="togglePackageCollapse(${pkg.id})">
-
-        <div style="width:44px;height:44px;border-radius:12px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;background:${pc.border};box-shadow:0 2px 6px ${pc.border}55">
-          <i class="fas ${pc.icon}"></i>
-        </div>
-
-        <div style="flex:1;min-width:0">
-          <div style="font-size:15px;font-weight:800;color:${pc.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pkg.name}</div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap">
-            <div style="width:140px;height:6px;background:#e5e7eb;border-radius:10px;overflow:hidden">
-              <div style="width:${pkgPct}%;height:100%;background:${pkgBarCol};border-radius:10px;transition:width .4s"></div>
-            </div>
-            <span style="font-size:12px;font-weight:700;color:${pkgBarCol}">${pkgPct}%</span>
-            <span style="font-size:11px;color:#9ca3af">${pkgDone}/${pkgTotal} hạng mục</span>
-            <span style="font-size:11px;color:#64748b;background:#f1f5f9;padding:1px 8px;border-radius:8px;border:1px solid #e2e8f0">
-              <i class="fas fa-layer-group mr-1" style="font-size:9px"></i>${stages.length} giai đoạn A–D
-            </span>
-          </div>
-        </div>
-
-        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0" onclick="event.stopPropagation()">
-          <button onclick="openRenamePackageModal(${pkg.id}, '${pkg.name.replace(/'/g,'\\&apos;')}')"
-            style="width:30px;height:30px;border-radius:7px;border:1px solid ${pc.border}66;background:#fff;color:${pc.text};cursor:pointer;display:flex;align-items:center;justify-content:center" title="Đổi tên gói thầu">
-            <i class="fas fa-pen" style="font-size:10px"></i>
-          </button>
-          <button onclick="confirmDeletePackage(${pkg.id}, '${pkg.name.replace(/'/g,'\\&apos;')}', ${pkgTotal})"
-            style="width:30px;height:30px;border-radius:7px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Xóa gói thầu">
-            <i class="fas fa-trash" style="font-size:10px"></i>
-          </button>
-          <button id="${pkgChevId}" onclick="event.stopPropagation();togglePackageCollapse(${pkg.id})"
-            style="width:32px;height:32px;border-radius:8px;border:1px solid ${pc.border}44;background:#fff;color:${pc.text};cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s">
-            <i id="${pkgChevId}_icon" class="fas fa-chevron-up" style="font-size:11px;transition:transform .25s;transform:rotate(${isOpen?'0':'180'}deg)"></i>
-          </button>
-        </div>
+    <div class="legal-stages-toolbar">
+      <span><i class="fas fa-layer-group mr-1 text-primary"></i>Đang xem: <span class="legal-package-name-edit">${escHtml(activePkg.name || 'Gói thầu')}</span> · ${activeStages.length} giai đoạn · ${activeItemCount} hạng mục</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button type="button" onclick="openAddPackageModal()" class="btn-secondary text-xs"><i class="fas fa-plus mr-1"></i>Thêm gói thầu</button>
+        <button type="button" onclick="legalBeginRenamePackage(${activePkg.id})" class="btn-secondary text-xs" title="Đổi tên gói đang chọn"><i class="fas fa-pen"></i></button>
+        <button type="button" onclick="confirmDeletePackage(${activePkg.id}, '${(activePkg.name || '').replace(/'/g, '\\&apos;')}', 0)" class="btn-secondary text-xs" title="Xóa gói đang chọn"><i class="fas fa-trash text-red-500"></i></button>
       </div>
+    </div>
+    <div class="legal-package-subtabs" role="tablist">`
 
-      <!-- Package Body (stages) -->
-      <div id="${pkgBodyId}" style="display:${isOpen?'block':'none'};padding:12px 16px 16px">
-        ${stages.length === 0 ? `<div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px">Gói thầu chưa có giai đoạn nào</div>` : ''}
-        ${stages.map(stage => renderPackageStageCard(stage, pc)).join('')}
-
-        <!-- Add stage within package -->
-        <div style="display:flex;justify-content:center;margin-top:10px">
-          <button onclick="openAddStageInPackageModal(${pkg.id})"
-            style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#6366f1;background:#eef2ff;border:1.5px dashed #a5b4fc;border-radius:8px;padding:6px 18px;cursor:pointer;width:100%;justify-content:center">
-            <i class="fas fa-plus-circle" style="font-size:11px"></i> Thêm giai đoạn vào gói này
-          </button>
-        </div>
-      </div>
-    </div>`
+  packages.forEach(pkg => {
+    const isActive = _legalPackageIdEq(pkg.id, _legalActivePackageId)
+    const label = escHtml(pkg.name || `Gói #${pkg.id}`)
+    html += `<button type="button" role="tab" aria-selected="${isActive}" class="legal-package-subtab${isActive ? ' active' : ''}" onclick="switchLegalPackageTab(${pkg.id})">${label}</button>`
   })
 
-  // Add package button at bottom
+  html += `</div>`
+  html += renderLegalChecklistForStages(activeStages, activePkg.name || '')
   html += `
-  <div style="display:flex;justify-content:center;margin-top:4px">
-    <button onclick="openAddPackageModal()"
-      style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:8px;padding:8px 24px;cursor:pointer;width:100%;justify-content:center">
-      <i class="fas fa-plus-circle" style="font-size:12px"></i> Thêm gói thầu mới (BCNCKT / TKBVTC / Thi công & Hoàn công…)
-    </button>
-  </div>`
+    <div style="display:flex;justify-content:center;margin-top:12px;gap:8px;flex-wrap:wrap">
+      <button type="button" onclick="openAddStageInPackageModal(${activePkg.id})" class="btn-secondary text-sm"><i class="fas fa-plus-circle mr-1"></i>Thêm giai đoạn vào gói này</button>
+    </div>`
 
   container.innerHTML = html
+  _legalDndBoundHost = null
+  initLegalChecklistDnD()
 }
 
 // ── Render a single stage card INSIDE a package ───────────────────────────────
@@ -19287,81 +21438,43 @@ function expandAllPackages() {
 
 // ── Package Management ────────────────────────────────────────────────────────
 
-// Package type options
-const PACKAGE_TYPE_OPTIONS = [
-  { value: 'bcnckt',       label: 'Gói BCNCKT (Báo cáo nghiên cứu khả thi)' },
-  { value: 'tkbvtc',       label: 'Gói TKBVTC (Thiết kế bản vẽ thi công)' },
-  { value: 'construction', label: 'Gói Thi công & Hoàn công' },
-  { value: 'custom',       label: 'Gói tùy chỉnh (nhập tên riêng)' },
-]
-
 function openAddPackageModal() {
-  const typeOpts = PACKAGE_TYPE_OPTIONS.map(o =>
-    `<option value="${o.value}">${o.label}</option>`
-  ).join('')
-
   const modalHtml = `
   <div id="addPkgModal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px">
     <div style="background:#fff;border-radius:16px;width:100%;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden">
       <div style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:20px 24px;display:flex;align-items:center;justify-content:space-between">
         <div>
           <div style="font-size:16px;font-weight:700;color:#fff"><i class="fas fa-folder-plus mr-2"></i>Thêm gói thầu</div>
-          <div style="font-size:12px;color:#e0e7ff;margin-top:2px">Mỗi gói thầu sẽ có 4 giai đoạn A–B–C–D tự động</div>
+          <div style="font-size:12px;color:#e0e7ff;margin-top:2px">Gói để trống. Tự nhập hồ sơ hoặc sao chép từ dự án khác.</div>
         </div>
         <button onclick="document.getElementById('addPkgModal').remove()" style="color:#e0e7ff;background:none;border:none;cursor:pointer;font-size:18px">&times;</button>
       </div>
       <div style="padding:24px">
-        <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Loại gói thầu</label>
-        <select id="addPkgType" onchange="onAddPkgTypeChange()" style="width:100%;padding:8px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:14px">
-          ${typeOpts}
-        </select>
-
         <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Tên gói thầu</label>
-        <input id="addPkgName" type="text" placeholder="VD: Gói BCNCKT dự án..." value="${PACKAGE_TYPE_OPTIONS[0].label}"
-          style="width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:6px">
-        <div style="font-size:11px;color:#6b7280;margin-bottom:18px">
-          <i class="fas fa-info-circle mr-1 text-blue-400"></i>
-          Hệ thống sẽ tự động tạo 4 giai đoạn: A. Chuẩn bị & Dự thầu · B. Ký hợp đồng · C. Thực hiện & Sản phẩm BIM · D. Nghiệm thu & Thanh toán
-        </div>
-
+        <input id="addPkgName" type="text" placeholder="VD: Gói thiết kế..."
+          style="width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:18px">
         <div style="display:flex;gap:10px;justify-content:flex-end">
           <button onclick="document.getElementById('addPkgModal').remove()"
-            style="padding:9px 20px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#374151;font-size:13px;cursor:pointer">
-            Hủy
-          </button>
+            style="padding:9px 18px;border-radius:8px;border:1.5px solid #d1d5db;background:#fff;color:#374151;font-size:13px;font-weight:600;cursor:pointer">Hủy</button>
           <button onclick="submitAddPackage()"
-            style="padding:9px 20px;border:none;border-radius:8px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:13px;font-weight:600;cursor:pointer">
-            <i class="fas fa-plus mr-1"></i> Tạo gói thầu
-          </button>
+            style="padding:9px 18px;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:13px;font-weight:600;cursor:pointer">Tạo gói trống</button>
         </div>
       </div>
     </div>
   </div>`
   document.body.insertAdjacentHTML('beforeend', modalHtml)
-}
-
-function onAddPkgTypeChange() {
-  const sel = document.getElementById('addPkgType')
-  const inp = document.getElementById('addPkgName')
-  const opt = PACKAGE_TYPE_OPTIONS.find(o => o.value === sel.value)
-  if (opt && sel.value !== 'custom') {
-    inp.value = opt.label
-  } else {
-    inp.value = ''
-    inp.focus()
-  }
+  document.getElementById('addPkgName')?.focus()
 }
 
 async function submitAddPackage() {
-  const type = document.getElementById('addPkgType')?.value || 'custom'
   const name = document.getElementById('addPkgName')?.value?.trim()
   if (!name) { toast('Vui lòng nhập tên gói thầu', 'warning'); return }
   try {
-    const res = await api(`/legal/${_legalCurrentProjectId}/packages`, {
-      method: 'POST', data: { name, package_type: type }
+    await api(`/legal/${_legalCurrentProjectId}/packages`, {
+      method: 'POST', data: { name, package_type: 'blank' }
     })
     document.getElementById('addPkgModal')?.remove()
-    toast(`Đã tạo gói thầu "${name}" với 4 giai đoạn A–D`, 'success', 4000)
+    toast(`Đã tạo gói trống "${name}". Hãy tự nhập hồ sơ hoặc sao chép từ dự án khác.`, 'success', 4000)
     loadLegalProject(_legalCurrentProjectId)
   } catch(err) {
     toast('Lỗi: ' + err.message, 'error')
@@ -19369,21 +21482,64 @@ async function submitAddPackage() {
 }
 
 function openRenamePackageModal(pkgId, currentName) {
-  const newName = prompt('Đổi tên gói thầu:', currentName)
-  if (!newName || !newName.trim() || newName.trim() === currentName) return
-  api(`/legal/packages/${pkgId}`, { method: 'PUT', data: { name: newName.trim() } })
-    .then(() => {
-      toast('Đã đổi tên gói thầu', 'success')
-      loadLegalProject(_legalCurrentProjectId)
+  legalBeginRenamePackage(pkgId, currentName)
+}
+
+function legalBeginRenamePackage(pkgId, currentName) {
+  const pkg = (_legalOverviewData?.packages || []).find(p => _legalPackageIdEq(p.id, pkgId))
+  const el = document.querySelector('.legal-package-name-edit')
+  _legalInlineRename(el, currentName || pkg?.name || el?.textContent || '', async (name) => {
+    await api(`/legal/packages/${pkgId}`, { method: 'PUT', data: { name } })
+    if (pkg) pkg.name = name
+    document.querySelectorAll('.legal-package-subtab').forEach(btn => {
+      if (btn.getAttribute('aria-selected') === 'true') btn.textContent = name
     })
-    .catch(err => toast('Lỗi: ' + err.message, 'error'))
+    toast('Đã đổi tên gói thầu', 'success')
+  })
+}
+
+function _legalInlineRename(anchorEl, current, onSave) {
+  if (!anchorEl || anchorEl.dataset.renaming === '1') return
+  anchorEl.dataset.renaming = '1'
+  const prev = String(current || '').trim()
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'legal-checklist-rename-input'
+  input.value = prev
+  anchorEl.textContent = ''
+  anchorEl.appendChild(input)
+  input.focus()
+  input.select()
+  let done = false
+  const finish = async (commit) => {
+    if (done) return
+    done = true
+    const next = input.value.trim()
+    anchorEl.dataset.renaming = ''
+    if (!commit || !next || next === prev) {
+      anchorEl.textContent = prev
+      return
+    }
+    anchorEl.textContent = next
+    try {
+      await onSave(next)
+    } catch (err) {
+      anchorEl.textContent = prev
+      toast('Lỗi: ' + (err?.message || err), 'error')
+    }
+  }
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true) }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false) }
+  })
+  input.addEventListener('blur', () => finish(true))
 }
 
 async function confirmDeletePackage(pkgId, pkgName, itemCount) {
   const hasItems = itemCount > 0
   const msg = hasItems
-    ? `Xóa gói thầu "${pkgName}"?\n\n⚠️ Gói này còn ${itemCount} hạng mục — tất cả sẽ bị xóa vĩnh viễn cùng với 4 giai đoạn A–D.\n\nHành động này KHÔNG THỂ hoàn tác.`
-    : `Xóa gói thầu "${pkgName}"?\nTất cả 4 giai đoạn A–D trong gói sẽ bị xóa.\nHành động này không thể hoàn tác.`
+    ? `Xóa gói thầu "${pkgName}"?\n\nGói này còn ${itemCount} hạng mục — giai đoạn và hạng mục trong gói cũng bị xóa.\n\nHành động này không hoàn tác được.`
+    : `Xóa gói thầu "${pkgName}"?\nGiai đoạn và hạng mục trong gói cũng bị xóa.`
   if (!confirm(msg)) return
   try {
     await api(`/legal/packages/${pkgId}`, { method: 'DELETE' })
@@ -19395,17 +21551,42 @@ async function confirmDeletePackage(pkgId, pkgName, itemCount) {
 }
 
 function openAddStageInPackageModal(pkgId) {
-  const newName = prompt('Tên giai đoạn mới trong gói thầu này:\n(Tên sẽ được tùy chỉnh, code A–D–E–… tự động)')
-  if (!newName || !newName.trim()) return
-  api(`/legal/${_legalCurrentProjectId}/stages`, {
-    method: 'POST',
-    data: { name: newName.trim(), package_id: pkgId }
-  })
-    .then(res => {
+  const host = document.querySelector('.legal-checklist-host')
+  if (!host) return
+  if (host.querySelector('.legal-stage-add-input')) {
+    host.querySelector('.legal-stage-add-input').focus()
+    return
+  }
+  const wrap = document.createElement('div')
+  wrap.className = 'legal-checklist-stage'
+  wrap.innerHTML = `<div class="legal-checklist-stage-head"><input class="legal-stage-add-input legal-checklist-rename-input" placeholder="Tên giai đoạn mới — Enter để lưu, Esc để hủy"></div>`
+  host.appendChild(wrap)
+  const input = wrap.querySelector('input')
+  input.focus()
+  let done = false
+  const cancel = () => { if (!done) { done = true; wrap.remove() } }
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); return }
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    const name = input.value.trim()
+    if (!name || done) return
+    done = true
+    try {
+      const res = await api(`/legal/${_legalCurrentProjectId}/stages`, {
+        method: 'POST',
+        data: { name, package_id: pkgId }
+      })
       toast(`Đã thêm giai đoạn [${res.code}]: ${res.name}`, 'success', 4000)
       loadLegalProject(_legalCurrentProjectId)
-    })
-    .catch(err => toast('Lỗi: ' + err.message, 'error'))
+    } catch (err) {
+      done = false
+      toast('Lỗi: ' + err.message, 'error')
+    }
+  })
+  input.addEventListener('blur', () => {
+    if (!input.value.trim()) cancel()
+  })
 }
 
 // ── Render Stages Table ──────────────────────────────────────────────────────
@@ -19419,143 +21600,16 @@ function renderLegalStages(stages) {
     return
   }
 
-  let html = ''
-  stages.forEach(stage => {
-    const sc = STAGE_COLORS[stage.code] || { bg:'#f9fafb', border:'#6b7280', text:'#374151', icon:'fa-folder' }
-    const totalInStage = stage.items.reduce((a, it) => a + 1 + (it.children?.length||0), 0)
-    const doneInStage  = stage.items.reduce((a, it) => {
-      let d = it.status === 'completed' ? 1 : 0
-      d += (it.children||[]).filter(c => c.status === 'completed').length
-      return a + d
-    }, 0)
-    const pct      = totalInStage > 0 ? Math.round(doneInStage/totalInStage*100) : 0
-    const barCol   = pct === 100 ? '#10b981' : pct >= 50 ? '#3b82f6' : sc.border
-    const isOpen   = _stageCollapseState[stage.id] !== false   // mặc định mở
-    const bodyId   = `stageBody_${stage.id}`
-    const chevId   = `stageChev_${stage.id}`
-
-    // Badge tóm tắt khi thu gọn
-    const pendingCount    = totalInStage - doneInStage
-    const inProgressCount = stage.items.reduce((a,it) => {
-      let c = it.status === 'in_progress' ? 1 : 0
-      c += (it.children||[]).filter(ch => ch.status === 'in_progress').length
-      return a + c
-    }, 0)
-
-    html += `
-    <div class="mb-4" style="border-radius:12px;border:1px solid ${isOpen?sc.border+'55':'#e5e7eb'};background:#fff;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);transition:border-color .2s">
-
-      <!-- ══ HEADER (click to collapse) ══ -->
-      <div onclick="toggleStageCollapse(${stage.id})"
-        style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:${isOpen ? sc.bg : '#f9fafb'};cursor:pointer;user-select:none;border-left:4px solid ${sc.border};transition:background .2s">
-
-        <!-- Stage badge -->
-        <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:#fff;background:${sc.border}">
-          ${stage.code}
-        </div>
-
-        <!-- Name + progress -->
-        <div style="flex:1;min-width:0">
-          <div style="font-size:14px;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${stage.name}</div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
-            <div style="width:120px;height:5px;background:#e5e7eb;border-radius:10px;overflow:hidden">
-              <div style="width:${pct}%;height:100%;background:${barCol};border-radius:10px;transition:width .4s"></div>
-            </div>
-            <span style="font-size:11px;font-weight:700;color:${barCol}">${pct}%</span>
-            <span style="font-size:11px;color:#9ca3af">${doneInStage}/${totalInStage} hoàn thành</span>
-            ${!isOpen && inProgressCount > 0 ? `<span style="font-size:10px;font-weight:600;color:#2563eb;background:#dbeafe;padding:1px 7px;border-radius:10px">${inProgressCount} đang làm</span>` : ''}
-            ${!isOpen && pendingCount > 0 && pendingCount < totalInStage ? `<span style="font-size:10px;font-weight:600;color:#64748b;background:#f1f5f9;padding:1px 7px;border-radius:10px">${pendingCount} còn lại</span>` : ''}
-          </div>
-        </div>
-
-        <!-- Right controls -->
-        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0" onclick="event.stopPropagation()">
-          <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
-            style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 10px;cursor:pointer" title="Thêm hạng mục">
-            <i class="fas fa-plus" style="font-size:9px"></i> Thêm
-          </button>
-          <button onclick="openRenameStageModal(${stage.id}, '${stage.name.replace(/'/g,'\\&apos;')}')"
-            style="width:30px;height:30px;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;" title="Đổi tên giai đoạn">
-            <i class="fas fa-pen" style="font-size:10px"></i>
-          </button>
-          <button onclick="confirmDeleteStage(${stage.id}, '${stage.name.replace(/'/g,'\\&apos;')}', ${totalInStage})"
-            style="width:30px;height:30px;border-radius:6px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center;" title="Xóa giai đoạn">
-            <i class="fas fa-trash" style="font-size:10px"></i>
-          </button>
-          <!-- Chevron collapse -->
-          <button id="${chevId}" onclick="event.stopPropagation();toggleStageCollapse(${stage.id})"
-            style="width:32px;height:32px;border-radius:8px;border:1px solid #e5e7eb;background:${isOpen?'#eef2ff':'#f9fafb'};color:${isOpen?'#6366f1':'#9ca3af'};cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s" title="${isOpen?'Thu gọn':'Mở rộng'}">
-            <i id="${chevId}_icon" class="fas fa-chevron-up" style="font-size:11px;transition:transform .25s;transform:rotate(${isOpen?'0':'180'}deg)"></i>
-          </button>
-        </div>
-      </div>
-
-      <!-- ══ BODY (collapsible) ══ -->
-      <div id="${bodyId}" style="display:${isOpen?'block':'none'}">
-        <table class="w-full" style="font-size:13px">
-          <thead>
-            <tr style="background:${sc.bg}">
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:40px" title="Click checkbox để đánh dấu hoàn thành">✓</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Ngày HT thực tế</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:170px">Ghi chú</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Thao tác</th>
-            </tr>
-          </thead>
-          <tbody>`
-
-    stage.items.forEach(item => {
-      const rowBg = item.status === 'completed' ? '#f0fdf4' : (item.status === 'in_progress' ? '#eff6ff' : '#fff')
-      html += renderLegalItemRow(item, sc, rowBg, false, stage.id)
-      ;(item.children || []).forEach(child => {
-        html += renderLegalItemRow(child, sc, rowBg, true, stage.id)
-      })
-    })
-    // Quick-add inline row
-    html += renderLegalQuickAddRow(stage.id, _legalCurrentProjectId, null)
-
-    html += `
-          </tbody>
-        </table>
-        <div style="padding:8px 16px;border-top:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
-          <button onclick="legalQuickAddShow(${stage.id})"
-            style="font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:7px;padding:5px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
-            <i class="fas fa-plus" style="font-size:10px"></i> Thêm dòng
-          </button>
-          <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
-            style="font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-            <i class="fas fa-external-link-alt" style="font-size:9px"></i> Nhập chi tiết
-          </button>
-        </div>
-      </div><!-- /body -->
-    </div><!-- /stage card -->`
-  })
-
-  // Nút Để thêm giai đoạn mới
-  html += `
-  <div style="display:flex;justify-content:center;margin-top:8px">
-    <button onclick="openAddStageModal()"
-      style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:8px;padding:7px 20px;cursor:pointer;width:100%;justify-content:center">
-      <i class="fas fa-plus-circle" style="font-size:12px"></i> Thêm giai đoạn hồ sơ mới
-    </button>
-  </div>`
-
-  // Nút expand/collapse tất cả
-  html = `
-  <div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:10px">
-    <button onclick="collapseAllStages()"
-      style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:4px 12px;cursor:pointer">
-      <i class="fas fa-compress-alt" style="font-size:10px"></i> Thu gọn tất cả
-    </button>
-    <button onclick="expandAllStages()"
-      style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 12px;cursor:pointer">
-      <i class="fas fa-expand-alt" style="font-size:10px"></i> Mở rộng tất cả
-    </button>
-  </div>` + html
-
-  container.innerHTML = html
+  container.innerHTML = `
+    <div class="legal-stages-toolbar">
+      <span><i class="fas fa-list-ol mr-1 text-primary"></i>${stages.length} giai đoạn hồ sơ</span>
+    </div>
+    ${renderLegalChecklistForStages(stages)}
+    <div style="display:flex;justify-content:center;margin-top:12px">
+      <button type="button" onclick="openAddStageModal()" class="btn-secondary text-sm"><i class="fas fa-plus-circle mr-1"></i>Thêm giai đoạn hồ sơ mới</button>
+    </div>`
+  _legalDndBoundHost = null
+  initLegalChecklistDnD()
 }
 
 // ── Toggle một giai đoạn ──────────────────────────────────────────────────────
@@ -19602,14 +21656,17 @@ function expandAllStages() {
 // ── Stage Management (Rename / Add / Delete) ─────────────────────────────────
 
 function openRenameStageModal(stageId, currentName) {
-  const newName = prompt('Đổi tên giai đoạn hồ sơ:', currentName)
-  if (!newName || !newName.trim() || newName.trim() === currentName) return
-  api(`/legal/stages/${stageId}`, { method: 'PUT', data: { name: newName.trim() } })
-    .then(() => {
-      toast('Đã đổi tên giai đoạn', 'success')
-      loadLegalProject(_legalCurrentProjectId)
-    })
-    .catch(err => toast('Lỗi: ' + err.message, 'error'))
+  legalBeginRenameStage(stageId, currentName)
+}
+
+function legalBeginRenameStage(stageId, currentName) {
+  const stage = _legalFindStage(stageId)
+  const el = document.querySelector(`.legal-checklist-stage[data-stage-id="${stageId}"] .legal-checklist-stage-title`)
+  _legalInlineRename(el, currentName || stage?.name || el?.textContent || '', async (name) => {
+    await api(`/legal/stages/${stageId}`, { method: 'PUT', data: { name } })
+    if (stage) stage.name = name
+    toast('Đã đổi tên giai đoạn', 'success')
+  })
 }
 
 async function confirmDeleteStage(stageId, stageName, itemCount) {
@@ -20130,8 +22187,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
   const isInprog   = item.status === 'in_progress'
   const isPending  = !isDone && !isInprog
 
-  // Màu nền hàng
-  const trBg = isDone ? '#f0fdf4' : isChild ? '#fafafa' : '#fff'
+  const trClass = isDone ? 'legal-tr-done' : isChild ? 'legal-tr-child' : 'legal-tr-default'
 
   // Checkbox
   const cbStyle = `width:16px;height:16px;cursor:pointer;accent-color:#10b981;border-radius:4px;flex-shrink:0`
@@ -20169,14 +22225,14 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
     : 'border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-size:12px;color:#9ca3af;cursor:pointer;width:100%;text-align:center'
 
   return `
-  <tr id="legal-row-${item.id}" style="background:${trBg};border-bottom:1px solid #f3f4f6;transition:background .2s">
+  <tr id="legal-row-${item.id}" class="${trClass}" style="border-bottom:1px solid #f3f4f6;transition:background .2s">
 
     <!-- ☑ Checkbox hoàn thành -->
     <td style="padding:8px 6px;text-align:center;vertical-align:middle;width:40px">
       <input type="checkbox"
         style="${cbStyle}"
         ${isDone ? 'checked' : ''}
-        onchange="legalToggleComplete(${item.id}, this.checked, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onchange="legalToggleComplete(${item.id}, this.checked)"
         title="${isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'}"
       />
     </td>
@@ -20195,7 +22251,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
           data-field="title"
           data-item-id="${item.id}"
           data-original="${item.title.replace(/"/g,'&quot;')}"
-          onblur="legalInlineSave(${item.id}, 'title', this.innerText.trim(), ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+          onblur="legalInlineSave(${item.id}, 'title', this.innerText.trim())"
           onkeydown="legalItemKeydown(event, ${item.id}, ${stageId}, ${_legalCurrentProjectId}, ${item.parent_id||'null'}, ${isChild?'true':'false'})"
           style="${titleStyle};outline:none;border-radius:4px;padding:2px 4px;min-width:100px;display:block;flex:1;word-break:break-word"
           onfocus="this.style.background='#f0fdf4';this.style.outline='1px solid #6ee7b7'"
@@ -20208,9 +22264,9 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
     <!-- Hạn thực hiện — date input inline -->
     <td style="padding:6px 8px;vertical-align:middle;text-align:center;width:110px">
       <input type="date"
-        value="${item.due_date || ''}"
+        value="${escHtml(_legalDueInputValue(item))}"
         style="${dueDateStyle}"
-        onchange="legalInlineSave(${item.id}, 'due_date', this.value, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onchange="legalInlineSave(${item.id}, 'due_date', this.value)"
         title="Ngày hết hạn — click để thay đổi"
         onfocus="this.style.border='1px solid #6ee7b7';this.style.background='#f0fdf4'"
         onblur="this.style.border='1px solid ${dueDateIsOverdue?'#fca5a5':'transparent'}';this.style.background='${dueDateIsOverdue?'#fef2f2':'transparent'}'"
@@ -20222,7 +22278,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
       <input type="date"
         value="${item.actual_completion_date || ''}"
         style="${actualDateStyle}"
-        onchange="legalInlineSave(${item.id}, 'actual_completion_date', this.value, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onchange="legalInlineSave(${item.id}, 'actual_completion_date', this.value)"
         title="Ngày hoàn thành thực tế — click để thay đổi"
         onfocus="this.style.border='1px solid #6ee7b7';this.style.background='#f0fdf4'"
         onblur="this.style.border='1px solid transparent';this.style.background='transparent'"
@@ -20235,7 +22291,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
         contenteditable="true"
         data-field="notes"
         data-item-id="${item.id}"
-        onblur="legalInlineSave(${item.id}, 'notes', this.innerText.trim(), ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onblur="legalInlineSave(${item.id}, 'notes', this.innerText.trim())"
         onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
         style="font-size:12px;color:#6b7280;font-style:italic;outline:none;border-radius:4px;padding:2px 4px;display:block;word-break:break-word;min-height:18px"
         onfocus="this.style.background='#f0fdf4';this.style.outline='1px solid #6ee7b7';this.style.fontStyle='normal'"
@@ -20426,7 +22482,7 @@ function openAddLegalItem(stageId, parentId, projectId) {
   $('legalItemStt').value = ''
   $('legalItemTitle').value = ''
   $('legalItemType').value = 'task'
-  $('legalItemDueDate').value = ''
+  $('legalItemDueDate').value = _legalTodayISO()
   $('legalItemActualDate').value = ''
   $('legalItemStatus').value = 'pending'
   $('legalItemNotes').value = ''
@@ -20461,16 +22517,42 @@ function _previewAutoStt(stageId, parentId) {
   }
 }
 
+function openEditLegalItemById(itemId) {
+  const item = _legalFindItemInOverview(itemId)
+  if (item) {
+    openEditLegalItem(item)
+    return
+  }
+  const row = document.querySelector(`.legal-checklist-row[data-legal-item-id="${itemId}"]`)
+  if (!row) {
+    toast('Không tìm thấy hạng mục — thử tải lại trang', 'warning')
+    return
+  }
+  openEditLegalItem({
+    id: itemId,
+    stage_id: Number(row.dataset.stageId),
+    parent_id: row.dataset.parentId ? Number(row.dataset.parentId) : null,
+    project_id: _legalCurrentProjectId,
+    title: row.querySelector('.legal-checklist-title')?.innerText || '',
+    due_date: row.querySelector('.legal-checklist-inline-date')?.value || '',
+    status: row.querySelector('.legal-checklist-inline-status')?.dataset.status || 'pending',
+    item_type: 'task',
+    notes: '',
+    stt: '',
+  })
+}
+
 function openEditLegalItem(item) {
-  if (typeof item === 'string') item = JSON.parse(item)
+  item = _legalParseItemArg(item)
+  if (!item) return
   $('legalItemId').value = item.id
   $('legalItemStageId').value = item.stage_id
   $('legalItemParentId').value = item.parent_id || ''
-  $('legalItemProjectId').value = item.project_id
+  $('legalItemProjectId').value = item.project_id || _legalCurrentProjectId || ''
   $('legalItemStt').value = item.stt
   $('legalItemTitle').value = item.title
   $('legalItemType').value = item.item_type || 'task'
-  $('legalItemDueDate').value = item.due_date || ''
+  $('legalItemDueDate').value = _legalDueInputValue(item)
   $('legalItemActualDate').value = item.actual_completion_date || ''
   $('legalItemStatus').value = item.status || 'pending'
   $('legalItemNotes').value = item.notes || ''
@@ -20531,7 +22613,8 @@ async function deleteLegalItem(id) {
 
 // ── Inline Edit: toggle hoàn thành bằng checkbox ─────────────────────────────
 async function legalToggleComplete(id, isChecked, item) {
-  if (typeof item === 'string') item = JSON.parse(item)
+  item = _legalParseItemArg(item) || _legalFindItemInOverview(id)
+  if (!item) return
   const newStatus = isChecked ? 'completed' : 'pending'
 
   // Cập nhật giao diện tức thì (optimistic UI)
@@ -20562,9 +22645,62 @@ async function legalToggleComplete(id, isChecked, item) {
   }
 }
 
+// ── Checklist display face: debounced inline save (C2) ───────────────────────
+const _legalInlineSaveTimers = {}
+
+function legalInlineSaveDebounced(id, field, value, item, delayMs = 550) {
+  const key = `${id}:${field}`
+  if (_legalInlineSaveTimers[key]) clearTimeout(_legalInlineSaveTimers[key])
+  _legalInlineSaveTimers[key] = setTimeout(() => {
+    delete _legalInlineSaveTimers[key]
+    legalInlineSave(id, field, value, item ?? _legalFindItemInOverview(id))
+  }, delayMs)
+}
+
+function legalInlineSaveFlush(id, field, value, item) {
+  const key = `${id}:${field}`
+  if (_legalInlineSaveTimers[key]) {
+    clearTimeout(_legalInlineSaveTimers[key])
+    delete _legalInlineSaveTimers[key]
+  }
+  legalInlineSave(id, field, value, item ?? _legalFindItemInOverview(id))
+}
+
+function legalChecklistTitleKeydown(e, itemId, item) {
+  const el = e.target
+  if (!el || el.getAttribute('contenteditable') !== 'true') return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    const it = _legalParseItemArg(item) || _legalFindItemInOverview(itemId)
+    const orig = el.dataset.origTitle != null ? el.dataset.origTitle : (it?.title || '')
+    el.innerText = orig
+    el.setAttribute('contenteditable', 'false')
+    legalInlineSaveFlush(itemId, 'title', orig.trim(), it)
+    return
+  }
+  if (e.key === 'Enter') {
+    if (_legalImeBlocksEnter(e)) return
+    e.preventDefault()
+    const text = (el.innerText || '').trim()
+    el.setAttribute('contenteditable', 'false')
+    legalInlineSaveFlush(itemId, 'title', text, item ?? _legalFindItemInOverview(itemId))
+    el.blur()
+  }
+}
+
+async function legalInlineSaveStatus(id, value, item) {
+  item = _legalParseItemArg(item) || _legalFindItemInOverview(id)
+  if (!item) return
+  if (value === (item.status || 'pending')) return
+  const row = document.querySelector(`.legal-checklist-row[data-legal-item-id="${id}"]`)
+  if (row) legalChecklistApplyRowStatusUI(row, value)
+  await legalInlineSave(id, 'status', value, item)
+}
+
 // ── Inline Edit: lưu trực tiếp từ contenteditable / date input ───────────────
 async function legalInlineSave(id, field, value, item) {
-  if (typeof item === 'string') item = JSON.parse(item)
+  item = _legalParseItemArg(item) || _legalFindItemInOverview(id)
+  if (!item) return
 
   // Không lưu nếu không thay đổi
   const oldVal = (item[field] || '').toString().trim()
@@ -20577,7 +22713,7 @@ async function legalInlineSave(id, field, value, item) {
     item_type: item.item_type || 'task',
     due_date: field === 'due_date' ? (value || null) : (item.due_date || null),
     actual_completion_date: field === 'actual_completion_date' ? (value || null) : (item.actual_completion_date || null),
-    status: item.status || 'pending',
+    status: field === 'status' ? value : (item.status || 'pending'),
     notes: field === 'notes' ? (value || null) : (item.notes || null),
   }
 
@@ -20599,12 +22735,13 @@ async function legalInlineSave(id, field, value, item) {
 // Cập nhật item trong _legalOverviewData mà không reload
 function _legalUpdateLocalItem(id, field, value) {
   if (!_legalOverviewData) return
+  const nid = Number(id)
   const updateInList = (items) => {
     for (const it of items || []) {
-      if (it.id === id) { it[field] = value; return true }
+      if (Number(it.id) === nid) { it[field] = value; return true }
       if (it.children) {
         for (const ch of it.children) {
-          if (ch.id === id) { ch[field] = value; return true }
+          if (Number(ch.id) === nid) { ch[field] = value; return true }
         }
       }
     }
@@ -20945,24 +23082,471 @@ async function saveLegalLetterConfig(e) {
     toast('Lỗi: ' + err.message, 'error')
   }
 }
-// ── E. Payment Status Tab ────────────────────────────────────────────────────
-function renderPaymentStatus(payments) {
-  const container = $('legalPaymentsTable')
+// ── E. Payment Status Tab (Wave D — package sub-tabs + inline sheet) ─────────
+function _legalPaymentResolvePackageId(payment) {
+  const explicit = Number(payment?.package_id)
+  if (Number.isFinite(explicit) && explicit > 0) {
+    const pkgs = _legalOverviewData?.packages || []
+    if (!pkgs.length || pkgs.some(p => _legalPackageIdEq(p.id, explicit))) {
+      return _legalPaymentNormPackageKey(explicit)
+    }
+  }
+  const itemId = Number(payment?.legal_item_id)
+  if (!Number.isFinite(itemId) || itemId <= 0) return 0
+  if (_legalPaymentItemPackageMap?.has(itemId)) {
+    return _legalPaymentItemPackageMap.get(itemId)
+  }
+  if (!_legalOverviewData?.packages?.length) return 0
+  for (const pkg of _legalOverviewData.packages) {
+    const pkgKey = _legalPaymentNormPackageKey(pkg.id)
+    for (const stage of pkg.stages || []) {
+      for (const item of stage.items || []) {
+        if (Number(item.id) === itemId) return pkgKey
+        for (const ch of item.children || []) {
+          if (Number(ch.id) === itemId) return pkgKey
+        }
+      }
+    }
+  }
+  return 0
+}
+
+function _legalPaymentPickDefaultPackageId(payments, packages) {
+  const list = payments || []
+  const pkgs = packages || []
+  const counts = new Map()
+  for (const p of list) {
+    const key = _legalPaymentResolvePackageId(p)
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  for (const pkg of pkgs) {
+    const id = _legalPaymentNormPackageKey(pkg.id)
+    if ((counts.get(id) || 0) >= 1) return id
+  }
+  return _legalPaymentNormPackageKey(pkgs[0]?.id)
+}
+
+function switchLegalPaymentPackageTab(pkgKey) {
+  const key = _legalPaymentNormPackageKey(pkgKey)
+  _legalPaymentActivePackageId = key
+  document.querySelectorAll('#legalPaymentPackageSubtabs .legal-package-subtab').forEach(btn => {
+    const on = Number(btn.dataset.pkgKey) === key
+    btn.classList.toggle('active', on)
+    btn.setAttribute('aria-selected', on ? 'true' : 'false')
+  })
+  document.getElementById('legal-pay-pkg-' + key)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
+
+function buildPaymentPayloadFromModal() {
+  const vatPctVal = parseFloat($('paymentVatPct')?.value) || 0
+  return {
+    description:     $('paymentDescription').value.trim(),
+    payment_phase:   $('paymentPhase').value.trim(),
+    request_number:  $('paymentRequestNumber').value.trim(),
+    request_date:    $('paymentRequestDate').value || null,
+    status:          $('paymentStatus').value,
+    amount:          parseMoneyVal('paymentAmount'),
+    paid_amount:     parseMoneyVal('paymentPaidAmount'),
+    paid_date:       $('paymentPaidDate').value || null,
+    invoice_number:  $('paymentInvoiceNumber').value.trim(),
+    legal_item_id:   parseInt($('paymentLegalItemId').value, 10) || null,
+    notes:           $('paymentNotes').value.trim(),
+    vat_pct:         vatPctVal
+  }
+}
+
+function buildPaymentPayloadFromRow(row) {
+  const vatPctVal = parseFloat(row.vat_pct) || 0
+  return {
+    description:     String(row.description ?? '').trim(),
+    payment_phase:   String(row.payment_phase ?? '').trim(),
+    request_number:  String(row.request_number ?? '').trim(),
+    request_date:    row.request_date || null,
+    status:          row.status || 'pending',
+    amount:          Number(row.amount) || 0,
+    paid_amount:     Number(row.paid_amount) || 0,
+    paid_date:       row.paid_date || null,
+    invoice_number:  String(row.invoice_number ?? '').trim(),
+    notes:           String(row.notes ?? '').trim(),
+    vat_pct:         vatPctVal
+  }
+}
+
+function _legalPaymentReadRow(rowEl) {
+  const field = (name) => {
+    const el = rowEl.querySelector(`[data-pfield="${name}"]`)
+    if (!el) return ''
+    if (el.dataset.money === '1') return parseMoneyVal(el)
+    return el.value
+  }
+  return {
+    description: field('description'),
+    payment_phase: field('payment_phase'),
+    request_number: field('request_number'),
+    request_date: field('request_date') || null,
+    status: field('status') || 'pending',
+    amount: field('amount'),
+    paid_amount: field('paid_amount'),
+    paid_date: field('paid_date') || null,
+    invoice_number: field('invoice_number'),
+    notes: field('notes'),
+    vat_pct: _legalProjectVatPct()
+  }
+}
+
+function _legalPaymentSyncToast(status, amount) {
+  const syncStatuses = ['processing', 'partial', 'paid']
+  return syncStatuses.includes(status) && (amount || 0) > 0
+}
+
+const _legalPaymentCommitTimers = {}
+
+function legalPaymentCommitDebounced(ev, paymentId, delayMs = 500) {
+  const row = ev?.target?.closest?.('.legal-payment-sheet-row')
+  if (row?.classList.contains('is-new')) return
+  const key = paymentId != null && paymentId !== 'null' ? String(paymentId) : 'new'
+  if (_legalPaymentCommitTimers[key]) clearTimeout(_legalPaymentCommitTimers[key])
+  _legalPaymentCommitTimers[key] = setTimeout(() => {
+    delete _legalPaymentCommitTimers[key]
+    legalPaymentCommitRow(ev, paymentId === 'null' || paymentId === null ? null : paymentId)
+  }, delayMs)
+}
+
+function legalPaymentCommitFlush(ev, paymentId) {
+  const key = paymentId != null && paymentId !== 'null' ? String(paymentId) : 'new'
+  if (_legalPaymentCommitTimers[key]) {
+    clearTimeout(_legalPaymentCommitTimers[key])
+    delete _legalPaymentCommitTimers[key]
+  }
+  return legalPaymentCommitRow(ev, paymentId === 'null' || paymentId === null ? null : paymentId)
+}
+
+function _legalPaymentPayloadUnchanged(paymentId, payload) {
+  const p = (_legalOverviewData?.payments || []).find(x => Number(x.id) === Number(paymentId))
+  if (!p) return false
+  const str = (v) => String(v ?? '').trim()
+  const num = (v) => Number(v) || 0
+  const dateOrNull = (v) => (v ? String(v) : null)
+  return (
+    str(payload.description) === str(p.description) &&
+    str(payload.payment_phase) === str(p.payment_phase) &&
+    str(payload.request_number) === str(p.request_number) &&
+    dateOrNull(payload.request_date) === dateOrNull(p.request_date) &&
+    str(payload.status) === str(p.status || 'pending') &&
+    num(payload.amount) === num(p.amount) &&
+    num(payload.paid_amount) === num(p.paid_amount) &&
+    dateOrNull(payload.paid_date) === dateOrNull(p.paid_date) &&
+    str(payload.invoice_number) === str(p.invoice_number) &&
+    str(payload.notes) === str(p.notes) &&
+    num(payload.vat_pct) === num(p.vat_pct != null ? p.vat_pct : 0)
+  )
+}
+
+function _legalMergePaymentInOverview(updated) {
+  if (!_legalOverviewData?.payments || !updated?.id) return
+  const idx = _legalOverviewData.payments.findIndex(x => Number(x.id) === Number(updated.id))
+  if (idx >= 0) _legalOverviewData.payments[idx] = { ..._legalOverviewData.payments[idx], ...updated }
+}
+
+function _legalPayPlain(n) {
+  return new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0))
+}
+
+function _legalPatchPaymentRowMetrics(rowEl, p) {
+  if (!rowEl || !p) return
+  const amountCell = rowEl.querySelector('[data-pfield="amount"]')?.closest('.legal-payment-sheet-cell')
+  amountCell?.querySelectorAll('.legal-payment-sheet-readonly').forEach(el => el.remove())
+  const paidCell = rowEl.querySelector('[data-pfield="paid_amount"]')?.closest('.legal-payment-sheet-cell')
+  paidCell?.querySelectorAll('.legal-payment-sheet-readonly').forEach(el => el.remove())
+  const bookedCell = rowEl.querySelector('[data-prole="booked"]')
+  if (bookedCell?.classList?.contains('legal-payment-sheet-cell')) {
+    if (p.booked_revenue != null) {
+      bookedCell.innerHTML = `<div class="legal-payment-sheet-readonly"><strong>${fmtMoney(Number(p.booked_revenue))}</strong></div>`
+    } else {
+      bookedCell.innerHTML = '<span class="legal-payment-sheet-readonly">—</span>'
+    }
+  }
+}
+
+async function legalPaymentCommitRow(ev, paymentId) {
+  if (_legalPaymentInlineBusy) return false
+  const row = ev?.target?.closest?.('.legal-payment-sheet-row')
+  if (!row || !row.isConnected) return false
+  const rowData = _legalPaymentReadRow(row)
+  const payload = buildPaymentPayloadFromRow(rowData)
+  if (!payload.description) {
+    if (!paymentId) {
+      if (!(payload.amount > 0)) return false
+    } else {
+      toast('Mô tả không được để trống', 'error')
+      return false
+    }
+  }
+  if (!paymentId) {
+    const card = row.closest('.legal-payment-package')
+    const pkgKey = _legalPaymentNormPackageKey(card?.dataset.packageKey)
+    payload.package_id = pkgKey > 0 ? pkgKey : null
+  }
+  if (!paymentId && !String(payload.description || '').trim() && (payload.amount || 0) > 0) {
+    payload.description = '(Chưa nhập mô tả)'
+  }
+  if (paymentId && _legalPaymentPayloadUnchanged(paymentId, payload)) return true
+  _legalPaymentInlineBusy = true
+  const willSync = _legalPaymentSyncToast(payload.status, payload.amount)
+  try {
+    if (paymentId) {
+      await api(`/legal/payments/${paymentId}`, { method: 'PUT', data: payload })
+      toast(willSync ? 'Đã cập nhật & đồng bộ doanh thu ✓' : 'Đã cập nhật đợt thanh toán', 'success', 4000)
+      const refreshed = await api(`/legal/${_legalCurrentProjectId}/payments`)
+      const updated = (refreshed.payments || []).find(x => Number(x.id) === Number(paymentId))
+      if (updated) {
+        _legalMergePaymentInOverview(updated)
+        _legalPatchPaymentRowMetrics(row, updated)
+        _legalReorderPaymentPackageDom(row)
+      }
+    } else {
+      await api(`/legal/${_legalCurrentProjectId}/payments`, { method: 'POST', data: payload })
+      if (_legalPaymentCommitTimers['new']) {
+        clearTimeout(_legalPaymentCommitTimers['new'])
+        delete _legalPaymentCommitTimers['new']
+      }
+      toast(willSync ? 'Đã thêm đợt TT & tự động tạo doanh thu ✓' : 'Đã thêm đợt thanh toán', 'success', 4000)
+      await loadLegalProject(_legalCurrentProjectId)
+      if (_legalCurrentTab !== 'payments') switchLegalTab('payments')
+      const savedPkg = payload.package_id || 0
+      const nextDesc = document.querySelector(`#legal-pay-pkg-${savedPkg} .legal-payment-sheet-row.is-new [data-pfield="description"]`)
+        || document.querySelector('#legalPaymentsTable .legal-payment-sheet-row.is-new [data-pfield="description"]')
+      if (nextDesc) nextDesc.focus()
+    }
+    return true
+  } catch (err) {
+    toast('Lỗi: ' + err.message, 'error')
+    return false
+  } finally {
+    _legalPaymentInlineBusy = false
+  }
+}
+
+function legalPaymentRowKeydown(ev, paymentId) {
+  if (ev.key === 'Enter') {
+    if (_legalImeBlocksEnter(ev)) return
+    ev.preventDefault()
+    const row = ev.target?.closest?.('.legal-payment-sheet-row')
+    if (row?.classList.contains('is-editing')) legalPaymentFinishEdit(ev, paymentId)
+    else legalPaymentCommitFlush(ev, paymentId || null)
+  }
+}
+
+let _legalPaymentEditingId = null
+
+function _legalPaymentCountsAsCollected(status) {
+  return status === 'paid' || status === 'partial'
+}
+
+function _legalPaymentDraftHasContent(rowEl) {
+  if (!rowEl) return false
+  const desc = rowEl.querySelector('[data-pfield="description"]')?.value?.trim()
+  const amount = Number(parseMoneyVal(rowEl.querySelector('[data-pfield="amount"]'))) || 0
+  const paid = Number(parseMoneyVal(rowEl.querySelector('[data-pfield="paid_amount"]'))) || 0
+  const date = rowEl.querySelector('[data-pfield="request_date"]')?.value
+  return !!(desc || amount || paid || date)
+}
+
+function legalPaymentDraftInput(ev) {
+  const row = ev.target?.closest?.('.legal-payment-sheet-row.is-new')
+  if (!row) return
+  const saved = row.parentElement?.querySelectorAll('.legal-payment-sheet-row:not(.is-new)').length || 0
+  const stt = _legalPaymentDraftHasContent(row) ? String(saved + 1) : ''
+  const label = row.querySelector('[data-prole="stt"]')
+  if (label) label.textContent = stt
+  const phase = row.querySelector('[data-pfield="payment_phase"]')
+  if (phase) phase.value = stt
+}
+
+function _legalPaymentDateText(value) {
+  const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '—'
+}
+
+async function legalPaymentFinishEdit(ev, paymentId) {
+  if (Number(_legalPaymentEditingId) !== Number(paymentId)) return
+  const ok = await legalPaymentCommitFlush(ev, paymentId)
+  if (ok === false) return
+  if (Number(_legalPaymentEditingId) !== Number(paymentId)) return
+  _legalPaymentEditingId = null
+  renderPaymentStatus(_legalOverviewData?.payments || [])
+}
+
+function legalPaymentRowFocusOut(ev, paymentId) {
+  const row = ev.currentTarget
+  if (!row?.classList.contains('is-editing')) return
+  const next = ev.relatedTarget
+  if (next && row.contains(next)) return
+  setTimeout(() => {
+    if (!row.isConnected) return
+    if (row.contains(document.activeElement)) return
+    legalPaymentFinishEdit({ target: row }, paymentId)
+  }, 0)
+}
+
+function legalPaymentDisplayClick(ev, id) {
+  if (ev.target.closest('button, a, input, select')) return
+  const fieldEl = ev.target.closest('[data-edit-field]')
+  if (!fieldEl) return
+  legalPaymentBeginEdit(id, fieldEl.dataset.editField)
+}
+
+async function legalPaymentBeginEdit(id, field) {
+  const allowed = ['description', 'request_date', 'status', 'amount', 'paid_amount']
+  const focusField = allowed.includes(field) ? field : 'description'
+  const prev = _legalPaymentEditingId
+  if (prev && Number(prev) !== Number(id)) {
+    const row = document.querySelector('.legal-payment-sheet-row.is-editing')
+    if (row) {
+      const ok = await legalPaymentCommitFlush({ target: row }, prev)
+      if (ok === false) return
+    }
+  }
+  _legalPaymentEditingId = Number(id)
+  renderPaymentStatus(_legalOverviewData?.payments || [])
+  const el = document.querySelector(`.legal-payment-sheet-row.is-editing [data-pfield="${focusField}"]`)
+  if (!el) return
+  el.focus()
+  if (el.tagName === 'INPUT' && typeof el.select === 'function') el.select()
+}
+
+async function legalPaymentStatusChange(ev, paymentId) {
+  legalPaymentRefreshTotals()
+  const row = ev?.target?.closest?.('.legal-payment-sheet-row')
+  if (row) row.classList.toggle('is-paid', ev.target?.value === 'paid')
+  if (row?.classList.contains('is-new')) return
+  await legalPaymentCommitFlush(ev, paymentId || null)
+}
+
+function _legalPaymentMoneyInputValue(n) {
+  const num = parseInt(n, 10) || 0
+  if (!num) return ''
+  return new Intl.NumberFormat('vi-VN').format(num)
+}
+
+function _legalPaymentPhaseRank(value) {
+  const s = String(value ?? '').trim()
+  if (!s) return Number.POSITIVE_INFINITY
+  const n = Number(s.replace(',', '.'))
+  if (Number.isFinite(n)) return n
+  const m = s.match(/(\d+(?:[.,]\d+)?)/)
+  return m ? Number(m[1].replace(',', '.')) : Number.POSITIVE_INFINITY
+}
+
+function _legalSortPaymentsByPhase(rows) {
+  return [...rows].sort((a, b) => {
+    const d = _legalPaymentPhaseRank(a.payment_phase) - _legalPaymentPhaseRank(b.payment_phase)
+    if (d) return d
+    return (Number(a.id) || 0) - (Number(b.id) || 0)
+  })
+}
+
+function _legalReorderPaymentPackageDom(rowEl) {
+  const sheet = rowEl?.closest?.('.legal-payment-sheet')
+  if (!sheet) return
+  const add = sheet.querySelector('.legal-payment-sheet-row.is-new')
+  const rows = [...sheet.querySelectorAll('.legal-payment-sheet-row:not(.is-new)')]
+  rows.sort((a, b) => {
+    const d = _legalPaymentPhaseRank(a.querySelector('[data-pfield="payment_phase"]')?.value)
+      - _legalPaymentPhaseRank(b.querySelector('[data-pfield="payment_phase"]')?.value)
+    if (d) return d
+    return (Number(a.dataset.paymentId) || 0) - (Number(b.dataset.paymentId) || 0)
+  })
+  rows.forEach(r => {
+    if (add) sheet.insertBefore(r, add)
+    else sheet.appendChild(r)
+  })
+}
+function _legalProjectVatPct() {
+  const fromOverview = _legalOverviewData?.project?.vat_pct
+  if (fromOverview != null && fromOverview !== '') return Number(fromOverview) || 0
+  const project = (allProjects || []).find(p => Number(p.id) === Number(_legalCurrentProjectId))
+  return Number(project?.vat_pct) || 0
+}
+
+function _legalPaymentPackageLabel(packageKey) {
+  const key = _legalPaymentNormPackageKey(packageKey)
+  if (!key) return 'Chung'
+  const pkg = (_legalOverviewData?.packages || []).find(p => _legalPaymentNormPackageKey(p.id) === key)
+  return pkg?.name || 'gói'
+}
+
+function _renderLegalPaymentSheetRow(p, packageKey, isNew, stt) {
+  const idAttr = isNew ? '' : String(p.id)
+  const editing = !isNew && Number(_legalPaymentEditingId) === Number(p.id)
+  const display = !isNew && !editing
+  const statusVal = isNew ? 'pending' : (p.status || 'pending')
+  const statusOpts = Object.keys(PAYMENT_STATUS_LABELS).map(k => {
+    const sel = statusVal === k ? ' selected' : ''
+    return `<option value="${k}"${sel}>${escHtml(PAYMENT_STATUS_LABELS[k])}</option>`
+  }).join('')
+  const amountFmt = _legalPaymentMoneyInputValue(p.amount)
+  const paidFmt = _legalPaymentMoneyInputValue(p.paid_amount)
+  const bookedCell = !isNew && p.booked_revenue != null
+    ? `<div class="legal-payment-sheet-readonly"><strong>${fmtMoney(Number(p.booked_revenue))}</strong></div>`
+    : '<span class="legal-payment-sheet-readonly">—</span>'
+  const delBtn = isNew ? '' : `<button type="button" class="text-red-400 hover:text-red-600" title="Xóa" onclick="deletePayment(${p.id})"><i class="fas fa-trash"></i></button>`
+  const paidClass = statusVal === 'paid' ? ' is-paid' : ''
+  const rowClass = (isNew ? 'legal-payment-sheet-row is-new' : (editing ? 'legal-payment-sheet-row is-editing' : 'legal-payment-sheet-row is-display')) + paidClass
+  const commitId = isNew ? 'null' : String(p.id)
+  const notesVal = escHtml(p.notes || '')
+  const descPh = isNew
+    ? 'Thêm dòng…'
+    : 'Mô tả *'
+  const descRequired = isNew ? '' : 'required'
+  const rowAttrs = isNew
+    ? ' oninput="legalPaymentDraftInput(event)"'
+    : (editing
+      ? ` onfocusout="legalPaymentRowFocusOut(event, ${commitId})"`
+      : ` onclick="legalPaymentDisplayClick(event, ${p.id})"`)
+  const sttText = display || editing ? String(stt || '') : ''
+  const amountNum = Number(p.amount) || 0
+  const paidNum = Number(p.paid_amount) || 0
+  const fields = display ? `
+      <input type="hidden" data-pfield="status" value="${escHtml(statusVal)}">
+      <input type="hidden" data-pfield="amount" data-money="1" data-raw-val="${amountNum || ''}" value="${amountNum || ''}">
+      <input type="hidden" data-pfield="paid_amount" data-money="1" data-raw-val="${paidNum || ''}" value="${paidNum || ''}">
+      <div class="legal-payment-sheet-stt" data-prole="stt">${escHtml(sttText)}</div>
+      <div class="legal-payment-sheet-text is-editable" data-edit-field="description">${escHtml(p.description || '')}</div>
+      <div class="legal-payment-sheet-text is-editable" data-edit-field="request_date">${_legalPaymentDateText(p.request_date)}</div>
+      <div class="legal-payment-sheet-text is-editable" data-edit-field="status"><span class="legal-payment-status-pill">${escHtml(PAYMENT_STATUS_LABELS[statusVal] || statusVal)}</span></div>
+      <div class="legal-payment-sheet-text money is-editable" data-edit-field="amount">${amountNum ? _legalPayPlain(amountNum) : '—'}</div>
+      <div class="legal-payment-sheet-text money is-editable" data-edit-field="paid_amount">${paidNum ? _legalPayPlain(paidNum) : '—'}</div>
+    ` : `
+      <div class="legal-payment-sheet-stt" data-prole="stt">${escHtml(sttText)}</div>
+      <div class="legal-payment-sheet-cell"><input data-pfield="description" value="${escHtml(p.description || '')}" placeholder="${descPh}" ${descRequired} onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><input type="date" data-pfield="request_date" value="${escHtml(p.request_date || '')}" title="Ngày nghiệm thu" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><select data-pfield="status" onchange="legalPaymentStatusChange(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">${statusOpts}</select></div>
+      <div class="legal-payment-sheet-cell">
+        <input class="legal-payment-money" data-pfield="amount" data-money="1" data-raw-val="${p.amount || ''}" value="${amountFmt}" placeholder="0" oninput="moneyInputFmt(this); legalPaymentRefreshTotals()" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">
+      </div>
+      <div class="legal-payment-sheet-cell">
+        <input class="legal-payment-money" data-pfield="paid_amount" data-money="1" data-raw-val="${p.paid_amount || ''}" value="${paidFmt}" placeholder="0" oninput="moneyInputFmt(this); legalPaymentRefreshTotals()" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">
+      </div>
+    `
+  return `
+    <div class="${rowClass}" data-payment-id="${idAttr}"${rowAttrs}>
+      <input type="hidden" data-pfield="notes" value="${notesVal}">
+      <input type="hidden" data-pfield="paid_date" value="${escHtml(p.paid_date || '')}">
+      <input type="hidden" data-pfield="request_number" value="${escHtml(p.request_number || '')}">
+      <input type="hidden" data-pfield="invoice_number" value="${escHtml(p.invoice_number || '')}">
+      <input type="hidden" data-pfield="payment_phase" value="${escHtml(isNew ? '' : (p.payment_phase || ''))}">
+      <input type="hidden" data-pfield="vat_pct" value="${_legalProjectVatPct()}">
+      ${fields}
+      <div class="legal-payment-sheet-cell legal-payment-sheet-booked" data-prole="booked">${bookedCell}</div>
+      <div class="legal-payment-sheet-actions legal-payment-sheet-cell">${delBtn}</div>
+    </div>`
+}
+
+function legalPaymentPaintSummary(total, totalAmount, paidAmount, pending) {
   const summaryEl = $('paymentSummaryCards')
-  if (!container) return
-
-  // Lấy thông tin dự án để tính doanh thu net (VAT/phí QL)
-  const proj = _legalOverviewData?.project || {}
-
-  // Summary cards — nghiệm thu & thanh toán = trước VAT
-  const total = payments.length
-  const totalAmount = payments.reduce((s, p) => s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)), 0)
-  const paidAmount = payments.reduce((s, p) => s + (p.cash_before_vat != null ? Number(p.cash_before_vat) : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0)), 0)
-  const pending = payments.filter(p => p.status === 'pending' || p.status === 'processing').length
-  const paid = payments.filter(p => p.status === 'paid').length
-
-  if (summaryEl) {
-    summaryEl.innerHTML = `
+  if (!summaryEl) return
+  summaryEl.innerHTML = `
       <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
         <div class="text-2xl font-bold text-blue-700">${total}</div>
         <div class="text-xs text-blue-500 mt-1">Tổng đợt TT</div>
@@ -20980,147 +23564,89 @@ function renderPaymentStatus(payments) {
         <div class="text-xs text-rose-500 mt-1">Chờ xử lý</div>
       </div>
     `
-  }
+}
 
-  if (!payments.length) {
-    container.innerHTML = `<div class="text-center py-12 text-gray-400">
-      <i class="fas fa-money-check-alt text-4xl mb-3 opacity-30"></i>
-      <p class="font-medium">Chưa có đợt thanh toán nào</p>
-      <p class="text-sm mt-1">Nhấn "+ Thêm đợt thanh toán" để tạo mới</p>
-    </div>`
-    return
-  }
-
-  // Progress bar overall
-  const progressPct = totalAmount > 0 ? Math.min(100, Math.round(paidAmount / totalAmount * 100)) : 0
-  const progressColor = progressPct >= 100 ? '#10b981' : progressPct >= 50 ? '#3b82f6' : '#f97316'
-
-  let html = `
-    <div class="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-      <div class="flex justify-between text-sm mb-1">
-        <span class="text-gray-600 font-medium">Tiến độ thanh toán</span>
-        <span class="font-bold" style="color:${progressColor}">${progressPct}%</span>
-      </div>
-      <div class="w-full bg-gray-200 rounded-full h-2">
-        <div class="h-2 rounded-full transition-all" style="width:${progressPct}%;background:${progressColor}"></div>
-      </div>
-      <div class="flex justify-between text-xs text-gray-400 mt-1">
-        <span>Dòng tiền đã thu: ${fmtMoney(paidAmount)}</span>
-        <span>Tổng nghiệm thu: ${fmtMoney(totalAmount)}</span>
-      </div>
-    </div>
-    <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="border-b border-gray-200 bg-gray-50">
-          <th class="py-2 px-3 text-left text-gray-600 font-semibold">Đợt TT</th>
-          <th class="py-2 px-3 text-left text-gray-600 font-semibold">Nội dung</th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Nghiệm thu<br><span class="font-normal text-xs text-amber-500">trước VAT</span></th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT<br><span class="font-normal text-xs text-blue-400">trước VAT</span></th>
-          <th class="py-2 px-3 text-center text-gray-600 font-semibold">VAT</th>
-          <th class="py-2 px-3 text-center text-gray-600 font-semibold">Ngày TT</th>
-          <th class="py-2 px-3 text-center text-gray-600 font-semibold">Trạng thái</th>
-          <th class="py-2 px-3 text-center text-gray-600 font-semibold">Hóa đơn</th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Doanh thu<br><span class="font-normal text-xs text-gray-400">(trước thuế)</span></th>
-          <th class="py-2 px-3 text-center text-gray-600 font-semibold"></th>
-        </tr>
-      </thead>
-      <tbody>
-  `
-
-  payments.forEach((p, idx) => {
-    const statusLabel = PAYMENT_STATUS_LABELS[p.status] || p.status
-    const statusClass = PAYMENT_STATUS_COLORS[p.status] || 'badge-todo'
-    const rowBg = idx % 2 === 0 ? '' : 'style="background:#f9fafb"'
-    const paidPct = (p.amount || 0) > 0 ? Math.min(100, Math.round((p.paid_amount || 0) / p.amount * 100)) : 0
-    html += `
-      <tr class="border-b border-gray-100 hover:bg-blue-50/30 transition-colors" ${rowBg}>
-        <td class="py-2 px-3">
-          <span class="font-semibold text-gray-700">${p.payment_phase || '—'}</span>
-          ${p.request_number ? `<div class="text-xs text-gray-400 mt-0.5">${p.request_number}</div>` : ''}
-        </td>
-        <td class="py-2 px-3">
-          <div class="text-gray-800">${p.description}</div>
-          ${p.item_title 
-            ? `<div class="text-xs text-gray-500 mt-0.5">
-                ${p.package_name ? `<span style="font-size:10px;color:#6366f1;font-weight:600;background:#eef2ff;padding:1px 5px;border-radius:4px">📦 ${p.package_name}</span> ` : ''}
-                ${p.stage_code ? `<span style="font-size:10px;color:#64748b;background:#f1f5f9;padding:1px 4px;border-radius:4px">[${p.stage_code}]</span> ` : ''}
-                <i class="fas fa-link" style="font-size:9px;color:#94a3b8"></i> ${p.item_stt ? '['+p.item_stt+'] ' : ''}${p.item_title}
-               </div>` 
-            : ''}
-          ${p.notes ? `<div class="text-xs text-gray-400 mt-0.5 italic">${p.notes}</div>` : ''}
-        </td>
-        <td class="py-2 px-3 text-right font-mono text-gray-700">
-          ${(() => {
-            const beforeVat = p.amount_before_vat != null
-              ? Number(p.amount_before_vat)
-              : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)
-            const feePct = proj?.management_fee_pct || 0
-            const dt = (p.booked_revenue != null)
-              ? Number(p.booked_revenue)
-              : calcRevenueNet(p.amount||0, p.vat_pct||0, feePct)
-            return `<div class="font-semibold" title="Trước VAT">${fmtMoney(beforeVat)}</div>
-              ${p.vat_pct > 0 ? `<div class="text-xs text-gray-400" title="Gross có VAT">có VAT: ${fmtMoney(p.amount||0)}</div>` : ''}
-              ${feePct > 0 ? `<div class="text-xs text-emerald-600" title="Doanh thu vào sổ (sau phí QL)">DT sổ: ${fmtMoney(dt)}</div>` : ''}`
-          })()}
-        </td>
-        <td class="py-2 px-3 text-right">
-          ${(() => {
-            const cashBv = p.cash_before_vat != null
-              ? Number(p.cash_before_vat)
-              : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0)
-            return `<div class="font-mono text-blue-600 font-semibold" title="Trước VAT">${fmtMoney(cashBv)}</div>
-              ${p.vat_pct > 0 && (p.paid_amount||0) > 0 ? `<div class="text-xs text-gray-400">có VAT: ${fmtMoney(p.paid_amount||0)}</div>` : ''}
-              ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}`
-          })()}
-        </td>
-        <td class="py-2 px-3 text-center">
-          ${(p.vat_pct > 0)
-            ? `<span class="inline-flex items-center gap-0.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
-                <i class="fas fa-percent" style="font-size:9px"></i>${p.vat_pct}%
-               </span>`
-            : `<span class="text-xs text-gray-300">—</span>`
-          }
-        </td>
-        <td class="py-2 px-3 text-center text-gray-600 text-xs">${p.paid_date ? p.paid_date : '—'}</td>
-        <td class="py-2 px-3 text-center"><span class="badge ${statusClass} text-xs">${statusLabel}</span></td>
-        <td class="py-2 px-3 text-center text-xs text-gray-500">
-          ${p.invoice_number ? `<div class="font-mono">${p.invoice_number}</div>` : '—'}
-          ${p.invoice_date ? `<div class="text-gray-400">${p.invoice_date}</div>` : ''}
-        </td>
-        <td class="py-2 px-3 text-right">
-          ${(() => {
-            const nghiemThu = p.amount || 0
-            const vatPct    = p.vat_pct || 0
-            const feePct    = _legalOverviewData?.project?.management_fee_pct || 0
-            const noVat     = p.amount_before_vat != null
-              ? Number(p.amount_before_vat)
-              : (vatPct > 0 ? Math.round(nghiemThu / (1 + vatPct / 100)) : nghiemThu)
-            const netRev    = p.booked_revenue != null
-              ? Number(p.booked_revenue)
-              : (feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat)
-            const isSynced  = p.revenue_synced || p.revenue_synced_id
-            const isActive  = ['paid','partial'].includes(p.status) && nghiemThu > 0
-            if (!isActive) return `<span class="text-xs text-gray-300">—</span>`
-            let titleParts = []
-            if (vatPct > 0) titleParts.push(`Loại VAT ${vatPct}%: ${nghiemThu.toLocaleString('vi-VN')} ÷ ${(1+vatPct/100).toFixed(2)} = ${noVat.toLocaleString('vi-VN')} VNĐ`)
-            if (feePct > 0) titleParts.push(`Phí QL ${feePct}%: ×${(100-feePct)}% = ${netRev.toLocaleString('vi-VN')} VNĐ`)
-            const tooltip = titleParts.length ? titleParts.join(' → ') : ''
-            return `<div class="font-mono font-semibold text-blue-700" title="${tooltip}">${fmtMoney(netRev)}</div>
-                    ${vatPct > 0 ? `<div class="text-xs text-amber-500 mt-0.5">−VAT ${vatPct}%</div>` : ''}
-                    ${feePct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : ''}
-                    ${isSynced ? `<div class="text-xs text-emerald-500 mt-0.5"><i class="fas fa-sync-alt" style="font-size:9px"></i> Đã ĐB</div>` : ''}`
-          })()}
-        </td>
-        <td class="py-2 px-3 text-center whitespace-nowrap">
-          <button onclick="editPayment(${p.id})" class="text-blue-500 hover:text-blue-700 mr-2" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
-          <button onclick="deletePayment(${p.id})" class="text-red-400 hover:text-red-600" title="Xóa"><i class="fas fa-trash"></i></button>
-        </td>
-      </tr>
-    `
+function legalPaymentRefreshTotals() {
+  const cards = document.querySelectorAll('#legalPaymentsTable .legal-payment-package')
+  if (!cards.length) return
+  let totalNt = 0
+  let totalCash = 0
+  let count = 0
+  let pending = 0
+  cards.forEach(card => {
+    let gross = 0
+    card.querySelectorAll('.legal-payment-sheet-row').forEach(row => {
+      const amount = Number(parseMoneyVal(row.querySelector('[data-pfield="amount"]'))) || 0
+      const paid = Number(parseMoneyVal(row.querySelector('[data-pfield="paid_amount"]'))) || 0
+      const vat = _legalProjectVatPct()
+      const status = row.querySelector('[data-pfield="status"]')?.value || 'pending'
+      const isNew = row.classList.contains('is-new')
+      gross += amount
+      totalNt += calcRevenueNet(amount, vat, 0)
+      if (_legalPaymentCountsAsCollected(status)) totalCash += calcRevenueNet(paid, vat, 0)
+      if (!isNew) {
+        count += 1
+        if (status === 'pending' || status === 'processing') pending += 1
+      }
+    })
+    const badge = card.querySelector('.legal-payment-package-total')
+    if (badge) badge.textContent = 'Tổng: ' + fmtMoney(gross)
   })
+  legalPaymentPaintSummary(count, totalNt, totalCash, pending)
+}
 
-  html += '</tbody></table></div>'
+function renderPaymentStatus(payments) {
+  const container = $('legalPaymentsTable')
+  const summaryEl = $('paymentSummaryCards')
+  if (!container) return
+
+  const packages = _legalOverviewData?.packages || []
+  const packageKeySet = new Set(packages.map(p => _legalPaymentNormPackageKey(p.id)))
+  const packagedPayments = (payments || []).filter(p => packageKeySet.has(_legalPaymentResolvePackageId(p)))
+  if (_legalPaymentActivePackageId === null || !packageKeySet.has(_legalPaymentNormPackageKey(_legalPaymentActivePackageId))) {
+    _legalPaymentActivePackageId = _legalPaymentPickDefaultPackageId(packagedPayments, packages)
+  }
+  _legalPaymentActivePackageId = _legalPaymentNormPackageKey(_legalPaymentActivePackageId)
+
+  const total = packagedPayments.length
+  const totalAmount = packagedPayments.reduce((s, p) => s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)), 0)
+  const paidAmount = packagedPayments.reduce((s, p) => {
+    if (!_legalPaymentCountsAsCollected(p.status)) return s
+    return s + (p.cash_before_vat != null ? Number(p.cash_before_vat) : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0))
+  }, 0)
+  const pending = packagedPayments.filter(p => p.status === 'pending' || p.status === 'processing').length
+
+  if (summaryEl) legalPaymentPaintSummary(total, totalAmount, paidAmount, pending)
+
+  const groups = packages.map(pkg => ({
+    key: _legalPaymentNormPackageKey(pkg.id),
+    name: pkg.name || `Gói #${pkg.id}`,
+  }))
+
+  const sheetHead = `<div class="legal-payment-sheet-head">
+        <span>STT</span><span>Mô tả</span><span>Ngày nghiệm thu</span><span>Trạng thái</span>
+        <span>Nghiệm thu</span><span>Đã thu</span><span>DT sổ</span><span></span>
+      </div>`
+  const blankRow = {
+    payment_phase: '', description: '', request_number: '', request_date: '', status: 'pending',
+    amount: 0, paid_amount: 0, paid_date: '', invoice_number: '', legal_item_id: null, vat_pct: 0,
+  }
+
+  let html = ''
+  groups.forEach(g => {
+    const rows = _legalSortPaymentsByPhase(payments.filter(p => _legalPaymentResolvePackageId(p) === g.key))
+    const gross = rows.reduce((s, p) => s + (Number(p.amount) || 0), 0)
+    html += `<section class="legal-payment-package" id="legal-pay-pkg-${g.key}" data-package-key="${g.key}">
+      <div class="legal-payment-package-head">
+        <span class="legal-payment-package-name">${escHtml(g.name)}</span>
+        <span class="legal-payment-package-total">Tổng: ${fmtMoney(gross)}</span>
+      </div>
+      <div class="legal-payment-sheet">${sheetHead}`
+    rows.forEach((p, i) => { html += _renderLegalPaymentSheetRow(p, g.key, false, i + 1) })
+    html += _renderLegalPaymentSheetRow(blankRow, g.key, true, '')
+    html += '</div></section>'
+  })
+  html += `<p class="text-xs mt-2" style="color:var(--shell-text-muted)">STT tự điền khi dòng có nội dung. Bấm vào ô để sửa, Enter hoặc bấm ra ngoài để lưu.</p>`
   container.innerHTML = html
 }
 
@@ -21319,25 +23845,9 @@ async function savePayment(e) {
   e.preventDefault()
   const id = $('paymentId').value
   const projectId = parseInt($('paymentProjectId').value)
-  const vatPctVal = parseFloat($('paymentVatPct')?.value) || 0
-  const payload = {
-    description:     $('paymentDescription').value.trim(),
-    payment_phase:   $('paymentPhase').value.trim(),
-    request_number:  $('paymentRequestNumber').value.trim(),
-    request_date:    $('paymentRequestDate').value || null,
-    status:          $('paymentStatus').value,
-    amount:          parseMoneyVal('paymentAmount'),
-    paid_amount:     parseMoneyVal('paymentPaidAmount'),
-    paid_date:       $('paymentPaidDate').value || null,
-    invoice_number:  $('paymentInvoiceNumber').value.trim(),
-    invoice_date:    $('paymentInvoiceDate').value || null,
-    legal_item_id:   parseInt($('paymentLegalItemId').value) || null,
-    notes:           $('paymentNotes').value.trim(),
-    vat_pct:         vatPctVal
-  }
+  const payload = buildPaymentPayloadFromModal()
   try {
-    const syncStatuses = ['paid', 'partial']
-    const willSync = syncStatuses.includes(payload.status) && (payload.paid_amount || 0) > 0
+    const willSync = _legalPaymentSyncToast(payload.status, payload.amount)
     if (id) {
       const res = await api(`/legal/payments/${id}`, { method: 'PUT', data: payload })
       const msg = willSync
@@ -21345,6 +23855,8 @@ async function savePayment(e) {
         : 'Đã cập nhật đợt thanh toán'
       toast(msg, 'success', 4000)
     } else {
+      const pkgKey = _legalPaymentNormPackageKey(_legalPaymentActivePackageId)
+      if (pkgKey > 0 && !payload.legal_item_id) payload.package_id = pkgKey
       const res = await api(`/legal/${projectId}/payments`, { method: 'POST', data: payload })
       const msg = willSync
         ? 'Đã thêm đợt TT & tự động tạo doanh thu ✓'
@@ -21776,6 +24288,109 @@ async function deleteLegalItemSubtask(subtaskId, taskId) {
 // ============================================================
 
 let _importExcelFile = null
+
+function closeLegalCopyFromModal() {
+  const m = $('modalLegalCopyFrom')
+  if (m) m.classList.add('hidden')
+}
+
+async function onLegalCopyFromSourceChange() {
+  const sel = $('legalCopyFromSource')
+  const wrap = $('legalCopyFromPkgWrap')
+  const list = $('legalCopyFromPkgList')
+  if (!sel || !wrap || !list) return
+  const srcId = parseInt(sel.value, 10)
+  if (!srcId) {
+    wrap.style.display = 'none'
+    list.innerHTML = ''
+    return
+  }
+  try {
+    const data = await api(`/legal/${srcId}/packages`)
+    const pkgs = data.packages || []
+    if (pkgs.length === 0) {
+      list.innerHTML = '<p class="text-gray-400 text-sm">Dự án nguồn chưa có gói thầu.</p>'
+    } else {
+      list.innerHTML = pkgs.map(p => `
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" class="legal-copy-pkg-cb" value="${p.id}">
+          <span>${escHtml(p.name)}</span>
+        </label>`).join('')
+    }
+    wrap.style.display = ''
+  } catch (e) {
+    list.innerHTML = `<p class="text-red-600 text-sm">${escHtml(e.message)}</p>`
+    wrap.style.display = ''
+  }
+}
+
+async function openLegalCopyFromModal() {
+  if (!_legalCurrentProjectId) {
+    toast('Vui lòng chọn dự án đích trước', 'warning')
+    return
+  }
+  if (!canReorderLegalChecklist()) {
+    toast('Chỉ quản trị dự án đích mới được sao chép HSPL', 'error')
+    return
+  }
+  const sel = $('legalCopyFromSource')
+  const result = $('legalCopyFromResult')
+  if (result) { result.classList.add('hidden'); result.innerHTML = '' }
+  if (sel) {
+    const opts = (allProjects || [])
+      .filter(p => p.id !== _legalCurrentProjectId)
+      .map(p => `<option value="${p.id}">${escHtml(p.name || p.code || ('#' + p.id))}</option>`)
+      .join('')
+    sel.innerHTML = `<option value="">— Chọn dự án nguồn —</option>${opts}`
+  }
+  const skipRadio = document.querySelector('input[name="legalCopyNameConflict"][value="skip"]')
+  if (skipRadio) skipRadio.checked = true
+  $('legalCopyFromPkgWrap').style.display = 'none'
+  $('legalCopyFromPkgList').innerHTML = ''
+  $('modalLegalCopyFrom').classList.remove('hidden')
+}
+
+async function executeLegalCopyFrom() {
+  if (!_legalCurrentProjectId) return
+  const srcId = parseInt($('legalCopyFromSource')?.value, 10)
+  if (!srcId) {
+    toast('Chọn dự án nguồn', 'warning')
+    return
+  }
+  const checked = [...document.querySelectorAll('.legal-copy-pkg-cb:checked')].map(el => parseInt(el.value, 10))
+  const conflictMode = document.querySelector('input[name="legalCopyNameConflict"]:checked')?.value || 'skip'
+  const btn = $('btnLegalCopyFromSubmit')
+  if (btn) btn.disabled = true
+  try {
+    const payload = {
+      source_project_id: srcId,
+      on_name_conflict: conflictMode,
+    }
+    if (checked.length) payload.package_ids = checked
+    const res = await api(`/legal/${_legalCurrentProjectId}/copy-from`, { method: 'POST', data: payload })
+    const copied = res.copied_packages || []
+    const conflicts = res.name_conflicts || []
+    let msg = copied.length
+      ? `Đã sao chép ${copied.length} gói thầu.`
+      : 'Không có gói nào được sao chép.'
+    if (conflicts.length) {
+      const skipped = conflicts.filter(c => c.action === 'skipped').map(c => c.name)
+      if (skipped.length) msg += ` Bỏ qua trùng tên: ${skipped.join(', ')}.`
+    }
+    toast(msg, copied.length ? 'success' : 'warning')
+    const result = $('legalCopyFromResult')
+    if (result) {
+      result.classList.remove('hidden')
+      result.innerHTML = `<p class="text-green-700">${escHtml(msg)}</p>`
+    }
+    await loadLegalProject(_legalCurrentProjectId)
+    if (copied.length) closeLegalCopyFromModal()
+  } catch (e) {
+    toast('Sao chép thất bại: ' + e.message, 'error')
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
 
 async function openImportExcelModal() {
   if (!_legalCurrentProjectId) {
@@ -25726,7 +28341,10 @@ function escHtml(str) {
 // IMPORT EXCEL / CSV MODAL
 // ══════════════════════════════════════════════════
 
-let _impRows = []  // parsed rows ready to submit
+let _impRows = []
+let _impSource = []
+let _impPreviewHeaders = []
+let _impPreviewRaw = []
 
 async function openImportTaskModal() {
   closeModal('taskModal')
@@ -25744,19 +28362,20 @@ async function openImportTaskModal() {
       $('impProject').value = val || ''
       if (_cbState['impCategoryCombobox']) delete _cbState['impCategoryCombobox']
       createCombobox('impCategoryCombobox', { placeholder: '-- Chọn hạng mục --', items: [], fullWidth: true,
-        onchange: v => { $('impCategory').value = v || '' }})
+        onchange: v => { $('impCategory').value = v || ''; refreshImportTaskTitles() }})
       if (val) {
         const cats = await api(`/projects/${val}/categories`).catch(() => [])
         const catItems = (cats || []).map(c => ({ value: String(c.id), label: c.name }))
         if (_cbState['impCategoryCombobox']) delete _cbState['impCategoryCombobox']
         createCombobox('impCategoryCombobox', { placeholder: '-- Chọn hạng mục --', items: catItems, fullWidth: true,
-          onchange: v => { $('impCategory').value = v || '' }})
+          onchange: v => { $('impCategory').value = v || ''; refreshImportTaskTitles() }})
       }
+      refreshImportTaskTitles()
     }
   })
   if (_cbState['impCategoryCombobox']) delete _cbState['impCategoryCombobox']
   createCombobox('impCategoryCombobox', { placeholder: '-- Chọn hạng mục --', items: [], fullWidth: true,
-    onchange: v => { $('impCategory').value = v || '' }})
+    onchange: v => { $('impCategory').value = v || ''; refreshImportTaskTitles() }})
 
   // Reset file + preview
   _impRows = []
@@ -25765,20 +28384,31 @@ async function openImportTaskModal() {
   if (fi) fi.value = ''
 
   openModal('importTaskModal')
+  ensureXlsxReady().catch(() => {})
 }
 
-function downloadTaskTemplate() {
+async function downloadTaskTemplate() {
+  try { await ensureXlsxReady() } catch (e) { toast(e.message || 'Thư viện XLSX chưa tải', 'error'); return }
   const XS = getXLSXForWrite()
   if (!XS) { toast('Thư viện XLSX chưa tải', 'error'); return }
-  const headers = ['ten_cong_viec','mo_ta','bo_mon','filename_model','phu_trach','uu_tien','ngay_bat_dau','ngay_het_han','gio_du_kien','ghi_chu','theo_hstk']
+  const headers = ['Dự án','Giai đoạn','Bộ môn','Loại task','Hạng mục','Mô tả chi tiết','Filename model','Phụ trách','Ưu tiên','Ngày bắt đầu','Ngày hết hạn','Giờ dự kiến','Ghi chú','Theo HSTK']
   const examples = [
-    ['Vẽ mô hình tầng 1','Hoàn thiện model kiến trúc tầng 1','AA','A001_T01.rvt','nguyen.van.a','medium','2026-07-01','2026-07-15','8','Theo bản vẽ đã duyệt','HSTK ngày 01/01/2025'],
-    ['Kiểm tra kết cấu cột','Kiểm tra toàn bộ cột tầng 1-3','ES','S001_COT.rvt','le.van.c','high','2026-07-05','2026-07-20','12','',''],
+    ['BOD','Thiết kế cơ sở','AA','Mô hình','Nhà làm việc chính','Hoàn thiện model kiến trúc tầng 1','A001_T01.rvt','nguyen.van.a','medium','2026-07-01','2026-07-15','8','Theo bản vẽ đã duyệt','HSTK ngày 01/01/2025'],
+    ['BOD','Thiết kế kỹ thuật','ES','Kiểm tra hồ sơ','Nhà làm việc chính','Kiểm tra toàn bộ cột tầng 1-3','','le.van.c','high','2026-07-05','2026-07-20','12','',''],
+  ]
+  const guide = [
+    ['Tên công việc không nhập trong file.'],
+    ['Khi import, tên được ghép bằng dấu gạch ngang:'],
+    ['Số hiệu văn bản dự án - Mã giai đoạn - Mã bộ môn - Loại (M3 / RP / Oth) - Tên hạng mục - Mô tả chi tiết'],
+    ['Điền Dự án, Giai đoạn, Loại task và Hạng mục trên từng dòng. Ô trống thì dùng giá trị ở bước 1 trên màn hình Import.'],
+    ['Dự án: điền mã dự án hoặc số hiệu văn bản, ví dụ BOD.'],
+    ['Loại task: Mô hình = M3, Kiểm tra hồ sơ = RP, Khác = Oth.'],
+    ['Giai đoạn: Thiết kế cơ sở = TKCS, Thiết kế kỹ thuật = TKKT, Thiết kế thi công = TKTC, Hoàn công = HC.'],
   ]
   const wb = XS.utils.book_new()
   const ws = XS.utils.aoa_to_sheet([headers, ...examples])
   ws['!cols'] = [
-    {wch:30},{wch:40},{wch:10},{wch:20},{wch:20},{wch:10},{wch:14},{wch:14},{wch:12},{wch:30},{wch:25}
+    {wch:14},{wch:20},{wch:12},{wch:18},{wch:24},{wch:42},{wch:22},{wch:20},{wch:12},{wch:14},{wch:14},{wch:12},{wch:30},{wch:28}
   ]
   // Style header row
   headers.forEach((_, i) => {
@@ -25786,7 +28416,23 @@ function downloadTaskTemplate() {
     if (ws[cell]) ws[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: '00A651' } }, alignment: { horizontal: 'center' } }
   })
   XS.utils.book_append_sheet(wb, ws, 'Tasks')
-  XS.writeFile(wb, 'task_import_template.xlsx')
+  const wsGuide = XS.utils.aoa_to_sheet(guide)
+  wsGuide['!cols'] = [{ wch: 110 }]
+  XS.utils.book_append_sheet(wb, wsGuide, 'Cach ghep ten')
+  try {
+    XS.writeFile(wb, 'task_import_template.xlsx')
+  } catch (e) {
+    const core = getXLSXCore()
+    if (!core || core === XS) { toast('Không tạo được file mẫu: ' + (e.message || e), 'error'); return }
+    const wb2 = core.utils.book_new()
+    const ws2 = core.utils.aoa_to_sheet([headers, ...examples])
+    ws2['!cols'] = ws['!cols']
+    core.utils.book_append_sheet(wb2, ws2, 'Tasks')
+    const wsGuide2 = core.utils.aoa_to_sheet(guide)
+    wsGuide2['!cols'] = [{ wch: 110 }]
+    core.utils.book_append_sheet(wb2, wsGuide2, 'Cach ghep ten')
+    core.writeFile(wb2, 'task_import_template.xlsx')
+  }
   toast('Đã tải file mẫu task_import_template.xlsx', 'success')
 }
 
@@ -25836,8 +28482,7 @@ function _parseCSV(text) {
     headers.forEach((h, j) => row[h] = (vals[j] || '').trim())
     rows.push(row)
   }
-  _impRows = rows.map(r => _mapImpRow(r)).filter(r => r.title)
-  _showImpPreview(headers, rows)
+  _acceptImportRows(headers, rows)
 }
 
 function _csvParseLine(line) {
@@ -25852,10 +28497,11 @@ function _csvParseLine(line) {
   return result.map(s => s.replace(/^"|"$/g,''))
 }
 
-function _parseXLSX(buffer) {
+async function _parseXLSX(buffer) {
   try {
+    try { await ensureXlsxReady() } catch (e) { toast(e.message || 'Thư viện XLSX chưa tải, vui lòng thử lại', 'error'); return }
     const XLSXLib = getXLSXCore()
-    if (typeof XLSXLib === 'undefined') { toast('Thư viện XLSX chưa tải, vui lòng thử lại', 'error'); return }
+    if (!XLSXLib) { toast('Thư viện XLSX chưa tải, vui lòng thử lại', 'error'); return }
     const wb = XLSXLib.read(new Uint8Array(buffer), { type: 'array', cellDates: true })
     const ws = wb.Sheets[wb.SheetNames[0]]
     if (!ws) { toast('File XLSX không có sheet dữ liệu', 'warning'); return }
@@ -25879,8 +28525,7 @@ function _parseXLSX(buffer) {
       return row
     }).filter(r => Object.values(r).some(v => v))
     if (dataRows.length === 0) { toast('File XLSX không có dữ liệu hợp lệ', 'warning'); return }
-    _impRows = dataRows.map(r => _mapImpRow(r)).filter(r => r.title)
-    _showImpPreview(headers, dataRows)
+    _acceptImportRows(headers, dataRows)
   } catch(ex) { toast('Lỗi parse XLSX: ' + ex.message, 'error') }
 }
 
@@ -25919,9 +28564,13 @@ function _inflateSync(data, uSize) {
 // Column name mapping (flexible)
 const _IMP_COL_MAP = {
   ten_cong_viec: 'title', 'tên công việc': 'title', title: 'title', 'ten cv': 'title',
-  mo_ta: 'description', 'mô tả': 'description', description: 'description',
+  mo_ta: 'description', 'mô tả': 'description', 'mô tả chi tiết': 'description', description: 'description',
   bo_mon: 'discipline', 'bộ môn': 'discipline', discipline: 'discipline',
-  filename_model: 'filename', filename: 'filename', 'tên file': 'filename',
+  du_an: 'project', 'dự án': 'project', project: 'project',
+  giai_doan: 'phase_text', 'giai đoạn': 'phase_text', phase: 'phase_text',
+  loai_task: 'type_text', 'loại task': 'type_text', 'loại': 'type_text', task_type: 'type_text',
+  hang_muc: 'category_name', 'hạng mục': 'category_name', category: 'category_name',
+  filename_model: 'filename', filename: 'filename', 'tên file': 'filename', 'filename model': 'filename',
   phu_trach: 'assignee', 'phụ trách': 'assignee', assignee: 'assignee', 'người phụ trách': 'assignee',
   uu_tien: 'priority', 'ưu tiên': 'priority', priority: 'priority',
   ngay_bat_dau: 'start_date', 'ngày bắt đầu': 'start_date', start_date: 'start_date',
@@ -25952,7 +28601,110 @@ function _mapImpRow(raw) {
   const priMap = { 'thấp':'low', 'trung bình':'medium', 'cao':'high', 'khẩn cấp':'urgent', low:'low', medium:'medium', high:'high', urgent:'urgent' }
   if (mapped.priority) mapped.priority = priMap[mapped.priority.toLowerCase()] || mapped.priority
   // Return with title as the main check
-  return { ...mapped, title: (mapped.title || '').trim() }
+  return { ...mapped, legacy_title: (mapped.title || '').trim(), title: '' }
+}
+
+function resolveImportProject(text) {
+  const q = String(text || '').trim().toLowerCase()
+  if (!q) return null
+  return (allProjects || []).find(p => {
+    const code = String(p.code || '').trim().toLowerCase()
+    const letter = String(p.project_code_letter || '').trim().toLowerCase()
+    const name = String(p.name || '').trim().toLowerCase()
+    return q === code || q === letter || q === name || q === `${code} - ${name}`
+  }) || null
+}
+
+function resolveImportPhase(text, fallback) {
+  const q = String(text || '').trim().toLowerCase()
+  const map = {
+    tkcs: 'basic_design', 'thiết kế cơ sở': 'basic_design', basic_design: 'basic_design',
+    tkkt: 'technical_design', 'thiết kế kỹ thuật': 'technical_design', technical_design: 'technical_design',
+    tktc: 'construction_design', 'thiết kế thi công': 'construction_design', construction_design: 'construction_design',
+    hc: 'as_built', 'hoàn công': 'as_built', as_built: 'as_built',
+  }
+  return map[q] || fallback || 'basic_design'
+}
+
+function resolveImportTaskType(text, fallback) {
+  const q = String(text || '').trim().toLowerCase()
+  const map = {
+    m3: 'model', 'mô hình': 'model', model: 'model',
+    rp: 'check_hs', 'kiểm tra hồ sơ': 'check_hs', check_hs: 'check_hs',
+    oth: 'other', 'khác': 'other', other: 'other',
+  }
+  return map[q] || fallback || 'model'
+}
+
+function composeImportTaskTitle(row) {
+  const rowProj = resolveImportProject(row.project)
+  const modalId = _cbGetValue('impProjectCombobox') || $('impProject')?.value
+  const modalProj = (allProjects || []).find(p => String(p.id) === String(modalId))
+  const proj = rowProj || (!String(row.project || '').trim() ? modalProj : null)
+  const docNo = proj
+    ? (proj.project_code_letter || proj.code || '').trim()
+    : String(row.project || '').trim()
+  const phase = taskPhaseCode(resolveImportPhase(row.phase_text, $('impPhase')?.value))
+  const disc = (row.discipline || '').trim()
+  const type = taskTypeCode(resolveImportTaskType(row.type_text, $('impTaskType')?.value))
+  let catName = String(row.category_name || '').trim()
+  if (!catName) {
+    const catState = _cbState['impCategoryCombobox']
+    if (catState?.value) {
+      const item = (catState.items || []).find(i => String(i.value) === String(catState.value))
+      catName = (item?.label || '').trim()
+    }
+  }
+  const desc = (row.description || '').replace(/\s+/g, ' ').trim()
+  return [docNo, phase, disc, type, catName, desc].filter(Boolean).join('-')
+}
+
+function importRowHasLinkPart(row) {
+  return ['description', 'discipline', 'category_name', 'project', 'type_text', 'phase_text'].some(k => String(row[k] || '').trim())
+}
+
+function _acceptImportRows(headers, rows) {
+  _impPreviewHeaders = headers
+  _impPreviewRaw = rows
+  _impSource = rows.map(r => _mapImpRow(r))
+  refreshImportTaskTitles()
+}
+
+async function refreshImportTaskTitles() {
+  const modalId = $('impProject')?.value
+  const ids = new Set()
+  if (modalId) ids.add(String(modalId))
+  _impSource.forEach(r => {
+    const found = resolveImportProject(r.project)
+    if (found) ids.add(String(found.id))
+  })
+  for (const id of ids) {
+    if (typeof hydrateProjectDocNo === 'function') await hydrateProjectDocNo(id)
+  }
+  const catCache = {}
+  async function catsOf(projectId) {
+    if (!projectId) return []
+    if (!catCache[projectId]) {
+      catCache[projectId] = await api(`/projects/${projectId}/categories`).catch(() => [])
+    }
+    return catCache[projectId] || []
+  }
+  for (const r of _impSource) {
+    const typedProject = String(r.project || '').trim()
+    const rowProj = resolveImportProject(typedProject)
+    const proj = rowProj || (!typedProject ? (allProjects || []).find(p => String(p.id) === String(modalId)) : null)
+    r.project_id = proj ? proj.id : null
+    r.phase = resolveImportPhase(r.phase_text, $('impPhase')?.value)
+    r.task_type = resolveImportTaskType(r.type_text, $('impTaskType')?.value)
+    const catName = String(r.category_name || '').trim().toLowerCase()
+    const cats = await catsOf(r.project_id)
+    const cat = catName ? cats.find(c => String(c.name || '').trim().toLowerCase() === catName) : null
+    r.category_id = cat ? cat.id : (!catName ? ($('impCategory')?.value || null) : null)
+    const composed = importRowHasLinkPart(r) ? composeImportTaskTitle(r) : ''
+    r.title = composed || r.legacy_title || ''
+  }
+  _impRows = _impSource.filter(r => r.title && r.project_id)
+  if (_impPreviewRaw.length) _showImpPreview(_impPreviewHeaders, _impPreviewRaw)
 }
 
 function _showImpPreview(headers, rows) {
@@ -25962,14 +28714,14 @@ function _showImpPreview(headers, rows) {
   if (!section) return
   section.style.display = ''
   // Header row
-  thead.innerHTML = headers.map(h => `<th class="px-2 py-1.5 text-left font-semibold text-gray-600 bg-gray-50 border-b border-gray-200 whitespace-nowrap">${h}</th>`).join('')
-  // Body rows (max 10 preview)
+  thead.innerHTML = ['Tên công việc (ghép)', ...headers].map(h => `<th class="px-2 py-1.5 text-left font-semibold text-gray-600 bg-gray-50 border-b border-gray-200 whitespace-nowrap">${escHtml(h)}</th>`).join('')
   const previewRows = rows.slice(0, 10)
   tbody.innerHTML = previewRows.map((row, i) => {
-    const mapped = _mapImpRow(row)
-    const hasTitle = !!mapped.title
+    const mapped = _impSource[i] || _mapImpRow(row)
+    const hasTitle = !!(mapped.title && mapped.project_id)
+    const cells = [mapped.title || '', ...headers.map(h => row[h] || '')]
     return `<tr class="${hasTitle ? 'hover:bg-gray-50' : 'bg-red-50'} border-t border-gray-100">
-      ${headers.map(h => `<td class="px-2 py-1 text-gray-700 whitespace-nowrap max-w-32 overflow-hidden text-ellipsis">${escHtml(row[h]||'')}</td>`).join('')}
+      ${cells.map(v => `<td class="px-2 py-1 text-gray-700 whitespace-nowrap max-w-40 overflow-hidden text-ellipsis">${escHtml(v)}</td>`).join('')}
     </tr>`
   }).join('')
   // Update counts
@@ -25980,7 +28732,7 @@ function _showImpPreview(headers, rows) {
   const invalidCount = total - valid
   const msg = $('impValidationMsg')
   if (invalidCount > 0) {
-    msg.innerHTML = `<span class="text-orange-600"><i class="fas fa-exclamation-triangle mr-1"></i>${invalidCount} dòng bị bỏ qua (thiếu tên công việc)</span>`
+    msg.innerHTML = `<span class="text-orange-600"><i class="fas fa-exclamation-triangle mr-1"></i>${invalidCount} dòng bị bỏ qua (thiếu mô tả để ghép tên, hoặc dự án trong file không khớp)</span>`
   } else {
     msg.innerHTML = `<span class="text-green-600"><i class="fas fa-check-circle mr-1"></i>Tất cả ${valid} dòng hợp lệ</span>`
   }
@@ -25999,6 +28751,9 @@ function _showImpPreview(headers, rows) {
 
 function clearImpPreview() {
   _impRows = []
+  _impSource = []
+  _impPreviewHeaders = []
+  _impPreviewRaw = []
   const section = $('impPreviewSection')
   if (section) section.style.display = 'none'
   const submitBtn = $('impSubmitBtn')
@@ -26008,24 +28763,19 @@ function clearImpPreview() {
 }
 
 async function submitImportTask() {
-  const projectId = $('impProject').value
-  if (!projectId) { toast('Vui lòng chọn dự án', 'warning'); return }
-  if (_impRows.length === 0) { toast('Không có dữ liệu hợp lệ để import', 'warning'); return }
-
-  const sharedPhase    = $('impPhase').value || 'basic_design'
-  const sharedTaskType = $('impTaskType').value || 'model'
-  const categoryId     = $('impCategory').value || null
+  await refreshImportTaskTitles()
+  if (_impRows.length === 0) { toast('Không có dòng hợp lệ. Điền dự án trong file hoặc chọn dự án ở bước 1.', 'warning'); return }
 
   const tasks = _impRows.map(r => ({
-    project_id:      parseInt(projectId),
-    category_id:     categoryId ? parseInt(categoryId) : null,
+    project_id:      parseInt(r.project_id),
+    category_id:     r.category_id ? parseInt(r.category_id) : null,
     title:           r.title,
     description:     r.description || null,
     discipline_code: r.discipline || null,
-    phase:           sharedPhase,
+    phase:           r.phase || 'basic_design',
     priority:        r.priority || 'medium',
     status:          'todo',
-    task_type:       sharedTaskType,
+    task_type:       r.task_type || 'model',
     model_filename:  r.filename || null,
     assigned_to:     r.assignee_id || null,
     start_date:      r.start_date || null,
@@ -27402,6 +30152,212 @@ function exportHstkExcel(submissionId) {
   const fileName = `Checklist_HSTK_${stageName}_${ver}_${dateStr}.xlsx`
   XS.writeFile(wb, fileName)
   toast(`✅ Đã xuất: ${fileName}`)
+}
+
+let _assistantDraft = null
+
+function mountAssistant() {
+  const dock = $('assistantDock')
+  if (!dock || !currentUser) return
+  dock.classList.remove('hidden')
+  dock.hidden = false
+  const docsBtn = $('assistantDocsBtn')
+  if (docsBtn) {
+    const show = currentUser.role === 'system_admin'
+    docsBtn.classList.toggle('hidden', !show)
+    docsBtn.hidden = !show
+  }
+}
+
+function setAssistantPanelOpen(open) {
+  const panel = $('assistantPanel')
+  if (!panel) return
+  panel.classList.toggle('is-open', open)
+  panel.classList.toggle('hidden', !open)
+  panel.hidden = !open
+  if (open) $('assistantInput')?.focus()
+}
+
+function toggleAssistantPanel() {
+  const panel = $('assistantPanel')
+  if (!panel) return
+  setAssistantPanelOpen(!panel.classList.contains('is-open'))
+}
+
+function closeAssistantPanel() {
+  setAssistantPanelOpen(false)
+}
+
+function appendAssistantBubble(text, mine, extraHtml) {
+  const thread = $('assistantThread')
+  if (!thread) return
+  const html = escHtml(text || '').replace(/\n/g, '<br>')
+  thread.insertAdjacentHTML('beforeend', `
+    <div class="chat-bubble ${mine ? 'me' : 'other'}">
+      <div class="bubble-inner">${html}${extraHtml || ''}</div>
+    </div>`)
+  thread.scrollTop = thread.scrollHeight
+}
+
+async function submitAssistantAsk(ev) {
+  ev.preventDefault()
+  const input = $('assistantInput')
+  const message = (input?.value || '').trim()
+  if (!message) return
+  input.value = ''
+  _assistantDraft = null
+  appendAssistantBubble(message, true)
+  try {
+    const data = await api('/assistant/ask', { method: 'POST', data: { message } })
+    _assistantDraft = data.draft || null
+    const extra = data.draft
+      ? `<div class="assistant-confirm"><button type="button" class="btn-primary text-xs" onclick="confirmAssistantDraft()">Xác nhận</button></div>`
+      : ''
+    appendAssistantBubble(data.reply || 'Chưa có tài liệu.', false, extra)
+  } catch (e) {
+    appendAssistantBubble(e.response?.data?.error || e.message || 'Không gửi được câu hỏi', false)
+  }
+}
+
+async function confirmAssistantDraft() {
+  if (!_assistantDraft) return
+  const draft = _assistantDraft
+  _assistantDraft = null
+  try {
+    const data = await api('/assistant/confirm', { method: 'POST', data: { draft } })
+    appendAssistantBubble(data.reply || data.error || 'Đã ghi.', false)
+  } catch (e) {
+    appendAssistantBubble(e.response?.data?.error || e.message || 'Không ghi được', false)
+  }
+}
+
+function toggleAssistantDocs() {
+  const box = $('assistantDocs')
+  if (!box || currentUser?.role !== 'system_admin') return
+  const open = box.hidden || box.classList.contains('hidden')
+  box.classList.toggle('hidden', !open)
+  box.hidden = !open
+  if (open) renderAssistantDocs()
+}
+
+async function renderAssistantDocs() {
+  const box = $('assistantDocs')
+  if (!box) return
+  box.innerHTML = '<div class="text-xs text-gray-400">Đang tải tài liệu…</div>'
+  try {
+    const rows = await api('/knowledge')
+    const list = (rows || []).map(a => `
+      <div class="flex items-center gap-2 py-1">
+        <button type="button" class="text-left text-xs hover:underline flex-1" onclick="editAssistantArticle(${a.id})">${escHtml(a.title)}</button>
+        <button type="button" class="text-xs text-red-500" onclick="deleteAssistantArticle(${a.id})">Xóa</button>
+      </div>
+    `).join('') || '<div class="text-xs text-gray-400">Chưa có bài.</div>'
+    box.innerHTML = `
+      <div class="text-xs font-semibold mb-1">Bài tra cứu</div>
+      ${list}
+      <button type="button" class="btn-secondary text-xs mt-2" onclick="editAssistantArticle(0)">Thêm bài</button>
+      <form id="assistantArticleForm" class="hidden mt-2" hidden onsubmit="saveAssistantArticle(event)">
+        <input id="assistantArticleId" type="hidden" value="">
+        <input id="assistantArticleTitle" class="input-field text-xs mb-1" placeholder="Tiêu đề" maxlength="200">
+        <select id="assistantArticleKind" class="select-field text-xs mb-1">
+          <option value="workflow">Quy trình</option>
+          <option value="technical">Kỹ thuật</option>
+        </select>
+        <div class="text-xs mb-1">Ai được đọc</div>
+        <label class="text-xs mr-2"><input type="checkbox" name="assistantAudience" value="all" checked> Mọi người</label>
+        <label class="text-xs mr-2"><input type="checkbox" name="assistantAudience" value="member"> Member</label>
+        <label class="text-xs mr-2"><input type="checkbox" name="assistantAudience" value="project_leader"> Leader</label>
+        <label class="text-xs mr-2"><input type="checkbox" name="assistantAudience" value="project_admin"> Project admin</label>
+        <textarea id="assistantArticleBody" class="input-field text-xs mt-1" rows="4" placeholder="Nội dung"></textarea>
+        <button type="submit" class="btn-primary text-xs mt-1">Lưu bài</button>
+      </form>`
+    window._assistantArticles = rows || []
+  } catch (e) {
+    box.innerHTML = `<div class="text-xs text-red-500">${escHtml(e.response?.data?.error || e.message || 'Không tải được')}</div>`
+  }
+}
+
+function editAssistantArticle(id) {
+  const form = $('assistantArticleForm')
+  if (!form) return
+  form.classList.remove('hidden')
+  form.hidden = false
+  const row = (window._assistantArticles || []).find(a => a.id === id)
+  $('assistantArticleId').value = row ? String(row.id) : ''
+  $('assistantArticleTitle').value = row?.title || ''
+  $('assistantArticleKind').value = row?.kind === 'technical' ? 'technical' : 'workflow'
+  $('assistantArticleBody').value = row?.body || ''
+  const audience = row ? String(row.audience || 'all').split(',') : ['all']
+  document.querySelectorAll('input[name="assistantAudience"]').forEach(el => {
+    el.checked = audience.includes(el.value) || (audience.includes('all') && el.value === 'all')
+  })
+}
+
+async function deleteAssistantArticle(id) {
+  try {
+    await api('/knowledge/' + id, { method: 'DELETE' })
+    renderAssistantDocs()
+  } catch (e) {
+    toast(e.response?.data?.error || e.message || 'Không xóa được', 'error')
+  }
+}
+
+async function saveAssistantArticle(ev) {
+  ev.preventDefault()
+  const id = $('assistantArticleId').value
+  const picked = [...document.querySelectorAll('input[name="assistantAudience"]:checked')].map(el => el.value)
+  const audience = picked.includes('all') || !picked.length ? 'all' : picked.filter(v => v !== 'all').join(',')
+  const payload = {
+    title: $('assistantArticleTitle').value.trim(),
+    body: $('assistantArticleBody').value.trim(),
+    kind: $('assistantArticleKind').value,
+    audience,
+  }
+  try {
+    if (id) await api('/knowledge/' + id, { method: 'PUT', data: payload })
+    else await api('/knowledge', { method: 'POST', data: payload })
+    toast('Đã lưu bài tra cứu')
+    renderAssistantDocs()
+  } catch (e) {
+    toast(e.response?.data?.error || e.message || 'Không lưu được', 'error')
+  }
+}
+
+async function loadSystemUsersTable() {
+  const host = document.getElementById('systemUsersHost')
+  if (!host || currentUser?.role !== 'system_admin') return
+  host.innerHTML = '<div class="card text-sm text-gray-400">Đang tải người dùng hệ thống…</div>'
+  try {
+    const rows = await api('/analytics/system-users')
+    const body = (rows || []).map(u => `<tr class="border-b border-gray-100">
+      <td class="py-2 px-3 text-sm">${escHtml(u.full_name || '')}</td>
+      <td class="py-2 px-3 text-xs">${escHtml(getRoleLabel(u.role))}</td>
+      <td class="py-2 px-3 text-xs">${escHtml(u.department || '—')}</td>
+      <td class="py-2 px-3 text-xs">${u.is_active ? 'Có' : 'Không'}</td>
+      <td class="py-2 px-3 text-xs">${escHtml(u.last_work_date || '—')}</td>
+      <td class="py-2 px-3 text-right text-sm">${u.open_tasks || 0}</td>
+      <td class="py-2 px-3 text-right text-sm">${u.overdue_tasks || 0}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="py-6 text-center text-gray-400">Chưa có người dùng</td></tr>'
+    host.innerHTML = `<div class="card">
+      <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-users-cog mr-2"></i>Người dùng hệ thống</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="border-b text-left text-gray-500 text-xs uppercase bg-gray-50">
+            <th class="py-2 px-3">Họ tên</th>
+            <th class="py-2 px-3">Vai trò</th>
+            <th class="py-2 px-3">Phòng ban</th>
+            <th class="py-2 px-3">Đang hoạt động</th>
+            <th class="py-2 px-3">Chấm công gần nhất</th>
+            <th class="py-2 px-3 text-right">Task mở</th>
+            <th class="py-2 px-3 text-right">Task trễ</th>
+          </tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`
+  } catch (e) {
+    host.innerHTML = `<div class="card text-sm text-red-500">${escHtml(e.response?.data?.error || e.message || 'Không tải được')}</div>`
+  }
 }
 
 // ═══ END CHECKLIST HSTK MODULE ═══════════════════════════════════════

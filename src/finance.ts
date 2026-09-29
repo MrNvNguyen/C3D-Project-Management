@@ -24,6 +24,38 @@ export function amountExcludingVat(grossAmount: number, vatPct: number): number 
   return computeBookedRevenue(grossAmount, vatPct, 0).amountBeforeVat
 }
 
+/** GTHĐ dự án = tổng giá trị gói thầu (gross) ÷ (1 + VAT% khai trên dự án). */
+export function contractValueBeforeVat(packageGrossTotal: number, vatPct: number): number {
+  return amountExcludingVat(packageGrossTotal, vatPct)
+}
+
+/** % Chi phí A khi phiếu chưa nhập. */
+export const LEGAL_COST_A_DEFAULT_PCT = 30
+
+export function resolveLegalCostAPct(stored: number | null | undefined): number {
+  if (stored == null || !Number.isFinite(Number(stored))) return LEGAL_COST_A_DEFAULT_PCT
+  return Number(stored)
+}
+
+export function legalCostAFormulaLabel(pct: number, vatPct: number): string {
+  const vat = Number(vatPct) || 0
+  const pctText = `${Number(pct) || 0}%`
+  if (vat <= 0) return pctText
+  const denom = 1 + vat / 100
+  return `${pctText}/${String(Number(denom.toFixed(2)))}`
+}
+
+/** Chi phí A (HSPL): trước VAT × % Chi phí A — không dùng booked path. */
+export function computeLegalCostA(
+  grossAmount: number,
+  vatPct: number,
+  managementFeePct: number
+): number {
+  const beforeVat = amountExcludingVat(grossAmount, vatPct)
+  const fee = Number(managementFeePct) || 0
+  return Math.round(beforeVat * fee / 100)
+}
+
 /** Cộng dồn NT + TT trước VAT theo project_id (từ payment_requests). */
 export function aggregatePaymentsBeforeVat(
   rows: Array<{ project_id: number; amount?: number; paid_amount?: number; vat_pct?: number | null }>
@@ -151,10 +183,25 @@ export function taskComputedProgress(totalTasks: number, doneTasks: number): num
   return total > 0 ? Math.round((done / total) * 100) : 0
 }
 
+const REVENUE_BOOK_STATUSES = new Set(['processing', 'partial', 'paid'])
+
 export function paymentStatusToRevenue(status: string): string {
   if (status === 'paid') return 'paid'
   if (status === 'partial') return 'partial'
   return 'pending'
+}
+
+/** Đợt Đang xử lý được ghi sổ với payment_status pending. Danh sách doanh thu hiện đúng trạng thái đợt. */
+export function displayRevenuePaymentStatus(
+  revenueStatus: string | null | undefined,
+  linkedPaymentStatus: string | null | undefined
+): string {
+  if (linkedPaymentStatus === 'processing') return 'processing'
+  return revenueStatus || 'pending'
+}
+
+function isoDateToday(): string {
+  return new Date().toISOString().slice(0, 10)
 }
 
 export function enrichPaymentMetrics(payment: {
@@ -212,6 +259,29 @@ export function enrichRevenueRow(row: {
   }
 }
 
+export function paymentOnPackageSql(alias: string): string {
+  return `(
+    EXISTS (
+      SELECT 1 FROM legal_packages lp
+      WHERE lp.id = ${alias}.package_id AND lp.project_id = ${alias}.project_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM legal_items li
+      JOIN legal_stages ls ON ls.id = li.stage_id
+      JOIN legal_packages lp ON lp.id = ls.package_id AND lp.project_id = ${alias}.project_id
+      WHERE li.id = ${alias}.legal_item_id
+    )
+  )`
+}
+
+export function revenueFromPackagePaymentSql(revenueAlias: string): string {
+  return `EXISTS (
+    SELECT 1 FROM payment_requests pq_pkg
+    WHERE pq_pkg.revenue_id = ${revenueAlias}.id
+      AND ${paymentOnPackageSql('pq_pkg')}
+  )`
+}
+
 export async function syncPaymentToRevenue(
   db: D1Database,
   payment: {
@@ -228,11 +298,16 @@ export async function syncPaymentToRevenue(
     revenue_id: number | null
     notes: string | null
     vat_pct?: number | null
+    request_date?: string | null
   },
   userId: number
 ): Promise<number | null> {
+  const onPackage = await db.prepare(
+    `SELECT 1 AS ok FROM payment_requests pr WHERE pr.id = ? AND ${paymentOnPackageSql('pr')} LIMIT 1`
+  ).bind(payment.id).first()
   const rawAmount = payment.amount || 0
-  const shouldSync = rawAmount > 0
+  const status = String(payment.status || '')
+  const shouldSync = !!onPackage && rawAmount > 0 && REVENUE_BOOK_STATUSES.has(status)
 
   const projRow = await db.prepare(
     'SELECT management_fee_pct FROM projects WHERE id = ?'
@@ -253,7 +328,14 @@ export async function syncPaymentToRevenue(
     ? `[${payment.payment_phase}] ${payment.description}`
     : payment.description
   const revenueStatus = paymentStatusToRevenue(payment.status)
-  const revenueDate = payment.status === 'pending' ? null : (payment.paid_date || null)
+  let revenueDate: string | null
+  if (status === 'processing') {
+    revenueDate = payment.request_date || isoDateToday()
+  } else if (status === 'partial' || status === 'paid') {
+    revenueDate = payment.paid_date || isoDateToday()
+  } else {
+    revenueDate = null
+  }
 
   let calcNote = ''
   if (vatPct > 0 && feePct > 0) {

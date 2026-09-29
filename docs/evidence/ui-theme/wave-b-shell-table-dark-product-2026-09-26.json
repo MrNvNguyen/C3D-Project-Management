@@ -1,0 +1,96 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-B-THEME",
+  "wave_id": "B-shell-table-dark",
+  "qa_tier": "product_spot",
+  "qa_batch": "browser_dark_shell_sidebar_tables",
+  "measured_at": "2026-09-26T11:42:00+07:00",
+  "measured_by": "qa-agent",
+  "classification": "PRODUCT_PASS_RUN",
+  "authority_lead_log": "Agents Logs/032.lead-dev-theme-legal-excel-wave-b-shell-table-dark-2026-09-26.md",
+  "runtime": {
+    "url": "http://127.0.0.1:8789/",
+    "build": "npm run build (vite + copy-public)",
+    "serve": "npx wrangler pages dev dist --local --port 8789 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "git_head": "fbb9beffb70fa69ea2b596873ee196349d9b9b4c",
+    "working_tree_theme_files": ["public/index.html", "public/static/app.js"],
+    "shell_lever_per_032": ["public/index.html"],
+    "auth": "POST /api/auth/login admin (system_admin)"
+  },
+  "user_screenshot_proxy": {
+    "claimed_page": "Quản Lý Chi Phí A",
+    "repo_string_match": "NOT_FOUND",
+    "closest_measured": ["#/costs Chi phí & Doanh thu", "#/tasks table + status pills", "#/legal #legalTabs"]
+  },
+  "diff_isolation": {
+    "paths_in_diff_vs_head": ["public/index.html", "public/static/app.js"],
+    "forbidden_paths_in_diff": ["src/finance.ts"],
+    "result": "PASS",
+    "note": "032 lead scope index.html only; app.js theme helpers remain in uncommitted Wave B working tree"
+  },
+  "checks": {
+    "dark_sidebar_navy_not_green_wash": {
+      "sidebar_background_image": "linear-gradient(rgb(16, 24, 32) 0%, rgb(12, 18, 25) 48%, rgb(10, 15, 22) 100%)",
+      "contains_primary_green_gradient": false,
+      "result": "PASS"
+    },
+    "dark_sidebar_nav_readability": {
+      "inactive_color": "rgb(197, 208, 222)",
+      "active_color": "rgb(255, 255, 255)",
+      "inactive_contrast_on_navy_sample": 11.46,
+      "result": "PASS"
+    },
+    "dark_topbar_sync": {
+      "background": "rgb(21, 29, 46)",
+      "token": "--shell-topbar-bg #151d2e",
+      "result": "PASS"
+    },
+    "dark_costs_tabs_tables": {
+      "inactive_subtab_color": "rgb(184, 197, 214)",
+      "inactive_subtab_contrast_on_card": 9.02,
+      "cost_table_head_color": "rgb(168, 184, 204)",
+      "cost_table_head_contrast": 7.81,
+      "money_accent_token": "#fbbf24",
+      "tbody_cell_border": "rgb(61, 80, 104)",
+      "result": "PASS"
+    },
+    "dark_tasks_table_badges": {
+      "thead_color": "rgb(197, 208, 222)",
+      "tbody_border": "rgb(61, 80, 104)",
+      "status_pills_visible": true,
+      "result": "PASS"
+    },
+    "dark_legal_tabs_quick": {
+      "inactive_tab_color": "rgb(184, 197, 214)",
+      "active_tab_border": "rgba(0, 166, 81, 0.45)",
+      "result": "PASS"
+    },
+    "light_mode_regression_quick": {
+      "setBimTheme_light": true,
+      "body_background": "rgb(240, 244, 248)",
+      "sidebar_green_gradient_restored": true,
+      "active_nav_token": "rgba(255, 255, 255, 0.22)",
+      "result": "PASS"
+    }
+  },
+  "not_measured": [
+    "Exact «Quản Lý Chi Phí A» layout and «Chưa chi» / «Đa chi» pills (D2 / external copy)",
+    "Legal package headers with inline light colors in app.js (C1 residual per lead 032)",
+    "Cost table populated money-accent column rows (local chi phí riêng empty)",
+    "axe / member role / FOUC cold load"
+  ],
+  "evidence_artifacts": [
+    "docs/evidence/ui-theme/wave-b-shell-dark-costs-2026-09-26.png",
+    "docs/evidence/ui-theme/wave-b-shell-dark-tasks-2026-09-26.png",
+    "docs/evidence/ui-theme/wave-b-shell-dark-legal-2026-09-26.png"
+  ],
+  "screenshot_bytes": {
+    "wave-b-shell-dark-costs-2026-09-26.png": 285615,
+    "wave-b-shell-dark-tasks-2026-09-26.png": 295030,
+    "wave-b-shell-dark-legal-2026-09-26.png": 196891
+  },
+  "handoff": {
+    "next_agent": "technical-advisor",
+    "po_human": false,
+    "git_commit": "Wave B uncommitted — await user request"
+  }
+}

@@ -5,6 +5,11 @@ import {
   amountExcludingVat,
   applyWorkDateFilter,
   computeBookedRevenue,
+  contractValueBeforeVat,
+  displayRevenuePaymentStatus,
+  computeLegalCostA,
+  legalCostAFormulaLabel,
+  resolveLegalCostAPct,
   computeProjectBudget,
   computeProjectLaborFromAggregates,
   computeRealtimeLaborFromAggregates,
@@ -14,10 +19,194 @@ import {
   filterMlcMonths,
   monthDateRange,
   sumPendingBookedFromPayments,
+  syncPaymentToRevenue,
   taskComputedProgress,
   yearDateRange,
   yearMonthKey,
 } from './finance'
+
+/** Minimal D1 mock for syncPaymentToRevenue integration tests. */
+function createSyncTestDb(feePct = 30, onPackage = true) {
+  const revenues = new Map<number, Record<string, unknown>>()
+  let nextRevenueId = 1
+  const ops: string[] = []
+  let paymentRevenueNulled = false
+  let deletedRevenueIds: number[] = []
+
+  const db = {
+    prepare(sql: string) {
+      const state = { binds: [] as unknown[] }
+      const stmt = {
+        bind(...args: unknown[]) {
+          state.binds.push(...args)
+          return stmt
+        },
+        async first() {
+          if (sql.includes('management_fee_pct')) {
+            return { management_fee_pct: feePct }
+          }
+          if (sql.includes('FROM payment_requests pr WHERE pr.id')) {
+            return onPackage ? { ok: 1 } : null
+          }
+          return null
+        },
+        async run() {
+          ops.push(sql.trim().slice(0, 40))
+          if (sql.includes('DELETE FROM project_revenues')) {
+            const id = state.binds[0] as number
+            deletedRevenueIds.push(id)
+            revenues.delete(id)
+          } else if (sql.includes('UPDATE payment_requests SET revenue_id = NULL')) {
+            paymentRevenueNulled = true
+          } else if (sql.includes('INSERT INTO project_revenues')) {
+            const id = nextRevenueId++
+            revenues.set(id, {
+              id,
+              amount: state.binds[2],
+              amount_original: state.binds[3],
+              revenue_date: state.binds[5],
+              payment_status: state.binds[7],
+            })
+            return { meta: { last_row_id: id } }
+          } else if (sql.includes('UPDATE project_revenues')) {
+            const id = state.binds[state.binds.length - 1] as number
+            const row = revenues.get(id)
+            if (row) {
+              row.amount = state.binds[1]
+              row.revenue_date = state.binds[4]
+              row.payment_status = state.binds[6]
+            }
+          }
+          return { meta: { last_row_id: 0 } }
+        },
+      }
+      return stmt
+    },
+  }
+
+  return {
+    db: db as unknown as D1Database,
+    revenues,
+    get ops() {
+      return ops
+    },
+    get paymentRevenueNulled() {
+      return paymentRevenueNulled
+    },
+    get deletedRevenueIds() {
+      return deletedRevenueIds
+    },
+    resetTracking() {
+      paymentRevenueNulled = false
+      deletedRevenueIds = []
+    },
+  }
+}
+
+const basePayment = {
+  id: 42,
+  project_id: 1,
+  description: 'NT đợt 1',
+  amount: 1_100_000,
+  paid_amount: 0,
+  currency: 'VND',
+  paid_date: null as string | null,
+  invoice_number: null as string | null,
+  payment_phase: null as string | null,
+  revenue_id: null as number | null,
+  notes: null as string | null,
+  vat_pct: 10,
+  request_date: '2026-03-15',
+}
+
+describe('syncPaymentToRevenue (Wave A sync gate)', () => {
+  it('pending with amount does not create revenue', async () => {
+    const { db, revenues } = createSyncTestDb()
+    const id = await syncPaymentToRevenue(db, { ...basePayment, status: 'pending' }, 1)
+    expect(id).toBeNull()
+    expect(revenues.size).toBe(0)
+  })
+
+  it('processing books 700_000 (1_100_000 VAT10 fee30) with request_date', async () => {
+    const { db, revenues } = createSyncTestDb(30)
+    const revId = await syncPaymentToRevenue(db, { ...basePayment, status: 'processing' }, 1)
+    expect(revId).toBe(1)
+    const row = revenues.get(1)!
+    expect(row.amount).toBe(700_000)
+    expect(row.revenue_date).toBe('2026-03-15')
+    expect(row.payment_status).toBe('pending')
+    expect(displayRevenuePaymentStatus('pending', 'processing')).toBe('processing')
+  })
+
+  it('lists a booked processing installment as processing, not as unpaid pending', () => {
+    expect(displayRevenuePaymentStatus('pending', 'processing')).toBe('processing')
+    expect(displayRevenuePaymentStatus('paid', 'paid')).toBe('paid')
+    expect(displayRevenuePaymentStatus('pending', 'pending')).toBe('pending')
+    expect(displayRevenuePaymentStatus('pending', null)).toBe('pending')
+  })
+
+  it('revert to pending deletes linked revenue and nulls payment link', async () => {
+    const harness = createSyncTestDb(30)
+    harness.revenues.set(99, { id: 99, amount: 700_000 })
+    const id = await syncPaymentToRevenue(harness.db, {
+      ...basePayment,
+      status: 'pending',
+      revenue_id: 99,
+    }, 1)
+    expect(id).toBeNull()
+    expect(harness.deletedRevenueIds).toEqual([99])
+    expect(harness.paymentRevenueNulled).toBe(true)
+    expect(harness.revenues.has(99)).toBe(false)
+  })
+
+  it('installment not on a package drops its revenue row', async () => {
+    const harness = createSyncTestDb(30, false)
+    harness.revenues.set(77, { id: 77, amount: 700_000 })
+    const id = await syncPaymentToRevenue(harness.db, {
+      ...basePayment,
+      status: 'paid',
+      revenue_id: 77,
+    }, 1)
+    expect(id).toBeNull()
+    expect(harness.deletedRevenueIds).toEqual([77])
+    expect(harness.revenues.has(77)).toBe(false)
+  })
+
+  it('rejected deletes linked revenue', async () => {
+    const harness = createSyncTestDb(30)
+    harness.revenues.set(88, { id: 88, amount: 700_000 })
+    const id = await syncPaymentToRevenue(harness.db, {
+      ...basePayment,
+      status: 'rejected',
+      revenue_id: 88,
+    }, 1)
+    expect(id).toBeNull()
+    expect(harness.deletedRevenueIds).toEqual([88])
+    expect(harness.paymentRevenueNulled).toBe(true)
+  })
+})
+
+describe('computeLegalCostA (Wave D2 Chi phí A)', () => {
+  it('1_395_000_000 gross, VAT 8%, fee 30% → 387_500_000', () => {
+    expect(computeLegalCostA(1_395_000_000, 8, 30)).toBe(387_500_000)
+  })
+
+  it('155_000_000 gross, VAT 8%, fee 30% → 43_055_556', () => {
+    expect(computeLegalCostA(155_000_000, 8, 30)).toBe(43_055_556)
+  })
+
+  it('blank percent uses 30', () => {
+    expect(resolveLegalCostAPct(null)).toBe(30)
+    expect(resolveLegalCostAPct(undefined)).toBe(30)
+    expect(resolveLegalCostAPct(60)).toBe(60)
+  })
+
+  it('formula label is percent over the VAT divisor', () => {
+    expect(legalCostAFormulaLabel(30, 8)).toBe('30%/1.08')
+    expect(legalCostAFormulaLabel(60, 10)).toBe('60%/1.1')
+    expect(legalCostAFormulaLabel(30, 0)).toBe('30%')
+  })
+})
 
 describe('computeBookedRevenue (migration 0037 example)', () => {
   it('VAT 10% only: 1_100_000 → 1_000_000 booked', () => {
@@ -308,6 +497,11 @@ describe('labor allocation (Wave 1a parity)', () => {
     ]
     const filtered = filterMlcMonths(rows, '2026-02-01', '2027-01-31')
     expect(filtered.map(m => m.year * 100 + m.month).sort()).toEqual([202602, 202701])
+  })
+
+  it('contract value is package gross before the project VAT', () => {
+    expect(contractValueBeforeVat(1_700_000_000, 0)).toBe(1_700_000_000)
+    expect(contractValueBeforeVat(1_700_000_000, 8)).toBe(Math.round(1_700_000_000 / 1.08))
   })
 
   it('dayAfter converts inclusive NTC end to half-open exclusive', () => {

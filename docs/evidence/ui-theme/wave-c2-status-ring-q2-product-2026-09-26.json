@@ -1,0 +1,98 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-C2-STATUS-RING",
+  "wave_id": "C2-status-ring-compact",
+  "attempt": "1/3",
+  "qa_tier": "Q2",
+  "qa_batch": "browser_legal_checklist_status_ring_062_063",
+  "measured_at": "2026-09-26T15:45:00+07:00",
+  "measured_by": "qa-agent",
+  "classification": "PRODUCT_PASS_RUN",
+  "runtime": {
+    "url": "http://127.0.0.1:8792/?c2ringqa=063#/legal",
+    "build": "npm run build (vite + copy-public)",
+    "serve": "npx wrangler pages dev dist --d1=bim-management-production --local --port 8792 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "git_head": "da4649562c0333a0cfe8fd841f1e4c12d85da31e",
+    "lead_logs": ["Agents Logs/062.lead-dev-theme-legal-excel-c2-status-ring-2026-09-26.md", "Agents Logs/063.lead-dev-theme-legal-excel-c2-status-ring-compact-2026-09-26.md"],
+    "c2_ring_state": "uncommitted",
+    "working_tree_files": ["public/index.html", "public/static/app.js"],
+    "d1_binding": "bim-management-production (local)",
+    "auth": "system_admin (admin) — browser login + API spot",
+    "fixture_project_id": 4
+  },
+  "regenerate": {
+    "static_api": "node scripts/qa-legal-status-ring-spot.mjs http://127.0.0.1:8792",
+    "browser": "node scripts/qa-legal-status-ring-browser.mjs http://127.0.0.1:8792 (requires Edge + optional playwright package)",
+    "screenshots": "docs/evidence/ui-theme/wave-c2-status-ring-light-2026-09-26.png, wave-c2-status-ring-dark-2026-09-26.png"
+  },
+  "prediction_checks": {
+    "1_ring_click_pending_completed_sync_persist": {
+      "served_wiring": {
+        "legalChecklistStatusRingClick": true,
+        "button_status_ring_in_render": true,
+        "legalInlineSaveStatus_path": true
+      },
+      "cycle_logic": {
+        "pending_to_completed": "completed",
+        "completed_to_pending": "pending",
+        "in_progress_to_completed": "completed",
+        "na_to_pending": "pending"
+      },
+      "browser_measured": {
+        "ring_control_tag": "BUTTON",
+        "fixture_item_id": 254,
+        "pending_to_completed_select_after_click": "completed",
+        "completed_to_pending_round_trip_select": "pending",
+        "api_overview_after_first_click": "completed",
+        "select_after_full_reload": "completed",
+        "na_to_pending_spot_item_253": true
+      },
+      "api_put_persist_spot_item_254": {
+        "put_completed_http": 200,
+        "overview_after": "completed",
+        "restore_pending_http": 200,
+        "overview_restore": "pending"
+      },
+      "result": "PASS"
+    },
+    "2_compact_size_not_dominating_row": {
+      "css_dist_index_html": {
+        "ring_hit_px": { "w": 26, "h": 26 },
+        "ring_visible_before_px": { "w": 15, "h": 15 },
+        "row_padding_vertical_px": 7,
+        "title_font_px": 13
+      },
+      "browser_bounding_box": {
+        "ring_hit_px": { "w": 26, "h": 26 },
+        "row_height_px": 46
+      },
+      "result": "PASS"
+    },
+    "3_distinct_from_dnd_grip_dark_light": {
+      "grip_min_css_px": { "w": 44, "h": 44 },
+      "browser_grip_hit_px": { "w": 44, "h": 44 },
+      "ring_draggable": false,
+      "grip_draggable": true,
+      "theme_pending_ring_border": {
+        "light_sample": "rgb(107, 114, 128)",
+        "dark_sample": "rgb(148, 163, 184)"
+      },
+      "screenshots": {
+        "light_bytes": 154702,
+        "light_path": "docs/evidence/ui-theme/wave-c2-status-ring-light-2026-09-26.png",
+        "dark_bytes": 159935,
+        "dark_path": "docs/evidence/ui-theme/wave-c2-status-ring-dark-2026-09-26.png"
+      },
+      "result": "PASS"
+    }
+  },
+  "residual_risks": {
+    "stale_app_js_cache": "Session without hard reload once rendered decorative span ring (pre-062 markup) while served /static/app.js already had button+handler; recommend bump index.html app.js?v= when committing 062/063.",
+    "automated_flake": "First browser sequence can read detached row handle before loadLegalProject settles; dedicated pending→completed block is binding.",
+    "dnd_reorder": "NOT_MEASURED this batch (C3 regression spot deferred)."
+  },
+  "must_not_claim": [
+    "theme-legal-excel box SUCCESS",
+    "Wave D / payment sheet",
+    "PO packet"
+  ]
+}

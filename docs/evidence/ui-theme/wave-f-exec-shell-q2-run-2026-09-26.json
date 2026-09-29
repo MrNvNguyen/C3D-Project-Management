@@ -1,0 +1,6 @@
+{
+  "script": "scripts/qa-wave-f-exec-shell-q2.mjs",
+  "regenerate": "node scripts/qa-wave-f-exec-shell-q2.mjs http://127.0.0.1:8791",
+  "verdict": "PASS",
+  "out": "docs\\evidence\\ui-theme\\wave-f-exec-shell-q2-product-2026-09-26.json"
+}

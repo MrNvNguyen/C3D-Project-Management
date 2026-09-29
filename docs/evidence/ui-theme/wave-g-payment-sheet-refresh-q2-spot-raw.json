@@ -1,0 +1,151 @@
+{
+  "measured_at": "2026-09-26T10:04:31.446Z",
+  "base_url": "http://127.0.0.1:8794",
+  "project_id": 5,
+  "fixture_tag": "QA-G-PSR-1790417071446",
+  "network": {
+    "during_existing_row_status": [
+      {
+        "kind": "POST_LEGAL_INIT",
+        "method": "POST",
+        "url": "http://127.0.0.1:8794/api/legal/init/5"
+      },
+      {
+        "kind": "GET_OVERVIEW",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/overview"
+      },
+      {
+        "kind": "PUT_PAYMENT",
+        "method": "PUT",
+        "url": "http://127.0.0.1:8794/api/legal/payments/32"
+      },
+      {
+        "kind": "GET_OVERVIEW",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/overview"
+      },
+      {
+        "kind": "POST_LEGAL_INIT",
+        "method": "POST",
+        "url": "http://127.0.0.1:8794/api/legal/init/5"
+      },
+      {
+        "kind": "GET_PAYMENTS_LIST",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/payments"
+      },
+      {
+        "kind": "POST_LEGAL_INIT",
+        "method": "POST",
+        "url": "http://127.0.0.1:8794/api/legal/init/5"
+      },
+      {
+        "kind": "GET_OVERVIEW",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/overview"
+      },
+      {
+        "kind": "GET_OVERVIEW",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/overview"
+      },
+      {
+        "kind": "POST_LEGAL_INIT",
+        "method": "POST",
+        "url": "http://127.0.0.1:8794/api/legal/init/5"
+      },
+      {
+        "kind": "POST_LEGAL_INIT",
+        "method": "POST",
+        "url": "http://127.0.0.1:8794/api/legal/init/5"
+      },
+      {
+        "kind": "GET_OVERVIEW",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/overview"
+      },
+      {
+        "kind": "GET_OVERVIEW",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/overview"
+      },
+      {
+        "kind": "POST_LEGAL_INIT",
+        "method": "POST",
+        "url": "http://127.0.0.1:8794/api/legal/init/5"
+      },
+      {
+        "kind": "POST_LEGAL_INIT",
+        "method": "POST",
+        "url": "http://127.0.0.1:8794/api/legal/init/5"
+      },
+      {
+        "kind": "GET_OVERVIEW",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/overview"
+      },
+      {
+        "kind": "GET_OVERVIEW",
+        "method": "GET",
+        "url": "http://127.0.0.1:8794/api/legal/5/overview"
+      },
+      {
+        "kind": "POST_LEGAL_INIT",
+        "method": "POST",
+        "url": "http://127.0.0.1:8794/api/legal/init/5"
+      }
+    ],
+    "counts": {
+      "POST_LEGAL_INIT": 7,
+      "GET_OVERVIEW": 7,
+      "PUT_PAYMENT": 1,
+      "GET_PAYMENTS_LIST": 1
+    }
+  },
+  "checks": {
+    "commit_path_hooks": {
+      "loadLegalProject_calls_during_commit": 2,
+      "post_legal_init_during_commit": 2,
+      "result": "FAIL"
+    },
+    "existing_row_no_legal_init": {
+      "post_legal_init_count_commit_path": 2,
+      "post_legal_init_count_net_window": 7,
+      "note": "Binding gate uses commit-path hooks; net_window may include unrelated background legal refresh",
+      "result": "FAIL"
+    },
+    "existing_row_put_and_get_payments": {
+      "put_count": 1,
+      "get_payments_count": 1,
+      "get_overview_count": 7,
+      "result": "PASS"
+    },
+    "dt_so_from_api_booked": {
+      "api_booked_revenue": 700000,
+      "api_revenue_id": 19,
+      "dom_booked_strong": "700,000 N ₫",
+      "expected": 700000,
+      "result": "PASS"
+    },
+    "active_package_tab_preserved": {
+      "before": {
+        "label": "Chung",
+        "activePackageId": 0
+      },
+      "after": {
+        "label": "Chung",
+        "activePackageId": 0
+      },
+      "result": "PASS"
+    }
+  },
+  "failures": [
+    "commit_path_hooks",
+    "existing_row_no_legal_init"
+  ],
+  "fixture_payment_id": 32,
+  "attempt_outcome": "FAIL",
+  "git_head": "145cb0915a18e5b956f6d8f8a764641ec2d9de41",
+  "verify_sha": "145cb0915a18e5b956f6d8f8a764641ec2d9de41"
+}

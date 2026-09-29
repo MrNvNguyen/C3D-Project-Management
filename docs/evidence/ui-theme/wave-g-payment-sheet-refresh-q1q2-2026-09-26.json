@@ -1,0 +1,115 @@
+{
+  "schema": "bim-pm-evidence-1",
+  "directive_id": "THEME-LEGAL-EXCEL-G-PAYMENT-SHEET-REFRESH",
+  "wave_id": "G-payment-sheet-refresh",
+  "attempt": "1/3",
+  "qa_tier": "Q1+Q2",
+  "q2_class": "PRODUCT_SPOT",
+  "measured_at": "2026-09-26T17:05:00+07:00",
+  "measured_by": "qa-agent",
+  "verify_sha": "145cb0915a18e5b956f6d8f8a764641ec2d9de41",
+  "git_head_measured": "145cb0915a18e5b956f6d8f8a764641ec2d9de41",
+  "parent_sha": "ee524242041c623cde0aaa87a424e7d0273390dc",
+  "lead_evidence_verify_sha_note": "Lead JSON verify_sha 9d48e8d is STALE; QA bound to 145cb09 per strategy handoff",
+  "run_class": "PRODUCT_FAILURE_RUN",
+  "attempt_outcome": "FAIL",
+  "falsifier_measured": true,
+  "wave_card": "Agents Logs/091.advisor-strategy-theme-legal-excel-residual-polish-auth-2026-09-26.md",
+  "lead_log": "Agents Logs/092.lead-dev-theme-legal-excel-g-payment-sheet-refresh-2026-09-26.md",
+  "runtime_fingerprint": {
+    "build": "npm run build (vite + copy-public)",
+    "serve": "npx wrangler pages dev dist --d1=bim-management-production --local --port 8794",
+    "base_url": "http://127.0.0.1:8794",
+    "d1": "local (.wrangler/state/v3/d1)",
+    "auth": "system_admin / admin (token redacted)",
+    "fixture_project_id": 5,
+    "note_8791": "Prior wrangler on 8791 timed out; fresh instance on 8794 after rebuild"
+  },
+  "q1": {
+    "head_equals_verify_sha": {
+      "command": "git rev-parse HEAD",
+      "result": "PASS",
+      "value": "145cb0915a18e5b956f6d8f8a764641ec2d9de41"
+    },
+    "finance_index_diff_vs_ee52424": {
+      "command": "git diff ee52424 -- src/finance.ts src/index.tsx",
+      "result": "PASS",
+      "empty": true
+    },
+    "npm_test": {
+      "command": "npm test",
+      "result": "PASS",
+      "tests": "38 passed (38)",
+      "scope": "supporting only"
+    },
+    "static_legalPaymentCommitRow": {
+      "existing_row_put_then_get_payments": true,
+      "existing_row_no_loadLegalProject_in_branch": true,
+      "new_row_post_still_loadLegalProject": true,
+      "dom_patch_legalPatchPaymentRowMetrics": true,
+      "debounce_500ms": true,
+      "result": "PASS"
+    },
+    "dt_so_no_client_booked_formula_on_patch": {
+      "_legalPatchPaymentRowMetrics_uses": "p.booked_revenue + fmtMoney",
+      "computeBookedRevenue_on_patch_path": false,
+      "calcRevenueNet_on_booked_cell": false,
+      "result": "PASS"
+    },
+    "overall": "PASS"
+  },
+  "q2_product": {
+    "existing_row_status_pending_to_processing": {
+      "fixture_payment_id": 32,
+      "fixture_tag_prefix": "QA-G-PSR-",
+      "amount": 1100000,
+      "vat_pct": 10,
+      "api_booked_revenue": 700000,
+      "api_revenue_id_set": true,
+      "dom_dt_so_strong": "700,000 N ₫",
+      "result": "PASS"
+    },
+    "active_package_tab_preserved": {
+      "tab": "Chung",
+      "activePackageId": 0,
+      "before_equals_after": true,
+      "result": "PASS"
+    },
+    "existing_row_put_and_get_payments": {
+      "put_count": 1,
+      "get_payments_count": 1,
+      "result": "PASS"
+    },
+    "existing_row_no_post_legal_init": {
+      "binding": "commit-path hooks during legalPaymentCommitRow(existing id)",
+      "post_legal_init_during_commit": 2,
+      "loadLegalProject_calls_during_commit": 2,
+      "cdp_post_legal_init_in_save_window": 7,
+      "note": "Init/overview also observed outside PUT→GET /payments ordering; concurrent legal refresh suspected — still fails strict WAVE_CARD intercept bar",
+      "result": "FAIL"
+    },
+    "new_row_post_optional": {
+      "result": "NOT_MEASURED",
+      "note": "Attempt-1 focus existing-row falsifier; new-row static still shows loadLegalProject once"
+    },
+    "overall": "FAIL"
+  },
+  "network_counts_measured": {
+    "during_existing_row_save_window_cdp": {
+      "PUT /api/legal/payments/:id": 1,
+      "GET /api/legal/:projectId/payments": 1,
+      "POST /api/legal/init/:projectId": 7,
+      "GET /api/legal/:projectId/overview": 7
+    },
+    "commit_path_hooks": {
+      "post_legal_init": 2,
+      "loadLegalProject": 2
+    }
+  },
+  "regenerate": {
+    "q1": "git rev-parse HEAD; git diff ee52424 -- src/finance.ts src/index.tsx; npm test",
+    "q2_browser": "npm run build && npx wrangler pages dev dist --d1=bim-management-production --local --port 8794 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "q2_spot": "npm exec --yes --package=playwright@1.49.1 -- node docs/evidence/ui-theme/wave-g-payment-sheet-refresh-q2-browser.mjs http://127.0.0.1:8794"
+  },
+  "ops_leftover": "QA-G-PSR-* pending phiếu on project 5 / Chung — local D1 only; not scored as product fail"
+}

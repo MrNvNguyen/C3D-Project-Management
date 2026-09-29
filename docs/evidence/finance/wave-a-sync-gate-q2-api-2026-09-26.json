@@ -1,0 +1,49 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-A-SYNC-GATE",
+  "measured_at": "2026-09-26T10:10+07:00",
+  "git_head": "5dccb822fb2a8e874827f4358ef3e823896f2a23",
+  "working_tree": "dirty (Wave A lever uncommitted: src/finance.ts, src/index.tsx, public/static/app.js, tests, docs)",
+  "runtime_fingerprint": "local wrangler pages dev dist @ http://127.0.0.1:8789 after npm run build (2026-09-26 QA session)",
+  "environment": "local D1 (.wrangler/state/v3/d1), ALLOW_PREVIEW=1",
+  "layer_a": {
+    "npm_test_finance": "33/33 pass",
+    "npm_test_full": "36/36 pass (finance.test.ts + authz-policy.test.ts)"
+  },
+  "layer_b": {
+    "revenue_audit_pre": { "broken_links": [], "orphan_revenues": [], "formula_mismatches": [] },
+    "resync_all_initial": { "success": true, "synced": 0, "total": 0, "errors": [] },
+    "bad_link_seed": {
+      "before_bad_links": 1,
+      "resync": { "success": true, "synced": 2, "total": 2, "errors": [] },
+      "after_bad_links": 0,
+      "stale_payment_revenue_id": null,
+      "orphan_revenue_id_2_deleted": true
+    },
+    "fixture_project_id": 5,
+    "fixture_fee_pct": 30,
+    "phiếu_flow": {
+      "create_pending": { "id": 1, "revenue_id": null },
+      "pending_api": { "status": "pending", "revenue_id": null },
+      "put_processing": { "status": "processing", "revenue_id": 1, "booked_revenue_enriched": 700000 },
+      "d1_join": {
+        "amount_nt": 1100000,
+        "booked": 700000,
+        "revenue_date": "2026-09-15",
+        "request_date": "2026-09-15",
+        "payment_status": "pending"
+      }
+    }
+  },
+  "static_checks": {
+    "willSync_dist_app_js": "processing|partial|paid && amount>0 (no paid_amount gate)",
+    "computeBookedRevenue_body_diff": "none in git diff",
+    "resync_select": "status IN (5 statuses) OR revenue_id IS NOT NULL + request_date in payload"
+  },
+  "not_measured": [
+    "Browser HSPL modal toast text on save (static willSync only)",
+    "Same booked number on Executive/dashboard KPI for fixture phiếu",
+    "Staging/production D1 resync",
+    "rejected/amount=0 via API (covered Q1 vitest + resync seed pending case)"
+  ],
+  "classification": "PRODUCT_PASS_RUN"
+}

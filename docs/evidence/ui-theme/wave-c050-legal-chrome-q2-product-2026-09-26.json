@@ -1,0 +1,116 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-C050-LEGAL-CHROME-POLISH",
+  "wave_id": "C050-legal-chrome-polish",
+  "attempt": "1/3",
+  "qa_tier": "Q2",
+  "qa_batch": "browser_legal_chrome_header_status_theme",
+  "measured_at": "2026-09-26T13:42:00+07:00",
+  "measured_by": "qa-agent",
+  "classification": "PRODUCT_PASS_RUN",
+  "runtime": {
+    "url": "http://127.0.0.1:8791/?c050qa=2026-09-26#/legal",
+    "build": "npm run build (vite + copy-public)",
+    "serve": "npx wrangler pages dev dist --d1=bim-management-production --local --port 8791 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "git_head": "1ba0aa4be50b7cf7fc6f86b09c46900b87002a2e",
+    "c2_commit": "1ba0aa4be50b7cf7fc6f86b09c46900b87002a2e",
+    "chrome_polish_state": "uncommitted",
+    "working_tree_polish_files": ["public/index.html", "public/static/app.js"],
+    "auth": "system_admin (admin / Admin@123456) — POST /api/auth/login + bim_token",
+    "fixture_project_id": 4,
+    "lead_log": "Agents Logs/050.lead-dev-theme-legal-chrome-polish-2026-09-26.md"
+  },
+  "diff_isolation": {
+    "paths_vs_1ba0aa4": ["public/index.html", "public/static/app.js"],
+    "forbidden_paths_in_diff": [],
+    "finance_ts": false,
+    "migrations": false,
+    "src_index_tsx": false,
+    "result": "PASS"
+  },
+  "served_assets": {
+    "index_html_has_legal_page_top": true,
+    "app_js_has_legal_status_prefix": true,
+    "inline_select_uses_badge_class": false
+  },
+  "checks": {
+    "1_header_import_excel_title_row": {
+      "legal_page_top_present": true,
+      "legal_panel_actions_parent": "legal-page-top",
+      "import_btn_outside_legal_right_col": true,
+      "heading_import_vertical_center_delta_px": 4.125,
+      "row_align_within_28px": true,
+      "header_above_kpi_row": true,
+      "result": "PASS"
+    },
+    "2_dark_status_dropdown_readability": {
+      "theme": "dark",
+      "inline_status_select_count": 28,
+      "closed_uses_legal_status_class": true,
+      "closed_has_badge_class": false,
+      "closed_color_scheme": "dark",
+      "option_computed_all_four": [
+        { "label": "Chưa thực hiện", "bg": "rgb(30, 41, 59)", "color": "rgb(226, 232, 240)" },
+        { "label": "Đang thực hiện", "bg": "rgb(30, 41, 59)", "color": "rgb(226, 232, 240)" },
+        { "label": "Đã hoàn thành", "bg": "rgb(30, 41, 59)", "color": "rgb(226, 232, 240)" },
+        { "label": "Không áp dụng", "bg": "rgb(30, 41, 59)", "color": "rgb(226, 232, 240)" }
+      ],
+      "dark_option_css_rule_present": true,
+      "note": "Computed styles on <option>; native OS dropdown paint not separately photographed open",
+      "result": "PASS"
+    },
+    "3_c2_persist_spot": {
+      "item_id": 253,
+      "title_suffix": "C050QA",
+      "title_after_full_reload": true,
+      "status_change_in_progress_to_na": true,
+      "status_after_reload_api_and_dom": "na",
+      "result": "PASS"
+    },
+    "4_light_mode_not_broken": {
+      "theme": "light",
+      "option_computed_sample": { "bg": "rgb(255, 255, 255)", "color": "rgb(55, 65, 81)" },
+      "closed_na_tint": { "bg": "rgb(254, 226, 226)", "color": "rgb(153, 27, 27)", "class": "legal-checklist-inline-status legal-status-na" },
+      "result": "PASS"
+    },
+    "5_diff_only_public_index_app_js": {
+      "result": "PASS"
+    },
+    "density_polish_spot": {
+      "legal_stages_toolbar_present": true,
+      "kpi_row_gap_margin_css_present": true,
+      "result": "PASS"
+    }
+  },
+  "not_measured": [
+    "member role tab subset",
+    "native select dropdown open-state screenshot (OS-rendered list)",
+    "all six legal tabs beyond stages/checklist face",
+    "executive-dashboard.js",
+    "C3/C4",
+    "production cut"
+  ],
+  "fixture_mutation": {
+    "note": "QA spot left local D1 item 253 title suffix C050QA and status na — revert optional for next run",
+    "item_id": 253,
+    "project_id": 4
+  },
+  "evidence_artifacts": [
+    "docs/evidence/ui-theme/wave-c050-legal-chrome-dark-2026-09-26.png",
+    "docs/evidence/ui-theme/wave-c050-legal-chrome-light-2026-09-26.png"
+  ],
+  "screenshot_bytes": {
+    "wave-c050-legal-chrome-dark-2026-09-26.png": 429331,
+    "wave-c050-legal-chrome-light-2026-09-26.png": 406554
+  },
+  "must_not_claim": [
+    "Wave C050 chrome polish committed",
+    "theme-legal-excel box SUCCESS",
+    "C3/C4 authorized",
+    "PO packet",
+    "production cut"
+  ],
+  "handoff": {
+    "next_agent": "technical-advisor",
+    "po_human": false
+  }
+}

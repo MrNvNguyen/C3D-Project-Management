@@ -1,0 +1,84 @@
+{
+  "schema": "bim-pm-evidence-1",
+  "directive_id": "THEME-LEGAL-EXCEL-C4-COPY-FROM",
+  "wave_id": "C4-copy-from",
+  "attempt": "1/3",
+  "qa_tier": "Q1+Q2",
+  "q2_class": "PRODUCT_SPOT",
+  "metric": "wave_c4_copy_from",
+  "measured_at": "2026-09-26T14:16:00+07:00",
+  "measured_by": "qa-agent",
+  "verify_sha": "5258bf75287adca8d69d67c22c771660bb0db502",
+  "c3_parent_sha": "dd3f7580f378c581b59a36ddbaa47947e18f6625",
+  "run_class": "PRODUCT_PASS_RUN",
+  "attempt_outcome": "PASS",
+  "runtime": {
+    "url": "http://127.0.0.1:8792/?c4qa=2026-09-26#/legal",
+    "build": "npm run build (vite + copy-public) @ 5258bf7",
+    "serve": "npx wrangler pages dev dist --d1=bim-management-production --local --port 8792 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "d1_binding": "bim-management-production (local)",
+    "preview_status": { "preview": true, "d1_ok": true, "host": "127.0.0.1" },
+    "auth_admin": "admin / Admin@123456 (token redacted)",
+    "auth_member": "nguyen.van.a / Bim@2024",
+    "auth_leader": "le.van.c / Bim@2024",
+    "fixture_source_project": 4,
+    "fixture_dest_project": 7,
+    "source_package_id": 10,
+    "authority": "Agents Logs/058.advisor-technical-theme-legal-excel-c4-copy-from-2026-09-26.md"
+  },
+  "layer_a": {
+    "npm_test": "36/36 PASS",
+    "c3_parent_no_copy_from": "git show dd3f758:src/index.tsx — no copy-from string",
+    "c4_diff_vs_dd3f758": {
+      "paths": ["public/index.html", "public/static/app.js", "src/index.tsx"],
+      "insertions": 344,
+      "deletions": 2,
+      "forbidden_in_diff": false
+    }
+  },
+  "q1_api": {
+    "copy_one_package_200": true,
+    "dest_new_package_id": 19,
+    "item_id_overlap": 0,
+    "dest_item_count": 28,
+    "title_parent_structure_match": true,
+    "dest_items_pending_null_completion": true,
+    "source_had_non_pending": true,
+    "name_conflict_skip_default": {
+      "action": "skipped",
+      "dest_duplicate_packages": 1
+    },
+    "rbac_member_dest_403": "Không có quyền quản trị HSPL dự án đích",
+    "rbac_leader_dest_403": "Không có quyền quản trị HSPL dự án đích",
+    "rbac_source_403_message": "code path present; distinct source-only token spot NOT_MEASURED",
+    "dual_isProjectAdminOrAbove": "src/index.tsx copy-from route checks dest then source",
+    "no_payment_revenue_inserts_in_route": "INSERT only legal_packages/stages/items",
+    "dest_tasks_after_copy": 0,
+    "recalculateSiblingsStt_on_dest_stages": true
+  },
+  "q2_product": {
+    "copy_toolbar_button": "btnCopyFromLegal — Sao chép từ dự án…",
+    "modal_copy_disclaimer": "Không sao chép thanh toán, tài liệu R2 hay task",
+    "theme": {
+      "dark_btn": { "color": "rgb(226, 232, 240)", "backgroundColor": "rgb(36, 48, 68)" },
+      "light_btn": { "color": "rgb(55, 65, 81)" },
+      "screenshots": [
+        "docs/evidence/ui-theme/wave-c4-copy-from-q2-dark-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-c4-copy-from-q2-light-2026-09-26.png"
+      ]
+    },
+    "end_to_end_modal_submit": "NOT_MEASURED — modal opened for theme spot; API spot covers copy contract"
+  },
+  "not_measured": [
+    "Cloudflare production / staging",
+    "wrangler d1 execute while dev server holds SQLITE_BUSY (payment_requests row count SQL)",
+    "Distinct 403 body for source-only admin (dest 403 measured for member/leader)",
+    "project_admin non–system_admin dual-project spot",
+    "Native modal submit → network HAR"
+  ],
+  "must_not_claim": [
+    "theme-legal-excel box SUCCESS",
+    "Wave D authorized",
+    "production cut"
+  ]
+}

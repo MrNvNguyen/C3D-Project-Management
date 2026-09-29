@@ -1,0 +1,104 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-D2-COST-A",
+  "wave_id": "D2-cost-a",
+  "attempt": "1/3",
+  "qa_tier": "Q2",
+  "q2_class": "PRODUCT_SPOT",
+  "measured_at": "2026-09-26T09:15:01.015Z",
+  "runtime": {
+    "url": "http://127.0.0.1:8791/?dqa=d2-cost-a-2026-09-26&t=1790414101015#/legal",
+    "base": "http://127.0.0.1:8791",
+    "fixture_project_id": 5,
+    "git_SHA": "d47a176 (dirty D2)",
+    "wrangler": "http://127.0.0.1:8791",
+    "d1": "local"
+  },
+  "checks": {
+    "admin_tab_visible": {
+      "result": "PASS",
+      "selector": "#ltab-cost-a"
+    },
+    "admin_cards_and_total": {
+      "cards_count": 0,
+      "api_page_total": 3136364,
+      "dom_page_total_text": "Tổng trang: 3,136 Tr ₫",
+      "dom_page_total_parsed": 3136364,
+      "api_dom_match": true,
+      "result": "PASS"
+    },
+    "screenshot_light": "legalTabCostA light",
+    "screenshot_dark": "legalTabCostA dark",
+    "ui_override_moves_total": {
+      "payment_id": "20",
+      "page_total_before": 3136364,
+      "page_total_after": 2886364,
+      "moved": true,
+      "result": "PASS"
+    },
+    "ui_reset_restores_total": {
+      "page_total_after_reset": 3136364,
+      "restored": true,
+      "result": "PASS"
+    },
+    "executive_no_cost_a_tab": {
+      "cost_a_in_executive_panel": false,
+      "result": "PASS"
+    },
+    "project_admin_rbac_ui": {
+      "overview_status": 403,
+      "ltab_cost_a_hidden": "NOT_MEASURED",
+      "switch_cost_a_lands_letters": true,
+      "role": "project_admin",
+      "result": "PASS"
+    }
+  },
+  "table": [
+    {
+      "check": "admin_tab_cards_total",
+      "api_page_total": 3136364,
+      "dom_total": 3136364,
+      "cards": 0,
+      "result": "PASS"
+    },
+    {
+      "check": "ui_override",
+      "before": 3136364,
+      "after": 2886364,
+      "result": "PASS"
+    },
+    {
+      "check": "ui_reset",
+      "before": 2886364,
+      "after": 3136364,
+      "expected": 3136364,
+      "result": "PASS"
+    },
+    {
+      "check": "executive_no_cost_a",
+      "result": "PASS"
+    },
+    {
+      "check": "project_admin_tab_rbac",
+      "tab_hidden": "NOT_MEASURED",
+      "lands_letters": true,
+      "overview": 403,
+      "result": "PASS"
+    }
+  ],
+  "failures": [],
+  "not_measured": [
+    "project_admin tab hidden — GET overview 403 on project 5 (no membership fixture)"
+  ],
+  "screenshots": [
+    {
+      "theme": "light",
+      "path": "docs/evidence/ui-theme/wave-d2-cost-a-light-2026-09-26.png"
+    },
+    {
+      "theme": "dark",
+      "path": "docs/evidence/ui-theme/wave-d2-cost-a-dark-2026-09-26.png"
+    }
+  ],
+  "run_class": "PRODUCT_PASS_RUN",
+  "attempt_outcome": "PASS"
+}

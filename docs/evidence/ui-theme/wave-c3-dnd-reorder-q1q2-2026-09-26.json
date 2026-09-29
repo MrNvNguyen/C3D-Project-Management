@@ -1,0 +1,79 @@
+{
+  "schema": "bim-pm-evidence-1",
+  "directive_id": "THEME-LEGAL-EXCEL-C3-DND-REORDER",
+  "wave_id": "C3-dnd-reorder",
+  "attempt": "1/3",
+  "qa_tier": "Q1+Q2",
+  "q2_class": "PRODUCT_SPOT",
+  "metric": "wave_c3_dnd_reorder",
+  "measured_at": "2026-09-26T14:00:00+07:00",
+  "measured_by": "qa-agent",
+  "verify_sha": "de58981c47a1ddd355890da5c013558456fde5aa",
+  "c3_working_tree": "uncommitted — public/index.html, public/static/app.js, src/index.tsx",
+  "run_class": "PRODUCT_PASS_RUN",
+  "attempt_outcome": "PASS",
+  "runtime": {
+    "url": "http://127.0.0.1:8792/?c3qa=2026-09-26#/legal",
+    "build": "npm run build (vite + copy-public)",
+    "serve": "npx wrangler pages dev dist --d1=bim-management-production --local --port 8792 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "d1_binding": "bim-management-production (local)",
+    "auth_admin": "system_admin — POST /api/auth/login (token redacted)",
+    "auth_member": "nguyen.van.a / Bim@2024",
+    "auth_leader": "le.van.c / Bim@2024",
+    "fixture_project_api": 4,
+    "fixture_project_browser": 2,
+    "lead_log": "Agents Logs/055.lead-dev-theme-legal-excel-c3-dnd-reorder-2026-09-26.md"
+  },
+  "layer_a": {
+    "npm_test": "36/36 PASS",
+    "diff_vs_de58981": {
+      "paths": ["public/index.html", "public/static/app.js", "src/index.tsx"],
+      "insertions": 369,
+      "deletions": 25,
+      "forbidden_in_diff": false
+    }
+  },
+  "q1_api": {
+    "reorder_body_to_index": true,
+    "legacy_direction_retained": true,
+    "rbac_member_403": true,
+    "rbac_project_leader_403": true,
+    "cross_package_400": "Không thể kéo sang gói thầu khác",
+    "stt_swap_reload": "257 to_index 0 → tops 1#257,2#253; reverted",
+    "child_suffix_after_parent_move": "253 down → children 2.1,2.2,2.3; revert → 1.1,1.2,1.3",
+    "recalculateSiblingsStt_batch": "db.batch chunks of 50 (writes); no per-row await .run() on STT updates"
+  },
+  "q2_product": {
+    "checklist_handles": { "count": 28, "min_px": 44, "draggable_handle_only": true },
+    "one_post_to_index": {
+      "drop_handler_single_api_call": true,
+      "native_drag_network_hook": "NOT_MEASURED — MCP drag ref / synthetic DragEvent did not fire drop; API spot confirms one POST per reorder"
+    },
+    "optimistic_revert": {
+      "_legalDndRevert_restores_dom": true,
+      "catch_calls_revert_on_api_error": "public/static/app.js drop handler",
+      "forced_api_fail_end_to_end": "NOT_MEASURED — revert helper exercised in browser"
+    },
+    "c2_inline_persist": { "item_id": 89, "title_suffix": "C3QA", "overview_after_flush": true },
+    "theme": {
+      "dark_row_bg_sample": "rgb(26, 35, 50)",
+      "dark_bad_wash_rows_fff_f0fdf4": 0,
+      "light_row_bg_shell_surface": "rgb(255, 255, 255) — expected light token, not dark-table wash",
+      "screenshots": [
+        "docs/evidence/ui-theme/wave-c3-dnd-reorder-q2-light-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-c3-dnd-reorder-q2-dark-2026-09-26.png"
+      ]
+    }
+  },
+  "not_measured": [
+    "Cloudflare production / staging",
+    "Native HTML5 drag → network HAR (one drop)",
+    "Stage-header drop UI",
+    "project_admin role spot (system_admin only in browser/API admin runs)"
+  ],
+  "must_not_claim": [
+    "theme-legal-excel box SUCCESS",
+    "C3 committed or production cut",
+    "C4 / D authorized"
+  ]
+}

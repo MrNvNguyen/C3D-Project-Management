@@ -1,0 +1,81 @@
+{
+  "schema": "bim-pm-evidence-1",
+  "directive_id": "THEME-LEGAL-EXCEL-G-RECONCILE",
+  "wave_id": "G-impact-reconcile",
+  "attempt": "1/3",
+  "qa_tier": "Q1+Q2",
+  "q2_class": "PRODUCT_SPOT",
+  "verify_sha": "e02f621d3ad33c4fdaa4c3a8ee855ecaad137d2d",
+  "git_head_measured": "55c2e8d612dfc9b00afea500a045ceb5315c60f6",
+  "measured_at": "2026-09-26T09:42:02.893Z",
+  "d1_scope": "local",
+  "runtime_fingerprint": {
+    "base_url": "http://127.0.0.1:8791",
+    "environment": "local D1 (.wrangler/state/v3/d1)",
+    "auth": "system_admin / admin (token redacted)"
+  },
+  "q1": {
+    "npm_test": {
+      "command": "npm test",
+      "result": "PASS",
+      "files": ["src/finance.test.ts (35)", "src/authz-policy.test.ts (3)"],
+      "run_at": "2026-09-26T16:41+07:00"
+    },
+    "computeBookedRevenue_body_diff_vs_verify_sha": "empty",
+    "git_diff_command": "git diff e02f621d3ad33c4fdaa4c3a8ee855ecaad137d2d -- src/finance.ts"
+  },
+  "product_claim_interpretation": {
+    "one_phieu_booked": 700000,
+    "kpi_is_project_aggregate": true,
+    "equal_literal_booked_vs_kpi_total": false,
+    "pass_basis": "delta_parity + aggregate_parity (sum HSPL booked with revenue_id === summary.revenue.actual); pending did not inflate KPI",
+    "corroboration_read_only": "docs/evidence/finance/wave-a-kpi-spot-estimate-vs-actual-2026-09-26.json (re-measured this run, not copied)"
+  },
+  "harness": {
+    "regenerate": "node scripts/qa-wave-g-impact-reconcile-q1q2.mjs http://127.0.0.1:8791"
+  },
+  "reconcile": {
+    "payment_id": 29,
+    "project_id": 5,
+    "status": "processing",
+    "revenue_id": 16,
+    "fixture": {
+      "description": "QA Wave G reconcile fixture",
+      "request_date": "2026-09-26",
+      "amount": 1100000,
+      "vat_pct": 10,
+      "paid_amount": 0,
+      "currency": "VND",
+      "management_fee_pct_project": 30,
+      "booked_revenue_expected": 700000
+    },
+    "hspl_booked_revenue": {
+      "GET /api/legal/:projectId/payments": 700000,
+      "GET /api/legal/:projectId/overview": 700000
+    },
+    "booked_revenue": 700000,
+    "kpi_field": "summary.revenue.actual",
+    "kpi_alias": "actual.doanh_thu_ns",
+    "kpi_alias_value": 9800000,
+    "kpi_value": 9800000,
+    "kpi_before": 9100000,
+    "kpi_after_pending": 9100000,
+    "kpi_delta_on_processing": 700000,
+    "sum_hspl_booked_revenue_with_revenue_id": 9800000,
+    "equal": false,
+    "aggregate_parity": true,
+    "delta_parity": true,
+    "pending_did_not_change_kpi": true
+  },
+  "known_gap": {
+    "legalPaymentCommitRow_awaits_loadLegalProject": "Payment sheet blur still full-tree reload (086); C2 debounce checklist-only — not attempt-1 falsifier"
+  },
+  "client_booked_formula": {
+    "sheet_uses_api_booked_revenue_only": true,
+    "note": "public/static/app.js bookedCell renders p.booked_revenue from API (no calcRevenueNet on DT sổ cell)"
+  },
+  "failures": [],
+  "run_class": "PRODUCT_PASS_RUN",
+  "attempt_outcome": "PASS",
+  "falsifier_measured": true
+}

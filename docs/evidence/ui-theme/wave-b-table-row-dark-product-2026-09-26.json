@@ -1,0 +1,98 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-B-THEME",
+  "wave_id": "B-table-row-dark-wash",
+  "qa_tier": "product_spot",
+  "qa_batch": "browser_dark_table_row_wash",
+  "measured_at": "2026-09-26T12:10:00+07:00",
+  "measured_by": "qa-agent",
+  "classification": "PRODUCT_PASS_RUN",
+  "authority_lead_log": "Agents Logs/036.lead-dev-theme-legal-excel-wave-b-table-row-dark-wash-2026-09-26.md",
+  "runtime": {
+    "url": "http://127.0.0.1:8788/",
+    "build": "npm run build (vite + copy-public)",
+    "serve": "wrangler pages dev dist --d1=bim-management-production --local --port 8788 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "migrate": "npm run db:migrate:local",
+    "seed": "npm run db:seed:test",
+    "git_head": "fbb9beffb70fa69ea2b596873ee196349d9b9b4c",
+    "theme_lever_files": ["public/index.html", "public/static/app.js"],
+    "auth": "POST /api/auth/login admin / Admin@123456 (system_admin); member spot-check nguyen.van.a session"
+  },
+  "diff_isolation": {
+    "paths_in_diff_vs_head": ["public/index.html", "public/static/app.js"],
+    "forbidden_paths_in_diff": ["src/finance.ts"],
+    "result": "PASS",
+    "note": "036 lever is dark row/table CSS + analytics/legal row classes in app.js; entire Wave B shell still uncommitted on same two files"
+  },
+  "falsifier": "same table mixed rows — some light wash (#fff/#fff5f5) with shell light text illegible",
+  "checks": {
+    "dashboard_overdue_table": {
+      "route": "#/dashboard",
+      "theme": "dark",
+      "overdue_row_count": 3,
+      "overdue_row_bg_sample": "rgba(248, 113, 113, 0.14)",
+      "overdue_row_text_sample": "rgb(226, 232, 240)",
+      "light_wash_rgb_255_245_245": false,
+      "result": "PASS"
+    },
+    "tasks_overdue_and_normal": {
+      "route": "#/tasks",
+      "theme": "dark",
+      "rows_sampled": 10,
+      "overdue_rows": 5,
+      "any_light_row_wash": false,
+      "overdue_bg": "rgba(248, 113, 113, 0.14)",
+      "normal_row_bg_sample": "rgb(26, 35, 50)",
+      "td_text_sample": "rgb(226, 232, 240)",
+      "result": "PASS"
+    },
+    "leave_list_and_pagination": {
+      "route": "#/leave",
+      "theme": "dark",
+      "leave_row_even_in_table_probe": "rgb(26, 35, 50)",
+      "leave_row_odd_in_table_probe": "rgba(255, 255, 255, 0.02)",
+      "leave_pagination_bg": "rgb(15, 23, 41)",
+      "leave_pagination_text": "rgb(226, 232, 240)",
+      "populated_leave_rows_local": 0,
+      "result": "PASS",
+      "note": "empty local leave body; zebra tokens verified via in-table class probe + visible shell"
+    },
+    "legal_checklist_tables": {
+      "route": "#/legal project_id=1 tab=stages",
+      "theme": "dark",
+      "table_count": 12,
+      "row_count": 192,
+      "any_light_body_wash": false,
+      "body_row_bg_samples": ["rgb(26, 35, 50)", "rgba(255, 255, 255, 0.06)"],
+      "td_text_sample": "rgb(226, 232, 240)",
+      "result": "PASS"
+    },
+    "analytics_row_classes_and_inline_neutralization": {
+      "route": "#/analytics",
+      "theme": "dark",
+      "an_row_over_bg": "rgba(248, 113, 113, 0.12)",
+      "an_row_warn_bg": "rgba(251, 191, 36, 0.1)",
+      "an_row_zebra_bg": "rgba(255, 255, 255, 0.03)",
+      "inline_tr_background_hash_fff5f5_resolved_bg": "rgb(26, 35, 50)",
+      "semantic_text_on_tint": "rgb(226, 232, 240)",
+      "populated_project_finance_grid_local": false,
+      "populated_timesheet_task_detail_rows_local": false,
+      "result": "PASS",
+      "note": "class + inline neutralization verified on analytics shell; finance debt td still uses inline #fff5f5 in app.js with dark td[] override in index.html"
+    }
+  },
+  "screenshots": [
+    "docs/evidence/ui-theme/wave-b-table-row-dark-dashboard-2026-09-26.png",
+    "docs/evidence/ui-theme/wave-b-table-row-dark-tasks-2026-09-26.png",
+    "docs/evidence/ui-theme/wave-b-table-row-dark-legal-stages-2026-09-26.png"
+  ],
+  "not_measured": [
+    "Analytics tab project-finance populated grid with debt column cells (local D1 empty)",
+    "Analytics timesheet task detail table with live an-row-over/warn rows (0 timesheet task rows local)",
+    "Leave list with multi-page pagination controls populated",
+    "Project detail embedded task table (proxy: #/tasks PASS)",
+    "Light-mode regression sweep for .overdue-row pink tint",
+    "axe / member-only legal tab subset"
+  ],
+  "handoff": "technical-advisor",
+  "po_human": false
+}

@@ -11,15 +11,20 @@ import {
   aggregatePaymentsBeforeVat,
   aggregateThreeMoney,
   amountExcludingVat,
+  contractValueBeforeVat,
   sumPendingBookedFromPayments,
   calendarMonthsOrFilter,
   calendarPairsSpan,
   computeBookedRevenue,
+  computeLegalCostA,
+  legalCostAFormulaLabel,
+  resolveLegalCostAPct,
   computeMonthLaborCost as computeMonthLaborCostCore,
   computeProjectBudget,
   computeProjectLaborFromTimesheets,
   computeRealtimeLaborByProject,
   computeRealtimeLaborFromAggregates,
+  displayRevenuePaymentStatus,
   enrichPaymentMetrics,
   enrichRevenueRow,
   fetchAllProjectsHoursByMonth,
@@ -29,6 +34,8 @@ import {
   monthDateRange,
   resolveAssigneeNames,
   syncPaymentToRevenue,
+  paymentOnPackageSql,
+  revenueFromPackagePaymentSql,
   taskComputedProgress,
   yearDateRange,
   yearMonthKey,
@@ -58,6 +65,8 @@ type Bindings = {
   /** Optional Pages secrets for Cloudflare Email Sending REST */
   CF_ACCOUNT_ID?: string
   CF_EMAIL_API_TOKEN?: string
+  /** Optional. When set, the assistant may call a model once per question. */
+  AI_API_KEY?: string
 }
 
 // ===================================================
@@ -206,6 +215,45 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       return {
         subject: `[OneCad BIM] 📌 Task mới: ${data.taskTitle}`,
         html: emailBase(`📌 Bạn được giao task mới`, body)
+      }
+    }
+
+    case 'task_reassigned_to': {
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        ...(data.previousAssignee ? [{ label: 'Người phụ trách trước', value: data.previousAssignee }] : []),
+        ...(data.deadline ? [{ label: 'Hạn', value: '📅 ' + data.deadline }] : []),
+        { label: 'Người chuyển', value: data.assignedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Bạn được tiếp nhận một task đã đổi người phụ trách.</p>
+        ${emailCard('Tên Task', '📌 ' + data.taskTitle)}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập hệ thống để xem chi tiết và tiếp tục thực hiện task.</p>`
+      return {
+        subject: `[OneCad BIM] Bạn tiếp nhận task: ${data.taskTitle}`,
+        html: emailBase(`Bạn tiếp nhận task`, body)
+      }
+    }
+
+    case 'task_reassigned_from': {
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        { label: 'Người tiếp nhận', value: data.newAssignee || 'N/A' },
+        { label: 'Người chuyển', value: data.assignedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Task bạn đang phụ trách vừa được chuyển sang người khác.</p>
+        ${emailCard('Tên Task', '📌 ' + data.taskTitle)}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Bạn không còn là người phụ trách task này.</p>`
+      return {
+        subject: `[OneCad BIM] Bạn không còn phụ trách task: ${data.taskTitle}`,
+        html: emailBase(`Task đã chuyển người phụ trách`, body)
       }
     }
 
@@ -835,6 +883,7 @@ async function sendEmail(env: Bindings, opts: {
   userId?: number
   relatedType?: string
   relatedId?: number
+  skipPush?: boolean
 }): Promise<'sent' | 'failed' | 'skipped'> {
   // ── Bỏ qua email liên quan đến thanh toán và timesheet ──────────────────
   const SKIP_PAYMENT_EVENTS = new Set(['payment_request_new', 'payment_status_changed', 'timesheet_reviewed', 'timesheet_bulk_approved'])
@@ -844,7 +893,7 @@ async function sendEmail(env: Bindings, opts: {
   }
   // ─────────────────────────────────────────────────────────────────────────
 
-  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish'])
+  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_reassigned_to', 'task_reassigned_from', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish'])
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
     const pref = await opts.db.prepare(
@@ -972,7 +1021,7 @@ async function sendEmail(env: Bindings, opts: {
     } catch { /* ignore log error */ }
   }
 
-  if (opts.userId) {
+  if (opts.userId && !opts.skipPush) {
     const eventIconMap: Record<string, string> = {
       task_assigned:   '📋',
       task_overdue:    '⏰',
@@ -996,6 +1045,95 @@ async function sendEmail(env: Bindings, opts: {
 }
 
 // ---- Helper: get user email info ----
+async function notifyTaskAssigneeChange(
+  db: D1Database,
+  env: Bindings,
+  actor: { id: number; full_name?: string },
+  task: { id: number; title: string; project_id: number; priority?: string | null; due_date?: string | null },
+  previousAssigneeId: number | null,
+  nextAssigneeId: number | null,
+) {
+  if (previousAssigneeId === nextAssigneeId) return
+  const proj = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
+  const projectName = proj?.name || ''
+  const nameOf = async (userId: number | null) => {
+    if (!userId) return ''
+    const row = await db.prepare('SELECT full_name FROM users WHERE id = ?').bind(userId).first() as any
+    return String(row?.full_name || '')
+  }
+  const prevName = await nameOf(previousAssigneeId)
+  const nextName = await nameOf(nextAssigneeId)
+
+  const notify = async (
+    userId: number | null,
+    title: string,
+    message: string,
+    eventType: string,
+    data: Record<string, any>,
+  ) => {
+    if (!userId) return
+    if (eventType !== 'task_reassigned_from' && Number(userId) === Number(actor.id)) return
+    try {
+      await db.prepare(
+        'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(userId, title, message, 'info', 'task', task.id).run()
+    } catch { /* bell row is best-effort */ }
+    const info = await getUserEmailInfo(db, userId)
+    if (info?.email) {
+      await sendEmail(env, {
+        to: info.email,
+        toName: info.full_name,
+        eventType,
+        data,
+        db,
+        userId,
+        relatedType: 'task',
+        relatedId: task.id,
+        skipPush: true,
+      })
+    }
+    sendWebPush(db, userId, {
+      title,
+      body: message,
+      tag: `${eventType}-${task.id}`,
+      url: '/',
+      notifId: null,
+      relatedType: 'task',
+      relatedId: task.id,
+    }).catch(() => {})
+  }
+
+  if (previousAssigneeId) {
+    const who = nextName || 'chưa chỉ định'
+    await notify(
+      previousAssigneeId,
+      'Task đã chuyển người phụ trách',
+      `Task "${task.title}" không còn giao cho bạn. Người tiếp nhận: ${who}.`,
+      'task_reassigned_from',
+      { taskTitle: task.title, projectName, newAssignee: who, assignedBy: actor.full_name || '' },
+    )
+  }
+  if (nextAssigneeId) {
+    const takingOver = !!previousAssigneeId
+    await notify(
+      nextAssigneeId,
+      takingOver ? 'Bạn tiếp nhận task' : 'Task mới được giao',
+      takingOver
+        ? `Bạn được tiếp nhận task: ${task.title}${prevName ? ` (trước đó: ${prevName})` : ''}.`
+        : `Bạn được giao task: ${task.title}`,
+      takingOver ? 'task_reassigned_to' : 'task_assigned',
+      {
+        taskTitle: task.title,
+        projectName,
+        priority: task.priority,
+        deadline: task.due_date,
+        assignedBy: actor.full_name || '',
+        previousAssignee: prevName,
+      },
+    )
+  }
+}
+
 async function getUserEmailInfo(db: D1Database, userId: number): Promise<{ email: string; full_name: string } | null> {
   const user = await db.prepare('SELECT email, full_name FROM users WHERE id = ? AND is_active = 1').bind(userId).first() as any
   if (!user?.email) return null
@@ -1590,8 +1728,8 @@ app.get('/api/projects', authMiddleware, async (c) => {
       SELECT
         p.id, p.code, p.name, p.description, p.client, p.project_type, p.status,
         p.start_date, p.end_date, p.location, p.admin_id, p.leader_id, p.progress,
-        p.created_by, p.created_at, p.updated_at, p.management_fee_pct,
-        p.contract_value, p.budget,
+        p.created_by, p.created_at, p.updated_at, p.management_fee_pct, p.vat_pct,
+        p.contract_value, p.budget, p.project_code_letter,
         u1.full_name as admin_name,
         u2.full_name as leader_name,
         COALESCE(ts.total_tasks, 0) as total_tasks,
@@ -1724,7 +1862,7 @@ app.post('/api/projects', authMiddleware, async (c) => {
     }
 
     const data = await c.req.json()
-    const { code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter } = data
+    const { code, name, description, client, project_type, status, start_date, end_date, budget, management_fee_pct, vat_pct, location, admin_id, leader_id, project_code_letter } = data
 
     if (!code || !name) return c.json({ error: 'Code and name required' }, 400)
 
@@ -1739,11 +1877,12 @@ app.post('/api/projects', authMiddleware, async (c) => {
     }
 
     const feePct = Math.min(100, Math.max(0, parseFloat(management_fee_pct) || 0))
+    const vatPct = Math.min(100, Math.max(0, parseFloat(vat_pct) || 0))
     const result = await db.prepare(
-      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, vat_pct, location, admin_id, leader_id, project_code_letter, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(codeNorm, name, description || null, client || null, project_type || 'building', status || 'planning',
-      start_date || null, end_date || null, budget || 0, contract_value || 0, feePct, location || null,
+      start_date || null, end_date || null, budget || 0, 0, feePct, vatPct, location || null,
       admin_id || user.id, leader_id || null, project_code_letter || codeNorm, user.id).run()
 
     const projectId = result.meta.last_row_id
@@ -1818,6 +1957,10 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     const db = c.env.DB
     const id = parseInt(c.req.param('id'))
     const data = await c.req.json()
+    delete data.contract_value
+    if (data.vat_pct !== undefined) {
+      data.vat_pct = Math.min(100, Math.max(0, parseFloat(data.vat_pct) || 0))
+    }
     const user = c.get('user') as any
     // Only system_admin or project admin_id can edit
     const proj = await db.prepare('SELECT * FROM projects WHERE id = ?').bind(id).first() as any
@@ -1825,7 +1968,7 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     if (user.role !== 'system_admin' && proj.admin_id !== user.id)
       return c.json({ error: 'Không có quyền chỉnh sửa dự án này' }, 403)
     const allowedFields = user.role === 'system_admin'
-      ? ['code','name','description','client','project_type','status','start_date','end_date','contract_value','management_fee_pct','location','admin_id','leader_id','progress','project_code_letter']
+      ? ['code','name','description','client','project_type','status','start_date','end_date','management_fee_pct','vat_pct','location','admin_id','leader_id','progress','project_code_letter']
       : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress','project_code_letter']
     if (data.code !== undefined && user.role === 'system_admin') {
       const codeNorm = String(data.code).trim()
@@ -1909,7 +2052,11 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
       } catch (_) { /* ignore email errors */ }
     }
 
-    return c.json({ success: true })
+    if (data.vat_pct !== undefined && Number(data.vat_pct) !== (Number(proj.vat_pct) || 0)) {
+      await applyProjectVatToPayments(db, id, user.id)
+    }
+
+    return c.json({ success: true, ...(await syncProjectContractFromPackages(db, id)) })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -2677,14 +2824,11 @@ app.get('/api/tasks/:id', authMiddleware, async (c) => {
   }
 })
 
-app.post('/api/tasks', authMiddleware, async (c) => {
+async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: any): Promise<{ status: number, body: any }> {
   try {
-    const db = c.env.DB
-    const user = c.get('user') as any
-    const data = await c.req.json()
     const { project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date } = data
 
-    if (!project_id || !title) return c.json({ error: 'project_id and title required' }, 400)
+    if (!project_id || !title) return { status: 400, body: { error: 'project_id and title required' } }
 
     // RBAC: mọi thành viên project đều được tạo task (kể cả member)
     // system_admin được tạo task ở mọi project
@@ -2695,7 +2839,7 @@ app.post('/api/tasks', authMiddleware, async (c) => {
       const membership = await db.prepare(
         'SELECT id FROM project_members WHERE project_id = ? AND user_id = ?'
       ).bind(project_id, user.id).first()
-      if (!membership) return c.json({ error: 'Bạn không phải thành viên của dự án này' }, 403)
+      if (!membership) return { status: 403, body: { error: 'Bạn không phải thành viên của dự án này' } }
     }
 
     const result = await db.prepare(
@@ -2724,7 +2868,7 @@ app.post('/api/tasks', authMiddleware, async (c) => {
       const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(project_id).first() as any
       if (emailUser) {
         const disciplineInfo = discipline_code ? await db.prepare('SELECT name FROM disciplines WHERE code = ?').bind(discipline_code).first() as any : null
-        await sendEmail(c.env, {
+        await sendEmail(env, {
           to: emailUser.email, toName: emailUser.full_name,
           eventType: 'task_assigned',
           data: { taskTitle: title, projectName: projInfo?.name, discipline: disciplineInfo?.name || discipline_code, priority: priority || 'medium', deadline: due_date, description, assignedBy: user.full_name },
@@ -2733,10 +2877,15 @@ app.post('/api/tasks', authMiddleware, async (c) => {
       }
     }
 
-    return c.json({ success: true, id: taskId }, 201)
+    return { status: 201, body: { success: true, id: taskId } }
   } catch (e: any) {
-    return c.json({ error: e.message }, 500)
+    return { status: 500, body: { error: e.message } }
   }
+}
+
+app.post('/api/tasks', authMiddleware, async (c) => {
+  const result = await createTaskRecord(c.env.DB, c.env, c.get('user'), await c.req.json())
+  return c.json(result.body, result.status as any)
 })
 
 // POST /api/tasks/bulk — tạo nhiều task cùng lúc (admin/leader)
@@ -2907,17 +3056,28 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
       }
     }
 
-    // ── Email: task_assigned (khi đổi người được giao) ──
-    if (data.assigned_to && data.assigned_to !== task.assigned_to) {
-      const emailUser = await getUserEmailInfo(db, data.assigned_to)
-      const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
-      if (emailUser) {
-        await sendEmail(c.env, {
-          to: emailUser.email, toName: emailUser.full_name,
-          eventType: 'task_assigned',
-          data: { taskTitle: task.title, projectName: projInfo?.name, priority: task.priority, deadline: task.due_date, assignedBy: user.full_name },
-          db, userId: data.assigned_to, relatedType: 'task', relatedId: id
-        })
+    if (fields.includes('assigned_to') && Object.prototype.hasOwnProperty.call(data, 'assigned_to')) {
+      const nextRaw = data.assigned_to ? Number(data.assigned_to) : null
+      const prevRaw = task.assigned_to ? Number(task.assigned_to) : null
+      const nextId = nextRaw && Number.isFinite(nextRaw) ? nextRaw : null
+      const prevId = prevRaw && Number.isFinite(prevRaw) ? prevRaw : null
+      if (nextId !== prevId) {
+        try {
+          await notifyTaskAssigneeChange(
+            db, c.env, user,
+            {
+              id,
+              title: data.title || task.title,
+              project_id: task.project_id,
+              priority: data.priority ?? task.priority,
+              due_date: data.due_date ?? task.due_date,
+            },
+            prevId,
+            nextId,
+          )
+        } catch (err: any) {
+          console.log('[task-assignee] notify failed: ' + (err?.message || err))
+        }
       }
     }
 
@@ -4030,11 +4190,8 @@ app.get('/api/timesheets/day-budget', authMiddleware, async (c) => {
   }
 })
 
-app.post('/api/timesheets', authMiddleware, async (c) => {
+async function createTimesheetRecord(db: D1Database, user: any, data: any): Promise<{ status: number, body: any }> {
   try {
-    const db = c.env.DB
-    const user = c.get('user') as any
-    const data = await c.req.json()
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description } = data
     const day_type = data.day_type || 'work'
     const category_id = data.category_id || null
@@ -4045,18 +4202,18 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     const taskEntries: Array<{task_id: number|null, regular_hours: number, overtime_hours: number}> = data.task_entries || []
     const isMultiTask = taskEntries.length > 0
 
-    if (!work_date) return c.json({ error: 'work_date required' }, 400)
-    if (!isLeaveDay && !project_id) return c.json({ error: 'project_id required for work day' }, 400)
+    if (!work_date) return { status: 400, body: { error: 'work_date required' } }
+    if (!isLeaveDay && !project_id) return { status: 400, body: { error: 'project_id required for work day' } }
 
     // Lấy role một lần dùng cho cả giới hạn tuần lẫn quyền tạo cho người khác
     const effRoleGlobal = await getEffectiveRole(db, user)
 
     // ── Giới hạn tuần: chỉ system_admin được khai báo timesheet tuần cũ ──
     if (effRoleGlobal !== 'system_admin' && !isWithinCurrentWeek(work_date)) {
-      return c.json({
+      return { status: 422, body: {
         error: 'Chỉ được khai báo timesheet trong tuần làm việc hiện tại (Thứ Hai – Chủ Nhật). Tuần đã qua không thể khai báo lại.',
         week_limit: true
-      }, 422)
+      } }
     }
 
     // Chỉ system_admin / project_admin được tạo timesheet cho người khác
@@ -4074,11 +4231,11 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       if (targetUserId !== user.id) {
         // Đang tạo timesheet cho người khác → phải là project_admin/system_admin
         if (!canCreateForOthers) {
-          return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác' }, 403)
+          return { status: 403, body: { error: 'Bạn không có quyền tạo timesheet cho người khác' } }
         }
         if (!isLeaveDay) {
           const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
-          if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác trong dự án này' }, 403)
+          if (!allowed) return { status: 403, body: { error: 'Bạn không có quyền tạo timesheet cho người khác trong dự án này' } }
         }
         // Leave day for others: only project_admin/system_admin (already guarded above)
       } else if (!isLeaveDay) {
@@ -4091,7 +4248,7 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
           `SELECT id FROM projects WHERE id = ? AND (admin_id = ? OR leader_id = ?)`
         ).bind(projIdToCheck, user.id, user.id).first()
         if (!isMember && !isAdminOrLeader) {
-          return c.json({ error: 'Bạn không phải thành viên của dự án này' }, 403)
+          return { status: 403, body: { error: 'Bạn không phải thành viên của dự án này' } }
         }
       }
       // Leave day for self: always allowed
@@ -4118,7 +4275,7 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       })
       const bad = validateTimesheetHoursAgainstBudget(budget, nReg, nOt)
       if (bad) {
-        return c.json({ error: bad.error, ...bad.payload }, 422)
+        return { status: 422, body: { error: bad.error, ...bad.payload } }
       }
     }
 
@@ -4137,7 +4294,7 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     if (existing) {
       // Prevent editing approved timesheets (unless system_admin)
       if (existing.status === 'approved' && user.role !== 'system_admin') {
-        return c.json({ error: 'Timesheet ngày này đã được duyệt. Không thể cập nhật.', exists: true, id: existing.id, status: existing.status }, 409)
+        return { status: 409, body: { error: 'Timesheet ngày này đã được duyệt. Không thể cập nhật.', exists: true, id: existing.id, status: existing.status } }
       }
       // Update existing record
       await db.prepare(
@@ -4168,13 +4325,18 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       }
     }
 
-    return c.json({ success: true, id: timesheetId, action: existing ? 'updated' : 'created' }, existing ? 200 : 201)
+    return { status: existing ? 200 : 201, body: { success: true, id: timesheetId, action: existing ? 'updated' : 'created' } }
   } catch (e: any) {
     if (e.message?.includes('UNIQUE constraint failed')) {
-      return c.json({ error: 'Timesheet cho ngày này đã tồn tại. Vui lòng chỉnh sửa bản ghi hiện có.', duplicate: true }, 409)
+      return { status: 409, body: { error: 'Timesheet cho ngày này đã tồn tại. Vui lòng chỉnh sửa bản ghi hiện có.', duplicate: true } }
     }
-    return c.json({ error: e.message }, 500)
+    return { status: 500, body: { error: e.message } }
   }
+}
+
+app.post('/api/timesheets', authMiddleware, async (c) => {
+  const result = await createTimesheetRecord(c.env.DB, c.get('user'), await c.req.json())
+  return c.json(result.body, result.status as any)
 })
 
 app.put('/api/timesheets/:id', authMiddleware, async (c) => {
@@ -5111,7 +5273,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
     const projFilter   = project_id ? `AND p.id = ${parseInt(project_id)}` : ''
     const dateFilter   = year ? `AND pr.revenue_date >= '${fyStart}' AND pr.revenue_date <= '${fyEnd}'` : ''
 
-    // ── Phần 1: project_revenues (paid / partial) đã có revenue_date ──────────
+    // Chỉ phiếu đã ghi sổ: processing / partial / paid.
+    // pending (Chờ thanh toán) và rejected không vào danh sách doanh thu.
     // paid_amount_original = amount (Giá trị nghiệm thu) → Cột "Theo HĐ"
     // paid_amount          = paid_amount thực tế từ payment_requests → Cột "Dòng tiền"
     const paidQuery = `
@@ -5127,6 +5290,7 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         NULL             AS request_date,
         pr.invoice_number,
         pr.payment_status,
+        pq.status        AS linked_payment_status,
         pr.notes,
         'revenue'        AS source,
         -- Theo HĐ = gross NT từ payment_requests (NULL nếu orphan — không COALESCE sang booked)
@@ -5138,51 +5302,27 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
       FROM project_revenues pr
       JOIN projects p ON p.id = pr.project_id
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
-      WHERE pr.payment_status IN ('paid','partial')
+      WHERE (
+          pr.payment_status IN ('paid','partial','processing')
+          OR pq.status = 'processing'
+        )
         ${projFilter}
         ${dateFilter}
+        AND ${revenueFromPackagePaymentSql('pr')}
     `
 
-    // ── Phần 2: payment_requests (pending) — không lọc ngày ──────────────────
-    // Khoản chờ thu chưa có paid_date, dùng request_date để hiển thị
-    const pendingQuery = `
-      SELECT
-        pq.id            AS id,
-        pq.project_id,
-        p.code           AS project_code,
-        p.name           AS project_name,
-        pq.description,
-        pq.amount,
-        pq.currency,
-        NULL             AS revenue_date,   -- chưa có ngày thu thực tế
-        pq.request_date,                    -- ngày yêu cầu (dùng để hiển thị)
-        pq.invoice_number,
-        'pending'        AS payment_status,
-        pq.notes,
-        'payment_request' AS source,
-        pq.amount           AS paid_amount_original,  -- Theo HĐ = nghiệm thu
-        COALESCE(pq.paid_amount, 0) AS paid_amount,   -- Dòng tiền (thường = 0 với pending)
-        p.management_fee_pct AS fee_pct,
-        COALESCE(pq.vat_pct, 0) AS vat_pct
-      FROM payment_requests pq
-      JOIN projects p ON p.id = pq.project_id
-      WHERE pq.status = 'pending'
-        ${project_id ? `AND pq.project_id = ${parseInt(project_id)}` : ''}
-        ${year ? `AND (pq.request_date IS NULL OR (pq.request_date >= '${fyStart}' AND pq.request_date <= '${fyEnd}'))` : ''}
-    `
+    const paidRows = await db.prepare(paidQuery).all()
 
-    const [paidRows, pendingRows] = await Promise.all([
-      db.prepare(paidQuery).all(),
-      db.prepare(pendingQuery).all()
-    ])
+    const paid = (paidRows.results as any[]).sort((a, b) =>
+      (b.revenue_date || '').localeCompare(a.revenue_date || '')).map((row) => {
+        const { linked_payment_status, ...rest } = row
+        return enrichRevenueRow({
+          ...rest,
+          payment_status: displayRevenuePaymentStatus(rest.payment_status, linked_payment_status),
+        })
+      })
 
-    // Ghép: đã thu trước, chờ thu sau; sắp xếp trong từng nhóm theo ngày giảm dần
-    const paid    = (paidRows.results    as any[]).sort((a, b) =>
-      (b.revenue_date || '').localeCompare(a.revenue_date || '')).map(enrichRevenueRow)
-    const pending = (pendingRows.results as any[]).sort((a, b) =>
-      (b.request_date || '').localeCompare(a.request_date || '')).map(enrichRevenueRow)
-
-    return c.json([...paid, ...pending])
+    return c.json(paid)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -8484,7 +8624,17 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
 
     const curYear  = new Date().getFullYear()
     const curMonth = new Date().getMonth() + 1
-    const curMonthStr = String(curMonth).padStart(2, '0')
+    const birthdayMonthNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
+    const birthdaySlots = [0, 1, 2].map(offset => {
+      const d = new Date(curYear, curMonth - 1 + offset, 1)
+      return {
+        year: d.getFullYear(),
+        month: d.getMonth() + 1,
+        month_key: String(d.getMonth() + 1).padStart(2, '0'),
+        label: birthdayMonthNames[d.getMonth()],
+        is_current: offset === 0,
+      }
+    })
     const fySettings3 = await getFiscalYearSettings(db)
     const { startDate: fyStartNow, endDate: fyEndNow } = getFiscalYearDateRange(curYear, fySettings3)
     const { start: monthStart, endExclusive: monthEnd } = monthDateRange(curYear, curMonth)
@@ -8610,9 +8760,9 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         SELECT id, full_name, birthday, department, job_title
         FROM users
         WHERE is_active = 1 AND birthday IS NOT NULL AND birthday != ''
-          AND strftime('%m', birthday) = ?
-        ORDER BY strftime('%d', birthday) ASC
-      `).bind(curMonthStr).all(),
+          AND strftime('%m', birthday) IN (?, ?, ?)
+        ORDER BY strftime('%m', birthday) ASC, strftime('%d', birthday) ASC
+      `).bind(birthdaySlots[0].month_key, birthdaySlots[1].month_key, birthdaySlots[2].month_key).all(),
       db.prepare(`
         SELECT p.id, p.code, p.name,
           date(p.end_date) as end_date,
@@ -8710,7 +8860,14 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         return { ...r, completion_rate, ontime_rate, productivity, score }
       })
     }
-    const birthdayRows = ((birthdaysThisMonth as any).results as any[]).map(u => ({ ...u, avatar: avatarApiPath(u.id) }))
+    const birthdayAll = ((birthdaysThisMonth as any).results as any[]).map(u => ({ ...u, avatar: avatarApiPath(u.id) }))
+    const birthdaysForecast = birthdaySlots.map(slot => {
+      const people = birthdayAll
+        .filter(u => String(u.birthday || '').substring(5, 7) === slot.month_key)
+        .sort((a, b) => String(a.birthday).substring(8, 10).localeCompare(String(b.birthday).substring(8, 10)))
+      return { ...slot, count: people.length, people }
+    })
+    const birthdayRows = birthdaysForecast[0]?.people || []
 
     return c.json({
       stats: {
@@ -8758,6 +8915,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       projects_near_deadline: (projectsNearDeadline as any).results,
       my_active_tasks: (myActiveTasks as any).results,
       birthdays_this_month: birthdayRows,
+      birthdays_forecast: birthdaysForecast,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -11677,6 +11835,7 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       FROM project_revenues
       WHERE payment_status IN ('paid','partial')
         AND revenue_date >= ? AND revenue_date <= ?
+        AND ${revenueFromPackagePaymentSql('project_revenues')}
       GROUP BY strftime('%Y-%m', revenue_date)
     `).bind(fyStart, fyEnd).all()
 
@@ -11687,6 +11846,7 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status = 'pending'
         AND pq.request_date >= ? AND pq.request_date <= ?
+        AND ${paymentOnPackageSql('pq')}
       GROUP BY strftime('%Y-%m', pq.request_date)
     `).bind(fyStart, fyEnd).all()
 
@@ -11981,6 +12141,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         SUM(CASE WHEN payment_status = 'partial' AND revenue_date >= ? AND revenue_date <= ? THEN amount ELSE 0 END) as revenue_partial,
         SUM(CASE WHEN payment_status IN ('paid','partial') AND revenue_date >= ? AND revenue_date <= ? THEN amount ELSE 0 END) as revenue_total
       FROM project_revenues
+      WHERE ${revenueFromPackagePaymentSql('project_revenues')}
       GROUP BY project_id
     `).bind(fyStart, fyEnd, fyStart, fyEnd, fyStart, fyEnd, fyStart, fyEnd).all()
 
@@ -11991,6 +12152,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status = 'pending'
         AND pq.request_date >= ? AND pq.request_date <= ?
+        AND ${paymentOnPackageSql('pq')}
       GROUP BY pr.project_id
     `).bind(fyStart, fyEnd).all()
     const pendingBookedMap: Record<number, number> = {}
@@ -12004,6 +12166,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
              request_date, paid_date
       FROM payment_requests
       WHERE status IN ('paid', 'partial', 'pending')
+        AND ${paymentOnPackageSql('payment_requests')}
     `).all()
     const payRowsNtcFiltered = (payRowsNtc.results as any[]).filter((r: any) => {
       if (r.status === 'pending') {
@@ -12212,6 +12375,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         MIN(revenue_date) as first_revenue_date,
         MAX(revenue_date) as last_revenue_date
       FROM project_revenues
+      WHERE ${revenueFromPackagePaymentSql('project_revenues')}
       GROUP BY project_id
     `).all()
 
@@ -12220,6 +12384,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
       FROM payment_requests
       WHERE status IN ('paid', 'partial', 'pending')
+        AND ${paymentOnPackageSql('payment_requests')}
     `).all()
     const { acceptanceByProject: revOrigMapLT, cashByProject: paidAmtMapLT } =
       aggregatePaymentsBeforeVat(payRowsLT.results as any[])
@@ -12680,229 +12845,17 @@ app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) =>
 // MODULE: HỒ SƠ PHÁP LÝ DỰ ÁN (Legal Documents)
 // ===================================================
 
-// ── Default stages & items template ─────────────────────────────────────────
-const DEFAULT_LEGAL_STAGES = [
-  {
-    code: 'A', name: 'Hồ sơ BCNCKT (Báo cáo nghiên cứu khả thi)', sort_order: 1,
-    items: [
-      { stt: '1', title: 'Hồ sơ nhiệm vụ và dự toán', item_type: 'group', children: [
-        { stt: '1.1', title: 'Đề cương nhiệm vụ', item_type: 'document' },
-        { stt: '1.2', title: 'Dự toán chi phí tư vấn', item_type: 'document' },
-        { stt: '1.3', title: 'Phê duyệt đề cương và dự toán', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Sản phẩm BIM giai đoạn BCNCKT', item_type: 'group', children: [
-        { stt: '2.1', title: 'Mô hình BIM BCNCKT', item_type: 'document' },
-        { stt: '2.2', title: 'Báo cáo kết quả BCNCKT', item_type: 'document' },
-        { stt: '2.3', title: 'Nộp và bàn giao sản phẩm', item_type: 'task' },
-      ]},
-    ]
-  },
-  {
-    code: 'B', name: 'Hồ sơ GĐTK (Thiết kế kỹ thuật)', sort_order: 2,
-    items: [
-      { stt: '1', title: 'Hồ sơ hợp đồng tư vấn', item_type: 'group', children: [
-        { stt: '1.1', title: 'Hợp đồng tư vấn thiết kế', item_type: 'document' },
-        { stt: '1.2', title: 'Phụ lục hợp đồng (nếu có)', item_type: 'document' },
-        { stt: '1.3', title: 'Kế hoạch thực hiện BIM (BEP)', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Hồ sơ thiết kế kỹ thuật', item_type: 'group', children: [
-        { stt: '2.1', title: 'Báo cáo triển khai BIM định kỳ', item_type: 'task' },
-        { stt: '2.2', title: 'Mô hình BIM GĐTK', item_type: 'document' },
-        { stt: '2.3', title: 'Hồ sơ thiết kế bản vẽ kỹ thuật', item_type: 'document' },
-        { stt: '2.4', title: 'Dự toán công trình', item_type: 'document' },
-      ]},
-      { stt: '3', title: 'Nghiệm thu và bàn giao GĐTK', item_type: 'group', children: [
-        { stt: '3.1', title: 'Biên bản nghiệm thu sản phẩm tư vấn', item_type: 'document' },
-        { stt: '3.2', title: 'Phê duyệt thiết kế kỹ thuật', item_type: 'document' },
-        { stt: '3.3', title: 'Đề nghị thanh toán', item_type: 'document' },
-      ]},
-    ]
-  },
-  {
-    code: 'C', name: 'Hồ sơ Thi công', sort_order: 3,
-    items: [
-      { stt: '1', title: 'Hồ sơ hợp đồng tư vấn thi công', item_type: 'group', children: [
-        { stt: '1.1', title: 'Hợp đồng tư vấn thi công', item_type: 'document' },
-        { stt: '1.2', title: 'Phụ lục hợp đồng (nếu có)', item_type: 'document' },
-        { stt: '1.3', title: 'BEP giai đoạn thi công', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Hồ sơ bản vẽ thi công', item_type: 'group', children: [
-        { stt: '2.1', title: 'Bản vẽ thi công chi tiết', item_type: 'document' },
-        { stt: '2.2', title: 'Mô hình BIM thi công', item_type: 'document' },
-        { stt: '2.3', title: 'Bảng thống kê khối lượng', item_type: 'document' },
-        { stt: '2.4', title: 'Báo cáo giám sát thi công định kỳ', item_type: 'task' },
-      ]},
-      { stt: '3', title: 'Nghiệm thu và thanh toán', item_type: 'group', children: [
-        { stt: '3.1', title: 'Biên bản nghiệm thu từng đợt', item_type: 'document' },
-        { stt: '3.2', title: 'Xác nhận khối lượng hoàn thành (Mẫu 3A)', item_type: 'document' },
-        { stt: '3.3', title: 'Giấy đề nghị thanh toán', item_type: 'document' },
-      ]},
-    ]
-  },
-  {
-    code: 'D', name: 'Hồ sơ Hoàn công', sort_order: 4,
-    items: [
-      { stt: '1', title: 'Hồ sơ hoàn công BIM', item_type: 'group', children: [
-        { stt: '1.1', title: 'Mô hình BIM hoàn công (As-built)', item_type: 'document' },
-        { stt: '1.2', title: 'Bản vẽ hoàn công', item_type: 'document' },
-        { stt: '1.3', title: 'Báo cáo tổng kết triển khai BIM', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Nghiệm thu hoàn công và thanh lý', item_type: 'group', children: [
-        { stt: '2.1', title: 'Biên bản nghiệm thu hoàn thành toàn bộ', item_type: 'document' },
-        { stt: '2.2', title: 'Mẫu số 3A - Xác nhận khối lượng hoàn thành', item_type: 'document' },
-        { stt: '2.3', title: 'Giấy đề nghị thanh toán lần cuối', item_type: 'document' },
-        { stt: '2.4', title: 'Thanh lý hợp đồng', item_type: 'document' },
-      ]},
-    ]
-  },
-]
+// Gói thầu mẫu đã chuyển sang docs/backup/legal-package-templates.ts và không còn được tạo sẵn.
 
-// ── Template 4 giai đoạn A-B-C-D cho mỗi gói thầu ──────────────────────────
-// Dùng khi tạo gói thầu mới. Tên giai đoạn có thể đổi tùy dự án.
-const DEFAULT_STAGES_FOR_PACKAGE = [
-  {
-    code: 'A', name: 'A. Chuẩn bị & Dự thầu', sort_order: 1,
-    items: [
-      { stt: '1', title: 'Hồ sơ năng lực dự thầu', item_type: 'group', children: [
-        { stt: '1.1', title: 'Đề cương nhiệm vụ & Dự toán chi phí', item_type: 'document' },
-        { stt: '1.2', title: 'Thư ngỏ / Thư cam kết thực hiện', item_type: 'document' },
-        { stt: '1.3', title: 'Hồ sơ năng lực nhà thầu', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Phê duyệt chủ trương & Kế hoạch lựa chọn nhà thầu', item_type: 'document', children: [] },
-    ]
-  },
-  {
-    code: 'B', name: 'B. Ký hợp đồng', sort_order: 2,
-    items: [
-      { stt: '1', title: 'Thương thảo và ký hợp đồng', item_type: 'group', children: [
-        { stt: '1.1', title: 'Công văn tham gia thương thảo hợp đồng', item_type: 'document' },
-        { stt: '1.2', title: 'Biên bản thương thảo hợp đồng', item_type: 'document' },
-        { stt: '1.3', title: 'Hợp đồng kinh tế', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Hồ sơ sau ký hợp đồng', item_type: 'group', children: [
-        { stt: '2.1', title: 'Bảo lãnh tạm ứng (nếu có)', item_type: 'document' },
-        { stt: '2.2', title: 'Đơn đề nghị tạm ứng', item_type: 'document' },
-        { stt: '2.3', title: 'Quyết định thành lập tổ chuyên gia', item_type: 'document' },
-        { stt: '2.4', title: 'Kế hoạch thực hiện BIM (BEP)', item_type: 'document' },
-      ]},
-    ]
-  },
-  {
-    code: 'C', name: 'C. Thực hiện & Sản phẩm BIM', sort_order: 3,
-    items: [
-      { stt: '1', title: 'Triển khai thực hiện', item_type: 'group', children: [
-        { stt: '1.1', title: 'Báo cáo triển khai BIM định kỳ', item_type: 'task' },
-        { stt: '1.2', title: 'Họp phối hợp BIM', item_type: 'task' },
-        { stt: '1.3', title: 'Phụ lục hợp đồng (nếu phát sinh)', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Nộp sản phẩm', item_type: 'group', children: [
-        { stt: '2.1', title: 'Mô hình BIM và hồ sơ thiết kế', item_type: 'document' },
-        { stt: '2.2', title: 'Báo cáo tổng kết & Bàn giao sản phẩm', item_type: 'document' },
-      ]},
-    ]
-  },
-  {
-    code: 'D', name: 'D. Nghiệm thu & Thanh toán', sort_order: 4,
-    items: [
-      { stt: '1', title: 'Nghiệm thu', item_type: 'group', children: [
-        { stt: '1.1', title: 'Biên bản nghiệm thu sản phẩm tư vấn', item_type: 'document' },
-        { stt: '1.2', title: 'Mẫu 3A - Xác nhận khối lượng hoàn thành', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Thanh toán', item_type: 'group', children: [
-        { stt: '2.1', title: 'Giấy đề nghị thanh toán', item_type: 'document' },
-        { stt: '2.2', title: 'Hóa đơn tài chính', item_type: 'document' },
-        { stt: '2.3', title: 'Thanh lý hợp đồng', item_type: 'document' },
-      ]},
-    ]
-  },
-]
-
-// Tên package mặc định theo loại
-const DEFAULT_PACKAGE_NAMES: Record<string, string> = {
-  bcnckt:       'Gói BCNCKT (Báo cáo nghiên cứu khả thi)',
-  tkbvtc:       'Gói TKBVTC (Thiết kế bản vẽ thi công)',
-  construction: 'Gói Thi công & Hoàn công',
-  custom:       'Gói thầu tùy chỉnh',
-}
-
-// ── Helper: tạo stages A-B-C-D cho 1 package ────────────────────────────────
-async function initStagesForPackage(db: D1Database, projectId: number, packageId: number, createdBy: number) {
-  for (const stage of DEFAULT_STAGES_FOR_PACKAGE) {
-    const stageResult = await db.prepare(
-      'INSERT INTO legal_stages (project_id, package_id, code, name, sort_order) VALUES (?,?,?,?,?)'
-    ).bind(projectId, packageId, stage.code, stage.name, stage.sort_order).run()
-    const stageId = stageResult.meta.last_row_id
-
-    let sortOrder = 0
-    for (const item of stage.items) {
-      sortOrder++
-      const parentResult = await db.prepare(
-        `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, sort_order, created_by)
-         VALUES (?,?,NULL,?,?,?,?,?)`
-      ).bind(projectId, stageId, item.stt, item.title, item.item_type, sortOrder, createdBy).run()
-      const parentId = parentResult.meta.last_row_id
-      if (item.children && item.children.length > 0) {
-        let childSort = 0
-        for (const child of item.children) {
-          childSort++
-          await db.prepare(
-            `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, sort_order, created_by)
-             VALUES (?,?,?,?,?,?,?,?)`
-          ).bind(projectId, stageId, parentId, child.stt, child.title, child.item_type, childSort, createdBy).run()
-        }
-      }
-    }
-  }
-}
-
-// ── Helper: init legal cho project mới (tạo 3 gói thầu mặc định) ────────────
-async function initLegalStagesForProject(db: D1Database, projectId: number, createdBy: number) {
-  // Check if already initialized (có package hoặc stage cũ)
-  const existingPkg = await db.prepare('SELECT id FROM legal_packages WHERE project_id = ?').bind(projectId).first()
-  const existingStage = await db.prepare('SELECT id FROM legal_stages WHERE project_id = ?').bind(projectId).first()
-  if (existingPkg || existingStage) return { skipped: true }
-
-  // Tạo 3 gói thầu mặc định
-  const defaultPackages = [
-    { name: DEFAULT_PACKAGE_NAMES.bcnckt,       package_type: 'bcnckt',       sort_order: 1 },
-    { name: DEFAULT_PACKAGE_NAMES.tkbvtc,       package_type: 'tkbvtc',       sort_order: 2 },
-    { name: DEFAULT_PACKAGE_NAMES.construction,  package_type: 'construction', sort_order: 3 },
-  ]
-
-  for (const pkg of defaultPackages) {
-    const pkgResult = await db.prepare(
-      'INSERT INTO legal_packages (project_id, name, package_type, sort_order) VALUES (?,?,?,?)'
-    ).bind(projectId, pkg.name, pkg.package_type, pkg.sort_order).run()
-    const packageId = pkgResult.meta.last_row_id
-    await initStagesForPackage(db, projectId, packageId as number, createdBy)
-  }
-
-  // Default letter config
+async function initLegalStagesForProject(db: D1Database, projectId: number, _createdBy: number) {
   await db.prepare(
     `INSERT OR IGNORE INTO legal_letter_config (project_id, prefix) VALUES (?,?)`
   ).bind(projectId, 'OC').run()
-
-  return { initialized: true }
+  return { initialized: false, empty: true }
 }
 
-// ── Helper: migrate dự án cũ (stages không có package_id) → xóa và reinit 3 gói mặc định ──
-async function migrateOldProjectToPackages(db: D1Database, projectId: number, createdBy: number) {
-  const orphanStages = await db.prepare(
-    'SELECT id FROM legal_stages WHERE project_id = ? AND package_id IS NULL'
-  ).bind(projectId).all()
-  if (!orphanStages.results || orphanStages.results.length === 0) return { skipped: true }
-
-  // Xóa items và stages cũ không có package (dữ liệu cũ trước khi có cấu trúc gói thầu)
-  const orphanIds = (orphanStages.results as any[]).map((s: any) => s.id)
-  for (const sid of orphanIds) {
-    await db.prepare('DELETE FROM legal_items WHERE stage_id = ?').bind(sid).run()
-  }
-  await db.prepare('DELETE FROM legal_stages WHERE project_id = ? AND package_id IS NULL').bind(projectId).run()
-
-  // Reinit với 3 gói thầu mặc định
-  await initLegalStagesForProject(db, projectId, createdBy)
-
-  return { migrated: true }
+async function migrateOldProjectToPackages(_db: D1Database, _projectId: number, _createdBy: number) {
+  return { skipped: true }
 }
 
 // ── Mã hiệu loại văn bản (dùng trong số văn bản) ────────────────────────────
@@ -13054,7 +13007,91 @@ app.delete('/api/legal/stages/:id', authMiddleware, async (c) => {
   }
 })
 
+function legalPackageContractInput(data: any) {
+  const code = String(data?.code || '').trim() || null
+  const start = String(data?.start_date || '').trim() || null
+  const end = String(data?.end_date || '').trim() || null
+  const raw = data?.contract_value
+  const contractValue = raw == null || raw === '' ? 0 : Math.max(0, Number(String(raw).replace(/[^\d.-]/g, '')) || 0)
+  return { code, start_date: start, end_date: end, contract_value: contractValue }
+}
+
 // ── Package CRUD ──────────────────────────────────────────────────────────────
+
+// GET /api/legal/package-counts — số gói thầu theo dự án (danh sách Hồ sơ pháp lý)
+app.get('/api/legal/package-counts', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  try {
+    const db = c.env.DB
+    const sql = user.role === 'system_admin'
+      ? `SELECT project_id, COUNT(*) AS package_count
+         FROM legal_packages GROUP BY project_id`
+      : `SELECT lp.project_id, COUNT(*) AS package_count
+         FROM legal_packages lp
+         WHERE lp.project_id IN (
+           SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+           UNION
+           SELECT project_id FROM project_members WHERE user_id = ?
+         )
+         GROUP BY lp.project_id`
+    const stmt = db.prepare(sql)
+    const rows = user.role === 'system_admin'
+      ? await stmt.all()
+      : await stmt.bind(user.id, user.id, user.id).all()
+    const counts: Record<string, number> = {}
+    for (const row of rows.results as any[]) counts[String(row.project_id)] = Number(row.package_count) || 0
+    return c.json({ counts })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+
+async function syncProjectContractFromPackages(db: D1Database, projectId: number) {
+  const row = await db.prepare(`
+    SELECT
+      COALESCE((SELECT SUM(contract_value) FROM legal_packages WHERE project_id = ?), 0) AS gross,
+      COALESCE((SELECT vat_pct FROM projects WHERE id = ?), 0) AS vat_pct
+  `).bind(projectId, projectId).first() as { gross?: number; vat_pct?: number } | null
+  const packageGross = Number(row?.gross) || 0
+  const vatPct = Number(row?.vat_pct) || 0
+  const contractValue = contractValueBeforeVat(packageGross, vatPct)
+  await db.prepare(
+    'UPDATE projects SET contract_value = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+  ).bind(contractValue, projectId).run()
+  return { contract_value: contractValue, package_gross: packageGross, vat_pct: vatPct }
+}
+
+async function applyProjectVatToPayments(db: D1Database, projectId: number, userId: number) {
+  const proj = await db.prepare(
+    'SELECT COALESCE(vat_pct, 0) AS vat_pct FROM projects WHERE id = ?'
+  ).bind(projectId).first() as { vat_pct?: number } | null
+  const vat = Math.min(100, Math.max(0, Number(proj?.vat_pct) || 0))
+  const rows = await db.prepare(
+    'SELECT * FROM payment_requests WHERE project_id = ? AND COALESCE(vat_pct, 0) != ?'
+  ).bind(projectId, vat).all()
+  for (const raw of rows.results as any[]) {
+    await db.prepare(
+      'UPDATE payment_requests SET vat_pct = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+    ).bind(vat, raw.id).run()
+    const revenueId = await syncPaymentToRevenue(db, {
+      id: raw.id,
+      project_id: projectId,
+      description: raw.description,
+      amount: raw.amount || 0,
+      paid_amount: raw.paid_amount || 0,
+      currency: raw.currency || 'VND',
+      paid_date: raw.paid_date || null,
+      invoice_number: raw.invoice_number || null,
+      payment_phase: raw.payment_phase || null,
+      status: raw.status || 'pending',
+      revenue_id: raw.revenue_id || null,
+      notes: raw.notes || null,
+      vat_pct: vat,
+      request_date: raw.request_date || null,
+    }, userId)
+    await db.prepare('UPDATE payment_requests SET revenue_id = ? WHERE id = ?')
+      .bind(revenueId || null, raw.id).run()
+  }
+}
 
 // GET /api/legal/:projectId/packages
 app.get('/api/legal/:projectId/packages', authMiddleware, async (c) => {
@@ -13067,13 +13104,15 @@ app.get('/api/legal/:projectId/packages', authMiddleware, async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
-// POST /api/legal/:projectId/packages — Thêm gói thầu mới (kèm 4 stages A-D)
+// POST /api/legal/:projectId/packages — Thêm gói thầu trống (không hồ sơ mẫu)
 app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
   const user = c.get('user') as any
   if (!['system_admin','project_admin','project_leader'].includes(user.role))
     return c.json({ error: 'Forbidden' }, 403)
   const projectId = parseInt(c.req.param('projectId'))
-  const { name, package_type } = await c.req.json()
+  const body = await c.req.json()
+  const { name, package_type } = body
+  const contract = legalPackageContractInput(body)
   if (!name || !name.trim()) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
   try {
     const maxOrderRow = await c.env.DB.prepare(
@@ -13081,12 +13120,15 @@ app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
     ).bind(projectId).first() as any
     const maxOrder = maxOrderRow?.mo || 0
     const pkgResult = await c.env.DB.prepare(
-      'INSERT INTO legal_packages (project_id, name, package_type, sort_order) VALUES (?,?,?,?)'
-    ).bind(projectId, name.trim(), package_type || 'custom', maxOrder + 1).run()
+      `INSERT INTO legal_packages (project_id, name, package_type, sort_order, code, start_date, end_date, contract_value)
+       VALUES (?,?,?,?,?,?,?,?)`
+    ).bind(
+      projectId, name.trim(), package_type || 'custom', maxOrder + 1,
+      contract.code, contract.start_date, contract.end_date, contract.contract_value
+    ).run()
     const packageId = pkgResult.meta.last_row_id as number
-    // Tạo 4 giai đoạn A-B-C-D cho gói thầu mới
-    await initStagesForPackage(c.env.DB, projectId, packageId, user.id)
-    return c.json({ success: true, id: packageId, name: name.trim() })
+    const synced = await syncProjectContractFromPackages(c.env.DB, projectId)
+    return c.json({ success: true, id: packageId, name: name.trim(), blank: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -13096,12 +13138,34 @@ app.put('/api/legal/packages/:id', authMiddleware, async (c) => {
   if (!['system_admin','project_admin','project_leader'].includes(user.role))
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
-  const { name } = await c.req.json()
-  if (!name || !name.trim()) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
+  const body = await c.req.json()
+  const name = body.name
+  if (!name || !String(name).trim()) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
   try {
-    await c.env.DB.prepare('UPDATE legal_packages SET name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
-      .bind(name.trim(), id).run()
-    return c.json({ success: true })
+    const pkg = await c.env.DB.prepare('SELECT project_id FROM legal_packages WHERE id = ?').bind(id).first() as { project_id?: number } | null
+    if (!pkg?.project_id) return c.json({ error: 'Không tìm thấy gói thầu' }, 404)
+    const sets = ['name=?', 'updated_at=CURRENT_TIMESTAMP']
+    const vals: any[] = [String(name).trim()]
+    if (Object.prototype.hasOwnProperty.call(body, 'code')) {
+      sets.push('code=?')
+      vals.push(String(body.code || '').trim() || null)
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'start_date')) {
+      sets.push('start_date=?')
+      vals.push(String(body.start_date || '').trim() || null)
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'end_date')) {
+      sets.push('end_date=?')
+      vals.push(String(body.end_date || '').trim() || null)
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'contract_value')) {
+      sets.push('contract_value=?')
+      vals.push(legalPackageContractInput(body).contract_value)
+    }
+    vals.push(id)
+    await c.env.DB.prepare(`UPDATE legal_packages SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run()
+    const synced = await syncProjectContractFromPackages(c.env.DB, pkg.project_id)
+    return c.json({ success: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -13112,6 +13176,8 @@ app.delete('/api/legal/packages/:id', authMiddleware, async (c) => {
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
   try {
+    const pkg = await c.env.DB.prepare('SELECT project_id FROM legal_packages WHERE id = ?').bind(id).first() as { project_id?: number } | null
+    if (!pkg?.project_id) return c.json({ error: 'Không tìm thấy gói thầu' }, 404)
     // Lấy danh sách stage_id trong gói
     const stages = await c.env.DB.prepare(
       'SELECT id FROM legal_stages WHERE package_id = ?'
@@ -13133,7 +13199,8 @@ app.delete('/api/legal/packages/:id', authMiddleware, async (c) => {
     // Xóa stages rồi xóa package
     await c.env.DB.prepare('DELETE FROM legal_stages WHERE package_id = ?').bind(id).run()
     await c.env.DB.prepare('DELETE FROM legal_packages WHERE id = ?').bind(id).run()
-    return c.json({ success: true })
+    const synced = await syncProjectContractFromPackages(c.env.DB, pkg.project_id)
+    return c.json({ success: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -13149,6 +13216,198 @@ app.post('/api/legal/migrate-packages/:projectId', authMiddleware, async (c) => 
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
+async function deleteLegalPackageCascade(db: D1Database, packageId: number) {
+  const stages = await db.prepare('SELECT id FROM legal_stages WHERE package_id = ?').bind(packageId).all()
+  const stageIds = (stages.results as any[]).map((s: any) => s.id)
+  for (const sid of stageIds) {
+    const parents = await db.prepare(
+      'SELECT id FROM legal_items WHERE stage_id = ? AND parent_id IS NULL'
+    ).bind(sid).all()
+    for (const p of parents.results as any[]) {
+      await db.prepare('DELETE FROM legal_items WHERE parent_id = ?').bind(p.id).run()
+    }
+    await db.prepare('DELETE FROM legal_items WHERE stage_id = ?').bind(sid).run()
+  }
+  await db.prepare('DELETE FROM legal_stages WHERE package_id = ?').bind(packageId).run()
+  await db.prepare('DELETE FROM legal_packages WHERE id = ?').bind(packageId).run()
+}
+
+// POST /api/legal/:projectId/copy-from — Sao chép gói thầu / stage / hạng mục từ dự án nguồn
+app.post('/api/legal/:projectId/copy-from', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const destProjectId = parseInt(c.req.param('projectId'))
+  const db = c.env.DB
+  try {
+    const body = await c.req.json()
+    const sourceProjectId = parseInt(String(body.source_project_id), 10)
+    if (!Number.isFinite(sourceProjectId) || sourceProjectId <= 0) {
+      return c.json({ error: 'source_project_id không hợp lệ' }, 400)
+    }
+    if (sourceProjectId === destProjectId) {
+      return c.json({ error: 'Dự án nguồn và đích phải khác nhau' }, 400)
+    }
+
+    if (!(await isProjectAdminOrAbove(db, user, destProjectId))) {
+      return c.json({ error: 'Không có quyền quản trị HSPL dự án đích' }, 403)
+    }
+    if (!(await isProjectAdminOrAbove(db, user, sourceProjectId))) {
+      return c.json({ error: 'Không có quyền quản trị HSPL dự án nguồn' }, 403)
+    }
+
+    const onNameConflict: 'skip' | 'overwrite' =
+      body.on_name_conflict === 'overwrite' ? 'overwrite' : 'skip'
+    const packageIdsFilter: number[] | null = Array.isArray(body.package_ids)
+      ? body.package_ids.map((x: any) => parseInt(String(x), 10)).filter((n: number) => Number.isFinite(n) && n > 0)
+      : null
+
+    let sourcePkgs = await db.prepare(
+      'SELECT * FROM legal_packages WHERE project_id = ? ORDER BY sort_order, id'
+    ).bind(sourceProjectId).all()
+    let srcList = sourcePkgs.results as any[]
+    if (packageIdsFilter && packageIdsFilter.length > 0) {
+      const idSet = new Set(packageIdsFilter)
+      srcList = srcList.filter((p) => idSet.has(p.id))
+      if (srcList.length === 0) {
+        return c.json({ error: 'Không tìm thấy gói thầu nguồn đã chọn' }, 400)
+      }
+    }
+
+    const destPkgsRes = await db.prepare(
+      'SELECT id, name FROM legal_packages WHERE project_id = ?'
+    ).bind(destProjectId).all()
+    const destByName = new Map<string, any>()
+    for (const p of destPkgsRes.results as any[]) {
+      destByName.set(String(p.name).trim(), p)
+    }
+
+    const destMaxOrderRow = await db.prepare(
+      'SELECT MAX(sort_order) as mo FROM legal_packages WHERE project_id = ?'
+    ).bind(destProjectId).first() as any
+    let destPkgOrder = destMaxOrderRow?.mo || 0
+
+    const nameConflicts: { name: string; source_package_id: number; dest_package_id: number; action: string }[] = []
+    const copiedPackages: { source_package_id: number; dest_package_id: number; name: string }[] = []
+    const recalcStages = new Set<number>()
+
+    for (const srcPkg of srcList) {
+      const pkgName = String(srcPkg.name).trim()
+      const destMatch = destByName.get(pkgName)
+
+      if (destMatch) {
+        if (onNameConflict === 'skip') {
+          nameConflicts.push({
+            name: pkgName,
+            source_package_id: srcPkg.id,
+            dest_package_id: destMatch.id,
+            action: 'skipped',
+          })
+          continue
+        }
+        await deleteLegalPackageCascade(db, destMatch.id)
+        destByName.delete(pkgName)
+        nameConflicts.push({
+          name: pkgName,
+          source_package_id: srcPkg.id,
+          dest_package_id: destMatch.id,
+          action: 'overwritten',
+        })
+      }
+
+      destPkgOrder += 1
+      const pkgIns = await db.prepare(
+        'INSERT INTO legal_packages (project_id, name, package_type, sort_order, notes) VALUES (?,?,?,?,?)'
+      ).bind(
+        destProjectId,
+        pkgName,
+        srcPkg.package_type || 'custom',
+        destPkgOrder,
+        srcPkg.notes || null
+      ).run()
+      const newPkgId = pkgIns.meta.last_row_id as number
+      destByName.set(pkgName, { id: newPkgId, name: pkgName })
+      copiedPackages.push({ source_package_id: srcPkg.id, dest_package_id: newPkgId, name: pkgName })
+
+      const srcStages = await db.prepare(
+        'SELECT * FROM legal_stages WHERE package_id = ? ORDER BY sort_order, id'
+      ).bind(srcPkg.id).all()
+      const stageMap = new Map<number, number>()
+
+      for (const st of srcStages.results as any[]) {
+        const stIns = await db.prepare(
+          'INSERT INTO legal_stages (project_id, package_id, code, name, sort_order) VALUES (?,?,?,?,?)'
+        ).bind(destProjectId, newPkgId, st.code, st.name, st.sort_order).run()
+        const newStageId = stIns.meta.last_row_id as number
+        stageMap.set(st.id, newStageId)
+        recalcStages.add(newStageId)
+      }
+
+      const srcStageIds = [...stageMap.keys()]
+      if (srcStageIds.length === 0) continue
+
+      const placeholders = srcStageIds.map(() => '?').join(',')
+      const itemsRes = await db.prepare(
+        `SELECT * FROM legal_items WHERE stage_id IN (${placeholders}) ORDER BY stage_id, parent_id IS NOT NULL, sort_order, id`
+      ).bind(...srcStageIds).all()
+      const items = itemsRes.results as any[]
+      const itemMap = new Map<number, number>()
+
+      for (const it of items.filter((i) => i.parent_id == null)) {
+        const newStageId = stageMap.get(it.stage_id)!
+        const ins = await db.prepare(
+          `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'pending', ?, ?, ?)`
+        ).bind(
+          destProjectId,
+          newStageId,
+          it.stt || '1',
+          it.title,
+          it.item_type || 'task',
+          it.due_date || null,
+          it.notes || null,
+          it.sort_order || 0,
+          user.id
+        ).run()
+        itemMap.set(it.id, ins.meta.last_row_id as number)
+      }
+
+      for (const it of items.filter((i) => i.parent_id != null)) {
+        const newParentId = itemMap.get(it.parent_id)
+        if (!newParentId) continue
+        const newStageId = stageMap.get(it.stage_id)!
+        const ins = await db.prepare(
+          `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, ?, ?)`
+        ).bind(
+          destProjectId,
+          newStageId,
+          newParentId,
+          it.stt || '1',
+          it.title,
+          it.item_type || 'task',
+          it.due_date || null,
+          it.notes || null,
+          it.sort_order || 0,
+          user.id
+        ).run()
+        itemMap.set(it.id, ins.meta.last_row_id as number)
+      }
+    }
+
+    for (const stageId of recalcStages) {
+      await recalculateSiblingsStt(db, stageId, null)
+    }
+
+    return c.json({
+      success: true,
+      copied_packages: copiedPackages,
+      name_conflicts: nameConflicts,
+      ...(await syncProjectContractFromPackages(db, destProjectId)),
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // ── Get all packages → stages → items for a project (overview) ───────────────
 app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
@@ -13160,24 +13419,39 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
     }
 
     // Không auto-migrate trên GET (Wave 4) — dùng POST /api/legal/:projectId/migrate-packages
+    const shell = c.req.query('view') === 'shell'
 
-    // Lấy packages
-    const pkgs = await db.prepare(
-      'SELECT * FROM legal_packages WHERE project_id = ? ORDER BY sort_order'
-    ).bind(projectId).all()
-
-    // Lấy tất cả stages
-    const stages = await db.prepare(
-      'SELECT * FROM legal_stages WHERE project_id = ? ORDER BY sort_order'
-    ).bind(projectId).all()
-
-    // Lấy tất cả items
-    const items = await db.prepare(
-      `SELECT li.*, u.full_name as created_by_name
-       FROM legal_items li
-       LEFT JOIN users u ON u.id = li.created_by
-       WHERE li.project_id = ? ORDER BY li.stage_id, li.sort_order`
-    ).bind(projectId).all()
+    const core = await db.batch([
+      db.prepare(
+        `SELECT id, project_id, name, package_type, sort_order, code, start_date, end_date, contract_value, notes
+         FROM legal_packages WHERE project_id = ? ORDER BY sort_order`
+      ).bind(projectId),
+      db.prepare(
+        `SELECT id, project_id, package_id, code, name, sort_order
+         FROM legal_stages WHERE project_id = ? ORDER BY sort_order`
+      ).bind(projectId),
+      db.prepare(
+        `SELECT id, project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order
+         FROM legal_items WHERE project_id = ? ORDER BY stage_id, sort_order, id`
+      ).bind(projectId),
+      db.prepare(
+        `SELECT id, name, code, contract_value, management_fee_pct, vat_pct FROM projects WHERE id = ?`
+      ).bind(projectId),
+      db.prepare(`SELECT COUNT(*) AS n FROM outgoing_letters WHERE project_id = ?`).bind(projectId),
+      db.prepare(`SELECT COUNT(*) AS n FROM legal_documents WHERE project_id = ?`).bind(projectId),
+      db.prepare(
+        `SELECT COALESCE(SUM(paid_amount), 0) AS paid
+         FROM payment_requests
+         WHERE project_id = ? AND status IN ('paid', 'partial') AND ${paymentOnPackageSql('payment_requests')}`
+      ).bind(projectId),
+    ])
+    const pkgs = core[0]
+    const stages = core[1]
+    const items = core[2]
+    const projectRow = (core[3].results?.[0] || null) as any
+    const letterCount = Number((core[4].results?.[0] as any)?.n || 0)
+    const documentCount = Number((core[5].results?.[0] as any)?.n || 0)
+    const paidOnPackage = Number((core[6].results?.[0] as any)?.paid || 0)
 
     // Build tree: package → stages → items
     const packagesWithStages = (pkgs.results as any[]).map(pkg => {
@@ -13205,79 +13479,80 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
       return { ...stage, items: tree }
     })
 
-    // Letters summary
-    const letters = await db.prepare(
-      `SELECT ol.*, li.title as item_title, li.stt as item_stt,
-              ls.code as stage_code, ls.name as stage_name,
-              lp.name as package_name
-       FROM outgoing_letters ol
-       LEFT JOIN legal_items li ON li.id = ol.legal_item_id
-       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
-       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
-       LEFT JOIN users u ON u.id = ol.created_by
-       WHERE ol.project_id = ? ORDER BY ol.letter_year DESC, ol.letter_seq DESC`
-    ).bind(projectId).all()
+    let letters: { results?: any[] } = { results: [] }
+    let docs: { results?: any[] } = { results: [] }
+    let payments: { results?: any[] } = { results: [] }
+    let minutes: { results?: any[] } = { results: [] }
+    let config: any = null
+    if (!shell) {
+      const extra = await db.batch([
+        db.prepare(
+          `SELECT ol.id, ol.project_id, ol.legal_item_id, ol.letter_number, ol.letter_seq, ol.letter_year,
+                  ol.letter_type, ol.letter_type_seq, ol.subject, ol.recipient, ol.sent_date, ol.status, ol.notes,
+                  ol.created_by, ol.created_at,
+                  li.title as item_title, li.stt as item_stt,
+                  ls.code as stage_code, ls.name as stage_name,
+                  lp.name as package_name
+           FROM outgoing_letters ol
+           LEFT JOIN legal_items li ON li.id = ol.legal_item_id
+           LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+           LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+           WHERE ol.project_id = ? ORDER BY ol.letter_year DESC, ol.letter_seq DESC`
+        ).bind(projectId),
+        db.prepare(
+          `SELECT ld.id, ld.project_id, ld.legal_item_id, ld.doc_type, ld.title,
+                  ld.file_name, ld.signed_date, ld.notes,
+                  ld.created_by, ld.created_at, ld.updated_at,
+                  ld.byte_length, ld.content_type, ld.r2_key,
+                  CASE
+                    WHEN ld.file_url IS NULL OR ld.file_url = '' THEN NULL
+                    WHEN ld.file_url LIKE 'data:%' THEN NULL
+                    WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN NULL
+                    ELSE ld.file_url
+                  END AS file_url,
+                  CASE
+                    WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN 1
+                    WHEN ld.file_url IS NOT NULL AND ld.file_url != '' THEN 1
+                    ELSE 0
+                  END AS has_file_flag,
+                  li.title as item_title, li.stt as item_stt,
+                  ls.code as stage_code, ls.name as stage_name,
+                  lp.name as package_name
+           FROM legal_documents ld
+           LEFT JOIN legal_items li ON li.id = ld.legal_item_id
+           LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+           LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+           WHERE ld.project_id = ? ORDER BY ld.created_at DESC`
+        ).bind(projectId),
+        db.prepare('SELECT * FROM legal_letter_config WHERE project_id = ?').bind(projectId),
+        db.prepare(
+          `SELECT pr.*, u.full_name as created_by_name,
+                  li.stt as item_stt, li.title as item_title,
+                  ls.code as stage_code, lp.name as package_name,
+                  CASE WHEN pr.revenue_id IS NOT NULL THEN 1 ELSE 0 END as revenue_synced
+           FROM payment_requests pr
+           LEFT JOIN users u ON u.id = pr.created_by
+           LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+           LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+           LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+           WHERE pr.project_id = ? ORDER BY pr.created_at DESC`
+        ).bind(projectId),
+        db.prepare(
+          `SELECT mm.*, u.full_name as created_by_name,
+                  li.title as legal_item_title
+           FROM meeting_minutes mm
+           LEFT JOIN users u ON u.id = mm.created_by
+           LEFT JOIN legal_items li ON li.id = mm.legal_item_id
+           WHERE mm.project_id = ? ORDER BY mm.meeting_date DESC, mm.created_at DESC`
+        ).bind(projectId),
+      ])
+      letters = extra[0]
+      docs = extra[1]
+      config = extra[2].results?.[0] || null
+      payments = extra[3]
+      minutes = extra[4]
+    }
 
-    // Documents summary — cột đúng schema; không trả base64 file_url
-    const docs = await db.prepare(
-      `SELECT ld.id, ld.project_id, ld.legal_item_id, ld.doc_type, ld.title,
-              ld.file_name, ld.signed_date, ld.notes,
-              ld.created_by, ld.created_at, ld.updated_at,
-              ld.byte_length, ld.content_type, ld.r2_key,
-              CASE
-                WHEN ld.file_url IS NULL OR ld.file_url = '' THEN NULL
-                WHEN ld.file_url LIKE 'data:%' THEN NULL
-                WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN NULL
-                ELSE ld.file_url
-              END AS file_url,
-              CASE
-                WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN 1
-                WHEN ld.file_url IS NOT NULL AND ld.file_url != '' THEN 1
-                ELSE 0
-              END AS has_file_flag,
-              li.title as item_title, li.stt as item_stt,
-              ls.code as stage_code, ls.name as stage_name,
-              lp.name as package_name
-       FROM legal_documents ld
-       LEFT JOIN legal_items li ON li.id = ld.legal_item_id
-       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
-       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
-       WHERE ld.project_id = ? ORDER BY ld.created_at DESC`
-    ).bind(projectId).all()
-
-    // Config
-    const config = await db.prepare(
-      'SELECT * FROM legal_letter_config WHERE project_id = ?'
-    ).bind(projectId).first()
-
-    // Payments
-    const payments = await db.prepare(
-      `SELECT pr.*, u.full_name as created_by_name,
-              li.stt as item_stt, li.title as item_title,
-              ls.code as stage_code, lp.name as package_name,
-              CASE WHEN pr.revenue_id IS NOT NULL THEN 1 ELSE 0 END as revenue_synced
-       FROM payment_requests pr
-       LEFT JOIN users u ON u.id = pr.created_by
-       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
-       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
-       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
-       WHERE pr.project_id = ? ORDER BY pr.created_at DESC`
-    ).bind(projectId).all()
-
-    // Meeting Minutes
-    const minutes = await db.prepare(
-      `SELECT mm.*, u.full_name as created_by_name,
-              li.title as legal_item_title
-       FROM meeting_minutes mm
-       LEFT JOIN users u ON u.id = mm.created_by
-       LEFT JOIN legal_items li ON li.id = mm.legal_item_id
-       WHERE mm.project_id = ? ORDER BY mm.meeting_date DESC, mm.created_at DESC`
-    ).bind(projectId).all()
-
-    // Project info — budget SSOT từ computeProjectBudget (finance.ts)
-    const projectRow = await db.prepare(
-      `SELECT id, name, code, contract_value, management_fee_pct FROM projects WHERE id = ?`
-    ).bind(projectId).first() as any
     const projectInfo = projectRow ? {
       ...projectRow,
       project_budget: computeProjectBudget(projectRow.contract_value, projectRow.management_fee_pct),
@@ -13285,16 +13560,19 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
 
     return c.json({
       packages: packagesWithStages,
-      stages: allStagesFlat,  // backward-compat
-      letters: letters.results,
-      documents: (docs.results as any[]).map(publicLegalDocument),
+      stages: allStagesFlat,
+      letters: shell ? null : letters.results,
+      documents: shell ? null : (docs.results as any[]).map(publicLegalDocument),
+      letter_count: letterCount,
+      document_count: documentCount,
+      paid_on_package: paidOnPackage,
       config,
-      payments: (payments.results as any[]).map(pr => ({
+      payments: shell ? null : (payments.results as any[]).map(pr => ({
         ...pr,
         ...enrichPaymentMetrics(pr, (projectInfo as any)?.management_fee_pct || 0),
       })),
-      minutes: minutes.results,
-      project: projectInfo   // thêm project info để frontend tính % phí QL
+      minutes: shell ? null : minutes.results,
+      project: projectInfo
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13339,7 +13617,8 @@ app.post('/api/legal/:projectId/items', authMiddleware, async (c) => {
     ).bind(
       projectId, stageId, parentId,
       autoStt, body.title, body.item_type || 'task',
-      body.due_date || null, body.actual_completion_date || null,
+      body.due_date || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date()),
+      body.actual_completion_date || null,
       body.status || 'pending',
       body.notes || null, sortOrder, user.id
     ).run()
@@ -13393,42 +13672,150 @@ async function recalculateSiblingsStt(db: D1Database, stageId: number, parentId:
     `SELECT id, parent_id FROM legal_items WHERE stage_id = ? AND parent_id IS ? ORDER BY sort_order, id`
   ).bind(stageId, parentId).all()
   const arr = siblings.results as any[]
+  let parentSttPrefix: string | null = null
+  if (parentId) {
+    const parent = await db.prepare('SELECT stt FROM legal_items WHERE id = ?').bind(parentId).first() as any
+    parentSttPrefix = parent?.stt || '1'
+  }
+  const stmts: D1PreparedStatement[] = []
   for (let i = 0; i < arr.length; i++) {
     const newSortOrder = i + 1
-    let newStt: string
-    if (!parentId) {
-      newStt = String(newSortOrder)
-    } else {
-      // Lấy stt của parent
-      const parent = await db.prepare('SELECT stt FROM legal_items WHERE id = ?').bind(parentId).first() as any
-      newStt = `${parent?.stt || '1'}.${newSortOrder}`
-    }
-    await db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?').bind(newStt, newSortOrder, arr[i].id).run()
-    // Nếu item cha bị renumber, cập nhật cả các item con
+    const newStt = !parentId ? String(newSortOrder) : `${parentSttPrefix}.${newSortOrder}`
+    stmts.push(
+      db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?').bind(newStt, newSortOrder, arr[i].id)
+    )
     if (!parentId) {
       const children = await db.prepare(
         `SELECT id FROM legal_items WHERE parent_id = ? ORDER BY sort_order, id`
       ).bind(arr[i].id).all()
       const childArr = children.results as any[]
       for (let j = 0; j < childArr.length; j++) {
-        await db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?')
-          .bind(`${newStt}.${j+1}`, j+1, childArr[j].id).run()
+        stmts.push(
+          db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?')
+            .bind(`${newStt}.${j + 1}`, j + 1, childArr[j].id)
+        )
       }
     }
   }
+  for (let i = 0; i < stmts.length; i += 50) {
+    await db.batch(stmts.slice(i, i + 50))
+  }
 }
 
-// ── Reorder item (move up / move down) ────────────────────────────────────────
+async function legalStagePackageId(db: D1Database, stageId: number): Promise<number | null> {
+  const row = await db.prepare('SELECT package_id FROM legal_stages WHERE id = ?').bind(stageId).first() as any
+  return row?.package_id ?? null
+}
+
+async function legalItemParentCycle(db: D1Database, itemId: number, newParentId: number | null): Promise<boolean> {
+  if (newParentId == null) return false
+  if (newParentId === itemId) return true
+  let cur: number | null = newParentId
+  while (cur != null) {
+    if (cur === itemId) return true
+    const row = await db.prepare('SELECT parent_id FROM legal_items WHERE id = ?').bind(cur).first() as any
+    if (!row) break
+    cur = row.parent_id ?? null
+  }
+  return false
+}
+
+// ── Reorder item (to_index drop or legacy up/down) ───────────────────────────
 app.post('/api/legal/items/:id/reorder', authMiddleware, async (c) => {
+  const user = c.get('user') as any
   const id = parseInt(c.req.param('id'))
-  const { direction } = await c.req.json()  // 'up' | 'down'
+  const body = await c.req.json()
+  const db = c.env.DB
   try {
-    const item = await c.env.DB.prepare(
-      'SELECT id, stage_id, parent_id, sort_order FROM legal_items WHERE id = ?'
+    const item = await db.prepare(
+      'SELECT id, project_id, stage_id, parent_id, sort_order FROM legal_items WHERE id = ?'
     ).bind(id).first() as any
     if (!item) return c.json({ error: 'Not found' }, 404)
 
-    const siblings = await c.env.DB.prepare(
+    if (!(await isProjectAdminOrAbove(db, user, item.project_id))) {
+      return c.json({ error: 'Không có quyền sắp xếp hạng mục HSPL' }, 403)
+    }
+
+    if (typeof body.to_index === 'number') {
+      const toIndex = body.to_index
+      if (!Number.isInteger(toIndex) || toIndex < 0) {
+        return c.json({ error: 'to_index không hợp lệ' }, 400)
+      }
+
+      const oldStageId = item.stage_id as number
+      const oldParentId: number | null = item.parent_id ?? null
+      const newStageId = body.stage_id != null ? parseInt(String(body.stage_id), 10) : oldStageId
+      let newParentId: number | null = oldParentId
+      if (body.parent_id !== undefined) {
+        newParentId = body.parent_id == null ? null : parseInt(String(body.parent_id), 10)
+      }
+
+      if (newParentId === id) {
+        return c.json({ error: 'Không thể đặt hạng mục làm cha của chính nó' }, 400)
+      }
+
+      const oldPkg = await legalStagePackageId(db, oldStageId)
+      const newPkg = await legalStagePackageId(db, newStageId)
+      if (oldPkg !== newPkg) {
+        return c.json({ error: 'Không thể kéo sang gói thầu khác' }, 400)
+      }
+
+      const newStage = await db.prepare('SELECT id, project_id FROM legal_stages WHERE id = ?').bind(newStageId).first() as any
+      if (!newStage || newStage.project_id !== item.project_id) {
+        return c.json({ error: 'Giai đoạn đích không hợp lệ' }, 400)
+      }
+
+      if (newParentId != null) {
+        const parentRow = await db.prepare(
+          'SELECT id, stage_id, parent_id FROM legal_items WHERE id = ?'
+        ).bind(newParentId).first() as any
+        if (!parentRow || parentRow.stage_id !== newStageId) {
+          return c.json({ error: 'Hạng mục cha đích không hợp lệ' }, 400)
+        }
+        if (await legalItemParentCycle(db, id, newParentId)) {
+          return c.json({ error: 'Thao tác tạo vòng lặp parent' }, 400)
+        }
+      }
+
+      const stageChanged = newStageId !== oldStageId
+      const parentChanged = newParentId !== oldParentId
+      if (stageChanged || parentChanged) {
+        await db.prepare('UPDATE legal_items SET stage_id = ?, parent_id = ? WHERE id = ?')
+          .bind(newStageId, newParentId, id).run()
+        if (stageChanged) {
+          await db.prepare('UPDATE legal_items SET stage_id = ? WHERE parent_id = ?')
+            .bind(newStageId, id).run()
+        }
+      }
+
+      const siblings = await db.prepare(
+        `SELECT id FROM legal_items WHERE stage_id = ? AND parent_id IS ? AND id != ? ORDER BY sort_order, id`
+      ).bind(newStageId, newParentId, id).all()
+      const orderedIds = (siblings.results as any[]).map((s) => s.id)
+      const insertAt = Math.min(toIndex, orderedIds.length)
+      orderedIds.splice(insertAt, 0, id)
+
+      const sortStmts = orderedIds.map((sid, i) =>
+        db.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(i + 1, sid)
+      )
+      for (let i = 0; i < sortStmts.length; i += 50) {
+        await db.batch(sortStmts.slice(i, i + 50))
+      }
+
+      await recalculateSiblingsStt(db, newStageId, newParentId)
+      if (stageChanged || parentChanged) {
+        await recalculateSiblingsStt(db, oldStageId, oldParentId)
+      }
+
+      return c.json({ success: true })
+    }
+
+    const { direction } = body  // legacy table path: 'up' | 'down'
+    if (direction !== 'up' && direction !== 'down') {
+      return c.json({ error: 'Thiếu to_index hoặc direction' }, 400)
+    }
+
+    const siblings = await db.prepare(
       `SELECT id, sort_order FROM legal_items WHERE stage_id = ? AND parent_id IS ? ORDER BY sort_order, id`
     ).bind(item.stage_id, item.parent_id).all()
     const arr = siblings.results as any[]
@@ -13438,14 +13825,14 @@ app.post('/api/legal/items/:id/reorder', authMiddleware, async (c) => {
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1
     if (swapIdx < 0 || swapIdx >= arr.length) return c.json({ success: true, noChange: true })
 
-    // Swap sort_order giữa 2 items
-    const aId = arr[idx].id,  bId = arr[swapIdx].id
+    const aId = arr[idx].id, bId = arr[swapIdx].id
     const aOrd = arr[idx].sort_order, bOrd = arr[swapIdx].sort_order
-    await c.env.DB.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(bOrd, aId).run()
-    await c.env.DB.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(aOrd, bId).run()
+    await db.batch([
+      db.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(bOrd, aId),
+      db.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(aOrd, bId),
+    ])
 
-    // Recalculate stt cho toàn bộ siblings sau khi swap
-    await recalculateSiblingsStt(c.env.DB, item.stage_id, item.parent_id)
+    await recalculateSiblingsStt(db, item.stage_id, item.parent_id)
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -14012,18 +14399,31 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
     const data = await c.req.json()
     const { description, request_number, request_date, amount, currency, status,
             paid_amount, paid_date, invoice_number, invoice_date, payment_phase,
-            legal_item_id, notes, vat_pct } = data
+            legal_item_id, notes } = data
     if (!description) return c.json({ error: 'description required' }, 400)
-    const vatPctVal = Math.min(100, Math.max(0, parseFloat(vat_pct) || 0))
+    const projVat = await c.env.DB.prepare(
+      'SELECT COALESCE(vat_pct, 0) AS vat_pct FROM projects WHERE id = ?'
+    ).bind(projectId).first() as { vat_pct?: number } | null
+    const vatPctVal = Math.min(100, Math.max(0, Number(projVat?.vat_pct) || 0))
+    let packageId: number | null = data.package_id === '' || data.package_id == null
+      ? null
+      : parseInt(data.package_id, 10)
+    if (!Number.isFinite(packageId) || (packageId as number) <= 0) packageId = null
+    if (packageId) {
+      const pkg = await c.env.DB.prepare(
+        'SELECT id FROM legal_packages WHERE id = ? AND project_id = ?'
+      ).bind(packageId, projectId).first()
+      if (!pkg) return c.json({ error: 'Gói thầu không thuộc dự án' }, 400)
+    }
 
-    // Insert payment request
+    // Insert payment request. package_id chỉ để lọc sheet; không tham gia công thức tiền.
     const result = await c.env.DB.prepare(`
       INSERT INTO payment_requests
-        (project_id, legal_item_id, request_number, description, request_date, amount, currency,
+        (project_id, legal_item_id, package_id, request_number, description, request_date, amount, currency,
          status, paid_amount, paid_date, invoice_number, invoice_date, payment_phase, notes, vat_pct, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(
-      projectId, legal_item_id || null, request_number || null, description,
+      projectId, legal_item_id || null, packageId, request_number || null, description,
       request_date || null, amount || 0, currency || 'VND',
       status || 'pending', paid_amount || 0, paid_date || null,
       invoice_number || null, invoice_date || null, payment_phase || null,
@@ -14039,7 +14439,8 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
       currency: currency || 'VND',
       paid_date: paid_date || null, invoice_number: invoice_number || null,
       payment_phase: payment_phase || null, status: status || 'pending',
-      revenue_id: null, notes: notes || null, vat_pct: vatPctVal
+      revenue_id: null, notes: notes || null, vat_pct: vatPctVal,
+      request_date: request_date || null,
     }, user.id)
 
     // Lưu revenue_id vào payment nếu có
@@ -14084,9 +14485,28 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
       return c.json({ error: 'Chỉ admin dự án mới được sửa thanh toán' }, 403)
     }
 
+    if (data.package_id !== undefined) {
+      let packageId: number | null = data.package_id === '' || data.package_id == null
+        ? null
+        : parseInt(data.package_id, 10)
+      if (!Number.isFinite(packageId) || (packageId as number) <= 0) packageId = null
+      if (packageId) {
+        const pkg = await c.env.DB.prepare(
+          'SELECT id FROM legal_packages WHERE id = ? AND project_id = ?'
+        ).bind(packageId, current.project_id).first()
+        if (!pkg) return c.json({ error: 'Gói thầu không thuộc dự án' }, 400)
+      }
+      data.package_id = packageId
+    }
+
+    const projVat = await c.env.DB.prepare(
+      'SELECT COALESCE(vat_pct, 0) AS vat_pct FROM projects WHERE id = ?'
+    ).bind(current.project_id).first() as { vat_pct?: number } | null
+    data.vat_pct = Math.min(100, Math.max(0, Number(projVat?.vat_pct) || 0))
+
     const fields = ['description', 'request_number', 'request_date', 'amount', 'currency',
                     'status', 'paid_amount', 'paid_date', 'invoice_number', 'invoice_date',
-                    'payment_phase', 'legal_item_id', 'notes', 'vat_pct']
+                    'payment_phase', 'legal_item_id', 'package_id', 'notes', 'vat_pct']
     const updates: string[] = []
     const values: any[] = []
     fields.forEach(f => {
@@ -14120,7 +14540,8 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
       notes: merged.notes || null,
       vat_pct: merged.vat_pct != null
         ? Math.min(100, Math.max(0, parseFloat(merged.vat_pct) || 0))
-        : (current.vat_pct || 0)
+        : (current.vat_pct || 0),
+      request_date: merged.request_date ?? current.request_date ?? null,
     }, user.id)
 
     // Cập nhật revenue_id
@@ -14216,13 +14637,293 @@ app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
   }
 })
 
-// POST /api/legal/:projectId/resync-revenues — re-sync mọi phiếu đã NT (amount > 0), gồm pending
+function legalCostAPackageKey(packageName: string | null | undefined): string {
+  const s = (packageName || '').trim()
+  return s || 'Chung'
+}
+
+// GET /api/legal/:projectId/cost-a — Chi phí A (system_admin only)
+app.get('/api/legal/:projectId/contacts', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  try {
+    const db = c.env.DB
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    const row = await db.prepare(
+      'SELECT contacts_json, logs_json FROM project_contact_books WHERE project_id = ?'
+    ).bind(projectId).first() as { contacts_json?: string; logs_json?: string } | null
+    return c.json({
+      contacts: parseContactJson(row?.contacts_json),
+      contactLogs: parseContactJson(row?.logs_json),
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+app.put('/api/legal/:projectId/contacts', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  try {
+    const db = c.env.DB
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    const body = await c.req.json()
+    const existing = await db.prepare(
+      'SELECT contacts_json, logs_json FROM project_contact_books WHERE project_id = ?'
+    ).bind(projectId).first() as { contacts_json?: string; logs_json?: string } | null
+    const contacts = Array.isArray(body?.contacts)
+      ? sanitizeContacts(body.contacts)
+      : parseContactJson(existing?.contacts_json)
+    const contactLogs = Array.isArray(body?.contactLogs)
+      ? sanitizeContactLogs(body.contactLogs)
+      : parseContactJson(existing?.logs_json)
+    await db.prepare(
+      `INSERT INTO project_contact_books (project_id, contacts_json, logs_json, updated_at)
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(project_id) DO UPDATE SET
+         contacts_json = excluded.contacts_json,
+         logs_json = excluded.logs_json,
+         updated_at = CURRENT_TIMESTAMP`
+    ).bind(projectId, JSON.stringify(contacts), JSON.stringify(contactLogs)).run()
+    return c.json({ contacts, contactLogs })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+function parseContactJson(raw?: string | null) {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
+}
+
+function clipContactText(value: unknown, max: number) {
+  return String(value ?? '').trim().slice(0, max)
+}
+
+function sanitizeContacts(rows: any[]) {
+  return rows.slice(0, 200).map((c, i) => ({
+    id: clipContactText(c?.id, 40) || `ct-${Date.now()}-${i}`,
+    name: clipContactText(c?.name, 120),
+    phone: clipContactText(c?.phone, 40),
+    email: clipContactText(c?.email, 120),
+    role: clipContactText(c?.role, 120),
+  })).filter(c => c.name)
+}
+
+function sanitizeContactLogs(rows: any[]) {
+  return rows.slice(0, 500).map((l, i) => {
+    const person = clipContactText(l?.person || l?.contactPerson, 160)
+    return {
+      id: clipContactText(l?.id, 40) || `log-${Date.now()}-${i}`,
+      date: clipContactText(l?.date, 10),
+      person,
+      contactPerson: clipContactText(l?.contactPerson || person, 160),
+      content: clipContactText(l?.content, 4000),
+      createdAt: clipContactText(l?.createdAt, 40) || new Date().toISOString(),
+    }
+  }).filter(l => l.person && l.content)
+}
+
+app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  if (user.role !== 'system_admin') {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+  try {
+    const db = c.env.DB
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập HSPL dự án này' }, 403)
+    }
+
+    const project = await db.prepare(
+      'SELECT id FROM projects WHERE id = ?'
+    ).bind(projectId).first() as any
+    if (!project) return c.json({ error: 'not found' }, 404)
+
+    const rows = await db.prepare(
+      `SELECT pr.id, pr.description, pr.payment_phase, pr.amount, pr.vat_pct, pr.status,
+              pr.request_number,
+              COALESCE(pk.name, lp.name) as package_name,
+              lca.amount_override, lca.cost_a_pct, lca.spend_status, lca.note
+       FROM payment_requests pr
+       LEFT JOIN legal_packages pk ON pk.id = pr.package_id
+       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+       LEFT JOIN legal_cost_a lca ON lca.payment_request_id = pr.id
+       WHERE pr.project_id = ? AND pr.amount > 0 AND pr.status != 'rejected'
+         AND ${paymentOnPackageSql('pr')}
+       ORDER BY pr.created_at DESC`
+    ).bind(projectId).all()
+
+    const groupMap = new Map<string, any[]>()
+    let pageTotal = 0
+
+    for (const raw of rows.results as any[]) {
+      const vatPct = Number(raw.vat_pct) || 0
+      const gross = Number(raw.amount) || 0
+      const storedPct = raw.cost_a_pct == null ? null : Number(raw.cost_a_pct)
+      const costAPct = resolveLegalCostAPct(storedPct)
+      const formulaAmount = computeLegalCostA(gross, vatPct, costAPct)
+      const overrideRaw = raw.amount_override
+      const amountOverride =
+        overrideRaw === null || overrideRaw === undefined ? null : Number(overrideRaw)
+      const candidate =
+        amountOverride != null && !Number.isNaN(amountOverride)
+          ? Math.round(amountOverride)
+          : formulaAmount
+      const amountInUse = candidate
+      pageTotal += amountInUse
+
+      const row = {
+        payment_request_id: raw.id,
+        description: raw.description,
+        payment_phase: raw.payment_phase,
+        request_number: raw.request_number,
+        amount: gross,
+        vat_pct: vatPct,
+        status: raw.status,
+        cost_a_pct: costAPct,
+        formula_label: legalCostAFormulaLabel(costAPct, vatPct),
+        formula_amount: formulaAmount,
+        amount_override: amountOverride,
+        amount_in_use: amountInUse,
+        spend_status: raw.spend_status || 'unspent',
+        note: raw.note ?? null,
+      }
+
+      const pkgKey = legalCostAPackageKey(raw.package_name)
+      if (!groupMap.has(pkgKey)) groupMap.set(pkgKey, [])
+      groupMap.get(pkgKey)!.push(row)
+    }
+
+    const groups = Array.from(groupMap.entries())
+      .sort(([a], [b]) => {
+        if (a === 'Chung') return 1
+        if (b === 'Chung') return -1
+        return a.localeCompare(b, 'vi')
+      })
+      .map(([package_name, groupRows]) => ({
+        package_name,
+        rows: groupRows,
+        group_total: groupRows.reduce((s, r) => s + r.amount_in_use, 0),
+      }))
+
+    return c.json({
+      groups,
+      page_total: pageTotal,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PATCH /api/legal/payments/:id/cost-a — sidecar only (system_admin)
+app.patch('/api/legal/payments/:id/cost-a', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const user = c.get('user') as any
+  if (user.role !== 'system_admin') {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+  try {
+    const db = c.env.DB
+    const payment = await db.prepare(
+      `SELECT pr.*, COALESCE(pk.name, lp.name) as package_name
+       FROM payment_requests pr
+       LEFT JOIN legal_packages pk ON pk.id = pr.package_id
+       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+       WHERE pr.id = ?`
+    ).bind(id).first() as any
+    if (!payment) return c.json({ error: 'not found' }, 404)
+    if (!(await canAccessProject(db, user, payment.project_id))) {
+      return c.json({ error: 'Không có quyền truy cập HSPL dự án này' }, 403)
+    }
+
+    const existing = await db.prepare(
+      'SELECT * FROM legal_cost_a WHERE payment_request_id = ?'
+    ).bind(id).first() as any
+
+    const data = await c.req.json().catch(() => ({})) as any
+
+    let amountOverride: number | null
+    if (data.amount_override === null) {
+      amountOverride = null
+    } else if (data.amount_override !== undefined) {
+      amountOverride = Math.round(Number(data.amount_override) || 0)
+    } else {
+      amountOverride =
+        existing?.amount_override === null || existing?.amount_override === undefined
+          ? null
+          : Number(existing.amount_override)
+    }
+
+    const spendStatus =
+      data.spend_status === 'spent' || data.spend_status === 'unspent'
+        ? data.spend_status
+        : (existing?.spend_status || 'unspent')
+
+    const note =
+      data.note !== undefined
+        ? (data.note === null ? null : String(data.note))
+        : (existing?.note ?? null)
+
+    let costAPct: number | null
+    if (data.cost_a_pct === null) {
+      costAPct = null
+    } else if (data.cost_a_pct !== undefined && data.cost_a_pct !== '') {
+      const n = Number(data.cost_a_pct)
+      costAPct = Number.isFinite(n) ? Math.round(n * 100) / 100 : null
+    } else {
+      costAPct = existing?.cost_a_pct == null ? null : Number(existing.cost_a_pct)
+    }
+
+    await db.prepare(
+      `INSERT INTO legal_cost_a (payment_request_id, amount_override, cost_a_pct, spend_status, note, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(payment_request_id) DO UPDATE SET
+         amount_override = excluded.amount_override,
+         cost_a_pct = excluded.cost_a_pct,
+         spend_status = excluded.spend_status,
+         note = excluded.note,
+         updated_at = datetime('now')`
+    ).bind(id, amountOverride, costAPct, spendStatus, note).run()
+
+    const vatPct = Number(payment.vat_pct) || 0
+    const gross = Number(payment.amount) || 0
+    const appliedPct = resolveLegalCostAPct(costAPct)
+    const formulaAmount = computeLegalCostA(gross, vatPct, appliedPct)
+    const amountInUse = amountOverride != null ? amountOverride : formulaAmount
+
+    return c.json({
+      payment_request_id: id,
+      package_name: legalCostAPackageKey(payment.package_name),
+      cost_a_pct: appliedPct,
+      formula_label: legalCostAFormulaLabel(appliedPct, vatPct),
+      formula_amount: formulaAmount,
+      amount_override: amountOverride,
+      amount_in_use: amountInUse,
+      spend_status: spendStatus,
+      note,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/legal/:projectId/resync-revenues — áp gate sync (processing|partial|paid); gỡ pending/rejected
 app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
   const user = c.get('user') as any
   try {
     const payments = await c.env.DB.prepare(
-      `SELECT * FROM payment_requests WHERE project_id = ? AND status IN ('paid','partial','pending') AND amount > 0`
+      `SELECT * FROM payment_requests WHERE project_id = ?
+       AND (status IN ('processing','partial','paid','pending','rejected') OR revenue_id IS NOT NULL)`
     ).bind(projectId).all()
 
     let synced = 0
@@ -14236,7 +14937,8 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
         invoice_number: p.invoice_number || null,
         payment_phase: p.payment_phase || null, status: p.status,
         revenue_id: p.revenue_id || null, notes: p.notes || null,
-        vat_pct: p.vat_pct || 0
+        vat_pct: p.vat_pct || 0,
+        request_date: p.request_date || null,
       }, user.id)
       synced++
     }
@@ -14246,12 +14948,13 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
   }
 })
 
-// POST /api/legal/resync-revenues-all — re-sync mọi phiếu amount > 0 (gồm pending)
+// POST /api/legal/resync-revenues-all — toàn DB: gate mới + phiếu còn revenue_id
 app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) => {
   const user = c.get('user') as any
   try {
     const payments = await c.env.DB.prepare(
-      `SELECT * FROM payment_requests WHERE status IN ('paid','partial','pending') AND amount > 0`
+      `SELECT * FROM payment_requests
+       WHERE status IN ('processing','partial','paid','pending','rejected') OR revenue_id IS NOT NULL`
     ).all()
 
     let synced = 0
@@ -14267,7 +14970,8 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
           invoice_number: p.invoice_number || null,
           payment_phase: p.payment_phase || null, status: p.status,
           revenue_id: p.revenue_id || null, notes: p.notes || null,
-          vat_pct: p.vat_pct || 0
+          vat_pct: p.vat_pct || 0,
+          request_date: p.request_date || null,
         }, user.id)
         synced++
       } catch (e: any) {
@@ -14885,12 +15589,7 @@ app.get('/api/meeting-minutes/:projectId', authMiddleware, async (c) => {
     const projectId = parseInt(c.req.param('projectId'))
     const user = c.get('user') as any
 
-    // Kiểm tra quyền truy cập dự án (member có thể xem như văn bản gửi đi)
-    const member = await db.prepare(
-      'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?'
-    ).bind(projectId, user.id).first() as any
-
-    if (!member && user.role !== 'system_admin') {
+    if (!(await canAccessProject(db, user, projectId))) {
       return c.json({ error: 'Bạn không có quyền truy cập dự án này' }, 403)
     }
 
@@ -16852,7 +17551,9 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
         SELECT project_id,
           SUM(CASE WHEN status IN ('paid','partial') THEN paid_amount ELSE 0 END) AS collected_amount,
           SUM(CASE WHEN status IN ('pending','partial','paid') THEN amount ELSE 0 END) AS acceptance_amount
-        FROM payment_requests GROUP BY project_id
+        FROM payment_requests
+        WHERE ${paymentOnPackageSql('payment_requests')}
+        GROUP BY project_id
       ) pay ON pay.project_id = p.id
       LEFT JOIN (
         SELECT project_id,
@@ -16873,6 +17574,7 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
     const payByProjectRows = await db.prepare(`
       SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
       FROM payment_requests
+      WHERE ${paymentOnPackageSql('payment_requests')}
     `).all()
     const grouped: Record<number, any[]> = {}
     for (const r of (payByProjectRows.results as any[])) {
@@ -17152,6 +17854,7 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     const payRowsOverview = await db.prepare(`
       SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
       FROM payment_requests WHERE project_id = ?
+        AND ${paymentOnPackageSql('payment_requests')}
     `).bind(id).all()
     const threeOverview = aggregateThreeMoney(payRowsOverview.results as any[])
 
@@ -17227,6 +17930,17 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
       ORDER BY bd.created_at DESC
     `).bind(id).all()
 
+    const bidPackages = await db.prepare(`
+      SELECT id, name, code, start_date, end_date, contract_value, sort_order
+      FROM legal_packages
+      WHERE project_id = ?
+      ORDER BY sort_order, id
+    `).bind(id).all()
+
+    const contactBook = await db.prepare(
+      'SELECT contacts_json FROM project_contact_books WHERE project_id = ?'
+    ).bind(id).first() as { contacts_json?: string } | null
+
     return c.json({
       project,
       legal: {
@@ -17237,6 +17951,8 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
       },
       letters: letters.results,
       minutes: minutes.results,
+      bid_packages: bidPackages.results,
+      contacts: parseContactJson(contactBook?.contacts_json),
       finance: {
         contract_value: contractValue,
         total_invoiced:  totalInvoiced,
@@ -17307,5 +18023,559 @@ app.put('/api/executive/project-health/:id', authMiddleware, pmoAccess, async (c
 
 // ===================================================
 // END EXECUTIVE PMO DASHBOARD API
+
+const ASSISTANT_ROLES = ['member', 'project_leader', 'project_admin', 'system_admin']
+
+function normalizeArticleAudience(raw: unknown): string | null {
+  if (raw == null || String(raw).trim() === '' || String(raw).trim() === 'all') return 'all'
+  const parts = String(raw).split(',').map(s => s.trim()).filter(Boolean)
+  if (parts.includes('all')) return 'all'
+  const unique = [...new Set(parts)]
+  if (!unique.length || unique.some(p => !ASSISTANT_ROLES.includes(p))) return null
+  return unique.join(',')
+}
+
+function articleReadableBy(audience: string, role: string): boolean {
+  if (role === 'system_admin') return true
+  if (!audience || audience === 'all') return true
+  return audience.split(',').includes(role)
+}
+
+function assistantRoleLabel(role: string): string {
+  const map: Record<string, string> = {
+    system_admin: 'System Admin',
+    project_admin: 'Project Admin',
+    project_leader: 'Project Leader',
+    member: 'Member',
+  }
+  return map[role] || role
+}
+
+function todayInVietnam(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date())
+}
+
+async function projectsVisibleTo(db: D1Database, user: any): Promise<Array<{ id: number, code: string, name: string, status?: string }>> {
+  const isAdmin = user.role === 'system_admin' ? 1 : 0
+  const rows = await db.prepare(`
+    SELECT DISTINCT p.id, p.code, p.name, p.status
+    FROM projects p
+    LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?
+    WHERE (p.status IS NULL OR p.status != 'cancelled')
+      AND (? = 1 OR p.admin_id = ? OR p.leader_id = ? OR m.id IS NOT NULL)
+    ORDER BY p.code
+  `).bind(user.id, isAdmin, user.id, user.id).all()
+  return (rows.results || []) as any[]
+}
+
+function rankArticles(articles: any[], question: string) {
+  const tokens = question.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(t => t.length >= 2)
+  return articles
+    .map(a => {
+      const title = String(a.title || '').toLowerCase()
+      const body = String(a.body || '').toLowerCase()
+      const score = tokens.reduce((n, t) => n + (title.includes(t) ? 3 : 0) + (body.includes(t) ? 1 : 0), 0)
+      return { article: a, score }
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4)
+}
+
+function wantsAssistantWrite(question: string): boolean {
+  const q = question.toLowerCase()
+  if (/tạo task|tao task|tạo công việc|tao cong viec|giao việc/.test(q)) return true
+  const mentionsSheet = /chấm công|cham cong|timesheet|khai báo giờ|khai bao gio/.test(q)
+  const asksToRecord = /\d+\s*giờ|\d+\s*gio|hôm nay|hom nay|ghi giúp|tạo giúp/.test(q)
+  return mentionsSheet && asksToRecord
+}
+
+function asksOwnAccess(question: string): boolean {
+  return /quyền của tôi|quyen cua toi|tôi có quyền|toi co quyen|mình được làm|minh duoc lam|tôi được tạo timesheet cho người khác|toi duoc tao timesheet/i.test(question)
+}
+
+async function ownAccessReply(db: D1Database, user: any): Promise<string> {
+  const projects = await projectsVisibleTo(db, user)
+  const canOthers = user.role === 'system_admin' || user.role === 'project_admin'
+  const projectLine = projects.length
+    ? 'Dự án bạn vào được: ' + projects.map(p => `${p.code} — ${p.name}`).join('; ') + '.'
+    : 'Bạn chưa thuộc dự án nào.'
+  const timesheetLine = canOthers
+    ? 'Bạn có thể tạo timesheet cho người khác trong dự án bạn quản.'
+    : 'Bạn chỉ tạo timesheet cho chính mình, trong tuần hiện tại, trên dự án bạn thuộc.'
+  return `Bạn đang đăng nhập với vai trò ${assistantRoleLabel(user.role)}. ${timesheetLine} ${projectLine}`
+}
+
+app.get('/api/analytics/system-users', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const rows = await db.prepare(`
+      SELECT u.id, u.full_name, u.role, u.department, u.is_active, u.created_at,
+        ts.last_work_date,
+        COALESCE(tk.open_tasks, 0) AS open_tasks,
+        COALESCE(tk.overdue_tasks, 0) AS overdue_tasks
+      FROM users u
+      LEFT JOIN (
+        SELECT user_id, MAX(work_date) AS last_work_date
+        FROM timesheets
+        GROUP BY user_id
+      ) ts ON ts.user_id = u.id
+      LEFT JOIN (
+        SELECT assigned_to,
+          COUNT(DISTINCT CASE WHEN status NOT IN ('completed','review','cancelled') THEN id END) AS open_tasks,
+          COUNT(DISTINCT CASE WHEN due_date < date('now')
+            AND status NOT IN ('completed','review','cancelled') THEN id END) AS overdue_tasks
+        FROM tasks
+        GROUP BY assigned_to
+      ) tk ON tk.assigned_to = u.id
+      ORDER BY u.full_name COLLATE NOCASE
+    `).all()
+    return c.json(rows.results || [])
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.get('/api/knowledge', authMiddleware, adminOnly, async (c) => {
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT id, title, body, kind, audience, updated_at FROM knowledge_articles ORDER BY updated_at DESC, id DESC`
+    ).all()
+    return c.json(rows.results || [])
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.post('/api/knowledge', authMiddleware, adminOnly, async (c) => {
+  try {
+    const data = await c.req.json()
+    const title = String(data.title || '').trim()
+    const body = String(data.body || '').trim()
+    const kind = data.kind === 'technical' ? 'technical' : 'workflow'
+    const audience = normalizeArticleAudience(data.audience)
+    if (!title || !body) return c.json({ error: 'Cần tiêu đề và nội dung' }, 400)
+    if (!audience) return c.json({ error: 'Đối tượng đọc không hợp lệ' }, 400)
+    const result = await c.env.DB.prepare(
+      `INSERT INTO knowledge_articles (title, body, kind, audience) VALUES (?, ?, ?, ?)`
+    ).bind(title.slice(0, 200), body.slice(0, 8000), kind, audience).run()
+    return c.json({ success: true, id: result.meta.last_row_id }, 201)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.put('/api/knowledge/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'))
+    const data = await c.req.json()
+    const title = String(data.title || '').trim()
+    const body = String(data.body || '').trim()
+    const kind = data.kind === 'technical' ? 'technical' : 'workflow'
+    const audience = normalizeArticleAudience(data.audience)
+    if (!title || !body) return c.json({ error: 'Cần tiêu đề và nội dung' }, 400)
+    if (!audience) return c.json({ error: 'Đối tượng đọc không hợp lệ' }, 400)
+    const existing = await c.env.DB.prepare('SELECT id FROM knowledge_articles WHERE id = ?').bind(id).first()
+    if (!existing) return c.json({ error: 'Không tìm thấy bài' }, 404)
+    await c.env.DB.prepare(
+      `UPDATE knowledge_articles SET title = ?, body = ?, kind = ?, audience = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+    ).bind(title.slice(0, 200), body.slice(0, 8000), kind, audience, id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.delete('/api/knowledge/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'))
+    await c.env.DB.prepare('DELETE FROM knowledge_articles WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+async function callAssistantModel(apiKey: string, question: string, passages: any[], projects: any[]): Promise<any> {
+  const today = todayInVietnam()
+  const docs = passages.map((p, i) => `[${i + 1}] ${p.article.title}\n${String(p.article.body).slice(0, 1500)}`).join('\n\n') || '(không có đoạn khớp)'
+  const projectLines = projects.map(p => `${p.code} | ${p.name}`).join('\n') || '(không có dự án)'
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Bạn là trợ lý nội bộ BIM PM. Chỉ trả JSON. kind là answer, timesheet hoặc task.
+Nếu người dùng hỏi quy trình, reply chỉ dựa trên các đoạn tài liệu. Không có trong tài liệu thì reply đúng câu "Chưa có tài liệu." và kind=answer. Không bịa bước.
+Nếu người dùng muốn chấm công hoặc tạo task, kind tương ứng. project_code phải là mã trong danh sách dự án. work_date YYYY-MM-DD. Hôm nay là ${today}. regular_hours là số giờ người dùng nói, để 0 nếu họ không nói giờ. title là tên task họ nói.
+Không nhắc lương, mật khẩu, token, doanh thu.
+JSON: {"kind":"answer","reply":"","project_code":"","work_date":"","regular_hours":0,"description":"","title":"","discipline_code":""}`,
+        },
+        {
+          role: 'user',
+          content: `Tài liệu:\n${docs}\n\nDự án được vào:\n${projectLines}\n\nCâu hỏi:\n${question.slice(0, 2000)}`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) throw new Error('model_http_' + res.status)
+  const data = await res.json() as any
+  const text = data?.choices?.[0]?.message?.content || '{}'
+  return JSON.parse(text)
+}
+
+function foldAssistantText(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase()
+}
+
+function assistantLookupTopic(question: string): 'money' | 'people' | 'timesheet' | 'task' | 'legal' | 'leave' | 'project' | null {
+  const q = foldAssistantText(question)
+  if (/quy trinh|cach |lam sao|huong dan/.test(q)) return null
+  if (/doanh thu|chi phi|thanh toan|ngan sach|vat|phi quan ly/.test(q)) return 'money'
+  if (/nghi phep|ngay phep|phep nam|leave/.test(q)) return 'leave'
+  if (/nhan su|nguoi dung|thanh vien|ai phu trach|ai trong/.test(q)) return 'people'
+  if (/cham cong|timesheet|gio cong/.test(q)) return 'timesheet'
+  if (/task|cong viec|qua han|tre han|viec cua/.test(q)) return 'task'
+  if (/ho so|goi thau|phap ly|hop dong/.test(q)) return 'legal'
+  if (/du an|project/.test(q)) return 'project'
+  return null
+}
+
+function matchVisibleProject(projects: Array<{ id: number, code: string, name: string }>, question: string) {
+  const q = foldAssistantText(question)
+  const hits = projects.filter(p => {
+    const code = foldAssistantText(p.code || '')
+    return code.length >= 4 && q.includes(code)
+  })
+  return hits.length === 1 ? hits[0] : null
+}
+
+function assistantMoney(amount: number): string {
+  return Math.round(Number(amount) || 0).toLocaleString('vi-VN') + ' đ'
+}
+
+const ASSISTANT_PROJECT_STATUS: Record<string, string> = {
+  planning: 'Lên kế hoạch',
+  active: 'Đang chạy',
+  on_hold: 'Tạm dừng',
+  completed: 'Hoàn thành',
+  cancelled: 'Đã hủy',
+}
+
+const ASSISTANT_TASK_STATUS: Record<string, string> = {
+  todo: 'Chưa làm',
+  in_progress: 'Đang làm',
+  review: 'Chờ duyệt',
+  completed: 'Xong',
+  cancelled: 'Hủy',
+}
+
+async function lookupAssistantFacts(db: D1Database, user: any, question: string): Promise<string | null> {
+  if (wantsAssistantWrite(question)) return null
+  const topic = assistantLookupTopic(question)
+  const projects = await projectsVisibleTo(db, user)
+  const named = matchVisibleProject(projects, question)
+  if (!topic && !named) return null
+  const scope = named ? [named] : projects
+  const ids = scope.map(p => p.id)
+  const inProjects = ids.length
+    ? `IN (${ids.map(() => '?').join(',')})`
+    : 'IN (NULL)'
+  const q = foldAssistantText(question)
+  const scopeLine = named ? `${named.code} — ${named.name}` : 'các dự án bạn vào được'
+
+  if (topic === 'money') {
+    if (user.role !== 'system_admin') {
+      return 'Doanh thu, chi phí và thanh toán chỉ System Admin xem được.'
+    }
+    if (!ids.length) return 'Không có dự án nào để tính tiền.'
+    const booked = await db.prepare(`
+      SELECT COUNT(*) AS n, COALESCE(SUM(project_revenues.amount), 0) AS booked
+      FROM project_revenues
+      WHERE project_id ${inProjects}
+        AND ${revenueFromPackagePaymentSql('project_revenues')}
+    `).bind(...ids).first() as { n?: number, booked?: number } | null
+    const pays = await db.prepare(`
+      SELECT COUNT(*) AS n
+      FROM payment_requests
+      WHERE project_id ${inProjects}
+        AND status != 'rejected'
+        AND ${paymentOnPackageSql('payment_requests')}
+    `).bind(...ids).first() as { n?: number } | null
+    return `Doanh thu vào sổ trên ${scopeLine}: ${assistantMoney(booked?.booked || 0)} (${booked?.n || 0} dòng, chỉ đợt đang gắn gói). Đợt thanh toán gắn gói: ${pays?.n || 0}.`
+  }
+
+  if (!ids.length) return 'Bạn chưa thuộc dự án nào.'
+
+  if (topic === 'leave') {
+    const year = Number(todayInVietnam().slice(0, 4))
+    let targetId = user.id
+    let targetName = user.full_name || 'bạn'
+    const nameHint = q.replace(/nghi phep|ngay phep|phep nam|leave|cua toi|cua minh|cua|nam|nay|bao nhieu|con|ngay/g, ' ').replace(/\s+/g, ' ').trim()
+    if (user.role === 'system_admin' && nameHint.length >= 3) {
+      const users = await db.prepare(`SELECT id, full_name FROM users WHERE is_active = 1`).all()
+      const hit = ((users.results || []) as any[]).find(u => foldAssistantText(String(u.full_name || '')).includes(nameHint))
+      if (hit?.id) {
+        targetId = hit.id
+        targetName = hit.full_name
+      }
+    }
+    const row = await db.prepare(
+      `SELECT total_days, used_days FROM leave_balances WHERE user_id = ? AND year = ?`
+    ).bind(targetId, year).first() as { total_days?: number, used_days?: number } | null
+    if (!row) return `${targetName} chưa có quota phép năm ${year}.`
+    const total = Number(row.total_days) || 0
+    const used = Number(row.used_days) || 0
+    return `Phép năm ${year} của ${targetName}: ${total} ngày, đã dùng ${used}, còn ${Math.max(0, total - used)}.`
+  }
+
+  if (topic === 'people') {
+    if (user.role === 'system_admin' && !named) {
+      const rows = await db.prepare(`
+        SELECT full_name, role, department, is_active
+        FROM users
+        ORDER BY full_name COLLATE NOCASE
+        LIMIT 30
+      `).all()
+      const lines = ((rows.results || []) as any[]).map(u =>
+        `- ${u.full_name} — ${assistantRoleLabel(u.role)} — ${u.department || 'chưa có phòng'} — ${u.is_active ? 'đang hoạt động' : 'đã khóa'}`
+      )
+      return lines.length ? `Người dùng trên hệ thống:\n${lines.join('\n')}` : 'Chưa có người dùng.'
+    }
+    const rows = await db.prepare(`
+      SELECT DISTINCT u.full_name, COALESCE(m.role, 'member') AS member_role, p.code
+      FROM projects p
+      JOIN project_members m ON m.project_id = p.id
+      JOIN users u ON u.id = m.user_id
+      WHERE p.id ${inProjects} AND u.is_active = 1
+      ORDER BY p.code, u.full_name COLLATE NOCASE
+      LIMIT 40
+    `).bind(...ids).all()
+    const lines = ((rows.results || []) as any[]).map(r =>
+      `- ${r.full_name} (${assistantRoleLabel(r.member_role)}) — ${r.code}`
+    )
+    return lines.length
+      ? `Thành viên trên ${scopeLine}:\n${lines.join('\n')}`
+      : `Chưa có thành viên trên ${scopeLine}.`
+  }
+
+  if (topic === 'timesheet') {
+    const seeTeam = user.role === 'system_admin' || user.role === 'project_admin'
+    const onlyMine = !seeTeam || /cua toi|cua minh/.test(q)
+    const mineSql = onlyMine ? 'AND t.user_id = ?' : ''
+    const binds = onlyMine ? [...ids, user.id] : ids
+    const rows = await db.prepare(`
+      SELECT t.work_date, t.regular_hours, t.overtime_hours, t.status, p.code, u.full_name
+      FROM timesheets t
+      JOIN users u ON u.id = t.user_id
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE (t.project_id ${inProjects} OR (t.project_id IS NULL AND t.user_id = ?))
+        ${mineSql}
+      ORDER BY t.work_date DESC, t.id DESC
+      LIMIT 12
+    `).bind(...ids, user.id, ...binds.slice(ids.length)).all()
+    const lines = ((rows.results || []) as any[]).map(r => {
+      const hours = (Number(r.regular_hours) || 0) + (Number(r.overtime_hours) || 0)
+      return `- ${r.work_date} ${r.code || 'Nghỉ'} — ${hours} giờ — ${r.full_name} — ${r.status || 'draft'}`
+    })
+    const who = onlyMine ? 'của bạn' : 'trên ' + scopeLine
+    return lines.length ? `Chấm công gần nhất ${who}:\n${lines.join('\n')}` : `Chưa có chấm công ${who}.`
+  }
+
+  if (topic === 'task') {
+    const onlyMine = user.role === 'member' || /cua toi|cua minh/.test(q)
+    const onlyOverdue = /tre|qua han/.test(q)
+    const today = todayInVietnam()
+    const mineSql = onlyMine ? 'AND t.assigned_to = ?' : ''
+    const lateSql = onlyOverdue ? `AND t.due_date IS NOT NULL AND t.due_date < ?` : ''
+    const binds = [...ids]
+    if (onlyMine) binds.push(user.id)
+    if (onlyOverdue) binds.push(today)
+    const rows = await db.prepare(`
+      SELECT t.title, t.status, t.due_date, p.code, u.full_name
+      FROM tasks t
+      JOIN projects p ON p.id = t.project_id
+      LEFT JOIN users u ON u.id = t.assigned_to
+      WHERE t.project_id ${inProjects}
+        AND t.status NOT IN ('completed', 'review', 'cancelled')
+        ${mineSql}
+        ${lateSql}
+      ORDER BY CASE WHEN t.due_date IS NOT NULL AND t.due_date < ? THEN 0 ELSE 1 END, t.due_date
+      LIMIT 12
+    `).bind(...binds, today).all()
+    const lines = ((rows.results || []) as any[]).map(r => {
+      const late = r.due_date && r.due_date < today ? ' — trễ' : ''
+      return `- [${r.code}] ${r.title} — ${r.full_name || 'chưa giao'} — ${ASSISTANT_TASK_STATUS[r.status] || r.status}${r.due_date ? ' — hạn ' + r.due_date : ''}${late}`
+    })
+    const label = onlyOverdue ? 'Task trễ hạn' : 'Task đang mở'
+    const who = onlyMine ? 'của bạn' : 'trên ' + scopeLine
+    return lines.length ? `${label} ${who}:\n${lines.join('\n')}` : `Không có ${label.toLowerCase()} ${who}.`
+  }
+
+  if (topic === 'legal') {
+    const showValue = user.role === 'system_admin'
+    const rows = await db.prepare(`
+      SELECT p.code AS project_code, lp.name, lp.code, lp.start_date, lp.end_date, lp.contract_value
+      FROM legal_packages lp
+      JOIN projects p ON p.id = lp.project_id
+      WHERE lp.project_id ${inProjects}
+      ORDER BY p.code, lp.sort_order, lp.id
+      LIMIT 30
+    `).bind(...ids).all()
+    const lines = ((rows.results || []) as any[]).map(r => {
+      const dates = [r.start_date, r.end_date].filter(Boolean).join(' → ')
+      const value = showValue ? ` — ${assistantMoney(r.contract_value || 0)}` : ''
+      return `- [${r.project_code}] ${r.name}${r.code ? ' (' + r.code + ')' : ''}${dates ? ' — ' + dates : ''}${value}`
+    })
+    return lines.length ? `Gói hồ sơ trên ${scopeLine}:\n${lines.join('\n')}` : `Chưa có gói hồ sơ trên ${scopeLine}.`
+  }
+
+  const rows = scope.slice(0, 15).map(p => `- ${p.code} — ${p.name}`)
+  const more = scope.length > 15 ? `\nVà thêm ${scope.length - 15} dự án.` : ''
+  if (!named) return `Bạn vào được ${scope.length} dự án:\n${rows.join('\n')}${more}`
+
+  const counts = await db.prepare(`
+    SELECT
+      SUM(CASE WHEN status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) AS open_n,
+      SUM(CASE WHEN status NOT IN ('completed','review','cancelled') AND due_date < ? THEN 1 ELSE 0 END) AS late_n
+    FROM tasks WHERE project_id = ?
+  `).bind(todayInVietnam(), named.id).first() as { open_n?: number, late_n?: number } | null
+  const packs = await db.prepare(
+    `SELECT name FROM legal_packages WHERE project_id = ? ORDER BY sort_order, id`
+  ).bind(named.id).all()
+  const packNames = ((packs.results || []) as any[]).map(r => r.name).join('; ') || 'chưa có gói'
+  const status = ASSISTANT_PROJECT_STATUS[named.status || ''] || ''
+  const statusLine = status ? `\nTrạng thái: ${status}.` : ''
+  return `${named.code} — ${named.name}.${statusLine}\nTask đang mở: ${counts?.open_n || 0}, trễ hạn: ${counts?.late_n || 0}.\nGói hồ sơ: ${packNames}.`
+}
+
+app.post('/api/assistant/ask', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const data = await c.req.json()
+    const question = String(data.message || '').trim()
+    if (!question) return c.json({ error: 'Cần nội dung câu hỏi' }, 400)
+    if (asksOwnAccess(question) && !wantsAssistantWrite(question)) {
+      return c.json({ reply: await ownAccessReply(db, user) })
+    }
+    const lookedUp = await lookupAssistantFacts(db, user, question)
+    if (lookedUp) return c.json({ reply: lookedUp })
+
+    const all = await db.prepare(
+      `SELECT id, title, body, kind, audience FROM knowledge_articles`
+    ).all()
+    const readable = ((all.results || []) as any[]).filter(a => articleReadableBy(String(a.audience || 'all'), user.role))
+    const ranked = rankArticles(readable, question)
+    const apiKey = c.env.AI_API_KEY
+
+    if (!apiKey) {
+      if (wantsAssistantWrite(question)) {
+        return c.json({ reply: 'Chưa soạn được timesheet hay task vì máy chủ chưa có khóa AI. Tra cứu tài liệu vẫn dùng được.' })
+      }
+      if (!ranked.length) return c.json({ reply: 'Chưa có tài liệu.' })
+      const best = ranked[0].article
+      return c.json({ reply: `${best.title}\n${best.body}` })
+    }
+
+    let model: any
+    try {
+      const projects = await projectsVisibleTo(db, user)
+      model = await callAssistantModel(apiKey, question, ranked, projects)
+    } catch {
+      if (!ranked.length) return c.json({ reply: 'Chưa có tài liệu.' })
+      const best = ranked[0].article
+      return c.json({ reply: `${best.title}\n${best.body}` })
+    }
+
+    const kind = model?.kind === 'timesheet' || model?.kind === 'task' ? model.kind : 'answer'
+    const reply = String(model?.reply || '').trim() || (ranked.length ? `${ranked[0].article.title}\n${ranked[0].article.body}` : 'Chưa có tài liệu.')
+    if (kind === 'answer') return c.json({ reply })
+
+    const projects = await projectsVisibleTo(db, user)
+    const code = String(model.project_code || '').trim().toLowerCase()
+    const project = projects.find(p => String(p.code).toLowerCase() === code)
+      || projects.find(p => String(p.name).toLowerCase() === code)
+    if (!project) {
+      return c.json({ reply: reply || 'Không thấy dự án đó trong các dự án bạn được vào.' })
+    }
+
+    if (kind === 'timesheet') {
+      const hours = Number(model.regular_hours)
+      const workDate = /^\d{4}-\d{2}-\d{2}$/.test(String(model.work_date || '')) ? String(model.work_date) : todayInVietnam()
+      if (!hours || hours <= 0) {
+        return c.json({ reply: 'Cần số giờ chấm công trước khi soạn bản nháp.' })
+      }
+      return c.json({
+        reply: `Bản nháp chấm công cho bạn: ${project.code} — ${project.name}, ngày ${workDate}, ${hours} giờ. Bấm xác nhận để ghi.`,
+        draft: {
+          kind: 'timesheet',
+          payload: {
+            project_id: project.id,
+            work_date: workDate,
+            regular_hours: hours,
+            description: String(model.description || '').slice(0, 500),
+          },
+        },
+      })
+    }
+
+    const title = String(model.title || '').trim()
+    if (!title) return c.json({ reply: 'Cần tên công việc trước khi soạn bản nháp.' })
+    return c.json({
+      reply: `Bản nháp task trong ${project.code} — ${project.name}: ${title}. Bấm xác nhận để tạo.`,
+      draft: {
+        kind: 'task',
+        payload: {
+          project_id: project.id,
+          title: title.slice(0, 200),
+          description: String(model.description || '').slice(0, 1000),
+          discipline_code: String(model.discipline_code || '').slice(0, 20) || null,
+        },
+      },
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.post('/api/assistant/confirm', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user') as any
+    const data = await c.req.json()
+    const kind = data?.draft?.kind
+    const payload = data?.draft?.payload || {}
+    if (kind === 'timesheet') {
+      const result = await createTimesheetRecord(c.env.DB, user, {
+        project_id: payload.project_id,
+        work_date: payload.work_date,
+        regular_hours: payload.regular_hours,
+        overtime_hours: 0,
+        description: payload.description || null,
+        day_type: 'work',
+      })
+      if (result.status >= 400) return c.json(result.body, result.status as any)
+      return c.json({ reply: 'Đã ghi chấm công.', result: result.body })
+    }
+    if (kind === 'task') {
+      const result = await createTaskRecord(c.env.DB, c.env, user, {
+        project_id: payload.project_id,
+        title: payload.title,
+        description: payload.description || null,
+        discipline_code: payload.discipline_code || null,
+      })
+      if (result.status >= 400) return c.json(result.body, result.status as any)
+      return c.json({ reply: 'Đã tạo task.', result: result.body })
+    }
+    return c.json({ error: 'Không có bản nháp để ghi' }, 400)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
 
 export default app

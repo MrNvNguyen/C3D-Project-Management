@@ -1,0 +1,57 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-A-KPI-SPOT",
+  "parent_hold": "Agents Logs/018.advisor-strategy-theme-legal-excel-wave-a-hold-kpi-2026-09-26.md",
+  "prior_evidence": "docs/evidence/finance/wave-a-sync-gate-q2-api-2026-09-26.json",
+  "measured_at": "2026-09-26T10:20+07:00",
+  "git_head": "5dccb822fb2a8e874827f4358ef3e823896f2a23",
+  "working_tree": "dirty (Wave A lever uncommitted: src/finance.ts, src/index.tsx, public/static/app.js, tests, docs)",
+  "lever": "OBSERVE_ONLY",
+  "runtime_fingerprint": "wrangler pages dev dist @ http://127.0.0.1:8789 (same session as QA 016; server responded 200)",
+  "environment": "local D1 (.wrangler/state/v3/d1), ALLOW_PREVIEW=1",
+  "auth": "system_admin / admin",
+  "close_metric": {
+    "route": "GET /api/projects/5/estimate-vs-actual",
+    "field": "summary.revenue.actual",
+    "measured_value": 700000,
+    "d1_cross_check": {
+      "query": "SELECT COALESCE(SUM(amount),0) FROM project_revenues WHERE project_id=5 AND payment_status IN ('paid','partial','pending')",
+      "sum": 700000,
+      "rows": [
+        {
+          "id": 1,
+          "amount": 700000,
+          "payment_status": "pending",
+          "revenue_date": "2026-09-15"
+        }
+      ]
+    },
+    "parity": "api_summary_revenue_actual === d1_booked_sum",
+    "includes_fixture_700000": true,
+    "only_revenue_on_project_5": true
+  },
+  "optional_corroboration": {
+    "route": "GET /api/executive/projects",
+    "project_id": 5,
+    "booked_revenue": 700000,
+    "matches_close_metric": true
+  },
+  "fixture_phiếu_state": {
+    "payment_id": 1,
+    "status": "processing",
+    "revenue_id": 1,
+    "hspl_booked_revenue": 700000,
+    "description": "QA Wave A sync gate fixture"
+  },
+  "scope_out_not_falsifier": {
+    "note": "NT (nghiem_thu) on same route uses payment_requests paid|partial|pending only; processing omitted by design in Wave A",
+    "actual_nghiem_thu": 454545,
+    "actual_doanh_thu_ns": 700000
+  },
+  "not_measured_this_spot": [
+    "Browser UI estimate-vs-actual screen",
+    "Dashboard top-projects booked KPI",
+    "Staging/production D1",
+    "NT parity for processing status"
+  ],
+  "close_metric_classification": "PASS"
+}

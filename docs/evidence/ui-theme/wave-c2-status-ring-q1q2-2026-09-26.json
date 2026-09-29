@@ -1,0 +1,110 @@
+{
+  "schema": "bim-pm-evidence-1",
+  "directive_id": "THEME-LEGAL-EXCEL-C2-STATUS-RING",
+  "wave_id": "C2-status-ring",
+  "attempt": "1/3",
+  "qa_tier": "Q1+Q2",
+  "q2_class": "PRODUCT_SPOT",
+  "metric": "wave_c2_status_ring_tick",
+  "measured_at": "2026-09-26T15:50:00+07:00",
+  "measured_by": "qa-agent",
+  "verify_sha": "da4649562c0333a0cfe8fd841f1e4c12d85da31e",
+  "c2_working_tree": "uncommitted — public/index.html, public/static/app.js",
+  "run_class": "PRODUCT_PASS_RUN",
+  "attempt_outcome": "PASS",
+  "runtime": {
+    "url": "http://127.0.0.1:8792/?c2ringqa=2026-09-26-q2#/legal",
+    "build": "npm run build (vite + copy-public)",
+    "serve": "npx wrangler pages dev dist --d1=bim-management-production --local --port 8792 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "d1_binding": "bim-management-production (local)",
+    "auth_admin": "system_admin — browser login admin (token redacted)",
+    "fixture_project_browser": 2,
+    "fixture_project_api": 4,
+    "lead_logs": [
+      "Agents Logs/062.lead-dev-theme-legal-excel-c2-status-ring-2026-09-26.md",
+      "Agents Logs/063.lead-dev-theme-legal-excel-c2-status-ring-compact-2026-09-26.md"
+    ]
+  },
+  "layer_a": {
+    "npm_test": "36/36 PASS",
+    "diff_vs_da464956": {
+      "paths": ["public/index.html", "public/static/app.js"],
+      "insertions": 308,
+      "deletions": 154,
+      "src_or_finance_in_diff": false
+    },
+    "static_wiring": {
+      "legalChecklistStatusRingClick_global": true,
+      "render_button_not_span": true,
+      "legalInlineSaveStatus_after_ring": true,
+      "stopPropagation_on_ring": true,
+      "drag_handle_separate_draggable": true
+    }
+  },
+  "q2_product": {
+    "ring_click_pending_to_completed": {
+      "item_id_browser": 89,
+      "ring_class_after": "legal-checklist-status-ring done",
+      "select_after": "completed",
+      "aria_pressed": "true",
+      "title_strikethrough_class": true
+    },
+    "reload_persist_completed": {
+      "ring_class": "legal-checklist-status-ring done",
+      "select": "completed"
+    },
+    "ring_click_back_to_pending": {
+      "ring_class": "legal-checklist-status-ring pending",
+      "select": "pending",
+      "api_overview_final": "pending"
+    },
+    "modal_not_open_on_ring": {
+      "legalItemModal_visible_after_click": false
+    },
+    "dnd_grip_distinct": {
+      "rings": 28,
+      "handles": 28,
+      "ring_tag": "BUTTON",
+      "ring_draggable": null,
+      "handle_draggable": "true",
+      "ring_hit_px": { "w": 26, "h": 26 },
+      "handle_hit_px": { "w": 44, "h": 44 }
+    },
+    "visual_modes": {
+      "pending": "open ring via ::before border",
+      "completed": "filled .done + check ::after",
+      "css_compact_063": { "visible_ring_px": 15, "hit_px": 26 }
+    },
+    "theme": {
+      "screenshots": [
+        "docs/evidence/ui-theme/wave-c2-status-ring-q2-light-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-c2-status-ring-q2-dark-2026-09-26.png"
+      ],
+      "light_bytes": 184496,
+      "dark_bytes": 194822
+    },
+    "api_put_persist_spot": {
+      "item_id": 254,
+      "pending_completed_pending_overview": true,
+      "script": "docs/evidence/ui-theme/wave-c2-status-ring-qa-spot.mjs"
+    }
+  },
+  "regenerate": {
+    "browser_q2": "npm exec --yes --package=playwright@1.49.1 -- node docs/evidence/ui-theme/wave-c2-status-ring-q2-browser.mjs",
+    "api_spot": "node docs/evidence/ui-theme/wave-c2-status-ring-qa-spot.mjs",
+    "screenshots": "npm exec --yes --package=playwright@1.49.1 -- node docs/evidence/ui-theme/wave-c2-status-ring-q2-screenshots.mjs"
+  },
+  "not_measured": [
+    "Cloudflare production / staging cut",
+    "C3 native drag reorder regression (same session)",
+    "in_progress / na full 4-state cycle (062 documents partial cycle to completed only)"
+  ],
+  "residual_risks": [
+    "Stale /static/app.js cache can render pre-062 decorative span rings until hard reload; bump app.js?v= on commit recommended"
+  ],
+  "must_not_claim": [
+    "theme-legal-excel box SUCCESS",
+    "Wave D / payment sheet",
+    "PO packet"
+  ]
+}

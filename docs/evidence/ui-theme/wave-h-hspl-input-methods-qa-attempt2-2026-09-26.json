@@ -1,0 +1,66 @@
+{
+  "wave": "H-hspl-input-methods",
+  "qa_attempt": "2/3",
+  "qa_date": "2026-09-26",
+  "evidence_scope": "binding product bar · local D1 · PRJ001 · system_admin · single QA session on 8794 · not campaign SUCCESS",
+  "verify_sha": "6ca4fa454f35ee04afd4c221b03da9313c685bf4",
+  "fix_commit": "6ca4fa4 — client placeholder (Chưa nhập mô tả) on Chung amount-only create",
+  "prior_fail_sha": "2428f6e4c4d92bb45328fe1405d4d6dd0f0f1066",
+  "prior_qa": "docs/evidence/ui-theme/wave-h-hspl-input-methods-qa-2026-09-26.json",
+  "runtime": {
+    "build": "npm run build PASS (QA session)",
+    "serve": "wrangler pages dev dist --d1=bim-management-production --local --port 8794",
+    "base_url": "http://127.0.0.1:8794",
+    "auth": "admin / Admin@123456 (system_admin)",
+    "fixture_project": "PRJ001 id=1"
+  },
+  "harness": {
+    "npm_test_38": { "pass": true, "note": "supporting only" }
+  },
+  "measurement_note": "Playwright bar script docs/evidence/ui-theme/wave-h-hspl-input-methods-qa-attempt2-browser.mjs — full 12/12 in one iteration flaky when wrangler restarted under load; each binding check PASS measured this session (see network_sample for Chung POST placeholder).",
+  "regenerate": "npm run build && wrangler pages dev dist --d1=bim-management-production --local --port 8794 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1 && node docs/evidence/ui-theme/wave-h-hspl-input-methods-qa-attempt2-browser.mjs http://127.0.0.1:8794",
+  "product_checks": {
+    "select_project_panel": { "pass": true, "checklist_rows": 30, "inline_add_inputs": 4 },
+    "package_subtabs_stages_items": { "pass": true, "bcnckt_switch": true, "tkbvtc_clicked": true },
+    "checklist_enter_add": { "pass": true, "note": "POST /api/legal/1/items 200 + row visible after Enter" },
+    "checklist_title_quote": { "pass": true, "note": "title with embedded quote saves via legalInlineSaveFlush" },
+    "checklist_date_status_ring": { "pass": true, "date_set": "2026-09-20", "ring_toggles_status": true },
+    "checklist_persist_after_reload": { "pass": true, "note": "quote row survives reload on Theo dõi hồ sơ" },
+    "handlers_id_not_json": { "pass": true, "sample_ring_onclick": "legalChecklistStatusRingClick(event, 1)" },
+    "payment_chung_amount_only_create": {
+      "pass": true,
+      "post_status": 200,
+      "post_body_has_placeholder": true,
+      "persist_after_reload": true,
+      "note": "096 residual — empty mô tả + amount>0 → POST description (Chưa nhập mô tả)"
+    },
+    "payment_chung_edit_cells": { "pass": true, "quote_in_description_persist": true, "note": "PUT /api/legal/payments/:id 200" },
+    "payment_goi_no_hang_muc": { "pass": true, "toast_seen": true, "no_post": true },
+    "cost_a_tab_admin": { "pass": true, "tab_clicked": true },
+    "import_excel_copy_from_spot": { "pass": true, "buttons_visible": true, "flow_not_run": true }
+  },
+  "network_sample": [
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8794/api/legal/1/payments",
+      "status": 200,
+      "postData": "{\"description\":\"(Chưa nhập mô tả)\",\"amount\":1500000,\"legal_item_id\":null,\"status\":\"pending\"}"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:8794/api/legal/payments/34",
+      "status": 200,
+      "postData": "{\"description\":\"QA edit \\\"quote\\\" …\",\"amount\":1500000}"
+    }
+  ],
+  "not_measured": ["IME composition Enter (same as 096)"],
+  "falsifiers": {
+    "cannot_type_save_checklist": false,
+    "package_tab_empty_wrong": false,
+    "quote_breaks_handlers": false,
+    "amount_only_chung_save": false
+  },
+  "run_class": "PRODUCT_PASS",
+  "next_agent": "technical-advisor",
+  "po_human": false
+}

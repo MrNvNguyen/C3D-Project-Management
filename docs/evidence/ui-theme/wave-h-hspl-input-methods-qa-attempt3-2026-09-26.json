@@ -1,0 +1,146 @@
+{
+  "wave": "H-hspl-input-methods",
+  "qa_attempt": "3/3",
+  "qa_date": "2026-09-26",
+  "evidence_scope": "binding product bar · local D1 · PRJ001 · system_admin · not campaign SUCCESS",
+  "verify_sha": "6ca4fa454f35ee04afd4c221b03da9313c685bf4",
+  "prior_fail_sha": "2428f6e4c4d92bb45328fe1405d4d6dd0f0f1066",
+  "base_url": "http://127.0.0.1:8794",
+  "runtime": {
+    "serve": "wrangler pages dev dist --port 8794 --local D1",
+    "auth": "admin / Admin@123456 (system_admin)",
+    "fixture_project": "PRJ001 id=1"
+  },
+  "harness": {
+    "script": "wave-h-hspl-input-methods-qa-attempt3-browser.mjs",
+    "isolation": "unique TAG; checklist scoped to active BCNCKT first stage; payment gói via switchLegalPaymentPackageTab + empty legal_item_id",
+    "checklist_rows_at_start": 53,
+    "checklist_rows_at_end": 54
+  },
+  "product_checks": {
+    "select_project_panel": {
+      "pass": true,
+      "checklist_rows": 53,
+      "inline_add_inputs": 4
+    },
+    "package_subtabs_stages_items": {
+      "pass": true,
+      "bcnckt_switch": true,
+      "tkbvtc_clicked": true,
+      "stage_blocks": 4
+    },
+    "checklist_enter_add": {
+      "pass": true,
+      "title": "QA-H3-1790433071577-enter",
+      "post_status": 200,
+      "item_id": 558,
+      "stage_id": "1"
+    },
+    "checklist_title_quote": {
+      "pass": true,
+      "sample": "QA-H3-1790433071577-enter \"quote\"",
+      "item_id": 558
+    },
+    "handlers_id_not_json": {
+      "pass": true,
+      "sample_ring_onclick": "legalChecklistStatusRingClick(event, 558)",
+      "item_id": 558
+    },
+    "checklist_date_status_ring": {
+      "pass": true,
+      "ring_toggles_status": true,
+      "date_set": "2026-09-20",
+      "status": "in_progress",
+      "item_id": 558
+    },
+    "checklist_persist_after_reload": {
+      "pass": true,
+      "quote_row": true,
+      "sample": "QA-H3-1790433071577-enter \"quote\"",
+      "item_id": 558
+    },
+    "payment_chung_edit_cells": {
+      "pass": true,
+      "quote_in_description_persist": true,
+      "payment_id": 66
+    },
+    "payment_chung_amount_only_create": {
+      "pass": true,
+      "post_status": 200,
+      "post_body_has_placeholder": true,
+      "persist_after_reload": true,
+      "ui_after_create": true,
+      "payment_id": 66,
+      "amount": 1671577
+    },
+    "payment_goi_no_hang_muc": {
+      "pass": true,
+      "toast_seen": true,
+      "no_post": true,
+      "active_payment_package": 1
+    },
+    "cost_a_tab_admin": {
+      "pass": true,
+      "tab_clicked": true
+    },
+    "import_excel_copy_from_spot": {
+      "pass": true,
+      "buttons_visible": true,
+      "flow_not_run": true
+    }
+  },
+  "network_sample": [
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8794/api/legal/1/items",
+      "status": 200,
+      "postData": "{\"stage_id\":1,\"parent_id\":null,\"title\":\"QA-H3-1790433071577-enter\",\"item_type\":\"task\",\"status\":\"pending\"}"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:8794/api/legal/items/558",
+      "status": 200,
+      "postData": "{\"title\":\"QA-H3-1790433071577-enter \\\"quote\\\"\",\"item_type\":\"task\",\"due_date\":null,\"actual_completion_date\":null,\"status\":\"pending\",\"notes\":null}"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:8794/api/legal/items/558",
+      "status": 200,
+      "postData": "{\"title\":\"QA-H3-1790433071577-enter \\\"quote\\\"\",\"item_type\":\"task\",\"due_date\":null,\"actual_completion_date\":null,\"status\":\"completed\",\"notes\":null}"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:8794/api/legal/items/558",
+      "status": 200,
+      "postData": "{\"title\":\"QA-H3-1790433071577-enter \\\"quote\\\"\",\"item_type\":\"task\",\"due_date\":\"2026-09-20\",\"actual_completion_date\":null,\"status\":\"completed\",\"notes\":null}"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8794/api/legal/1/payments",
+      "status": 200,
+      "postData": "{\"description\":\"(Chưa nhập mô tả)\",\"payment_phase\":\"\",\"request_number\":\"\",\"request_date\":null,\"status\":\"pending\",\"amount\":1671577,\"paid_amount\":0,\"paid_date\":null,\"invoice_number\":\"\",\"legal_item_id\":null,\"notes\":\"\",\"vat_pct\":0}"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8794/api/legal/1/payments",
+      "status": 200,
+      "postData": "{\"description\":\"(Chưa nhập mô tả)\",\"payment_phase\":\"\",\"request_number\":\"\",\"request_date\":null,\"status\":\"pending\",\"amount\":1671577,\"paid_amount\":0,\"paid_date\":null,\"invoice_number\":\"\",\"legal_item_id\":null,\"notes\":\"\",\"vat_pct\":0}"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:8794/api/legal/payments/66",
+      "status": 200,
+      "postData": "{\"description\":\"QA edit \\\"quote\\\" 1790433071577\",\"payment_phase\":\"\",\"request_number\":\"\",\"request_date\":null,\"status\":\"pending\",\"amount\":1671577,\"paid_amount\":0,\"paid_date\":null,\"invoice_number\":\"\",\"legal_item_id\":null,\"notes\":\"\",\"vat_pct\":0}"
+    }
+  ],
+  "errors": [],
+  "run_class": "PRODUCT_PASS",
+  "falsifiers": {
+    "cannot_type_save_checklist": false,
+    "package_tab_empty_wrong": false,
+    "quote_breaks_handlers": false,
+    "amount_only_chung_save": false
+  },
+  "next_agent": "technical-advisor",
+  "po_human": false
+}

@@ -1,0 +1,74 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-G-RECONCILE",
+  "wave_id": "G-impact-reconcile",
+  "attempt": "1/3",
+  "qa_tier": "Q1+Q2",
+  "measured_at": "2026-09-26T16:45+07:00",
+  "git_head": "e02f621d3ad33c4fdaa4c3a8ee855ecaad137d2d",
+  "mode": "MEASURE_ONLY",
+  "lever": "OBSERVE_ONLY",
+  "runtime_fingerprint": {
+    "base_url": "http://127.0.0.1:8791",
+    "environment": "local D1 (.wrangler/state/v3/d1)",
+    "auth": "system_admin / admin"
+  },
+  "contracts_checked": {
+    "computeBookedRevenue_body_diff_vs_e02f621": "empty",
+    "no_client_booked_recompute_on_sheet": "booked from API readonly cell only (corroborated Q2)"
+  },
+  "close_metric": {
+    "method_primary": "delta_put_processing",
+    "payment_id": 28,
+    "project_id": 5,
+    "status": "processing",
+    "revenue_id": 15,
+    "fixture": {
+      "amount": 1100000,
+      "vat_pct": 10,
+      "management_fee_pct_project": 30,
+      "booked_revenue_expected": 700000
+    },
+    "hspl_booked_revenue": {
+      "GET /api/legal/5/payments": 700000,
+      "GET /api/legal/5/overview": 700000
+    },
+    "kpi_field": "summary.revenue.actual",
+    "kpi_alias": "actual.doanh_thu_ns",
+    "kpi_before": 8400000,
+    "kpi_after_pending": 8400000,
+    "kpi_after_processing": 9100000,
+    "kpi_value": 9100000,
+    "delta": 700000,
+    "equal": false,
+    "delta_match": true,
+    "pending_did_not_change_kpi": true
+  },
+  "document_method_corroboration": {
+    "payment_id": 1,
+    "booked_revenue": 700000,
+    "kpi_value": 9100000,
+    "sum_booked_revenue_rows_with_revenue_id": 9100000,
+    "kpi_equals_sum_booked_rows": true,
+    "phiếu_included_in_kpi_total": true
+  },
+  "q2_optional_dom": {
+    "route": "http://127.0.0.1:8791/?dqa=wave-g-reconcile-2026-09-26#/legal",
+    "payment_id": 28,
+    "dt_so_cell_text": "700,000 N ₫",
+    "api_booked_revenue": 700000,
+    "dom_matches_api_booked": true,
+    "regenerate": "playwright: login admin, loadLegalProject(5), switchLegalTab('payments'), switchLegalPaymentPackageTab('chung'), read DT sổ column (second-to-last cell) on data-payment-id=28"
+  },
+  "known_gap_not_g_falsifier": {
+    "legalPaymentCommitRow_full_loadLegalProject": "documented Agents Logs/086.advisor-technical-theme-legal-excel-g-reconcile-2026-09-26.md — payment sheet blur still full-tree reload; C2 debounce is checklist-only"
+  },
+  "not_measured": [
+    "Staging/production D1",
+    "Executive global booked_revenue tile (all projects)",
+    "NT (nghiem_thu) parity for processing on estimate-vs-actual",
+    "Browser estimate-vs-actual screen (API only for KPI)",
+    "Payment debounce fix (attempt 2 lever if required)"
+  ],
+  "run_class": "PRODUCT_PASS_RUN",
+  "attempt_outcome": "PASS"
+}

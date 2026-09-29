@@ -1,0 +1,85 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-B-THEME",
+  "wave_id": "B-theme",
+  "qa_tier": "Q2",
+  "qa_batch": "browser_shell_light_dark",
+  "measured_at": "2026-09-26T10:52:00+07:00",
+  "measured_by": "qa-agent",
+  "classification": "PRODUCT_PASS_RUN",
+  "runtime": {
+    "url": "http://127.0.0.1:8789/",
+    "build": "npm run build (vite + copy-public)",
+    "serve": "npx wrangler pages dev dist --local --port 8789",
+    "git_head": "fbb9beffb70fa69ea2b596873ee196349d9b9b4c",
+    "working_tree_theme_files": ["public/index.html", "public/static/app.js"],
+    "auth": "system_admin via POST /api/auth/login + bim_token (browser SPA)"
+  },
+  "diff_isolation": {
+    "paths_in_diff_vs_head": ["public/index.html", "public/static/app.js"],
+    "forbidden_paths_in_diff": [],
+    "result": "PASS"
+  },
+  "checks": {
+    "header_sang_toi_visible": true,
+    "toggle_immediate_data_theme": {
+      "dark": { "data_theme": "dark", "bim_theme": "dark", "dark_btn_active": true },
+      "light": { "data_theme": "light", "bim_theme": "light", "light_btn_active": true },
+      "result": "PASS"
+    },
+    "no_bim_theme_follows_os": {
+      "bim_theme": null,
+      "os_prefers_dark": true,
+      "data_theme": "dark",
+      "result": "PASS"
+    },
+    "user_choice_wins_on_full_reload": {
+      "bim_theme_stored": "light",
+      "os_prefers_dark": true,
+      "data_theme_after_location_reload": "light",
+      "light_btn_active": true,
+      "result": "PASS"
+    },
+    "no_reset_system_button": true,
+    "shell_contrast_wcag_approx": {
+      "dark": { "top_bar": 13.66, "card": 14.5, "body": 14.5 },
+      "light": { "top_bar": 14.68, "card": 14.05, "body": 13.28 },
+      "threshold_note": "ratio >= 4.5 normal text",
+      "result": "PASS"
+    },
+    "modal_spot_projectModal_dark": {
+      "opened": true,
+      "contrast_ratio": 17.03,
+      "result": "PASS"
+    },
+    "dashboard_charts_safeChart_dark": {
+      "chart_keys": ["productivity", "discipline", "hours"],
+      "sample_colors": {
+        "grid": "rgba(148, 163, 184, 0.22)",
+        "tick": "#94a3b8",
+        "legend": "#e2e8f0"
+      },
+      "result": "PASS"
+    }
+  },
+  "not_measured": [
+    "FOUC duration on cold load (head boot script present; no >1s flash observed informally)",
+    "prefers-color-scheme: light branch in live browser (automation host OS prefers dark; boot logic mirrored in evaluate)",
+    "member role UI (system_admin only)",
+    "executive-dashboard.js / #page-executive-dashboard contrast spot",
+    "productivity-only route charts beyond dashboard visit"
+  ],
+  "evidence_artifacts": [
+    "docs/evidence/ui-theme/wave-b-shell-dark-modal-2026-09-26.png",
+    "docs/evidence/ui-theme/wave-b-shell-light-dashboard-2026-09-26.png"
+  ],
+  "screenshot_bytes": {
+    "wave-b-shell-dark-modal-2026-09-26.png": 361179,
+    "wave-b-shell-light-dashboard-2026-09-26.png": 420557
+  },
+  "must_not_claim": [
+    "theme-legal-excel box SUCCESS",
+    "Wave C-G / D2 PASS",
+    "production resync",
+    "Q1-only PASS as Wave B product"
+  ]
+}

@@ -26,6 +26,8 @@ export default defineConfig({
     })
   ],
   server: {
+    // Default Vite "localhost" can bind IPv6-only (::1); 127.0.0.1 then fails → axios "Network Error".
+    host: true,
     watch: {
       ignored: ['**/.wrangler/**', '**/dist/**', '**/node_modules/**'],
     },

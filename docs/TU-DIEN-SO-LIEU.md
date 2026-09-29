@@ -12,13 +12,13 @@ Cần kế toán / PO ký trước khi tin số trên dashboard sau khi đổi c
 | Thanh toán / GTTT (báo cáo) | API `cash_before_vat` | `paid_amount ÷ (1 + vat%/100)` — **luôn trước VAT** | Không so GTHĐ với số có VAT |
 | Gross lưu DB | `payment_requests.amount` / `paid_amount` | Giá trị nhập (có thể gồm VAT) | Không dùng raw làm cột NT/GTTT |
 | Dòng tiền gross (tham chiếu) | `cash_collected` | `paid_amount` nguyên | Không cộng vào doanh thu vào sổ |
-| Doanh thu vào sổ (booked) | `project_revenues.amount` | `syncPaymentToRevenue`: trước VAT → × (1 − fee%/100) | Không tính lại trong `app.js` |
+| Doanh thu vào sổ (booked) | `project_revenues.amount` | `syncPaymentToRevenue` khi phiếu `processing`/`partial`/`paid` và `amount > 0`: trước VAT → × (1 − fee%/100); `pending`/`rejected` không giữ dòng sổ | Không tính lại trong `app.js` |
 | Ngân sách dự án | API `project_budget` | `contract_value × (1 − management_fee_pct/100)` | `projects.budget` (cột legacy, luôn coi = 0) |
 | Chi phí trực tiếp | `project_costs` (không `salary`) | SUM(amount) | — |
 | Chi phí lương | Timesheet đã ghi × `monthly_labor_costs` (phân bổ theo giờ quy đổi) | Xem `computeProjectLaborFromTimesheets` | Không đọc `project_labor_costs` cho KPI (bảng đó chỉ cache đồng bộ tay) |
 | Chi phí chung | `shared_cost_allocations.allocated_amount` | — | — |
 
-Ba số phải tách trên mọi báo cáo: **nghiệm thu (trước VAT)**, **doanh thu vào sổ** (gồm phiếu `pending` đã NT — chưa thu tiền vẫn vào sổ), **dòng tiền** (chỉ `paid`/`partial`, trước VAT). Công nợ HĐ = GTHĐ − GTTT (cả hai trước VAT).
+Ba số phải tách trên mọi báo cáo: **nghiệm thu (trước VAT)** (phiếu `pending`/`partial`/`paid` — báo cáo NT), **doanh thu vào sổ** (chỉ phiếu `processing`/`partial`/`paid` đã sync — `pending` Chờ thanh toán và `rejected` không vào sổ), **dòng tiền** (chỉ `paid`/`partial`, trước VAT). Công nợ HĐ = GTHĐ − GTTT (cả hai trước VAT).
 
 ## Công / phép / timesheet
 

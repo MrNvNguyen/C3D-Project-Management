@@ -1,0 +1,69 @@
+          <button id="btnNewTask" type="button" onclick="taskGridFocusNewRow('global')" class="btn-primary flex items-center gap-2">
+            <i class="fas fa-plus"></i>Tạo task mới
+          </button>
+        </div>
+
+        <!-- Filters -->
+        <div class="card mb-4">
+          <div class="flex flex-wrap gap-3 items-center">
+            <input type="text" id="taskSearch" placeholder="🔍 Tìm kiếm task / phụ trách..." class="input-field" style="width:220px" oninput="onTaskSearchInput()">
+            <select id="taskStatusFilter" class="select-field" style="width:140px" onchange="reloadTaskList()">
+              <option value="">Tất cả TT</option>
+              <option value="todo">Chờ thực hiện</option>
+              <option value="in_progress">Đang làm</option>
+              <option value="review">Đang duyệt</option>
+              <option value="completed">Hoàn thành</option>
+            </select>
+            <select id="taskPriorityFilter" class="select-field" style="width:130px" onchange="reloadTaskList()">
+              <option value="">Tất cả ưu tiên</option>
+              <option value="urgent">Khẩn cấp</option>
+              <option value="high">Cao</option>
+              <option value="medium">Trung bình</option>
+              <option value="low">Thấp</option>
+            </select>
+            <!-- Project combobox filter -->
+            <div id="taskProjectCombobox" style="width:220px"></div>
+            <!-- Category combobox: only visible when a project is selected -->
+            <div id="taskCategoryCombobox" style="display:none;width:200px"></div>
+            <select id="taskPhaseFilter" class="select-field" style="width:140px" onchange="reloadTaskList()">
+              <option value="">Tất cả giai đoạn</option>
+              <option value="basic_design">TKCS - Cơ sở</option>
+              <option value="technical_design">TKKT - Kỹ thuật</option>
+              <option value="construction_design">TKTC - Thi công</option>
+              <option value="as_built">Hoàn công</option>
+            </select>
+            <div id="taskDisciplineFilterCombobox" style="position:relative;display:inline-block;min-width:160px"></div>
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" id="taskOverdueFilter" onchange="onTaskOverdueFilterChange()"> Chỉ task trễ hạn
+            </label>
+            <button onclick="_taskSetSort('default')" class="flex items-center gap-1.5 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 hover:border-indigo-300 rounded px-2.5 py-1.5 transition-colors" id="taskSortResetBtn" title="Sắp xếp mặc định: theo trạng thái + ngày hạn">
+              <i class="fas fa-sort-amount-down text-xs"></i> Mặc định
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="overflow-x-auto desk-only-table">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
+                <th class="pb-3 pr-3 font-medium" style="width:32px"></th>
+                <th class="pb-3 pr-3 font-medium min-w-48 cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="title" onclick="_taskSetSort('title')" title="Sắp xếp theo tên">Tên công việc<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="project" onclick="_taskSetSort('project')" title="Sắp xếp theo dự án">Dự án<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium">Hạng mục</th>
+                <th class="pb-3 pr-3 font-medium">Loại</th>
+                <th class="pb-3 pr-3 font-medium">Filename</th>
+                <th class="pb-3 pr-3 font-medium">Bộ môn</th>
+                <th class="pb-3 pr-3 font-medium">Giai đoạn</th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="priority" onclick="_taskSetSort('priority')" title="Sắp xếp theo ưu tiên">Ưu tiên<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium">Phụ trách</th>
+                <th class="pb-3 pr-3 font-medium">Bắt đầu</th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="due_date" onclick="_taskSetSort('due_date')" title="Sắp xếp theo ngày hạn">Hạn<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="progress" onclick="_taskSetSort('progress')" title="Phần trăm hoàn thành">% hoàn thành<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium cursor-pointer select-none hover:text-indigo-600 transition-colors" data-sort-field="status" onclick="_taskSetSort('status')" title="Sắp xếp theo trạng thái">Trạng thái<i class="sort-icon fas fa-sort ml-1 text-gray-300"></i></th>
+                <th class="pb-3 pr-3 font-medium">HSTK</th>
+                <th class="pb-3 pr-3 font-medium">Ghi chú</th>
+                <th class="pb-3 pr-3 font-medium">CDE</th>
+                <th class="pb-3 font-medium">Thao tác</th>
+              </tr></thead>
+              <tbody id="tasksTable" class="divide-y"></tbody>
+            </table>

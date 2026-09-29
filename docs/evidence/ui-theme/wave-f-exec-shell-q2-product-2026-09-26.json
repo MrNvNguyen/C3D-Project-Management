@@ -1,0 +1,145 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-F-EXEC-SHELL",
+  "wave_id": "F-exec-shell",
+  "attempt": "1/3",
+  "qa_tier": "Q2",
+  "q2_class": "PRODUCT_SPOT",
+  "measured_at": "2026-09-26T09:35:02.626Z",
+  "runtime": {
+    "base": "http://127.0.0.1:8791",
+    "git_head": "3da083b",
+    "cache_bust": "wavef=exec-shell-q2-2026-09-26&t=1790415302626"
+  },
+  "checks": {
+    "diff_isolation": {
+      "all_changed": [
+        "docs/evidence/ui-theme/wave-d-payment-sheet-dark-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-d-payment-sheet-light-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-d-payment-sheet-q2-product-2026-09-26.json",
+        "public/index.html",
+        "public/static/executive-dashboard.js",
+        "scripts/qa-wave-d-payment-sheet-q2.mjs"
+      ],
+      "f_product_files": [
+        "public/index.html",
+        "public/static/executive-dashboard.js"
+      ],
+      "unrelated_dirty": [
+        "docs/evidence/ui-theme/wave-d-payment-sheet-dark-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-d-payment-sheet-light-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-d-payment-sheet-q2-product-2026-09-26.json",
+        "scripts/qa-wave-d-payment-sheet-q2.mjs"
+      ],
+      "bad_product": [],
+      "forbidden": [],
+      "result": "PASS"
+    },
+    "served_executive_js": {
+      "url": "http://127.0.0.1:8791/static/executive-dashboard.js?v=wave-f-exec-shell-q2-1790415302626",
+      "status": 200,
+      "bytes": 86782,
+      "sha256": "d738d342fed3f27f600a5c0fdcde23b71fa1bab685e99b17f35bf16f3bcfbcd6",
+      "matches_public_sha256": true,
+      "has_exec_legal_checklistRow": true,
+      "exec_legal_stageTable_has_table_tag": false,
+      "result": "PASS"
+    },
+    "exec_shell_layout": {
+      "left_panel": true,
+      "right_panel": true,
+      "tabs": [
+        {
+          "id": "overview",
+          "present": true,
+          "label": "Tổng quan"
+        },
+        {
+          "id": "legal",
+          "present": true,
+          "label": "Hồ sơ pháp lý"
+        },
+        {
+          "id": "finance",
+          "present": true,
+          "label": "Tài chính"
+        },
+        {
+          "id": "directives",
+          "present": true,
+          "label": "Chỉ đạo"
+        }
+      ],
+      "four_main_tabs": 4,
+      "money_kpi_tile_count": 8,
+      "items_panel_tables": 0,
+      "checklist_rows": 84,
+      "status_rings": 84,
+      "result": "PASS"
+    },
+    "exec_legal_items_face": {
+      "items_panel_tables": 0,
+      "checklist_rows": 84,
+      "status_rings": 84,
+      "result": "PASS"
+    },
+    "theme_screenshots": {
+      "light": "docs\\evidence\\ui-theme\\wave-f-exec-shell-q2-light-2026-09-26.png",
+      "dark": "docs\\evidence\\ui-theme\\wave-f-exec-shell-q2-dark-2026-09-26.png",
+      "result": "PASS"
+    }
+  },
+  "table": [
+    {
+      "check": "diff_isolation",
+      "result": "PASS",
+      "files": [
+        "docs/evidence/ui-theme/wave-d-payment-sheet-dark-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-d-payment-sheet-light-2026-09-26.png",
+        "docs/evidence/ui-theme/wave-d-payment-sheet-q2-product-2026-09-26.json",
+        "public/index.html",
+        "public/static/executive-dashboard.js",
+        "scripts/qa-wave-d-payment-sheet-q2.mjs"
+      ]
+    },
+    {
+      "check": "served_executive_js",
+      "result": "PASS"
+    },
+    {
+      "check": "exec_shell_layout",
+      "result": "PASS"
+    },
+    {
+      "check": "exec_legal_items_face",
+      "result": "PASS"
+    },
+    {
+      "check": "theme_screenshots",
+      "result": "PASS"
+    }
+  ],
+  "failures": [],
+  "not_measured": [],
+  "screenshots": [
+    "docs\\evidence\\ui-theme\\wave-f-exec-shell-q2-light-2026-09-26.png",
+    "docs\\evidence\\ui-theme\\wave-f-exec-shell-q2-dark-2026-09-26.png"
+  ],
+  "served_js": {
+    "url": "http://127.0.0.1:8791/static/executive-dashboard.js?v=wave-f-exec-shell-q2-1790415302626",
+    "status": 200,
+    "bytes": 86782,
+    "sha256": "d738d342fed3f27f600a5c0fdcde23b71fa1bab685e99b17f35bf16f3bcfbcd6",
+    "matches_public_sha256": true,
+    "has_exec_legal_checklistRow": true,
+    "exec_legal_stageTable_has_table_tag": false,
+    "result": "PASS"
+  },
+  "verdict": "PASS",
+  "fixture": {
+    "project_id": 2,
+    "project_code": "PRJ002",
+    "item_count": 84,
+    "packages": 3
+  },
+  "run_class": "PRODUCT_PASS_RUN"
+}

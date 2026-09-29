@@ -1,0 +1,38 @@
+{
+  "wave": "H-hspl-input-methods",
+  "qa_date": "2026-09-26",
+  "verify_sha": "2428f6e4c4d92bb45328fe1405d4d6dd0f0f1066",
+  "run_class": "PRODUCT_FAILURE",
+  "runtime": {
+    "build": "npm run build PASS",
+    "serve": "http://127.0.0.1:8794 — wrangler pages dev dist (pre-existing local D1; db:migrate:local SQLITE_BUSY while server held lock)",
+    "auth": "system_admin (browser session)",
+    "fixture_project": "PRJ001 id=1"
+  },
+  "harness": {
+    "npm_test_38": { "pass": true }
+  },
+  "product_checks": {
+    "select_project_panel": { "pass": true, "checklist_rows": 30, "inline_add_inputs": 4 },
+    "package_subtabs_stages_items": { "pass": true, "bcnckt_switch": true },
+    "checklist_enter_add": { "pass": true, "persist_after_reload": true },
+    "checklist_title_quote": { "pass": true, "persist_after_reload": true },
+    "checklist_date_status_ring": { "pass": true, "ring_toggles_status": true, "date_set": "2026-09-20" },
+    "handlers_id_not_json": { "pass": true, "sample_ring_onclick": "legalChecklistStatusRingClick(event, 1)" },
+    "payment_chung_edit_cells": { "pass": true, "quote_in_description_persist": true },
+    "payment_chung_amount_only_create": {
+      "pass": false,
+      "note": "Enter on is-new row with amount only → POST /api/legal/1/payments 400 description required (client allows empty desc when amount>0; server index.tsx still requires description)"
+    },
+    "cost_a_tab_admin": { "pass": true },
+    "import_excel_copy_from_spot": { "pass": true, "buttons_visible": true, "flow_not_run": true }
+  },
+  "falsifiers": {
+    "cannot_type_save_checklist": false,
+    "package_tab_empty_wrong": false,
+    "quote_breaks_handlers": false,
+    "amount_only_chung_save": true
+  },
+  "next_agent": "technical-advisor",
+  "po_human": false
+}

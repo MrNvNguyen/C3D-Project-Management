@@ -1,0 +1,88 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-B-THEME",
+  "wave_id": "B-contrast-polish",
+  "qa_tier": "product_spot",
+  "qa_batch": "browser_dark_contrast_residual",
+  "measured_at": "2026-09-26T11:18:00+07:00",
+  "measured_by": "qa-agent",
+  "classification": "PRODUCT_PASS_RUN",
+  "authority_lead_log": "Agents Logs/028.lead-dev-theme-legal-excel-wave-b-contrast-polish-2026-09-26.md",
+  "runtime": {
+    "url": "http://127.0.0.1:8789/",
+    "build": "npm run build (vite + copy-public)",
+    "serve": "npx wrangler pages dev dist --local --port 8789 --binding JWT_SECRET=local-preview-jwt-secret-bim-pm-2026 --binding ALLOW_PREVIEW=1",
+    "git_head": "fbb9beffb70fa69ea2b596873ee196349d9b9b4c",
+    "working_tree_theme_files": ["public/index.html", "public/static/app.js"],
+    "auth": "existing browser session (system_admin shell)"
+  },
+  "user_screenshot_proxy": {
+    "claimed_page": "Quản Lý Chi Phí A",
+    "repo_string_match": "NOT_FOUND",
+    "closest_measured": ["#/costs Chi phí & Doanh thu (tabs + costTableHead)", "#/tasks table status/badge-todo class"]
+  },
+  "diff_isolation": {
+    "paths_in_diff_vs_head": ["public/index.html", "public/static/app.js"],
+    "contrast_polish_lever_per_028": ["public/index.html"],
+    "forbidden_paths_in_diff": ["src/finance.ts"],
+    "result": "PASS"
+  },
+  "checks": {
+    "dark_inactive_cost_subtab": {
+      "selector": "#tabRevenues (inactive while #tabCosts active)",
+      "color": "rgb(184, 197, 214)",
+      "contrast_ratio_on_card_surface": 9.02,
+      "active_tab_costs_color": "rgb(255, 255, 255)",
+      "result": "PASS"
+    },
+    "dark_sidebar_inactive_nav": {
+      "color": "rgba(255, 255, 255, 0.8)",
+      "contrast_ratio": 17.87,
+      "result": "PASS"
+    },
+    "dark_table_thead": {
+      "selector": "#costTableHead th",
+      "color": "rgb(197, 208, 222)",
+      "contrast_ratio": 10.11,
+      "result": "PASS"
+    },
+    "dark_table_cell_borders": {
+      "td_border_color": "rgb(61, 80, 104)",
+      "card_border": "rgb(61, 80, 104)",
+      "visual_row_separators_tasks_table": true,
+      "result": "PASS"
+    },
+    "dark_badge_todo_muted": {
+      "css_class": ".badge-todo",
+      "theoretical_on_shell_surface_ratio": 7.96,
+      "note": "No «Chưa chi» label in repo; tasks table uses badge-todo for draft/pending-style pills",
+      "result": "PASS"
+    },
+    "light_mode_regression_quick": {
+      "setBimTheme_light": true,
+      "body_background": "rgb(240, 244, 248)",
+      "active_tab_still_primary_green": true,
+      "result": "PASS"
+    }
+  },
+  "not_measured": [
+    "Exact user screenshot page «Quản Lý Chi Phí A» (strings absent in repo)",
+    "Payment-status badge row on #costTableBody (empty chi phí riêng table in local D1)",
+    "WCAG filmstrip / automated axe scan",
+    "member role session",
+    "FOUC on cold load"
+  ],
+  "evidence_artifacts": [
+    "docs/evidence/ui-theme/wave-b-contrast-dark-costs-2026-09-26.png",
+    "docs/evidence/ui-theme/wave-b-contrast-dark-tasks-table-2026-09-26.png"
+  ],
+  "screenshot_bytes": {
+    "wave-b-contrast-dark-costs-2026-09-26.png": 277048,
+    "wave-b-contrast-dark-tasks-table-2026-09-26.png": 284753
+  },
+  "must_not_claim": [
+    "theme-legal-excel box SUCCESS",
+    "Wave C1 HSPL shell authorized",
+    "PO packet",
+    "git commit of Wave B (still uncommitted — user must request commit)"
+  ]
+}

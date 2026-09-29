@@ -1,0 +1,145 @@
+{
+  "directive_id": "THEME-LEGAL-EXCEL-E-TASK-GRID",
+  "wave_id": "E-task-grid",
+  "attempt": "1/3",
+  "qa_tier": "Q1+Q2",
+  "q2_class": "PRODUCT_SPOT",
+  "measured_at": "2026-09-26T09:24:08.761Z",
+  "runtime": {
+    "url": "http://127.0.0.1:8791/?dqa=wave-e-task-grid-2026-09-26&t=1790414648761",
+    "base": "http://127.0.0.1:8791",
+    "git_SHA": "a6cdf59 (dirty E: public/index.html + public/static/app.js)",
+    "wrangler": "http://127.0.0.1:8791",
+    "d1": "local",
+    "fixture_project_id": 1
+  },
+  "q1_layer_a": {
+    "npm_test": "38/38 PASS",
+    "command": "npm test (vitest run)"
+  },
+  "checks": {
+    "served_app_js_symbols": {
+      "result": "PASS"
+    },
+    "diff_isolation": {
+      "all_changed": [
+        "public/index.html",
+        "public/static/app.js"
+      ],
+      "product_files": [
+        "public/index.html",
+        "public/static/app.js"
+      ],
+      "non_product": [],
+      "finance_index_diff": null,
+      "result": "PASS"
+    },
+    "member_get_tasks_scope": {
+      "result": "PASS",
+      "member_task_count": 3,
+      "leak_count": 0,
+      "leak_sample": []
+    }
+  },
+  "table": [
+    {
+      "check": "served /static/app.js has buildTaskPayloadFromGrid + task-grid-row",
+      "result": "PASS"
+    },
+    {
+      "check": "diff vs a6cdf59 = public/index.html + public/static/app.js only",
+      "result": "PASS",
+      "all_changed": [
+        "public/index.html",
+        "public/static/app.js"
+      ],
+      "product_files": [
+        "public/index.html",
+        "public/static/app.js"
+      ],
+      "non_product": [],
+      "finance_index_diff": null
+    },
+    {
+      "check": "member GET /api/tasks no out-of-scope rows",
+      "result": "PASS"
+    },
+    {
+      "check": "empty last row .task-grid-row.is-new",
+      "result": "PASS"
+    },
+    {
+      "check": "Tạo task focuses empty row title",
+      "result": "PASS"
+    },
+    {
+      "check": "taskModal hidden on main path (after Tạo task)",
+      "result": "PASS",
+      "hidden": true,
+      "display": "none"
+    },
+    {
+      "check": "Enter on empty row POST + task in API",
+      "result": "PASS",
+      "post_status": 201,
+      "count_before": 7,
+      "count_after": 8
+    },
+    {
+      "check": "taskModal hidden after Enter create",
+      "result": "PASS",
+      "hidden": true,
+      "display": "none"
+    },
+    {
+      "check": "paste two title lines → two creates",
+      "result": "PASS",
+      "post_count": 2,
+      "hasA": true,
+      "hasB": true
+    },
+    {
+      "check": "edit title Enter → PUT; modal hidden",
+      "result": "PASS",
+      "putSeen": true,
+      "modal": {
+        "hidden": true,
+        "display": "none"
+      }
+    },
+    {
+      "check": "Tab into assignee opens combobox UI",
+      "result": "PASS"
+    },
+    {
+      "check": "member cannot see foreign-project task",
+      "result": "NOT_MEASURED"
+    },
+    {
+      "check": "member create assigns self (existing rule)",
+      "result": "PASS",
+      "assigned_to": 2,
+      "memId": 2
+    },
+    {
+      "check": "falsifier: no task DnD in E diff",
+      "result": "PASS"
+    }
+  ],
+  "failures": [],
+  "not_measured": [
+    "member foreign-project task visibility in browser — no admin-only task outside member scope in local fixture (global GET scope check PASS)"
+  ],
+  "screenshots": [
+    {
+      "theme": "light",
+      "path": "docs/evidence/ui-theme/wave-e-task-grid-light-2026-09-26.png"
+    },
+    {
+      "theme": "dark",
+      "path": "docs/evidence/ui-theme/wave-e-task-grid-dark-2026-09-26.png"
+    }
+  ],
+  "run_class": "PRODUCT_PASS_RUN",
+  "attempt_outcome": "PASS"
+}
