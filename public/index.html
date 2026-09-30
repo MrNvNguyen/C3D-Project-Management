@@ -446,6 +446,28 @@
     html[data-theme="dark"] .text-gray-400 { color: var(--shell-text-faint) !important; }
     html[data-theme="dark"] .text-gray-300 { color: #9fb0c4 !important; }
 
+    /* Dark — trang Email thông báo: bỏ nền pastel, giữ chữ đọc được */
+    html[data-theme="dark"] #page-email-admin .bg-gradient-to-br {
+      background-image: none !important;
+      background-color: var(--shell-surface) !important;
+    }
+    html[data-theme="dark"] #page-email-admin .border-blue-200 { border-color: rgba(96, 165, 250, 0.45) !important; }
+    html[data-theme="dark"] #page-email-admin .border-sky-300,
+    html[data-theme="dark"] #page-email-admin .border-sky-100 { border-color: rgba(56, 189, 248, 0.4) !important; }
+    html[data-theme="dark"] #page-email-admin .border-orange-200 { border-color: rgba(251, 146, 60, 0.45) !important; }
+    html[data-theme="dark"] #page-email-admin .border-green-200 { border-color: rgba(52, 211, 153, 0.4) !important; }
+    html[data-theme="dark"] #page-email-admin .border-yellow-200 { border-color: rgba(250, 204, 21, 0.4) !important; }
+    html[data-theme="dark"] #page-email-admin .bg-yellow-50 { background-color: rgba(250, 204, 21, 0.14) !important; }
+    html[data-theme="dark"] #page-email-admin .text-yellow-800 { color: #fde68a !important; }
+    html[data-theme="dark"] #page-email-admin .bg-green-100 { background-color: rgba(0, 166, 81, 0.22) !important; }
+    html[data-theme="dark"] #page-email-admin .bg-blue-100 { background-color: rgba(59, 130, 246, 0.22) !important; }
+    html[data-theme="dark"] #page-email-admin .bg-red-100 { background-color: rgba(248, 113, 113, 0.2) !important; }
+    html[data-theme="dark"] #page-email-admin .bg-sky-100 { background-color: rgba(14, 165, 233, 0.2) !important; color: #bae6fd !important; }
+    html[data-theme="dark"] #page-email-admin .text-sky-700,
+    html[data-theme="dark"] #page-email-admin .text-sky-600 { color: #7dd3fc !important; }
+    html[data-theme="dark"] #page-email-admin .text-green-600 { color: #86efac !important; }
+    html[data-theme="dark"] #page-email-admin .bg-white { background-color: var(--shell-input-bg) !important; }
+
     /* Dark — secondary nav / tab rows (project, cost, legal, modals) */
     html[data-theme="dark"] .tab-btn:not(.active) { color: var(--shell-nav-inactive); }
     html[data-theme="dark"] .tabs-scroll-row.border-b,
@@ -779,11 +801,43 @@
     .legal-info-kpi .v { font-size: 20px; font-weight: 800; margin-top: 6px; color: var(--shell-text); }
     .legal-info-kpi.paid .v { color: #34d399; }
     .legal-info-kpi.costa .v { color: #fbbf24; }
-    .legal-pkg-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--shell-border); border-radius: 12px; margin-bottom: 8px; background: var(--shell-input-bg); }
+    .legal-pkg-sheet { border: 1px solid var(--shell-border); border-radius: 12px; overflow: hidden; background: var(--shell-surface); }
+    .legal-pkg-sheet-head,
+    .legal-pkg-row {
+      display: grid;
+      grid-template-columns: minmax(180px, 1.8fr) 168px 108px 108px minmax(128px, 0.9fr) 64px;
+      column-gap: 12px;
+      align-items: center;
+      padding: 10px 14px;
+    }
+    .legal-pkg-sheet-head {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--shell-text-muted);
+      background: var(--shell-table-head-bg);
+      border-bottom: 1px solid var(--shell-border);
+    }
+    .legal-pkg-sheet-head .num,
+    .legal-pkg-row .val { text-align: right; }
+    .legal-pkg-row { border-bottom: 1px solid var(--shell-border); background: transparent; }
+    .legal-pkg-row:last-child { border-bottom: 0; }
+    .legal-pkg-row:hover { background: var(--shell-row-hover); }
     .legal-pkg-row .nm { font-weight: 700; color: var(--shell-text); }
-    .legal-pkg-row .sub { font-size: 12px; color: var(--shell-text-muted); }
-    .legal-pkg-meta { margin-left: auto; display: flex; align-items: center; gap: 16px; text-align: right; }
-    .legal-pkg-meta .val { font-weight: 700; color: var(--shell-text); white-space: nowrap; }
+    .legal-pkg-row .sub { font-size: 12px; color: var(--shell-text-muted); white-space: nowrap; }
+    .legal-pkg-row .val { font-weight: 700; color: var(--shell-text); white-space: nowrap; }
+    .legal-pkg-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .legal-pkg-sign-pick { display: grid; grid-template-columns: 1fr 1fr; width: 100%; border: 1px solid var(--shell-border); border-radius: 8px; overflow: hidden; background: rgba(255, 255, 255, 0.04); }
+    .legal-pkg-sign-pick button { margin: 0; border: 0; border-radius: 0; background: transparent; color: var(--shell-text-muted); font-size: 12px; font-weight: 700; padding: 6px 4px; cursor: pointer; line-height: 1.2; text-align: center; }
+    .legal-pkg-sign-pick button.is-unsigned { background: #ea580c; color: #fff; }
+    .legal-pkg-sign-pick button.is-signed { background: #00A651; color: #fff; }
+    html[data-theme="dark"] .legal-pkg-sign-pick button.is-unsigned { background: #f97316; color: #fff7ed; }
+    html[data-theme="dark"] .legal-pkg-sign-pick button.is-signed { background: #00A651; color: #ecfdf5; }
+    .legal-pkg-sign-read { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: rgba(251, 146, 60, 0.16); color: #c2410c; flex-shrink: 0; }
+    .legal-pkg-sign-read.is-signed { background: rgba(0, 166, 81, 0.16); color: #047857; }
+    html[data-theme="dark"] .legal-pkg-sign-read { color: #fdba74; }
+    html[data-theme="dark"] .legal-pkg-sign-read.is-signed { color: #86efac; }
     .legal-contact-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
     @media (max-width: 900px) { .legal-contact-grid { grid-template-columns: 1fr; } }
     .legal-contact-card { position: relative; border: 1px solid var(--shell-border); border-radius: 12px; padding: 14px; background: var(--shell-input-bg); }
@@ -1834,8 +1888,9 @@
       .legal-project-list { max-height: 28vh; }
       .legal-page-heading h2 { font-size: 1.15rem; }
       .legal-page-actions { width: 100%; justify-content: flex-start; }
-      .legal-pkg-row { flex-wrap: wrap; align-items: flex-start; }
-      .legal-pkg-meta { margin-left: 0; width: 100%; justify-content: space-between; }
+      .legal-pkg-sheet { overflow-x: auto; }
+      .legal-pkg-sheet-head,
+      .legal-pkg-row { min-width: 760px; }
       #page-dashboard .grid,
       #page-tasks .grid { min-width: 0; }
     }
@@ -7470,6 +7525,10 @@
         <label class="label">Giá trị hợp đồng (VNĐ)</label>
         <input type="text" id="legalPkgValue" class="input-field" inputmode="numeric" placeholder="0" oninput="moneyInputFmt(this)">
       </div>
+      <label class="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" id="legalPkgSigned">
+        Đã ký hợp đồng
+      </label>
       <div id="legalPkgSeedWrap">
         <p class="text-xs text-gray-400">Gói mới để trống. Tự nhập hồ sơ ở tab Theo dõi hồ sơ, hoặc sao chép từ dự án khác.</p>
       </div>
@@ -7956,7 +8015,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260929aa"></script>
+<script src="/static/app.js?v=20260930g"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
@@ -7964,7 +8023,7 @@
     if (window._execDashLoaded) return Promise.resolve();
     return new Promise(function (resolve, reject) {
       var s = document.createElement('script');
-      s.src = '/static/executive-dashboard.js?v=20260929g';
+      s.src = '/static/executive-dashboard.js?v=20260930e';
       s.onload = function () { window._execDashLoaded = true; resolve(); };
       s.onerror = reject;
       document.body.appendChild(s);

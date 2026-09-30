@@ -530,18 +530,21 @@ function exec_tab_overview(ov) {
       <div class="bg-gray-50 rounded-xl p-3">
         <p class="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">
           <i class="fas fa-file-contract mr-1 text-blue-400"></i> Gói thầu
-          <span class="ml-1 normal-case font-semibold text-gray-500">${packages.length} gói</span>
+          <span class="ml-1 normal-case font-semibold text-gray-500">${packages.length} gói${packages.length ? ` · ${packages.filter(p => Number(p.contract_signed) === 1).length} đã ký` : ''}</span>
         </p>
         ${packages.length === 0
           ? `<p class="text-xs text-gray-400 italic">Chưa có gói thầu. Thêm ở Hồ sơ pháp lý → Thông tin dự án.</p>`
-          : `<div class="space-y-1.5 max-h-40 overflow-y-auto">
+          : `<div class="space-y-1.5 max-h-72 overflow-y-auto">
             ${packages.map(pkg => `
             <div class="bg-white rounded-lg px-2 py-1.5">
               <div class="flex items-start justify-between gap-2">
                 <p class="text-xs font-semibold text-gray-800 leading-tight">${exec_escapeHtml(pkg.name || '')}${pkg.code ? ` <span class="font-normal text-gray-400">${exec_escapeHtml(pkg.code)}</span>` : ''}</p>
                 <span class="text-xs font-bold text-[#00A651] whitespace-nowrap">${exec_fmtMoney(pkg.contract_value)}</span>
               </div>
-              <p class="text-xs text-gray-400 mt-0.5">${exec_fmtDate(pkg.start_date)} → ${exec_fmtDate(pkg.end_date)}</p>
+              <div class="flex items-center justify-between gap-2 mt-1">
+                <p class="text-xs text-gray-400">${exec_fmtDate(pkg.start_date)} → ${exec_fmtDate(pkg.end_date)}</p>
+                <span class="legal-pkg-sign-read${Number(pkg.contract_signed) === 1 ? ' is-signed' : ''}">${Number(pkg.contract_signed) === 1 ? 'Đã ký' : 'Chưa ký'}</span>
+              </div>
             </div>`).join('')}
           </div>`}
       </div>

@@ -20188,23 +20188,37 @@ function renderLegalProjectInfo() {
       .reduce((s, p) => s + (Number(p.paid_amount) || 0), 0)
     : (Number(_legalOverviewData.paid_on_package) || 0)
   const dong = (n) => fmt(n) + ' đ'
+  const signedCount = packages.filter(p => Number(p.contract_signed) === 1).length
   const rows = packages.map(pkg => {
-    const start = pkg.start_date ? fmtDate(pkg.start_date) : 'Chưa chọn'
-    const end = pkg.end_date ? fmtDate(pkg.end_date) : 'Chưa chọn'
+    const start = pkg.start_date ? fmtDate(pkg.start_date) : '—'
+    const end = pkg.end_date ? fmtDate(pkg.end_date) : '—'
     const code = pkg.code ? `<div class="sub">${escHtml(pkg.code)}</div>` : ''
     return `<div class="legal-pkg-row">
       <div style="min-width:0">
         <div class="nm">${escHtml(pkg.name || '')}</div>
         ${code}
       </div>
-      <div class="legal-pkg-meta">
-        <div class="sub">Ngày ký: ${escHtml(start)}<br>Kết thúc: ${escHtml(end)}</div>
-        <div class="val">${dong(pkg.contract_value || 0)}</div>
+      ${legalPackageSignPickHtml(pkg.id, pkg.contract_signed)}
+      <div class="sub">${escHtml(start)}</div>
+      <div class="sub">${escHtml(end)}</div>
+      <div class="val">${dong(pkg.contract_value || 0)}</div>
+      <div class="legal-pkg-actions">
         <button type="button" class="text-blue-400 hover:text-blue-300" title="Sửa" onclick="openLegalPackageForm(${pkg.id})"><i class="fas fa-pen"></i></button>
         <button type="button" class="text-red-400 hover:text-red-300" title="Xóa" onclick="confirmDeleteLegalPackage(${pkg.id})"><i class="fas fa-trash"></i></button>
       </div>
     </div>`
   }).join('')
+  const sheet = packages.length ? `<div class="legal-pkg-sheet">
+    <div class="legal-pkg-sheet-head">
+      <span>Gói thầu</span>
+      <span>Ký hợp đồng</span>
+      <span>Ngày ký</span>
+      <span>Kết thúc</span>
+      <span class="num">Giá trị HĐ</span>
+      <span></span>
+    </div>
+    ${rows}
+  </div>` : ''
   const client = proj.client || apiProj.client || ''
   const desc = proj.description || ''
   el.innerHTML = `
@@ -20232,16 +20246,57 @@ function renderLegalProjectInfo() {
         </div>
       </div>
       <div class="flex items-center justify-between mb-3">
-        <h4 class="font-bold text-gray-800"><i class="fas fa-file-contract mr-2 text-primary"></i>Danh sách gói thầu / hợp đồng (${packages.length} gói)</h4>
+        <h4 class="font-bold text-gray-800"><i class="fas fa-file-contract mr-2 text-primary"></i>Danh sách gói thầu / hợp đồng (${packages.length} gói${packages.length ? ` · ${signedCount} đã ký` : ''})</h4>
         <button type="button" class="btn-primary text-sm" onclick="openLegalPackageForm()"><i class="fas fa-plus mr-1"></i>Thêm gói thầu</button>
       </div>
-      ${rows || '<p class="text-sm text-gray-400 text-center py-6">Chưa có gói thầu. Thêm gói ở đây để tab Theo dõi hồ sơ dùng chung danh sách này.</p>'}
+      ${sheet || '<p class="text-sm text-gray-400 text-center py-6">Chưa có gói thầu. Thêm gói ở đây để tab Theo dõi hồ sơ dùng chung danh sách này.</p>'}
     </div>`
   if (currentUser?.role === 'system_admin' && _legalCurrentProjectId) {
     api(`/legal/${_legalCurrentProjectId}/cost-a`).then(data => {
       const node = $('legalInfoCostA')
       if (node) node.textContent = dong(data?.page_total || 0)
     }).catch(() => {})
+  }
+}
+
+function legalPackageSignPickHtml(pkgId, signed) {
+  const on = Number(signed) === 1
+  const id = Number(pkgId)
+  return `<div class="legal-pkg-sign-pick" role="group" aria-label="Trạng thái ký hợp đồng">
+    <button type="button" class="${on ? '' : 'is-unsigned'}" onclick="legalPackageSetSigned(${id}, 0)">Chưa ký</button>
+    <button type="button" class="${on ? 'is-signed' : ''}" onclick="legalPackageSetSigned(${id}, 1)">Đã ký</button>
+  </div>`
+}
+
+function _legalPackageApplySigned(pkgId, signed) {
+  const next = Number(signed) === 1 ? 1 : 0
+  const legalPkg = (_legalOverviewData?.packages || []).find(p => _legalPackageIdEq(p.id, pkgId))
+  if (legalPkg) legalPkg.contract_signed = next
+  const execPkg = (typeof execState !== 'undefined' ? execState.currentOverview?.bid_packages : null) || []
+  const row = execPkg.find(p => Number(p.id) === Number(pkgId))
+  if (row) row.contract_signed = next
+  const box = $('legalPkgSigned')
+  if (box && String($('legalPkgId')?.value || '') === String(pkgId)) box.checked = next === 1
+}
+
+async function legalPackageSetSigned(pkgId, signed) {
+  const next = Number(signed) === 1 ? 1 : 0
+  const legalPkg = (_legalOverviewData?.packages || []).find(p => _legalPackageIdEq(p.id, pkgId))
+  const execPkgs = (typeof execState !== 'undefined' ? execState.currentOverview?.bid_packages : null) || []
+  const execPkg = execPkgs.find(p => Number(p.id) === Number(pkgId))
+  const prev = Number((legalPkg || execPkg)?.contract_signed) === 1 ? 1 : 0
+  if (prev === next) return
+  _legalPackageApplySigned(pkgId, next)
+  if ($('legalProjectInfo')) renderLegalProjectInfo()
+  const execPage = $('page-executive-dashboard')
+  if (execPage?.classList.contains('active') && typeof exec_renderRightPanel === 'function') exec_renderRightPanel()
+  try {
+    await api(`/legal/packages/${pkgId}`, { method: 'PUT', data: { contract_signed: next } })
+  } catch (e) {
+    _legalPackageApplySigned(pkgId, prev)
+    if ($('legalProjectInfo')) renderLegalProjectInfo()
+    if (execPage?.classList.contains('active') && typeof exec_renderRightPanel === 'function') exec_renderRightPanel()
+    toast('Không lưu được trạng thái ký: ' + (e.response?.data?.error || e.message), 'error')
   }
 }
 
@@ -20270,6 +20325,8 @@ function openLegalPackageForm(pkgId) {
   if (val) {
     val.value = pkg?.contract_value ? _legalPaymentMoneyInputValue(pkg.contract_value) : ''
   }
+  const signed = $('legalPkgSigned')
+  if (signed) signed.checked = Number(pkg?.contract_signed) === 1
   const seedWrap = $('legalPkgSeedWrap')
   if (seedWrap) seedWrap.style.display = pkg ? 'none' : ''
   openModal('legalPackageModal')
@@ -20286,6 +20343,7 @@ async function submitLegalPackageForm(ev) {
     start_date: $('legalPkgStart').value,
     end_date: $('legalPkgEnd').value,
     contract_value: parseMoneyVal('legalPkgValue') || 0,
+    contract_signed: $('legalPkgSigned')?.checked ? 1 : 0,
     package_type: 'blank',
   }
   try {

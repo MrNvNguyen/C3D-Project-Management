@@ -13013,7 +13013,9 @@ function legalPackageContractInput(data: any) {
   const end = String(data?.end_date || '').trim() || null
   const raw = data?.contract_value
   const contractValue = raw == null || raw === '' ? 0 : Math.max(0, Number(String(raw).replace(/[^\d.-]/g, '')) || 0)
-  return { code, start_date: start, end_date: end, contract_value: contractValue }
+  const signedRaw = data?.contract_signed
+  const contract_signed = signedRaw === true || signedRaw === 1 || signedRaw === '1' ? 1 : 0
+  return { code, start_date: start, end_date: end, contract_value: contractValue, contract_signed }
 }
 
 // ── Package CRUD ──────────────────────────────────────────────────────────────
@@ -13120,11 +13122,11 @@ app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
     ).bind(projectId).first() as any
     const maxOrder = maxOrderRow?.mo || 0
     const pkgResult = await c.env.DB.prepare(
-      `INSERT INTO legal_packages (project_id, name, package_type, sort_order, code, start_date, end_date, contract_value)
-       VALUES (?,?,?,?,?,?,?,?)`
+      `INSERT INTO legal_packages (project_id, name, package_type, sort_order, code, start_date, end_date, contract_value, contract_signed)
+       VALUES (?,?,?,?,?,?,?,?,?)`
     ).bind(
       projectId, name.trim(), package_type || 'custom', maxOrder + 1,
-      contract.code, contract.start_date, contract.end_date, contract.contract_value
+      contract.code, contract.start_date, contract.end_date, contract.contract_value, contract.contract_signed
     ).run()
     const packageId = pkgResult.meta.last_row_id as number
     const synced = await syncProjectContractFromPackages(c.env.DB, projectId)
@@ -13140,12 +13142,17 @@ app.put('/api/legal/packages/:id', authMiddleware, async (c) => {
   const id = parseInt(c.req.param('id'))
   const body = await c.req.json()
   const name = body.name
-  if (!name || !String(name).trim()) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
+  const signedOnly = !String(name || '').trim() && Object.prototype.hasOwnProperty.call(body, 'contract_signed')
+  if (!signedOnly && (!name || !String(name).trim())) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
   try {
     const pkg = await c.env.DB.prepare('SELECT project_id FROM legal_packages WHERE id = ?').bind(id).first() as { project_id?: number } | null
     if (!pkg?.project_id) return c.json({ error: 'Không tìm thấy gói thầu' }, 404)
-    const sets = ['name=?', 'updated_at=CURRENT_TIMESTAMP']
-    const vals: any[] = [String(name).trim()]
+    const sets = ['updated_at=CURRENT_TIMESTAMP']
+    const vals: any[] = []
+    if (!signedOnly) {
+      sets.push('name=?')
+      vals.push(String(name).trim())
+    }
     if (Object.prototype.hasOwnProperty.call(body, 'code')) {
       sets.push('code=?')
       vals.push(String(body.code || '').trim() || null)
@@ -13162,8 +13169,13 @@ app.put('/api/legal/packages/:id', authMiddleware, async (c) => {
       sets.push('contract_value=?')
       vals.push(legalPackageContractInput(body).contract_value)
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'contract_signed')) {
+      sets.push('contract_signed=?')
+      vals.push(legalPackageContractInput(body).contract_signed)
+    }
     vals.push(id)
     await c.env.DB.prepare(`UPDATE legal_packages SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run()
+    if (signedOnly) return c.json({ success: true, contract_signed: legalPackageContractInput(body).contract_signed })
     const synced = await syncProjectContractFromPackages(c.env.DB, pkg.project_id)
     return c.json({ success: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -13423,7 +13435,7 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
 
     const core = await db.batch([
       db.prepare(
-        `SELECT id, project_id, name, package_type, sort_order, code, start_date, end_date, contract_value, notes
+        `SELECT id, project_id, name, package_type, sort_order, code, start_date, end_date, contract_value, contract_signed, notes
          FROM legal_packages WHERE project_id = ? ORDER BY sort_order`
       ).bind(projectId),
       db.prepare(
@@ -17931,7 +17943,7 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     `).bind(id).all()
 
     const bidPackages = await db.prepare(`
-      SELECT id, name, code, start_date, end_date, contract_value, sort_order
+      SELECT id, name, code, start_date, end_date, contract_value, contract_signed, sort_order
       FROM legal_packages
       WHERE project_id = ?
       ORDER BY sort_order, id
