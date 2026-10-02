@@ -745,7 +745,12 @@ function assetAssigneeOptionsHtml() {
 }
 
 function getAssetCategoryName(c) {
-  const m = { computer: 'Máy tính', laptop: 'Laptop', software: 'Phần mềm', equipment: 'Thiết bị', furniture: 'Nội thất', vehicle: 'Phương tiện', other: 'Khác' }
+  const m = {
+    computer: 'Máy trạm', laptop: 'Laptop', monitor: 'Màn hình', printer: 'Máy in / máy scan',
+    tablet: 'Máy tính bảng', phone: 'Điện thoại', network: 'Thiết bị mạng', storage: 'Ổ cứng / NAS',
+    accessory: 'Phụ kiện khác', software: 'Phần mềm / bản quyền',
+    equipment: 'Thiết bị', furniture: 'Nội thất', vehicle: 'Phương tiện', other: 'Khác',
+  }
   return m[c] || c
 }
 
@@ -12061,13 +12066,48 @@ async function deleteCostItem(type, id) {
 // ================================================================
 // ASSETS
 // ================================================================
-async function loadAssets() {
+function captureAssetView() {
+  const openParents = []
+  document.querySelectorAll('tr[class*="asset-child-of-"]').forEach(row => {
+    const match = row.className.match(/asset-child-of-(\d+)/)
+    if (match && row.style.display !== 'none') openParents.push(Number(match[1]))
+  })
+  const box = $('assetsTable')?.closest('.overflow-x-auto')
+  return {
+    page: _assetPage,
+    scrollY: window.scrollY,
+    scrollX: box ? box.scrollLeft : 0,
+    openParents: [...new Set(openParents)],
+  }
+}
+
+function restoreAssetView(snap) {
+  if (!snap) return
+  snap.openParents.forEach(id => {
+    document.querySelectorAll(`.asset-child-of-${id}`).forEach(row => { row.style.display = '' })
+    const icon = document.getElementById(`toggle-icon-${id}`)
+    if (icon) icon.className = 'fas fa-chevron-up'
+  })
+  const box = $('assetsTable')?.closest('.overflow-x-auto')
+  if (box) box.scrollLeft = snap.scrollX
+  window.scrollTo(0, snap.scrollY)
+}
+
+async function loadAssets(opts = {}) {
+  const snap = opts.preserveView ? captureAssetView() : null
   try {
     if (!allUsers.length) allUsers = await api('/users')
     allAssets = await api('/assets')
-    _assetPage = 1
     renderAssetStats()
-    renderAssetsTable(allAssets)
+    if (snap) {
+      _assetPage = snap.page
+      filterAssets(true)
+      restoreAssetView(snap)
+      requestAnimationFrame(() => restoreAssetView(snap))
+    } else {
+      _assetPage = 1
+      renderAssetsTable(allAssets)
+    }
   } catch (e) { toast('Lỗi tải tài sản: ' + e.message, 'error') }
 }
 
@@ -12261,7 +12301,7 @@ function toggleAssetChildren(parentId) {
   }
 }
 
-function filterAssets() {
+function filterAssets(keepPage = false) {
   const search = ($('assetSearch')?.value || '').toLowerCase()
   const category = $('assetCategoryFilter')?.value || ''
   const status = $('assetStatusFilter')?.value || ''
@@ -12277,7 +12317,7 @@ function filterAssets() {
   // Nếu không có filter → render tree gốc
   const hasFilter = search || category || status || depr
   if (!hasFilter) {
-    _assetPage = 1
+    if (!keepPage) _assetPage = 1
     renderAssetsTable(allAssets)
     return
   }
@@ -12291,7 +12331,7 @@ function filterAssets() {
   )
   // Render flat kết quả (không children)
   const flatAssets = filtered.map(a => ({ ...a, children: [] }))
-  _assetPage = 1
+  if (!keepPage) _assetPage = 1
   renderAssetsTable(flatAssets)
 }
 
@@ -12306,6 +12346,13 @@ function assetExcelCategory(category) {
   const m = {
     computer: 'Máy trạm',
     laptop: 'Laptop',
+    monitor: 'Màn hình',
+    printer: 'Máy in / máy scan',
+    tablet: 'Máy tính bảng',
+    phone: 'Điện thoại',
+    network: 'Thiết bị mạng',
+    storage: 'Ổ cứng / NAS',
+    accessory: 'Phụ kiện khác',
     software: 'Phần mềm / bản quyền',
     equipment: 'Phụ kiện khác',
     furniture: 'Phụ kiện khác',
@@ -12351,12 +12398,37 @@ function assetExcelXmlEscape(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-function assetExcelSetRow(rowXml, rowNum, values) {
-  return rowXml.replace(/<c r="([A-O])(\d+)"([^>]*?)(?:\/>|>[\s\S]*?<\/c>)/g, (full, col, r, attrs) => {
+function assetExcelStyleMap(bold, boldBase) {
+  const text = bold ? boldBase : 10
+  const cols = {}
+  'ABCDEFGHIJKLMNO'.split('').forEach(col => { cols[col] = text })
+  cols.H = bold ? boldBase + 1 : 11
+  cols.I = bold ? boldBase + 2 : 12
+  cols.J = bold ? boldBase + 3 : 13
+  return cols
+}
+
+function assetExcelEnsureBoldStyles(xml) {
+  const marker = 'numFmtId="164" fontId="5" fillId="0" borderId="3"'
+  const count = Number((xml.match(/<cellXfs count="(\d+)">/) || [])[1] || 0)
+  if (xml.includes(marker)) return { xml, boldBase: count - 4 }
+  const extra = [
+    '<xf numFmtId="0" fontId="5" fillId="0" borderId="3" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>',
+    '<xf numFmtId="1" fontId="5" fillId="0" borderId="3" xfId="0" applyFont="1" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>',
+    '<xf numFmtId="3" fontId="5" fillId="0" borderId="3" xfId="0" applyFont="1" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>',
+    '<xf numFmtId="164" fontId="5" fillId="0" borderId="3" xfId="0" applyFont="1" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>',
+  ].join('')
+  return {
+    xml: xml.replace(/<cellXfs count="\d+">/, `<cellXfs count="${count + 4}">`).replace('</cellXfs>', extra + '</cellXfs>'),
+    boldBase: count,
+  }
+}
+
+function assetExcelSetRow(rowXml, rowNum, values, styleMap) {
+  return rowXml.replace(/<c r="([A-O])(\d+)"([^>]*?)(?:\/>|>[\s\S]*?<\/c>)/g, (full, col, r) => {
     if (Number(r) !== rowNum) return full
-    const spec = values[col]
-    const style = (attrs.match(/\ss="(\d+)"/) || [])[1]
-    const sAttr = style ? ` s="${style}"` : ''
+    const spec = values && values[col]
+    const sAttr = styleMap && styleMap[col] != null ? ` s="${styleMap[col]}"` : ''
     if (!spec || spec.v === '' || spec.v == null) return `<c r="${col}${rowNum}"${sAttr}/>`
     if (spec.t === 'n') return `<c r="${col}${rowNum}"${sAttr}><v>${spec.v}</v></c>`
     return `<c r="${col}${rowNum}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${assetExcelXmlEscape(spec.v).replace(/\n/g, '&#10;')}</t></is></c>`
@@ -12382,7 +12454,7 @@ function assetExcelShiftRefs(xml, fromRow, delta) {
   return out
 }
 
-function assetExcelFillSheet(xml, records) {
+function assetExcelFillSheet(xml, records, boldBase) {
   const need = records.length
   const capacity = ASSET_EXCEL_DATA_END - ASSET_EXCEL_DATA_START + 1
   let extra = 0
@@ -12407,7 +12479,7 @@ function assetExcelFillSheet(xml, records) {
     if (rn < ASSET_EXCEL_DATA_START || rn > clearUntil) return row
     const rec = records[idx]
     const blank = { A: null, B: null, C: null, D: null, E: null, F: null, G: null, H: null, I: null, J: null, K: null, L: null, M: null, N: null, O: null }
-    return assetExcelSetRow(row, rn, rec || blank)
+    return assetExcelSetRow(row, rn, rec || blank, assetExcelStyleMap(!!(rec && rec._bold), boldBase))
   })
   return sheet
 }
@@ -12525,20 +12597,52 @@ async function assetExcelDeflate(bytes) {
   return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
+function assetExcelFamilyHolder(asset) {
+  if (asset.is_shared) return { group: 'shared', name: 'Dùng chung của phòng', title: '' }
+  const user = asset.assigned_to ? allUsers.find(u => u.id == asset.assigned_to) : null
+  const name = asset.assigned_to_name || user?.full_name || ''
+  if (!name) return { group: 'unused', name: 'Chưa sử dụng', title: '' }
+  return { group: 'user', name, title: asset.assigned_job_title || user?.job_title || '' }
+}
+
+function assetExcelOrderedAssets() {
+  const families = (allAssets || []).map(parent => {
+    const holder = assetExcelFamilyHolder(parent)
+    const rows = [{ ...parent, _parentName: '', _bold: true, _holder: holder }]
+    ;(parent.children || []).forEach(child => {
+      rows.push({
+        ...child,
+        _parentName: parent.name || parent.asset_code || '',
+        _bold: false,
+        _holder: holder,
+      })
+    })
+    return { holder, rows }
+  })
+  const rank = group => group === 'user' ? 0 : group === 'shared' ? 1 : 2
+  families.sort((a, b) => {
+    const byGroup = rank(a.holder.group) - rank(b.holder.group)
+    if (byGroup) return byGroup
+    const byName = a.holder.name.localeCompare(b.holder.name, 'vi')
+    if (byName) return byName
+    return String(a.rows[0].asset_code || '').localeCompare(String(b.rows[0].asset_code || ''), 'vi', { numeric: true })
+  })
+  return families.flatMap(family => family.rows)
+}
+
 function assetExcelRecords(flatRows) {
   return flatRows.map(a => {
-    const user = a.assigned_to ? allUsers.find(u => u.id == a.assigned_to) : null
-    const holder = a.is_shared ? 'Dùng chung của phòng' : (a.assigned_to_name || user?.full_name || '')
-    const title = a.is_shared ? '' : (a.assigned_job_title || user?.job_title || '')
+    const holder = a._holder || assetExcelFamilyHolder(a)
     const brandModel = [a.brand, a.model].filter(Boolean).join(' ')
     const boughtIso = a.purchase_date ? String(a.purchase_date).substring(0, 10) : ''
     const bought = boughtIso ? assetExcelDisplayDate(boughtIso) : ''
     const warranty = boughtIso ? assetExcelDatePlusYears(boughtIso, 3) : ''
     const note = a._parentName ? `Tài sản con của ${a._parentName}` : ''
     return {
+      _bold: !!a._bold,
       A: null,
-      B: holder ? { t: 's', v: holder } : null,
-      C: title ? { t: 's', v: title } : null,
+      B: holder.name ? { t: 's', v: holder.name } : null,
+      C: holder.title ? { t: 's', v: holder.title } : null,
       D: { t: 's', v: assetExcelCategory(a.category) },
       E: brandModel ? { t: 's', v: brandModel } : null,
       F: a.serial_number ? { t: 's', v: a.serial_number } : null,
@@ -12561,13 +12665,7 @@ async function exportAssetsExcel() {
     return
   }
 
-  const flatRows = []
-  ;(allAssets || []).forEach(a => {
-    flatRows.push({ ...a, _parentName: '' })
-    ;(a.children || []).forEach(c => {
-      flatRows.push({ ...c, _parentName: a.name || a.asset_code || '' })
-    })
-  })
+  const flatRows = assetExcelOrderedAssets()
 
   try {
     const res = await fetch(ASSET_EXCEL_TEMPLATE)
@@ -12575,10 +12673,19 @@ async function exportAssetsExcel() {
     const src = new Uint8Array(await res.arrayBuffer())
     const entries = assetExcelReadZip(src)
     const sheet = entries.find(e => e.name === 'xl/worksheets/sheet1.xml')
-    if (!sheet) throw new Error('File mẫu thiếu sheet Tài sản')
+    const stylesEntry = entries.find(e => e.name === 'xl/styles.xml')
+    if (!sheet || !stylesEntry) throw new Error('File mẫu thiếu sheet Tài sản')
+    const stylesBytes = stylesEntry.method === 0 ? stylesEntry.data : await assetExcelInflate(stylesEntry.data)
+    const styled = assetExcelEnsureBoldStyles(new TextDecoder().decode(stylesBytes))
+    const stylesOut = new TextEncoder().encode(styled.xml)
+    const stylesPacked = await assetExcelDeflate(stylesOut)
+    stylesEntry.method = 8
+    stylesEntry.crc = assetExcelCrc32(stylesOut)
+    stylesEntry.uncompSize = stylesOut.length
+    stylesEntry.data = stylesPacked
     const xmlBytes = sheet.method === 0 ? sheet.data : await assetExcelInflate(sheet.data)
     const xml = new TextDecoder().decode(xmlBytes)
-    const filled = assetExcelFillSheet(xml, assetExcelRecords(flatRows))
+    const filled = assetExcelFillSheet(xml, assetExcelRecords(flatRows), styled.boldBase)
     const outBytes = new TextEncoder().encode(filled)
     const packed = await assetExcelDeflate(outBytes)
     sheet.method = 8
@@ -12835,7 +12942,7 @@ $('assetForm').addEventListener('submit', async (e) => {
     }
     closeModal('assetModal')
     toast(id ? 'Cập nhật tài sản thành công' : 'Thêm tài sản thành công')
-    loadAssets()
+    await loadAssets({ preserveView: true })
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })
 
@@ -12844,7 +12951,7 @@ async function deleteAsset(id) {
   try {
     await api(`/assets/${id}`, { method: 'delete' })
     toast('Đã xóa tài sản')
-    loadAssets()
+    await loadAssets({ preserveView: true })
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
 }
 

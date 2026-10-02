@@ -4479,11 +4479,18 @@
         <div class="card mb-4">
           <div class="flex flex-wrap gap-3">
             <input type="text" id="assetSearch" placeholder="🔍 Tìm tài sản..." class="input-field" style="width:220px" oninput="filterAssets()">
-            <select id="assetCategoryFilter" class="select-field" style="width:150px" onchange="filterAssets()">
+            <select id="assetCategoryFilter" class="select-field" style="width:200px" onchange="filterAssets()">
               <option value="">Tất cả loại</option>
-              <option value="computer">Máy tính</option>
+              <option value="computer">Máy trạm</option>
               <option value="laptop">Laptop</option>
-              <option value="software">Phần mềm</option>
+              <option value="monitor">Màn hình</option>
+              <option value="printer">Máy in / máy scan</option>
+              <option value="tablet">Máy tính bảng</option>
+              <option value="phone">Điện thoại</option>
+              <option value="network">Thiết bị mạng</option>
+              <option value="storage">Ổ cứng / NAS</option>
+              <option value="accessory">Phụ kiện khác</option>
+              <option value="software">Phần mềm / bản quyền</option>
               <option value="equipment">Thiết bị</option>
               <option value="furniture">Nội thất</option>
               <option value="vehicle">Phương tiện</option>
@@ -8203,9 +8210,16 @@
         <div>
           <label class="label">Loại *</label>
           <select id="assetCategory" class="select-field" required>
-            <option value="computer">Máy tính</option>
+            <option value="computer">Máy trạm</option>
             <option value="laptop">Laptop</option>
-            <option value="software">Phần mềm</option>
+            <option value="monitor">Màn hình</option>
+            <option value="printer">Máy in / máy scan</option>
+            <option value="tablet">Máy tính bảng</option>
+            <option value="phone">Điện thoại</option>
+            <option value="network">Thiết bị mạng</option>
+            <option value="storage">Ổ cứng / NAS</option>
+            <option value="accessory">Phụ kiện khác</option>
+            <option value="software">Phần mềm / bản quyền</option>
             <option value="equipment">Thiết bị</option>
             <option value="furniture">Nội thất</option>
             <option value="vehicle">Phương tiện</option>
@@ -8977,7 +8991,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261002a"></script>
+<script src="/static/app.js?v=20261002d"></script>
 <script src="/static/design-hstk.js?v=20261001p"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
