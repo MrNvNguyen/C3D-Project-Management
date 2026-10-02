@@ -1,5 +1,6 @@
 // ================================================================
 // OneCad BIM Management System - Frontend Application
+// bundle: 20261001i
 // ================================================================
 
 // Helper: dùng XLSXStyle (có cell styling) cho writeFile, dùng XLSX core cho read/parse
@@ -738,6 +739,11 @@ function taskPhasePillClass(phase) {
   return 'task-phase-pill ' + (map[phase] || 'task-phase-na')
 }
 
+function assetAssigneeOptionsHtml() {
+  const people = allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+  return '<option value="">-- Không giao --</option><option value="shared">Dùng chung</option>' + people
+}
+
 function getAssetCategoryName(c) {
   const m = { computer: 'Máy tính', laptop: 'Laptop', software: 'Phần mềm', equipment: 'Thiết bị', furniture: 'Nội thất', vehicle: 'Phương tiện', other: 'Khác' }
   return m[c] || c
@@ -829,7 +835,7 @@ function logout() {
 // ================================================================
 // Valid pages that can be deep-linked via URL hash
 const _navigablePages = [
-  'dashboard', 'projects', 'tasks', 'timesheet', 'gantt', 'costs',
+  'dashboard', 'project-dashboard', 'projects', 'tasks', 'timesheet', 'gantt', 'costs',
   'assets', 'depreciation', 'users', 'profile', 'email-admin',
   'productivity', 'finance-project', 'labor-cost', 'cost-types',
   'system-config', 'analytics', 'legal', 'leave', 'executive-dashboard'
@@ -897,7 +903,7 @@ function navigate(page, opts = {}) {
   if (navEl) navEl.classList.add('active')
 
   const breadcrumbs = {
-    dashboard: 'Dashboard', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
+    dashboard: 'Dashboard', 'project-dashboard': 'Dashboard dự án', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
     tasks: 'Công việc', timesheet: 'Timesheet', gantt: 'Tiến độ Gantt',
     costs: 'Chi phí & Doanh thu', assets: 'Tài sản', depreciation: 'Khấu hao tài sản',
     users: 'Nhân sự', profile: 'Hồ sơ', 'email-admin': 'Email Thông báo',
@@ -928,6 +934,10 @@ function navigate(page, opts = {}) {
     }).catch(e => toast('Lỗi tải Executive Dashboard: ' + e.message, 'error'))
   }
   else if (page === 'dashboard') loadDashboard()
+  else if (page === 'project-dashboard') {
+    if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
+    if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
+  }
   else if (page === 'projects') loadProjects()
   else if (page === 'tasks') loadTasks()
   else if (page === 'timesheet') loadTimesheets()
@@ -2362,6 +2372,11 @@ function buildTaskPayloadFromGrid(taskBase, gridFields, opts = {}) {
           ? 1
           : 0,
     hstk_date: (pick('hstk_date', taskBase?.hstk_date) ? String(pick('hstk_date', taskBase?.hstk_date)).trim() : null) || null,
+    design_package_id: (() => {
+      const hid = document.getElementById('taskDesignPackageId')
+      const v = pick('design_package_id', taskBase?.design_package_id ?? (hid ? hid.value : window._taskDesignPackageId))
+      return v ? parseInt(v, 10) || null : null
+    })(),
     task_type: pick('task_type', taskBase?.task_type || 'model'),
     model_filename: pick('model_filename', taskBase?.model_filename ?? null) || null,
   }
@@ -2529,8 +2544,18 @@ async function taskGridCommitRow(ev, taskId, context) {
     return
   }
   if (!isNew && _taskGridPayloadUnchanged(taskBase, payload)) return
+  const pkgId = payload.design_package_id ?? taskBase.design_package_id
+  if (pkgId && !String(payload.hstk_date || '').trim()) {
+    const hstkEl = row.querySelector('[data-tfield="hstk_date"]')
+    if (hstkEl && typeof markRequiredField === 'function') {
+      markRequiredField(row, 'hstk_date', 'Phải điền Theo HSTK nào để so sánh với hồ sơ phát sinh task', true)
+    }
+    toast('Phải điền Theo HSTK nào', 'warning')
+    return
+  }
 
   _taskGridInlineBusy = true
+  const prevHstk = row.querySelector('[data-tfield="hstk_date"]')?.value
   try {
     if (isNew) await api('/tasks', { method: 'post', data: payload })
     else await api(`/tasks/${taskId}`, { method: 'put', data: payload })
@@ -2541,6 +2566,15 @@ async function taskGridCommitRow(ev, taskId, context) {
       await loadTasks()
     }
   } catch (e) {
+    if (e.response?.data?.field === 'hstk_date') {
+      const hstkEl = row.querySelector('[data-tfield="hstk_date"]')
+      if (hstkEl) {
+        if (prevHstk !== undefined) hstkEl.value = prevHstk
+        if (typeof markRequiredField === 'function') {
+          markRequiredField(row, 'hstk_date', e.response?.data?.error || '', true)
+        }
+      }
+    }
     toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
   } finally {
     _taskGridInlineBusy = false
@@ -3280,9 +3314,14 @@ async function openProjectDetail(id, openChatTab = false) {
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-comments mr-1"></i>Chat nhóm
           </button>
+          ${currentUser?.role === 'system_admin' ? `
           <button id="projTab-summary" onclick="switchProjectTab('summary',${project.id})"
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-table mr-1"></i>Tổng hợp CV
+          </button>` : ''}
+          <button id="projTab-qlydesign" onclick="switchProjectTab('qlydesign',${project.id})"
+            class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
+            <i class="fas fa-folder-tree mr-1"></i>Qly Công việc
           </button>
           ${currentUser?.role === 'system_admin' ? `
           <button id="projTab-estimate" onclick="switchProjectTab('estimate',${project.id})"
@@ -3328,15 +3367,20 @@ async function openProjectDetail(id, openChatTab = false) {
           <div id="projectChatPanel_${project.id}" style="height:100%"></div>
         </div>
 
-        <!-- Work Summary panel (lazy-loaded) -->
+        <!-- Work Summary panel (lazy-loaded, system_admin only) -->
+        ${currentUser?.role === 'system_admin' ? `
         <div id="projPanel-summary" class="hidden p-4" style="min-height:400px">
           <div id="workSummaryContainer_${project.id}"></div>
-        </div>
+        </div>` : ''}
         <!-- Estimate panel (lazy-loaded, system_admin only) -->
         ${currentUser?.role === 'system_admin' ? `
         <div id="projPanel-estimate" class="hidden p-4" style="min-height:400px">
           <div id="estimateContainer_${project.id}"></div>
         </div>` : ''}
+        <!-- QLy HSTK (NAS packages) -->
+        <div id="projPanel-qlydesign" class="hidden p-4" style="min-height:400px">
+          <div id="qlyHstkContainer_${project.id}"></div>
+        </div>
         <!-- Checklist HSTK Panel -->
         <div id="projPanel-hstk" class="hidden p-4" style="min-height:400px">
           <div id="hstkContainer_${project.id}"></div>
@@ -3672,6 +3716,7 @@ async function reloadModelCard(projectId) {
       _reloadTaskFilenameCombobox(projectId, models)
     }
     document.querySelectorAll(`.task-grid-row[data-project-id="${projectId}"]`).forEach(row => _taskGridApplyModelOptions(row))
+    if (typeof refreshQlyHstkIfVisible === 'function') await refreshQlyHstkIfVisible(projectId)
   } catch(e) { console.error('reloadModelCard', e) }
 }
 
@@ -5430,6 +5475,11 @@ async function openTaskModal(taskId = null, projectId = null) {
       if ($('taskWorkNotes')) $('taskWorkNotes').value = task.work_notes || ''
       if ($('taskCdeReport')) $('taskCdeReport').checked = !!task.cde_report
       if ($('taskHstkDate')) $('taskHstkDate').value = task.hstk_date || ''
+      window._taskDesignPackageId = task.design_package_id || null
+      window._taskDesignPackageName = ''
+      const hidLoad = document.getElementById('taskDesignPackageId')
+      if (hidLoad) hidLoad.value = task.design_package_id || ''
+      if (typeof applyHstkRequiredUi === 'function') applyHstkRequiredUi()
       if ($('taskType')) { $('taskType').value = task.task_type || 'model'; updateTaskTypeUI() }
       // Filename combobox will be initialized after project is loaded (below)
       if ($('taskFilename')) $('taskFilename').value = task.model_filename || ''
@@ -5516,6 +5566,10 @@ async function openTaskModal(taskId = null, projectId = null) {
     if ($('taskWorkNotes')) $('taskWorkNotes').value = ''
     if ($('taskCdeReport')) $('taskCdeReport').checked = false
     if ($('taskHstkDate')) $('taskHstkDate').value = ''
+    window._taskDesignPackageId = window._taskDesignPackageId || null
+    const hidNew = document.getElementById('taskDesignPackageId')
+    if (hidNew) hidNew.value = window._taskDesignPackageId || ''
+    if (typeof applyHstkRequiredUi === 'function') applyHstkRequiredUi()
     if ($('taskType')) { $('taskType').value = 'model'; updateTaskTypeUI() }
     if ($('taskFilename')) $('taskFilename').value = ''
     // Init filename combobox empty (will populate on project select)
@@ -5692,6 +5746,13 @@ $('taskForm').addEventListener('submit', async (e) => {
     model_filename: (_cbGetValue('taskFilenameCombobox') || ($('taskFilename') ? $('taskFilename').value.trim() : null)) || null,
   }
   const data = buildTaskPayloadFromGrid({}, gridFields, { isNew: !id })
+  if (data.design_package_id && !String(data.hstk_date || '').trim()) {
+    if (typeof markRequiredField === 'function') {
+      markRequiredField(document.getElementById('taskModal'), 'hstk_date', 'Phải điền Theo HSTK nào để so sánh với hồ sơ phát sinh task', true)
+    }
+    toast('Phải điền Theo HSTK nào', 'warning')
+    return
+  }
   try {
     if (id) await api(`/tasks/${id}`, { method: 'put', data })
     else await api('/tasks', { method: 'post', data })
@@ -5701,11 +5762,34 @@ $('taskForm').addEventListener('submit', async (e) => {
     // Nếu đang xem chi tiết dự án → reload lại để cập nhật realtime
     if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
       _invalidateProjectDetailCache()
-      await openProjectDetail(window._currentProjectDetailId)
+      const stayOnQlyHstk = window._taskFromQlyHstk ||
+        (document.getElementById('projPanel-qlydesign')?.style.display === 'block')
+      window._taskFromQlyHstk = false
+      if (stayOnQlyHstk && typeof refreshQlyHstkIfVisible === 'function') {
+        try {
+          const pid = window._currentProjectDetailId
+          const tasks = await api(`/tasks?project_id=${pid}&limit=${TASK_PROJECT_LIMIT}`)
+          if (_projectDetailFetchCache.projectId === parseInt(pid, 10)) {
+            _projectDetailFetchCache.tasks = tasks
+          }
+          _projTaskAllData = tasks
+          renderProjTaskRows()
+        } catch (_) { /* ignore */ }
+        await refreshQlyHstkIfVisible(window._currentProjectDetailId)
+      } else {
+        await openProjectDetail(window._currentProjectDetailId)
+      }
     } else {
+      window._taskFromQlyHstk = false
       loadTasks()
     }
-  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+  } catch (e) {
+    const field = e.response?.data?.field
+    if (field === 'hstk_date' && typeof markRequiredField === 'function') {
+      markRequiredField(document.getElementById('taskModal'), 'hstk_date', e.response?.data?.error || '', true)
+    }
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+  }
 })
 
 function confirmDeleteTask(id, title) {
@@ -6418,12 +6502,17 @@ function openImageViewer(src, name) {
 // ── Project Detail Tab Switcher ───────────────────────────────────────────
 function switchProjectTab(tab, projectId) {
   const pid = projectId || window._currentProjectDetailId
+  if (tab === 'summary' && currentUser?.role !== 'system_admin') {
+    switchProjectTab('tasks', pid)
+    return
+  }
   // Show/hide panels
   const taskPanel     = $('projPanel-tasks')
   const weeklyPanel   = $('projPanel-weekly')
   const chatPanel     = $('projPanel-chat')
   const summaryPanel  = $('projPanel-summary')
   const hstkPanel     = $('projPanel-hstk')
+  const qlyPanel      = $('projPanel-qlydesign')
   const estimatePanel = $('projPanel-estimate')
   if (taskPanel)     taskPanel.style.display     = tab === 'tasks'    ? 'block' : 'none'
   if (weeklyPanel)   weeklyPanel.style.display   = tab === 'weekly'   ? 'block' : 'none'
@@ -6440,9 +6529,13 @@ function switchProjectTab(tab, projectId) {
     hstkPanel.classList.remove('hidden')
     hstkPanel.style.display = tab === 'hstk' ? 'block' : 'none'
   }
+  if (qlyPanel) {
+    qlyPanel.classList.remove('hidden')
+    qlyPanel.style.display = tab === 'qlydesign' ? 'block' : 'none'
+  }
 
   // Update tab buttons
-  ;['tasks','weekly','chat','summary','estimate'].forEach(key => {
+  ;['tasks','weekly','chat','summary','estimate','qlydesign'].forEach(key => {
     const btn = $(`projTab-${key}`)
     if (btn) btn.className = `tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap${key === tab ? ' active' : ''}`
   })
@@ -6487,6 +6580,13 @@ function switchProjectTab(tab, projectId) {
     if (container && !container._initialized) {
       container._initialized = true
       renderWorkSummaryTab(container, pid)
+    }
+  }
+
+  if (tab === 'qlydesign') {
+    const container = $(`qlyHstkContainer_${pid}`)
+    if (container && typeof initQlyHstkTab === 'function' && !container._qlyHstkLoaded) {
+      initQlyHstkTab(container, pid)
     }
   }
 
@@ -12015,8 +12115,10 @@ function renderAssetsTable(assets) {
   // Render 1 hàng tài sản (dùng chung cho cha và con)
   function renderRow(a, isChild = false) {
     // Ưu tiên dùng assigned_to_name từ API (JOIN sẵn), fallback sang allUsers
-    const assignedName = a.assigned_to_name ||
-      (a.assigned_to ? (allUsers.find(u => u.id == a.assigned_to)?.full_name || null) : null)
+    const assignedName = a.is_shared
+      ? 'Dùng chung'
+      : (a.assigned_to_name ||
+      (a.assigned_to ? (allUsers.find(u => u.id == a.assigned_to)?.full_name || null) : null))
     const deprSt = a.depreciation_status || 'none'
     const netVal = a.net_book_value || a.current_value || 0
     const pctDepr = a.purchase_price > 0 ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100)) : 0
@@ -12194,116 +12296,310 @@ function filterAssets() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Xuất Excel tài sản
+// Xuất Excel tài sản theo mẫu PBIMDD (3 sheet, không đổi form)
 // ─────────────────────────────────────────────────────────────
-function exportAssetsExcel() {
+const ASSET_EXCEL_TEMPLATE = '/static/templates/tai-san-pbimdd.xlsx'
+const ASSET_EXCEL_DATA_START = 8
+const ASSET_EXCEL_DATA_END = 68
+
+function assetExcelCategory(category) {
+  const m = {
+    computer: 'Máy trạm',
+    laptop: 'Laptop',
+    software: 'Phần mềm / bản quyền',
+    equipment: 'Phụ kiện khác',
+    furniture: 'Phụ kiện khác',
+    vehicle: 'Phụ kiện khác',
+    other: 'Phụ kiện khác',
+  }
+  return m[category] || 'Phụ kiện khác'
+}
+
+function assetExcelCondition(status) {
+  const m = {
+    active: 'Tốt',
+    unused: 'Tốt',
+    maintenance: 'Chậm',
+    repair: 'Hỏng một phần',
+    retired: 'Hỏng',
+    lost: 'Hỏng',
+  }
+  return m[status] || 'Tốt'
+}
+
+function assetExcelDatePlusYears(iso, years) {
+  if (!iso) return ''
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return ''
+  const y = Number(m[1]) + years
+  const dt = Date.UTC(y, Number(m[2]) - 1, Number(m[3]))
+  if (Number.isNaN(dt)) return ''
+  return String(Math.round(dt / 86400000) + 25569)
+}
+
+function assetExcelDateSerial(iso) {
+  return assetExcelDatePlusYears(iso, 0)
+}
+
+function assetExcelDisplayDate(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return ''
+  return `${m[3]}/${m[2]}/${m[1]}`
+}
+
+function assetExcelXmlEscape(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function assetExcelSetRow(rowXml, rowNum, values) {
+  return rowXml.replace(/<c r="([A-O])(\d+)"([^>]*?)(?:\/>|>[\s\S]*?<\/c>)/g, (full, col, r, attrs) => {
+    if (Number(r) !== rowNum) return full
+    const spec = values[col]
+    const style = (attrs.match(/\ss="(\d+)"/) || [])[1]
+    const sAttr = style ? ` s="${style}"` : ''
+    if (!spec || spec.v === '' || spec.v == null) return `<c r="${col}${rowNum}"${sAttr}/>`
+    if (spec.t === 'n') return `<c r="${col}${rowNum}"${sAttr}><v>${spec.v}</v></c>`
+    return `<c r="${col}${rowNum}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${assetExcelXmlEscape(spec.v).replace(/\n/g, '&#10;')}</t></is></c>`
+  })
+}
+
+function assetExcelRenumberRow(rowXml, newNum) {
+  return rowXml
+    .replace(/<row\b([^>]*?)\sr="\d+"/, `<row$1 r="${newNum}"`)
+    .replace(/\sr="([A-Z]+)\d+"/g, ` r="$1${newNum}"`)
+}
+
+function assetExcelShiftRefs(xml, fromRow, delta) {
+  if (!delta) return xml
+  const shiftRef = ref => ref.replace(/([A-Z]+)(\d+)/g, (_, c, n) => {
+    const rn = Number(n)
+    return c + (rn >= fromRow ? rn + delta : rn)
+  })
+  let out = xml.replace(/<row\b[^>]*\sr="(\d+)"[^>]*>[\s\S]*?<\/row>/g, (row, n) => {
+    return Number(n) >= fromRow ? assetExcelRenumberRow(row, Number(n) + delta) : row
+  })
+  out = out.replace(/ref="([A-Z]+\d+(?::[A-Z]+\d+)?)"/g, (full, ref) => `ref="${shiftRef(ref)}"`)
+  return out
+}
+
+function assetExcelFillSheet(xml, records) {
+  const need = records.length
+  const capacity = ASSET_EXCEL_DATA_END - ASSET_EXCEL_DATA_START + 1
+  let extra = 0
+  let sheet = xml
+  if (need > capacity) {
+    extra = need - capacity
+    sheet = assetExcelShiftRefs(sheet, ASSET_EXCEL_DATA_END + 1, extra)
+    const protoMatch = sheet.match(new RegExp(`<row\\b[^>]*\\sr="${ASSET_EXCEL_DATA_START}"[^>]*>[\\s\\S]*?<\\/row>`))
+    if (protoMatch) {
+      let inserted = ''
+      for (let i = 0; i < extra; i++) {
+        inserted += assetExcelRenumberRow(protoMatch[0], ASSET_EXCEL_DATA_END + 1 + i)
+      }
+      const anchor = sheet.match(new RegExp(`<row\\b[^>]*\\sr="${ASSET_EXCEL_DATA_END}"[^>]*>[\\s\\S]*?<\\/row>`))
+      if (anchor) sheet = sheet.replace(anchor[0], anchor[0] + inserted)
+    }
+  }
+  const clearUntil = ASSET_EXCEL_DATA_START + Math.max(need, capacity) - 1
+  sheet = sheet.replace(/<row\b[^>]*\sr="(\d+)"[^>]*>[\s\S]*?<\/row>/g, (row, n) => {
+    const rn = Number(n)
+    const idx = rn - ASSET_EXCEL_DATA_START
+    if (rn < ASSET_EXCEL_DATA_START || rn > clearUntil) return row
+    const rec = records[idx]
+    const blank = { A: null, B: null, C: null, D: null, E: null, F: null, G: null, H: null, I: null, J: null, K: null, L: null, M: null, N: null, O: null }
+    return assetExcelSetRow(row, rn, rec || blank)
+  })
+  return sheet
+}
+
+function assetExcelCrc32(bytes) {
+  let c = ~0
+  for (let i = 0; i < bytes.length; i++) {
+    c ^= bytes[i]
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1))
+  }
+  return ~c >>> 0
+}
+
+function assetExcelReadZip(u8) {
+  const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength)
+  let eocd = -1
+  for (let i = u8.length - 22; i >= 0; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break }
+  }
+  if (eocd < 0) throw new Error('File mẫu Excel không hợp lệ')
+  const count = view.getUint16(eocd + 10, true)
+  let cd = view.getUint32(eocd + 16, true)
+  const entries = []
+  for (let n = 0; n < count; n++) {
+    if (view.getUint32(cd, true) !== 0x02014b50) throw new Error('File mẫu Excel không hợp lệ')
+    const method = view.getUint16(cd + 10, true)
+    const flag = view.getUint16(cd + 8, true)
+    const time = view.getUint16(cd + 12, true)
+    const date = view.getUint16(cd + 14, true)
+    const crc = view.getUint32(cd + 16, true)
+    const compSize = view.getUint32(cd + 20, true)
+    const uncompSize = view.getUint32(cd + 24, true)
+    const nameLen = view.getUint16(cd + 28, true)
+    const extraLen = view.getUint16(cd + 30, true)
+    const commentLen = view.getUint16(cd + 32, true)
+    const localOff = view.getUint32(cd + 42, true)
+    const name = new TextDecoder().decode(u8.subarray(cd + 46, cd + 46 + nameLen))
+    const localNameLen = view.getUint16(localOff + 26, true)
+    const localExtraLen = view.getUint16(localOff + 28, true)
+    const dataOff = localOff + 30 + localNameLen + localExtraLen
+    const extra = u8.slice(localOff + 30 + localNameLen, dataOff)
+    const data = u8.slice(dataOff, dataOff + compSize)
+    entries.push({ name, method, flag, time, date, crc, compSize, uncompSize, extra, data })
+    cd += 46 + nameLen + extraLen + commentLen
+  }
+  return entries
+}
+
+function assetExcelWriteZip(entries) {
+  const parts = []
+  const cds = []
+  let offset = 0
+  const enc = new TextEncoder()
+  for (const e of entries) {
+    const nameBytes = enc.encode(e.name)
+    const local = new Uint8Array(30 + nameBytes.length + e.extra.length)
+    const lv = new DataView(local.buffer)
+    lv.setUint32(0, 0x04034b50, true)
+    lv.setUint16(4, 20, true)
+    lv.setUint16(6, e.flag, true)
+    lv.setUint16(8, e.method, true)
+    lv.setUint16(10, e.time, true)
+    lv.setUint16(12, e.date, true)
+    lv.setUint32(14, e.crc, true)
+    lv.setUint32(18, e.data.length, true)
+    lv.setUint32(22, e.uncompSize, true)
+    lv.setUint16(26, nameBytes.length, true)
+    lv.setUint16(28, e.extra.length, true)
+    local.set(nameBytes, 30)
+    local.set(e.extra, 30 + nameBytes.length)
+    const cd = new Uint8Array(46 + nameBytes.length)
+    const cv = new DataView(cd.buffer)
+    cv.setUint32(0, 0x02014b50, true)
+    cv.setUint16(4, 20, true)
+    cv.setUint16(6, 20, true)
+    cv.setUint16(8, e.flag, true)
+    cv.setUint16(10, e.method, true)
+    cv.setUint16(12, e.time, true)
+    cv.setUint16(14, e.date, true)
+    cv.setUint32(16, e.crc, true)
+    cv.setUint32(20, e.data.length, true)
+    cv.setUint32(24, e.uncompSize, true)
+    cv.setUint16(28, nameBytes.length, true)
+    cv.setUint32(42, offset, true)
+    cd.set(nameBytes, 46)
+    parts.push(local, e.data)
+    cds.push(cd)
+    offset += local.length + e.data.length
+  }
+  const cdStart = offset
+  let cdSize = 0
+  cds.forEach(cd => { parts.push(cd); cdSize += cd.length })
+  const eocd = new Uint8Array(22)
+  const ev = new DataView(eocd.buffer)
+  ev.setUint32(0, 0x06054b50, true)
+  ev.setUint16(8, entries.length, true)
+  ev.setUint16(10, entries.length, true)
+  ev.setUint32(12, cdSize, true)
+  ev.setUint32(16, cdStart, true)
+  parts.push(eocd)
+  const total = parts.reduce((s, p) => s + p.length, 0)
+  const out = new Uint8Array(total)
+  let p = 0
+  parts.forEach(part => { out.set(part, p); p += part.length })
+  return out
+}
+
+async function assetExcelInflate(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+async function assetExcelDeflate(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+function assetExcelRecords(flatRows) {
+  return flatRows.map(a => {
+    const user = a.assigned_to ? allUsers.find(u => u.id == a.assigned_to) : null
+    const holder = a.is_shared ? 'Dùng chung của phòng' : (a.assigned_to_name || user?.full_name || '')
+    const title = a.is_shared ? '' : (a.assigned_job_title || user?.job_title || '')
+    const brandModel = [a.brand, a.model].filter(Boolean).join(' ')
+    const boughtIso = a.purchase_date ? String(a.purchase_date).substring(0, 10) : ''
+    const bought = boughtIso ? assetExcelDisplayDate(boughtIso) : ''
+    const warranty = boughtIso ? assetExcelDatePlusYears(boughtIso, 3) : ''
+    const note = a._parentName ? `Tài sản con của ${a._parentName}` : ''
+    return {
+      A: null,
+      B: holder ? { t: 's', v: holder } : null,
+      C: title ? { t: 's', v: title } : null,
+      D: { t: 's', v: assetExcelCategory(a.category) },
+      E: brandModel ? { t: 's', v: brandModel } : null,
+      F: a.serial_number ? { t: 's', v: a.serial_number } : null,
+      G: a.specifications ? { t: 's', v: a.specifications } : null,
+      H: bought ? { t: 's', v: bought } : null,
+      I: { t: 'n', v: Number(a.purchase_price) || 0 },
+      J: warranty ? { t: 'n', v: warranty } : null,
+      K: { t: 's', v: assetExcelCondition(a.status) },
+      L: { t: 's', v: 'Công ty cấp' },
+      M: null,
+      N: a.asset_code ? { t: 's', v: a.asset_code } : null,
+      O: note ? { t: 's', v: note } : null,
+    }
+  })
+}
+
+async function exportAssetsExcel() {
   if (!allAssets || allAssets.length === 0) {
     toast('Không có dữ liệu tài sản để xuất', 'warning')
     return
   }
 
-  const statusLabels  = { active: 'Đang sử dụng', unused: 'Chưa sử dụng', maintenance: 'Bảo trì', repair: 'Sửa chữa', retired: 'Thanh lý', lost: 'Mất' }
-  const deprLabels    = { active: 'Đang khấu hao', none: 'Không KH', completed: 'Đã hết KH', paused: 'Tạm dừng' }
-  const locationLabels = { office: 'Văn phòng', home: 'Nhà riêng', site: 'Công trường', other: 'Khác' }
-
-  // Flatten cây cha-con, giữ thứ tự: cha → con ngay sau cha
   const flatRows = []
   ;(allAssets || []).forEach(a => {
-    flatRows.push({ ...a, _level: 0, _parentCode: '' })
+    flatRows.push({ ...a, _parentName: '' })
     ;(a.children || []).forEach(c => {
-      flatRows.push({ ...c, _level: 1, _parentCode: a.asset_code })
+      flatRows.push({ ...c, _parentName: a.name || a.asset_code || '' })
     })
   })
 
-  // Helper
-  const numFmt = n => (n || 0).toLocaleString('vi-VN')
-  const dateFmt = d => d ? d.substring(0, 10) : ''
-  const getUserName = id => id ? (allUsers.find(u => u.id === id)?.full_name || '') : ''
-
-  // Header
-  const headers = [
-    'STT', 'Mã tài sản', 'Tên tài sản', 'Tài sản cha',
-    'Loại', 'Thương hiệu', 'Model', 'Thông số kỹ thuật',
-    'Ngày mua', 'Địa điểm', 'Người sử dụng',
-    'Giá mua (VNĐ)', 'Thời gian KH (năm)', 'KH/tháng (VNĐ)',
-    'Khấu hao luỹ kế (VNĐ)', 'Giá trị còn lại (VNĐ)', '% đã KH',
-    'Bắt đầu KH', 'Kết thúc KH', 'Trạng thái KH',
-    'Trạng thái', 'Ghi chú'
-  ]
-
-  // Rows
-  const rows = flatRows.map((a, i) => {
-    const netVal   = a.net_book_value || a.current_value || 0
-    const pctDepr  = a.purchase_price > 0
-      ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100))
-      : 0
-    const deprSt   = a.depreciation_status || 'none'
-    const prefix   = a._level === 1 ? '  └ ' : ''
-    return [
-      i + 1,
-      (a._level === 1 ? '  ' : '') + (a.asset_code || ''),
-      prefix + (a.name || ''),
-      a._parentCode || '',
-      getAssetCategoryName(a.category || ''),
-      a.brand || '',
-      a.model || '',
-      a.specifications || '',
-      dateFmt(a.purchase_date),
-      locationLabels[a.location] || (a.location || ''),
-      getUserName(a.assigned_to),
-      a.purchase_price || 0,
-      a.depreciation_years || '',
-      deprSt === 'active' ? (a.monthly_depreciation || 0) : '',
-      a.accumulated_depreciation || 0,
-      netVal,
-      pctDepr + '%',
-      dateFmt(a.depreciation_start),
-      dateFmt(a.depreciation_end),
-      deprLabels[deprSt] || deprSt,
-      statusLabels[a.status] || (a.status || ''),
-      a.notes || ''
-    ]
-  })
-
-  // Tính tổng footer
-  const totalPurchase = flatRows.reduce((s, a) => s + (a.purchase_price || 0), 0)
-  const totalMonthly  = flatRows.filter(a => (a.depreciation_status || 'none') === 'active').reduce((s, a) => s + (a.monthly_depreciation || 0), 0)
-  const totalAccum    = flatRows.reduce((s, a) => s + (a.accumulated_depreciation || 0), 0)
-  const totalNet      = flatRows.reduce((s, a) => s + (a.net_book_value || a.current_value || 0), 0)
-  const footerRow     = ['', 'TỔNG CỘNG', `${flatRows.length} tài sản`, '', '', '', '', '', '', '', '',
-    totalPurchase, '', totalMonthly, totalAccum, totalNet, '', '', '', '', '', '']
-
-  // ── Build CSV (UTF-8 BOM để Excel đọc đúng tiếng Việt) ──
-  const escape = v => {
-    const s = String(v === null || v === undefined ? '' : v)
-    if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
-    return s
+  try {
+    const res = await fetch(ASSET_EXCEL_TEMPLATE)
+    if (!res.ok) throw new Error('Không tải được file mẫu')
+    const src = new Uint8Array(await res.arrayBuffer())
+    const entries = assetExcelReadZip(src)
+    const sheet = entries.find(e => e.name === 'xl/worksheets/sheet1.xml')
+    if (!sheet) throw new Error('File mẫu thiếu sheet Tài sản')
+    const xmlBytes = sheet.method === 0 ? sheet.data : await assetExcelInflate(sheet.data)
+    const xml = new TextDecoder().decode(xmlBytes)
+    const filled = assetExcelFillSheet(xml, assetExcelRecords(flatRows))
+    const outBytes = new TextEncoder().encode(filled)
+    const packed = await assetExcelDeflate(outBytes)
+    sheet.method = 8
+    sheet.crc = assetExcelCrc32(outBytes)
+    sheet.uncompSize = outBytes.length
+    sheet.data = packed
+    const zip = assetExcelWriteZip(entries)
+    const blob = new Blob([zip], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const today = new Date().toISOString().substring(0, 10).replace(/-/g, '')
+    link.href = url
+    link.download = `Tai_san_PBIMDD_${today}.xlsx`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    toast(`Đã xuất ${flatRows.length} tài sản theo mẫu Excel`, 'success')
+  } catch (err) {
+    toast('Không xuất được Excel: ' + (err.message || err), 'error')
   }
-  const csvLines = [
-    '=== BÁO CÁO TÀI SẢN CÔNG TY ===',
-    `Ngày xuất: ${new Date().toLocaleDateString('vi-VN')} ${new Date().toLocaleTimeString('vi-VN')}`,
-    `Tổng số tài sản: ${allAssets.length} (${flatRows.length} bao gồm linh kiện)`,
-    '',
-    headers.map(escape).join(','),
-    ...rows.map(r => r.map(escape).join(',')),
-    '',
-    footerRow.map(escape).join(',')
-  ]
-
-  const BOM = '\uFEFF'
-  const csvContent = BOM + csvLines.join('\r\n')
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-  const url  = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  const today = new Date().toISOString().substring(0, 10).replace(/-/g, '')
-  link.href     = url
-  link.download = `BIM_TaiSan_${today}.csv`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-
-  toast(`Đã xuất ${flatRows.length} tài sản ra file Excel`, 'success')
 }
 
 async function openAssetModal(assetId = null) {
@@ -12311,8 +12607,7 @@ async function openAssetModal(assetId = null) {
   $('assetModalTitle').textContent = assetId ? 'Chỉnh sửa tài sản' : 'Thêm tài sản mới'
   $('assetId').value = assetId || ''
   $('assetParentId').value = ''
-  $('assetAssignedTo').innerHTML = '<option value="">-- Không giao --</option>' +
-    allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+  $('assetAssignedTo').innerHTML = assetAssigneeOptionsHtml()
 
   // Ẩn banner tài sản cha mặc định
   if ($('assetParentRow')) $('assetParentRow').classList.add('hidden')
@@ -12336,7 +12631,7 @@ async function openAssetModal(assetId = null) {
       setMoneyInput('assetPurchasePrice', asset.purchase_price || 0)
       setMoneyInput('assetCurrentValue', asset.current_value || 0)
       $('assetDepartment').value = asset.department || ''
-      $('assetAssignedTo').value = asset.assigned_to || ''
+      $('assetAssignedTo').value = asset.is_shared ? 'shared' : (asset.assigned_to || '')
       $('assetSpecs').value = asset.specifications || ''
       $('assetDepreciationYears').value = asset.depreciation_years || 0
       $('assetDepreciationStart').value = asset.depreciation_start_date || asset.purchase_date || ''
@@ -12385,8 +12680,7 @@ async function openAssetModalAsChild(parentId) {
   if ($('assignParentRow')) $('assignParentRow').classList.add('hidden')
   if ($('changeParentUI')) $('changeParentUI').classList.add('hidden')
 
-  $('assetAssignedTo').innerHTML = '<option value="">-- Không giao --</option>' +
-    allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+  $('assetAssignedTo').innerHTML = assetAssigneeOptionsHtml()
 
   // Clear các field, inherit phòng ban từ cha
   ;['assetCode','assetName','assetBrand','assetModel','assetSerial','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
@@ -12395,7 +12689,7 @@ async function openAssetModalAsChild(parentId) {
   $('assetCategory').value = parentAsset.category || 'computer'
   $('assetStatus').value = 'active'
   $('assetDepartment').value = parentAsset.department || ''
-  $('assetAssignedTo').value = parentAsset.assigned_to || ''
+  $('assetAssignedTo').value = parentAsset.is_shared ? 'shared' : (parentAsset.assigned_to || '')
   $('assetPurchaseDate').value = today()
   $('assetDepreciationYears').value = '0'
   $('assetDepreciationStart').value = today()
@@ -12525,7 +12819,8 @@ $('assetForm').addEventListener('submit', async (e) => {
     purchase_price: parseMoneyVal('assetPurchasePrice'),
     current_value: parseMoneyVal('assetCurrentValue'),
     department: $('assetDepartment').value,
-    assigned_to: parseInt($('assetAssignedTo').value) || null,
+    assigned_to: $('assetAssignedTo').value === 'shared' ? null : (parseInt($('assetAssignedTo').value) || null),
+    is_shared: $('assetAssignedTo').value === 'shared' ? 1 : 0,
     specifications: $('assetSpecs').value,
     depreciation_years: parseInt($('assetDepreciationYears').value) || 0,
     depreciation_start_date: $('assetDepreciationStart').value || null,
@@ -13315,10 +13610,10 @@ function _renderStaffTableRows() {
       }
       const cell = v => v ? `<span class="text-gray-800">${v}</span>` : '<span class="text-gray-300">—</span>'
       const genderTxt = {male:'Nam', female:'Nữ', other:'Khác'}[u.gender] || null
-      const rowBg = (i % 2 === 0) ? '#ffffff' : '#f9fafb'
-      return `<tr class="hover:bg-blue-50 transition-colors cursor-pointer" onmouseover="this.querySelectorAll('.sticky-col').forEach(c=>c.style.background='#eff6ff')" onmouseout="this.querySelectorAll('.sticky-col').forEach(c=>c.style.background='${rowBg}')" onclick="openUserDetail(${u.id})">
-        <td class="sticky-col py-2.5 px-3 text-gray-400 text-xs border-r border-gray-100" style="position:sticky;left:0;z-index:10;background:${rowBg};min-width:42px">${start + i + 1}</td>
-        <td class="sticky-col py-2.5 px-3 border-r border-gray-200" style="position:sticky;left:42px;z-index:10;background:${rowBg};min-width:200px;box-shadow:2px 0 6px rgba(0,0,0,0.08)">
+      const rowStripe = (i % 2 === 0) ? 'staff-row-even' : 'staff-row-odd'
+      return `<tr class="staff-table-row ${rowStripe} transition-colors cursor-pointer" onclick="openUserDetail(${u.id})">
+        <td class="staff-sticky-col py-2.5 px-3 text-gray-400 text-xs border-r border-gray-100" style="position:sticky;left:0;z-index:10;min-width:42px">${start + i + 1}</td>
+        <td class="staff-sticky-col py-2.5 px-3 border-r border-gray-200" style="position:sticky;left:42px;z-index:10;min-width:200px;box-shadow:2px 0 6px rgba(0,0,0,0.08)">
           <div class="flex items-center gap-2">
             ${avatar}
             <div>
@@ -19444,12 +19739,39 @@ let _legalOverviewData = null
 let _legalCostAData = null
 let _legalCurrentTab = 'info'
 let _legalPackageCounts = {}
+let _legalHasUnsignedContract = {}
+let _legalProjectStatusFilter = 'all'
 let _legalTabSetByUser = false
 let _legalProjectSearch = ''
+let _legalRelatedSearch = ''
+let _legalProjectClientFilter = ''
+let _legalPackageNames = {}
 let _legalActivePackageId = null
 let _legalPaymentActivePackageId = null
 let _legalPaymentInlineBusy = false
 let _legalPaymentItemPackageMap = null
+
+function isLegalSupportMemberUser() {
+  if (!currentUser || currentUser.role !== 'member') return false
+  return String(currentUser.department || '').trim().toLowerCase() === 'support'
+}
+
+/** SSOT: overview.can_manage from API after load; Support member before first load. */
+function legalCanManageCurrentProject() {
+  if (_legalOverviewData && typeof _legalOverviewData.can_manage === 'boolean') {
+    return !!_legalOverviewData.can_manage
+  }
+  if (isLegalSupportMemberUser()) return true
+  if (!_legalCurrentProjectId || !currentUser) return false
+  const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
+  return ['system_admin', 'project_admin', 'project_leader'].includes(eff)
+}
+
+function legalHasFullModuleUi() {
+  if (!currentUser) return false
+  if (currentUser.role === 'system_admin' || isLegalSupportMemberUser()) return true
+  return false
+}
 
 function _legalPaymentNormPackageKey(key) {
   if (key === null || key === undefined || key === '') return 0
@@ -19906,33 +20228,161 @@ const PAYMENT_STATUS_COLORS = {
 
 // ── Navigate to Legal page ───────────────────────────────────────────────────
 function legalOnProjectSearch(q) {
-  _legalProjectSearch = (q || '').trim().toLowerCase()
-  renderLegalProjectList()
+  _legalProjectSearch = (q || '').trim()
+  void _legalAfterProjectListFilterChange()
 }
 
-function renderLegalProjectList() {
-  const el = $('legalProjectList')
-  if (!el) return
-  const q = _legalProjectSearch
-  const filtered = (allProjects || []).filter(p => {
-    if (!q) return true
-    const hay = `${p.code || ''} ${p.name || ''}`.toLowerCase()
-    return hay.includes(q)
+function legalOnRelatedSearch(q) {
+  _legalRelatedSearch = (q || '').trim()
+  void _legalAfterProjectListFilterChange()
+}
+
+function _legalRelatedHaystack(p) {
+  const pid = String(p.id)
+  const pkgNames = (_legalPackageNames[pid] || []).join(' ')
+  return _foldVn([
+    p.description,
+    p.name,
+    p.code,
+    p.client,
+    p.location,
+    pkgNames,
+  ].filter(Boolean).join(' '))
+}
+
+const LEGAL_PROJECT_STATUS_CHIPS = [
+  { id: 'all', label: 'Tất cả' },
+  { id: 'active', label: 'Đang làm' },
+  { id: 'on_hold', label: 'Tạm dừng' },
+  { id: 'completed', label: 'HT' },
+]
+
+function _legalProjectMatchesStatusChip(p) {
+  if (_legalProjectStatusFilter === 'pending_sign') _legalProjectStatusFilter = 'all'
+  const chip = _legalProjectStatusFilter || 'all'
+  if (chip === 'all') return true
+  const status = String(p.status || 'active').toLowerCase()
+  if (chip === 'active') return status === 'active'
+  if (chip === 'completed') return status === 'completed'
+  if (chip === 'on_hold') return status === 'on_hold'
+  return true
+}
+
+function _legalFilteredProjects() {
+  const qNameCode = _foldVn(_legalProjectSearch)
+  const qRelated = _foldVn(_legalRelatedSearch)
+  const client = _legalProjectClientFilter
+  return (allProjects || []).filter(p => {
+    if (client && String(p.client || '') !== client) return false
+    if (!_legalProjectMatchesStatusChip(p)) return false
+    if (qNameCode) {
+      const hay = _foldVn(`${p.code || ''} ${p.name || ''}`)
+      if (!hay.includes(qNameCode)) return false
+    }
+    if (qRelated && !_legalRelatedHaystack(p).includes(qRelated)) return false
+    return true
   })
-  if (!filtered.length) {
-    el.innerHTML = '<div class="legal-project-empty">Không tìm thấy dự án</div>'
+}
+
+async function _legalAfterProjectListFilterChange() {
+  const filtered = _legalFilteredProjects()
+  renderLegalProjectStatusChips()
+  renderLegalProjectList()
+  const curId = _legalCurrentProjectId
+  const stillVisible = curId && filtered.some(p => Number(p.id) === Number(curId))
+  if (stillVisible) return
+  if (filtered.length) {
+    await selectLegalProject(filtered[0].id)
     return
   }
-  el.innerHTML = filtered.map(p => {
-    const active = Number(_legalCurrentProjectId) === Number(p.id)
-    const n = _legalPackageCounts[String(p.id)]
-    const pkgLine = n == null ? '' : `<div class="legal-project-pkgs">${n} gói thầu</div>`
-    return `<button type="button" class="legal-project-card${active ? ' active' : ''}" onclick="selectLegalProject(${p.id})">
+  _legalCurrentProjectId = null
+  _legalOverviewData = null
+  _legalShowProjectShell(false)
+  if ($('legalKPIRow')) $('legalKPIRow').style.display = 'none'
+  if ($('legalTabs')) $('legalTabs').style.display = 'none'
+  ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnCopyFromLegal', 'btnLegalChangeLog'].forEach(id => {
+    if ($(id)) $(id).style.display = 'none'
+  })
+  if ($('legalProjectSelectCombobox') && typeof _cbAssignValue === 'function') {
+    try { _cbAssignValue('legalProjectSelectCombobox', '') } catch (_) {}
+  }
+}
+
+function renderLegalProjectStatusChips() {
+  const host = $('legalProjectStatusChips')
+  if (!host) return
+  if (_legalProjectStatusFilter === 'pending_sign') _legalProjectStatusFilter = 'all'
+  const active = _legalProjectStatusFilter || 'all'
+  host.innerHTML = LEGAL_PROJECT_STATUS_CHIPS.map(chip => {
+    const sel = chip.id === active
+    return `<button type="button" role="tab" aria-selected="${sel ? 'true' : 'false'}"
+      class="legal-project-status-chip${sel ? ' active' : ''}"
+      onclick="legalOnProjectStatusFilter('${chip.id}')">${escHtml(chip.label)}</button>`
+  }).join('')
+}
+
+async function legalOnProjectStatusFilter(chipId) {
+  const next = chipId || 'all'
+  if (_legalProjectStatusFilter === next) return
+  _legalProjectStatusFilter = next
+  await _legalAfterProjectListFilterChange()
+}
+
+function _legalCanBrowseAllLegalProjects() {
+  if (!currentUser) return false
+  if (currentUser.role === 'system_admin') return true
+  return isLegalSupportMemberUser()
+}
+
+function _legalInstallClientFilterCombobox() {
+  if (!$('legalClientFilterCombobox')) return
+  const uniqueClients = [...new Set(
+    (allProjects || []).map(p => p.client).filter(c => c && String(c).trim())
+  )].sort((a, b) => String(a).localeCompare(String(b), 'vi'))
+  const clientItems = uniqueClients.map(c => ({ value: c, label: c }))
+  const host = $('legalClientFilterCombobox')
+  if (host) {
+    host.title = uniqueClients.length
+      ? ''
+      : 'Chưa có chủ đầu tư trong dữ liệu (cột client trống trên mọi dự án bạn xem được).'
+  }
+  createCombobox('legalClientFilterCombobox', {
+    placeholder: 'Tất cả chủ đầu tư',
+    items: clientItems,
+    value: _legalProjectClientFilter || '',
+    minWidth: '180px',
+    onchange: (val) => legalOnClientFilterChange(val)
+  })
+}
+
+async function legalOnClientFilterChange(val) {
+  _legalProjectClientFilter = (val || '').trim()
+  await _legalAfterProjectListFilterChange()
+}
+
+function _legalProjectCardHtml(p) {
+  const active = Number(_legalCurrentProjectId) === Number(p.id)
+  const n = _legalPackageCounts[String(p.id)]
+  const pkgLine = n == null ? '' : `<div class="legal-project-pkgs">${n} gói thầu</div>`
+  return `<button type="button" class="legal-project-card${active ? ' active' : ''}" onclick="selectLegalProject(${p.id})">
       <div class="legal-project-code">${escHtml(p.code || '—')}</div>
       <div class="legal-project-name">${escHtml(p.name || '')}</div>
       ${pkgLine}
     </button>`
-  }).join('')
+}
+
+function renderLegalProjectList() {
+  renderLegalProjectStatusChips()
+  const el = $('legalProjectList')
+  if (!el) return
+  const filtered = _legalFilteredProjects().slice().sort((a, b) =>
+    String(a.code || '').localeCompare(String(b.code || ''), 'vi')
+  )
+  if (!filtered.length) {
+    el.innerHTML = '<div class="legal-project-empty">Không tìm thấy dự án</div>'
+    return
+  }
+  el.innerHTML = filtered.map(_legalProjectCardHtml).join('')
 }
 
 function _legalShowProjectShell(show) {
@@ -19975,15 +20425,39 @@ async function loadLegalPackageCounts() {
   try {
     const data = await api('/legal/package-counts')
     _legalPackageCounts = data?.counts || {}
-  } catch (_) { _legalPackageCounts = {} }
+    _legalHasUnsignedContract = data?.has_unsigned_contract || {}
+    _legalPackageNames = data?.package_names || {}
+  } catch (_) {
+    _legalPackageCounts = {}
+    _legalHasUnsignedContract = {}
+    _legalPackageNames = {}
+  }
 }
 
 async function loadLegal() {
-  if (allProjects.length === 0) {
-    try { allProjects = (await api('/projects')).projects || [] } catch(e) {}
-  }
+  try {
+    if (_legalCanBrowseAllLegalProjects()) {
+      const data = await api('/legal/projects')
+      allProjects = data?.projects || []
+    } else if (!allProjects.length || _projectsCacheKind === 'slim') {
+      const data = await api('/projects')
+      allProjects = data?.projects || (Array.isArray(data) ? data : [])
+      if (_projectsCacheKind === 'slim') {
+        _projectsCacheKind = 'full'
+        _projectsCacheAt = Date.now()
+        refreshProjectRoleCache()
+      }
+    }
+  } catch (e) {}
   await loadLegalPackageCounts()
+  _legalInstallClientFilterCombobox()
   if (!_legalCurrentProjectId) _legalCurrentProjectId = _legalPickDefaultProjectId()
+  else {
+    const filtered = _legalFilteredProjects()
+    const stillVisible = filtered.some(p => Number(p.id) === Number(_legalCurrentProjectId))
+    if (!stillVisible && filtered.length) _legalCurrentProjectId = filtered[0].id
+    else if (!stillVisible) _legalCurrentProjectId = null
+  }
 
   renderLegalProjectList()
 
@@ -20005,7 +20479,7 @@ async function loadLegal() {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
   }
 }
 
@@ -20016,7 +20490,7 @@ async function _onLegalProjectComboChange(val) {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
     renderLegalProjectList()
     return
   }
@@ -20066,9 +20540,10 @@ async function loadLegalProject(projectId) {
     // Member chỉ được xem + tạo văn bản gửi đi
     // Project Leader trở lên: toàn quyền
     const effRole = getEffectiveRoleForProject(requestedId)
-    // Kiểm tra quyền: chỉ system_admin mới có full quyền
-    const isSystemAdmin = effRole === 'system_admin'
-    const isDestLegalAdmin = ['system_admin', 'project_admin'].includes(effRole)
+    const canManage = !!data.can_manage
+    const isDestLegalAdmin = canManage && (
+      ['system_admin', 'project_admin'].includes(effRole) || isLegalSupportMemberUser()
+    )
     if ($('btnCopyFromLegal')) {
       $('btnCopyFromLegal').style.display = isDestLegalAdmin ? '' : 'none'
     }
@@ -20076,8 +20551,8 @@ async function loadLegalProject(projectId) {
     // Show KPI row
     $('legalKPIRow').style.display = ''
 
-    // Điều chỉnh tabs theo quyền
-    if (!isSystemAdmin) {
+    // Điều chỉnh tabs theo quyền (system_admin + Support member: full HSPL trừ Chi phí A)
+    if (!legalHasFullModuleUi()) {
       // Member / Project Leader / Project Admin: chỉ hiện Văn bản gửi đi, Biên bản họp, Tài liệu đính kèm
       $('legalTabs').style.display = ''
       ;['stages', 'payments', 'cost-a', 'info'].forEach(t => {
@@ -20099,6 +20574,7 @@ async function loadLegalProject(projectId) {
       if ($('btnAddLetter')) $('btnAddLetter').style.display = ''
       if ($('btnAddDoc')) $('btnAddDoc').style.display = ''
       ;['btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = 'none' })
+      if ($('btnLegalChangeLog')) $('btnLegalChangeLog').style.display = ''
       // Ẩn KPI cards liên quan đến stages và payments
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
       if (kpiCards) {
@@ -20115,7 +20591,7 @@ async function loadLegalProject(projectId) {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = ''
       })
-      ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = '' })
+      ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display = '' })
       // Khôi phục tất cả KPI cards
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
       if (kpiCards) kpiCards.forEach(card => card.style.display = '')
@@ -20815,15 +21291,14 @@ function switchLegalPackageTab(pkgId) {
 }
 
 function canReorderLegalChecklist() {
-  if (!_legalCurrentProjectId || !currentUser) return false
+  if (!legalCanManageCurrentProject()) return false
+  if (isLegalSupportMemberUser()) return true
   const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
   return ['system_admin', 'project_admin'].includes(eff)
 }
 
 function canDeleteLegalChecklist() {
-  if (!_legalCurrentProjectId || !currentUser) return false
-  const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
-  return ['system_admin', 'project_admin', 'project_leader'].includes(eff)
+  return legalCanManageCurrentProject()
 }
 
 let _legalDndActive = null
@@ -24352,6 +24827,32 @@ function closeLegalCopyFromModal() {
   if (m) m.classList.add('hidden')
 }
 
+function _legalCopyFillInnerSourcePkgOptions(pkgs) {
+  const innerSrc = $('legalCopyInnerSourcePkg')
+  if (!innerSrc) return
+  if (!pkgs || pkgs.length === 0) {
+    innerSrc.innerHTML = '<option value="">— Dự án nguồn chưa có gói —</option>'
+    innerSrc.disabled = true
+    return
+  }
+  innerSrc.disabled = false
+  innerSrc.innerHTML = `<option value="">— Chọn gói nguồn —</option>${pkgs.map(p =>
+    `<option value="${p.id}">${escHtml(p.name)}</option>`).join('')}`
+}
+
+async function _legalCopyFillInnerDestPkgOptions() {
+  const innerDest = $('legalCopyInnerDestPkg')
+  if (!innerDest || !_legalCurrentProjectId) return
+  try {
+    const data = await api(`/legal/${_legalCurrentProjectId}/packages`)
+    const pkgs = data.packages || []
+    innerDest.innerHTML = `<option value="">— Không sao chép nội dung —</option>${pkgs.map(p =>
+      `<option value="${p.id}">${escHtml(p.name)}</option>`).join('')}`
+  } catch (e) {
+    innerDest.innerHTML = `<option value="">— Lỗi tải gói đích —</option>`
+  }
+}
+
 async function onLegalCopyFromSourceChange() {
   const sel = $('legalCopyFromSource')
   const wrap = $('legalCopyFromPkgWrap')
@@ -24361,6 +24862,7 @@ async function onLegalCopyFromSourceChange() {
   if (!srcId) {
     wrap.style.display = 'none'
     list.innerHTML = ''
+    _legalCopyFillInnerSourcePkgOptions([])
     return
   }
   try {
@@ -24375,10 +24877,98 @@ async function onLegalCopyFromSourceChange() {
           <span>${escHtml(p.name)}</span>
         </label>`).join('')
     }
+    _legalCopyFillInnerSourcePkgOptions(pkgs)
     wrap.style.display = ''
   } catch (e) {
     list.innerHTML = `<p class="text-red-600 text-sm">${escHtml(e.message)}</p>`
+    _legalCopyFillInnerSourcePkgOptions([])
     wrap.style.display = ''
+  }
+}
+
+const LEGAL_AUDIT_AREA_LABELS = {
+  project_info: 'Thông tin dự án',
+  dossier: 'Theo dõi hồ sơ',
+  payment: 'Tình trạng thanh toán',
+  fee_a: 'Chi phí A',
+  contact: 'Contact Liên Hệ',
+}
+const LEGAL_AUDIT_ACTION_LABELS = { create: 'Thêm', update: 'Sửa', delete: 'Xóa' }
+
+function _legalAuditFormatWhen(raw) {
+  if (!raw) return '—'
+  const d = new Date(String(raw).replace(' ', 'T') + (String(raw).includes('Z') ? '' : 'Z'))
+  if (Number.isNaN(d.getTime())) return escHtml(String(raw))
+  return escHtml(d.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' }))
+}
+
+function _legalAuditFormatDiff(entry) {
+  const oldV = entry.old_value != null ? String(entry.old_value) : ''
+  const newV = entry.new_value != null ? String(entry.new_value) : ''
+  if (entry.action === 'create') {
+    return `<span class="new">${escHtml(newV || '—')}</span>`
+  }
+  if (entry.action === 'delete') {
+    return `<span class="old">${escHtml(oldV || '—')}</span>`
+  }
+  if (!oldV && !newV) return '—'
+  return `<span class="old">${escHtml(oldV || '—')}</span> → <span class="new">${escHtml(newV || '—')}</span>`
+}
+
+async function openLegalChangeLogModal() {
+  if (!_legalCurrentProjectId) {
+    toast('Chọn dự án trước', 'warning')
+    return
+  }
+  const modal = $('modalLegalChangeLog')
+  if (!modal) return
+  modal.classList.remove('hidden')
+  modal.style.display = 'flex'
+  await loadLegalChangeLog()
+}
+
+function closeLegalChangeLogModal() {
+  const modal = $('modalLegalChangeLog')
+  if (!modal) return
+  modal.classList.add('hidden')
+  modal.style.display = 'none'
+}
+
+async function loadLegalChangeLog() {
+  const list = $('legalChangeLogList')
+  if (!list || !_legalCurrentProjectId) return
+  list.innerHTML = '<div class="text-gray-500 text-sm py-6 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải…</div>'
+  try {
+    const data = await api(`/legal/${_legalCurrentProjectId}/change-log`)
+    const entries = data?.entries || []
+    if (!entries.length) {
+      list.innerHTML = '<p class="text-center py-10" style="color:var(--shell-text-muted)">Chưa có thay đổi.</p>'
+      return
+    }
+    const rows = entries.map(e => {
+      const area = LEGAL_AUDIT_AREA_LABELS[e.area] || e.area || '—'
+      const action = LEGAL_AUDIT_ACTION_LABELS[e.action] || e.action || '—'
+      const actor = escHtml(e.actor_name || `#${e.actor_user_id}`)
+      const field = escHtml(e.field || '—')
+      const label = escHtml(e.entity_label || '—')
+      return `<tr>
+        <td style="white-space:nowrap">${_legalAuditFormatWhen(e.created_at)}</td>
+        <td>${actor}</td>
+        <td>${escHtml(area)}</td>
+        <td>${label}</td>
+        <td>${field}</td>
+        <td>${escHtml(action)}</td>
+        <td class="legal-change-log-diff">${_legalAuditFormatDiff(e)}</td>
+      </tr>`
+    }).join('')
+    list.innerHTML = `<table class="legal-change-log-table">
+      <thead><tr>
+        <th>Thời gian</th><th>Người sửa</th><th>Mục</th><th>Nhãn</th><th>Trường</th><th>Thao tác</th><th>Cũ → Mới</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`
+  } catch (err) {
+    list.innerHTML = `<p class="text-center py-8 text-red-500">${escHtml(err.message || 'Không tải được lịch sử')}</p>`
   }
 }
 
@@ -24405,6 +24995,12 @@ async function openLegalCopyFromModal() {
   if (skipRadio) skipRadio.checked = true
   $('legalCopyFromPkgWrap').style.display = 'none'
   $('legalCopyFromPkgList').innerHTML = ''
+  const innerSrc = $('legalCopyInnerSourcePkg')
+  if (innerSrc) {
+    innerSrc.innerHTML = '<option value="">— Chọn dự án nguồn trước —</option>'
+    innerSrc.disabled = true
+  }
+  await _legalCopyFillInnerDestPkgOptions()
   $('modalLegalCopyFrom').classList.remove('hidden')
 }
 
@@ -24416,6 +25012,18 @@ async function executeLegalCopyFrom() {
     return
   }
   const checked = [...document.querySelectorAll('.legal-copy-pkg-cb:checked')].map(el => parseInt(el.value, 10))
+  const innerSourcePkgId = parseInt($('legalCopyInnerSourcePkg')?.value, 10)
+  const innerDestPkgId = parseInt($('legalCopyInnerDestPkg')?.value, 10)
+  const innerBoth = innerSourcePkgId > 0 && innerDestPkgId > 0
+  const innerPartial = (innerSourcePkgId > 0) !== (innerDestPkgId > 0)
+  if (innerPartial) {
+    toast('Chọn cả gói nguồn và gói đích để sao chép nội dung', 'warning')
+    return
+  }
+  if (!checked.length && !innerBoth) {
+    toast('Chọn gói thầu cần sao chép hoặc cặp gói nguồn/đích', 'warning')
+    return
+  }
   const conflictMode = document.querySelector('input[name="legalCopyNameConflict"]:checked')?.value || 'skip'
   const btn = $('btnLegalCopyFromSubmit')
   if (btn) btn.disabled = true
@@ -24425,24 +25033,41 @@ async function executeLegalCopyFrom() {
       on_name_conflict: conflictMode,
     }
     if (checked.length) payload.package_ids = checked
+    if (innerBoth) {
+      payload.inner_content = {
+        source_package_id: innerSourcePkgId,
+        dest_package_id: innerDestPkgId,
+      }
+    }
     const res = await api(`/legal/${_legalCurrentProjectId}/copy-from`, { method: 'POST', data: payload })
     const copied = res.copied_packages || []
     const conflicts = res.name_conflicts || []
-    let msg = copied.length
-      ? `Đã sao chép ${copied.length} gói thầu.`
-      : 'Không có gói nào được sao chép.'
+    const inner = res.inner_content
+    const parts = []
+    if (copied.length) parts.push(`Đã sao chép ${copied.length} gói thầu`)
+    else if (!innerBoth) parts.push('Không có gói thầu mới được sao chép')
+    if (inner) {
+      parts.push(
+        `Nội dung gói: +${inner.copied_items || 0} hạng mục, +${inner.copied_documents || 0} tài liệu, +${inner.copied_letters || 0} văn bản` +
+        ((inner.skipped_items || inner.skipped_documents || inner.skipped_letters)
+          ? ` (bỏ qua trùng: ${(inner.skipped_items || 0) + (inner.skipped_documents || 0) + (inner.skipped_letters || 0)})`
+          : '')
+      )
+    }
+    let msg = parts.join('. ') + (parts.length ? '.' : 'Không có thay đổi.')
     if (conflicts.length) {
       const skipped = conflicts.filter(c => c.action === 'skipped').map(c => c.name)
-      if (skipped.length) msg += ` Bỏ qua trùng tên: ${skipped.join(', ')}.`
+      if (skipped.length) msg += ` Bỏ qua gói trùng tên: ${skipped.join(', ')}.`
     }
-    toast(msg, copied.length ? 'success' : 'warning')
+    const didWork = copied.length > 0 || (inner && ((inner.copied_items || 0) + (inner.copied_documents || 0) + (inner.copied_letters || 0) > 0))
+    toast(msg, didWork ? 'success' : 'warning')
     const result = $('legalCopyFromResult')
     if (result) {
       result.classList.remove('hidden')
       result.innerHTML = `<p class="text-green-700">${escHtml(msg)}</p>`
     }
     await loadLegalProject(_legalCurrentProjectId)
-    if (copied.length) closeLegalCopyFromModal()
+    if (didWork) closeLegalCopyFromModal()
   } catch (e) {
     toast('Sao chép thất bại: ' + e.message, 'error')
   } finally {

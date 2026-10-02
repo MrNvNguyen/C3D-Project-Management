@@ -1,0 +1,5 @@
+Windows Registry Editor Version 5.00
+
+; File .reg KHÔNG hỗ trợ %~dp0 — merge file này sẽ trỏ sai đường dẫn script.
+; Dùng install-bimfolder.ps1 trong cùng thư mục (xem HUONG-DAN-CAI-DAT.md).
+

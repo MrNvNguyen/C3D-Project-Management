@@ -355,7 +355,10 @@
     .progress-fill.danger { background: linear-gradient(90deg, #ef4444, #f87171); }
     .modal-overlay { position: fixed; inset: 0; background: var(--shell-overlay); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; }
     .modal { background: var(--shell-surface); color: var(--shell-text); border-radius: 12px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--shell-border); }
-    #modalLegalCopyFrom .legal-copy-dialog { max-width: 460px; padding: 0; overflow: hidden; }
+    #modalLegalCopyFrom .legal-copy-dialog { max-width: 520px; padding: 0; overflow: hidden; }
+    #modalLegalCopyFrom .legal-copy-section-divider { border: 0; border-top: 1px solid var(--shell-border); margin: 4px 0 2px; }
+    #modalLegalCopyFrom .legal-copy-section-title { font-size: 13px; font-weight: 700; color: var(--shell-text); margin: 0 0 8px; }
+    #modalLegalCopyFrom .legal-copy-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--shell-text-muted); }
     #modalLegalCopyFrom .legal-copy-head {
       display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
       padding: 16px 18px; border-bottom: 1px solid var(--shell-border);
@@ -380,6 +383,28 @@
       max-height: 160px; overflow-y: auto; background: var(--shell-input-bg); color: var(--shell-text);
     }
     #modalLegalCopyFrom .legal-copy-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    #modalLegalChangeLog .legal-copy-dialog { padding: 0; overflow: hidden; }
+    #modalLegalChangeLog .legal-copy-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+      padding: 16px 18px; border-bottom: 1px solid var(--shell-border);
+    }
+    #modalLegalChangeLog .legal-copy-head h3 { margin: 0; font-size: 16px; font-weight: 700; color: var(--shell-text); }
+    #modalLegalChangeLog .legal-copy-x {
+      border: 0; background: transparent; color: var(--shell-text-muted); cursor: pointer;
+      width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+    }
+    #modalLegalChangeLog .legal-copy-x:hover { background: var(--shell-row-hover); color: var(--shell-text); }
+    #modalLegalChangeLog .legal-copy-body { padding: 12px 18px 16px; }
+    #modalLegalChangeLog .legal-copy-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 18px 16px; }
+    .legal-change-log-table { width: 100%; border-collapse: collapse; font-size: 12px; color: var(--shell-text); }
+    .legal-change-log-table th {
+      position: sticky; top: 0; background: var(--shell-surface); z-index: 1;
+      padding: 8px 10px; border-bottom: 1px solid var(--shell-border); text-align: left; font-weight: 700;
+    }
+    .legal-change-log-table td { padding: 8px 10px; border-bottom: 1px solid var(--shell-border); vertical-align: top; }
+    .legal-change-log-diff { font-size: 12px; line-height: 1.4; }
+    .legal-change-log-diff .old { color: var(--shell-text-muted); text-decoration: line-through; }
+    .legal-change-log-diff .new { color: var(--shell-text); font-weight: 600; }
     .toast { position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px; border-radius: 8px; padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: slideIn 0.3s ease; }
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     @keyframes fadeOut { to { opacity: 0; transform: translateX(100%); } }
@@ -497,6 +522,313 @@
     html[data-theme="dark"] tbody.divide-y > :not([hidden]) ~ :not([hidden]),
     html[data-theme="dark"] table.divide-y > :not([hidden]) ~ :not([hidden]) { border-color: var(--shell-table-row-border); }
 
+    /* QLy HSTK — ma trận hạng mục × model (cột cố định, cuộn ngang) */
+    table.design-hstk-model-matrix {
+      table-layout: fixed;
+      border-collapse: collapse;
+    }
+    table.design-hstk-model-matrix th,
+    table.design-hstk-model-matrix td {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    table.design-hstk-model-matrix .dh-cell-wrap {
+      white-space: normal;
+    }
+    table.design-hstk-model-matrix .dh-cell-nowrap {
+      white-space: nowrap;
+    }
+    table.design-hstk-model-matrix .dh-task-cell {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 0.35rem 0.5rem;
+    }
+    table.design-hstk-model-matrix .dh-task-cell > .btn-primary {
+      margin-top: 0.05rem;
+    }
+
+    /* Dashboard dự án — thẻ dự án (scoped) */
+    .pd-project-card { border: 1px solid var(--shell-border-strong, #e5e7eb); border-radius: 0.75rem; padding: 1rem 1.15rem; margin-bottom: 0.85rem; background: var(--shell-surface, #fff); }
+    .pd-kpi-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; margin: 0.75rem 0; }
+    .pd-kpi { min-height: 3.25rem; padding: 0.45rem 0.65rem; border-radius: 0.5rem; background: var(--shell-table-head-bg, #f9fafb); border: 1px solid var(--shell-border-strong, #e5e7eb); display: flex; flex-direction: column; justify-content: center; }
+    .pd-kpi-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--shell-muted, #6b7280); font-weight: 600; }
+    .pd-kpi-value { font-size: 1.05rem; font-weight: 700; color: var(--shell-text, #111827); line-height: 1.3; }
+    .pd-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--shell-muted, #6b7280); margin: 0.85rem 0 0.35rem; }
+    .pd-table-wrap { overflow-x: auto; margin-top: 0.25rem; }
+    table.pd-table { width: 100%; border-collapse: collapse; font-size: 11px; min-width: 420px; }
+    table.pd-table th { text-align: left; font-weight: 600; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--shell-border-strong, #e5e7eb); color: var(--shell-table-head-text, #6b7280); white-space: nowrap; }
+    table.pd-table td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--shell-table-row-border, #f3f4f6); vertical-align: top; color: var(--shell-text, #374151); }
+    table.pd-table tbody tr:last-child td { border-bottom: none; }
+    table.pd-matrix { min-width: 480px; }
+    table.pd-matrix td.pd-matrix-cell { font-family: ui-monospace, monospace; font-size: 10px; white-space: nowrap; }
+    .pd-rev-pill { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.15rem 0.4rem; border-radius: 0.25rem; background: var(--shell-table-head-bg, #f3f4f6); }
+    .pd-rev-pill.pd-rev-ok { background: rgba(0, 166, 81, 0.15); color: #047857; border: 1px solid rgba(0, 166, 81, 0.35); }
+    .pd-rev-pill.pd-rev-warn { background: rgba(251, 191, 36, 0.12); color: #b45309; border: 1px solid rgba(251, 191, 36, 0.35); }
+    .pd-rev-bar { display: inline-block; width: 3px; height: 0.85rem; border-radius: 2px; background: #00A651; flex-shrink: 0; }
+    .pd-alert-list { list-style: none; margin: 0.5rem 0 0; padding: 0; font-size: 11px; }
+    .pd-alert-list li { display: flex; gap: 0.35rem; align-items: flex-start; padding: 0.25rem 0; border-bottom: 1px solid var(--shell-table-row-border, #f3f4f6); color: #b91c1c; }
+    .pd-alert-list li:last-child { border-bottom: none; }
+    .pd-status-pill { font-size: 10px; font-weight: 700; padding: 0.2rem 0.55rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.03em; }
+    .pd-status-stuck { background: rgba(248, 113, 113, 0.15); color: #fecaca; border: 1px solid rgba(248, 113, 113, 0.35); }
+    .pd-status-ok { background: rgba(0, 166, 81, 0.15); color: #047857; border: 1px solid rgba(0, 166, 81, 0.35); }
+    html[data-theme="dark"] .pd-rev-pill.pd-rev-ok { color: #86efac; }
+    html[data-theme="dark"] .pd-rev-pill.pd-rev-warn { color: #fde68a; }
+    html[data-theme="dark"] .pd-status-ok { color: #86efac; }
+    html[data-theme="dark"] .pd-alert-list li { color: #fca5a5; }
+    html[data-theme="dark"] .pd-kpi-value { color: var(--shell-text); }
+    .pd-tab { font-size: 13px; font-weight: 600; padding: 0.45rem 0.85rem; margin-bottom: -1px; border-bottom: 2px solid transparent; color: var(--shell-muted, #6b7280); background: transparent; cursor: pointer; }
+    .pd-tab:hover { color: var(--shell-text, #374151); }
+    .pd-tab.pd-tab-active { color: var(--primary, #00A651); border-bottom-color: var(--primary, #00A651); }
+    .pd-master-detail { display: flex; gap: 0.85rem; align-items: stretch; min-height: 420px; }
+    .pd-project-list { flex: 0 0 300px; max-width: 320px; min-width: 260px; align-self: stretch; display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--shell-border-strong, #e5e7eb); border-radius: 0.65rem; background: var(--shell-surface, #fff); padding: 0.35rem; }
+    .pd-list-toolbar { flex-shrink: 0; padding: 0.25rem 0.2rem 0.45rem; border-bottom: 1px solid var(--shell-border-strong, #e5e7eb); margin-bottom: 0.35rem; }
+    .pd-list-toolbar .input-field { font-size: 12px; padding: 6px 8px; width: 100%; box-sizing: border-box; }
+    html[data-theme="dark"] #pdProjectSearch::placeholder { color: var(--shell-text-faint, #9ca3af); }
+    .pd-project-status-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .pd-project-status-chip {
+      font-size: 11px; font-weight: 600; line-height: 1.2; padding: 4px 8px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--shell-border, #e5e7eb); background: var(--shell-input-bg, #f9fafb); color: var(--shell-text-muted, #6b7280);
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .pd-project-status-chip:hover { background: var(--shell-row-hover, #f3f4f6); border-color: var(--shell-border-strong, #d1d5db); color: var(--shell-text, #374151); }
+    .pd-project-status-chip.active { background: #00A651; border-color: #00A651; color: #fff; }
+    .pd-project-status-chip.active:hover { background: #009648; border-color: #009648; color: #fff; }
+    /* QLy HSTK (#projPanel-qlydesign) — sheet tab & bộ môn chip */
+    #projPanel-qlydesign .hstk-phase-sheets {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      border-bottom: 1px solid var(--shell-border);
+      padding-bottom: 8px;
+    }
+    #projPanel-qlydesign .hstk-phase-sheet {
+      font-size: 12px; padding: 6px 12px; border-radius: 8px 8px 0 0;
+      border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    #projPanel-qlydesign .hstk-phase-sheet:hover {
+      background: var(--shell-row-hover);
+      border-color: var(--shell-border-strong, var(--shell-border));
+      color: var(--shell-text);
+    }
+    #projPanel-qlydesign .hstk-phase-sheet.active {
+      background: #00A651;
+      border-color: #00A651;
+      border-bottom-color: #00A651;
+      color: #fff;
+      font-weight: 600;
+    }
+    #projPanel-qlydesign .hstk-phase-sheet.active:hover {
+      background: #009648;
+      border-color: #009648;
+      color: #fff;
+    }
+    #projPanel-qlydesign .hstk-disc-filter .hstk-disc-chip {
+      font-size: 11px; padding: 4px 10px; border-radius: 999px;
+      border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    #projPanel-qlydesign .hstk-disc-filter .hstk-disc-chip:hover {
+      background: var(--shell-row-hover);
+      border-color: var(--shell-border-strong, var(--shell-border));
+      color: var(--shell-text);
+    }
+    #projPanel-qlydesign .hstk-disc-filter .hstk-disc-chip.active {
+      background: #00A651;
+      border-color: #00A651;
+      color: #fff;
+    }
+    #projPanel-qlydesign .hstk-disc-filter .hstk-disc-chip.active:hover {
+      background: #009648;
+      border-color: #009648;
+      color: #fff;
+    }
+    #projPanel-qlydesign .hstk-disc-block {
+      border-color: var(--shell-border) !important;
+    }
+    #projPanel-qlydesign .hstk-disc-block > div:first-child {
+      background: var(--shell-input-bg) !important;
+      border-bottom: 1px solid var(--shell-border);
+    }
+    #projPanel-qlydesign .hstk-disc-block button.text-gray-500 {
+      color: var(--shell-text-muted) !important;
+    }
+    #projPanel-qlydesign .hstk-disc-block button.text-gray-500:hover {
+      color: var(--primary) !important;
+    }
+    #projPanel-qlydesign .border-dashed.bg-gray-50 {
+      background: var(--shell-input-bg) !important;
+      border-color: var(--shell-border) !important;
+      color: var(--shell-text-muted);
+    }
+    /* QLy HSTK — chế độ Sáng: ma trận không giữ nền navy hardcode từ design-hstk.js */
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block {
+      background: #fff !important;
+      border-color: #d1d5db !important;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child {
+      background: #f9fafb !important;
+      border-bottom-color: #e5e7eb !important;
+      color: #111827;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child .text-gray-600 {
+      color: #4b5563 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block .border-t.border-gray-100 {
+      border-color: #e5e7eb !important;
+      background: #fff;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix {
+      background: #fff !important;
+      border: 1px solid #e5e7eb !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead.bg-gray-900 {
+      background: #f3f4f6 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead th {
+      color: #374151 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody tr {
+      background: #fff !important;
+      border-bottom-color: #e5e7eb !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody tr:hover {
+      background: #f9fafb !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody td {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody td.text-gray-200,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody td.text-gray-100,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody td.text-gray-300 {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-100,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-200,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-300,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-slate-300,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-white {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .tabular-nums.text-gray-200 {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead.text-gray-300,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead.text-gray-300 th {
+      color: #374151 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix input[type="text"],
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-bulk-folder-input {
+      background: #fff !important;
+      color: #0f172a !important;
+      border-color: #d1d5db !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-400 {
+      color: #475569 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-500 {
+      color: #64748b !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix td div.text-gray-400 > div:not([class*="text-indigo"]) {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix td div.text-gray-400 > div span.text-gray-500 {
+      color: #64748b !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix [class*="text-indigo-300"] {
+      color: #4338ca !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-green-400,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-primary {
+      color: #047857 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child .font-bold,
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child .font-bold span {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child .text-gray-400 {
+      color: #64748b !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-gray-700"] {
+      background-color: #e5e7eb !important;
+      color: #374151 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-blue-900"] {
+      background-color: #dbeafe !important;
+      color: #1d4ed8 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-blue-900"] .text-blue-200,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-blue-900"][class*="text-blue-200"] {
+      color: #1d4ed8 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-amber-900"] {
+      background-color: #fef3c7 !important;
+      color: #b45309 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-amber-900"][class*="text-amber-200"] {
+      color: #b45309 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-green-900"] {
+      background-color: #d1fae5 !important;
+      color: #047857 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-green-900"][class*="text-green-200"] {
+      color: #047857 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span.bg-gray-800,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-gray-800"] {
+      background-color: #f3f4f6 !important;
+      color: #64748b !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-gray-700"][class*="text-gray-200"],
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-gray-700"] {
+      color: #374151 !important;
+    }
+    .pd-list-items { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+    .pd-project-detail { flex: 1 1 0; min-width: 0; overflow-x: auto; align-self: stretch; }
+    .pd-list-item { display: block; width: 100%; text-align: left; padding: 0.6rem 0.65rem; margin-bottom: 0.25rem; border-radius: 0.45rem; border: 1px solid transparent; background: transparent; cursor: pointer; color: inherit; box-sizing: border-box; }
+    .pd-list-item:hover { background: var(--shell-table-head-bg, #f9fafb); border-color: var(--shell-border-strong, #e5e7eb); }
+    .pd-list-item.pd-list-item-active { background: rgba(0, 166, 81, 0.08); border-color: rgba(0, 166, 81, 0.35); }
+    .pd-list-item-name { font-weight: 600; font-size: 13px; line-height: 1.3; word-break: break-word; }
+    .pd-list-item-meta { font-size: 10px; color: var(--shell-muted, #6b7280); margin-top: 0.25rem; display: flex; gap: 0.35rem; align-items: center; }
+    .pd-list-item-meta-code { flex-wrap: wrap; }
+    .pd-list-item-meta-foot { flex-wrap: nowrap; justify-content: space-between; gap: 0.5rem; }
+    .pd-list-item-meta-foot .pd-list-item-progress { white-space: nowrap; flex-shrink: 0; }
+    .pd-list-item-meta-foot .pd-status-pill { flex-shrink: 0; }
+    .pd-workload-card { margin-bottom: 0.75rem; border: 1px solid var(--shell-border-strong, #e5e7eb); border-radius: 0.75rem; background: var(--shell-surface, #fff); overflow: hidden; }
+    .pd-workload-head { padding: 0.65rem 0.85rem; border-bottom: 1px solid var(--shell-table-row-border, #f3f4f6); background: var(--shell-table-head-bg, #f9fafb); }
+    .pd-workload-title { font-size: 13px; font-weight: 700; margin: 0 0 0.25rem; color: var(--shell-text, #111827); }
+    .pd-workload-summary { font-size: 11px; margin: 0; color: var(--shell-muted, #6b7280); line-height: 1.4; }
+    .pd-workload-body { max-height: min(280px, 40vh); overflow-y: auto; overflow-x: auto; }
+    table.pd-workload-table { min-width: 100%; font-size: 11px; }
+    table.pd-workload-table th { position: sticky; top: 0; z-index: 1; background: var(--shell-table-head-bg, #f9fafb); }
+    table.pd-workload-table td { vertical-align: middle; }
+    table.pd-workload-table .pd-workload-proj { max-width: 11rem; word-break: break-word; }
+    table.pd-workload-table .pd-workload-task { min-width: 8rem; word-break: break-word; }
+    table.pd-workload-table .pd-workload-stat { white-space: nowrap; }
+    table.pd-workload-table tr.pd-workload-summary-row td { color: var(--shell-muted, #6b7280); font-size: 10px; border-bottom-style: dashed; }
+    table.pd-workload-table tr.pd-workload-hidden-row td { color: var(--shell-muted, #6b7280); font-style: italic; }
+    .pd-detail-panel { border: 1px solid var(--shell-border-strong, #e5e7eb); border-radius: 0.75rem; padding: 1rem 1.15rem; background: var(--shell-surface, #fff); }
+    .pd-detail-header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.75rem; align-items: flex-start; padding-bottom: 0.65rem; border-bottom: 1px solid var(--shell-table-row-border, #f3f4f6); margin-bottom: 0.65rem; }
+    .pd-detail-sub { font-size: 11px; color: var(--shell-muted, #6b7280); margin-top: 0.35rem; }
+    .pd-alert-grouped { list-style: none; margin: 0.5rem 0 0; padding: 0.35rem 0.55rem; font-size: 11px; border-radius: 0.45rem; background: rgba(248, 113, 113, 0.06); border: 1px solid rgba(248, 113, 113, 0.2); }
+    .pd-alert-grouped li { padding: 0.2rem 0; color: #b91c1c; line-height: 1.35; }
+    .pd-alert-quiet { font-size: 11px; color: var(--shell-muted, #6b7280); margin: 0.5rem 0 0; font-style: italic; }
+    html[data-theme="dark"] .pd-alert-grouped li { color: #fca5a5; }
+    .pd-empty-hint { padding: 2rem 1rem; text-align: center; color: var(--shell-muted, #6b7280); font-size: 13px; }
+    @media (max-width: 900px) {
+      .pd-master-detail { flex-direction: column; }
+      .pd-project-list { flex: none; max-width: none; max-height: 240px; width: 100%; }
+      .pd-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
     /* Dark — project list table + muted status pills */
     html[data-theme="dark"] .proj-table-wrap { background: var(--shell-surface); border-color: var(--shell-border-strong); box-shadow: 0 1px 4px var(--shell-shadow); }
     html[data-theme="dark"] .proj-table thead tr { background: var(--shell-table-head-bg); }
@@ -519,6 +851,161 @@
     html[data-theme="dark"] .badge-planning { background: rgba(59, 130, 246, 0.18); color: #bfdbfe; border: 1px solid rgba(96, 165, 250, 0.35); }
     html[data-theme="dark"] .badge-on_hold { background: rgba(251, 191, 36, 0.16); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.32); }
     html[data-theme="dark"] .badge { border: 1px solid transparent; }
+    /* Dark — Chi tiết dự án: bảng checklist model (Tổng hợp CV / wsSummaryTable) */
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] table {
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] thead tr {
+      background: var(--shell-table-head-bg) !important;
+      color: var(--shell-table-head-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] th,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] td {
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary tr.ws-phase-hdr td {
+      background: #243b5c !important;
+      color: #f1f5f9 !important;
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] tbody tr.ws-group-row {
+      background-color: var(--shell-surface) !important;
+      border-bottom-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] tbody tr.ws-group-row td[colspan="6"] {
+      background-color: var(--shell-input-bg) !important;
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] tbody tr.ws-group-row td:not([colspan]) {
+      background-color: inherit !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] tbody tr.ws-group-row:nth-child(even) td:not([colspan]) {
+      background-color: rgba(255, 255, 255, 0.03) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-blue-800,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-blue-500,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-blue-600,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-blue-700 {
+      color: #93c5fd !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-green-800,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-green-500,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-green-600 {
+      color: #86efac !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-800,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-700,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-600 {
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-400,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-300 {
+      color: var(--shell-text-muted) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .hstk-display,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .work-notes-display {
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .hstk-display:hover,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .work-notes-display:hover {
+      background: var(--shell-row-hover) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-gray-200 {
+      background-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] td[style*="background:#f0fdf4"],
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] td[style*="background: #f0fdf4"] {
+      background: rgba(52, 211, 153, 0.12) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-blue-100 {
+      background-color: rgba(59, 130, 246, 0.22) !important;
+      color: #bfdbfe !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-gray-100.text-gray-500,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-gray-100 {
+      background-color: rgba(148, 163, 184, 0.22) !important;
+      color: #dbe4ef !important;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-blue-100.text-blue-700,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-blue-100.text-blue-600 {
+      background-color: rgba(59, 130, 246, 0.22) !important;
+      color: #bfdbfe !important;
+      border: 1px solid rgba(96, 165, 250, 0.35);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-yellow-100.text-yellow-700 {
+      background-color: rgba(251, 191, 36, 0.18) !important;
+      color: #fde68a !important;
+      border: 1px solid rgba(251, 191, 36, 0.35);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-green-100.text-green-700 {
+      background-color: rgba(52, 211, 153, 0.18) !important;
+      color: #a7f3d0 !important;
+      border: 1px solid rgba(52, 211, 153, 0.35);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] span[style*="background:#f3f4f6"] {
+      background: var(--shell-input-bg) !important;
+      color: var(--shell-text-muted) !important;
+      border: 1px solid var(--shell-border);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .cde-toggle {
+      border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] input[type="text"],
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] textarea {
+      background: var(--shell-input-bg) !important;
+      color: var(--shell-text) !important;
+      border: 1px solid var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .border-blue-200 {
+      border-color: rgba(96, 165, 250, 0.35) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .file-subtasks .text-gray-500 {
+      color: var(--shell-text-muted) !important;
+    }
+    @media (max-width: 767px) {
+      html[data-theme="dark"] [id^="wsSummaryTable_"] th:first-child,
+      html[data-theme="dark"] [id^="wsSummaryTable_"] td:first-child {
+        background: var(--shell-surface) !important;
+        box-shadow: 2px 0 4px rgba(0, 0, 0, 0.25);
+      }
+      html[data-theme="dark"] [id^="wsSummaryTable_"] tr.ws-phase-hdr td:first-child {
+        background: #243b5c !important;
+      }
+    }
+    /* Dark — Chi tiết dự án: Checklist HSTK (đợt hồ sơ, #hstkTableWrap) */
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap table {
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap thead tr {
+      background: var(--shell-table-head-bg) !important;
+      color: var(--shell-table-head-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap th,
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap td {
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr {
+      background: var(--shell-surface) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-green-50,
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-yellow-50,
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-gray-50 {
+      background: var(--shell-input-bg) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-green-50 {
+      background: rgba(52, 211, 153, 0.1) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-yellow-50 {
+      background: rgba(251, 191, 36, 0.1) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap input[type="text"],
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap select {
+      background: var(--shell-input-bg) !important;
+      color: var(--shell-text) !important;
+      border-color: var(--shell-border) !important;
+    }
     .task-cat-pill, .task-phase-pill, .task-disc-pill, .task-sub-pill {
       display: inline-block; max-width: 8rem; padding: 2px 8px; border-radius: 6px;
       font-size: 12px; font-weight: 600; line-height: 1.35;
@@ -580,6 +1067,178 @@
       border-color: rgba(96, 165, 250, 0.55) !important;
     }
 
+    /* Import HSPL Excel modal — viewport-fit layout (#modalImportExcel only) */
+    #modalImportExcel.modal-overlay {
+      padding: 1rem;
+      align-items: center;
+      justify-content: center;
+    }
+    #modalImportExcel .modal-container {
+      width: 100%;
+      max-height: calc(100vh - 2rem);
+      max-height: calc(100dvh - 2rem);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #fff;
+      color: #1f2937;
+      border-radius: 12px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
+    }
+    #modalImportExcel .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-shrink: 0;
+      padding: 14px 18px;
+      border-radius: 12px 12px 0 0;
+    }
+    #modalImportExcel .modal-title {
+      margin: 0;
+      flex: 1;
+      min-width: 0;
+      font-size: 1.05rem;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    #modalImportExcel .modal-close {
+      position: static;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      border-radius: 8px;
+      line-height: 1;
+    }
+    #modalImportExcel .modal-close:hover {
+      background: rgba(255, 255, 255, 0.18);
+    }
+    #modalImportExcel .modal-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    #modalImportExcel .modal-footer {
+      flex-shrink: 0;
+      border-top: 1px solid #e5e7eb;
+      padding: 16px 24px;
+      background: #fff;
+    }
+    @media (max-width: 767px) {
+      #modalImportExcel.modal-overlay {
+        align-items: center;
+        padding: 1rem;
+      }
+      #modalImportExcel .modal-container {
+        max-height: calc(100dvh - 2rem);
+      }
+    }
+
+    /* Dark — Import HSPL Excel modal (#modalImportExcel only) */
+    html[data-theme="dark"] #modalImportExcel .modal-container {
+      background: var(--shell-surface);
+      color: var(--shell-text);
+      border: 1px solid var(--shell-border);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+    }
+    html[data-theme="dark"] #modalImportExcel .modal-body,
+    html[data-theme="dark"] #modalImportExcel .modal-footer {
+      background: var(--shell-surface);
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #modalImportExcel .modal-footer {
+      border-top: 1px solid var(--shell-border);
+    }
+    html[data-theme="dark"] #modalImportExcel .bg-blue-50 {
+      background: rgba(59, 130, 246, 0.14) !important;
+      border-color: rgba(96, 165, 250, 0.45) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel .text-blue-800,
+    html[data-theme="dark"] #modalImportExcel .text-blue-700 {
+      color: #bfdbfe !important;
+    }
+    html[data-theme="dark"] #modalImportExcel .text-blue-500 {
+      color: #93c5fd !important;
+    }
+    html[data-theme="dark"] #modalImportExcel .text-gray-700,
+    html[data-theme="dark"] #modalImportExcel .text-gray-600 {
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel .text-gray-500,
+    html[data-theme="dark"] #modalImportExcel .text-xs.text-gray-400,
+    html[data-theme="dark"] #modalImportExcel .text-gray-400 {
+      color: var(--shell-text-muted) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel hr.border-gray-200 {
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel #importPackageSelect {
+      background: var(--shell-input-bg) !important;
+      color: var(--shell-text) !important;
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel #importPackageSelect option {
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #modalImportExcel #importDropZone {
+      background: var(--shell-input-bg) !important;
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel #importDropZone .text-gray-300 {
+      color: var(--shell-text-muted) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel #importDropZone .text-gray-500 {
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel #importDropZone:hover,
+    html[data-theme="dark"] #modalImportExcel #importDropZone.border-green-400,
+    html[data-theme="dark"] #modalImportExcel #importDropZone.bg-green-50 {
+      border-color: rgba(45, 159, 94, 0.65) !important;
+      background: rgba(0, 166, 81, 0.12) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel .modal-body > .bg-gray-50 {
+      background: var(--shell-input-bg) !important;
+      border: 1px solid var(--shell-border);
+    }
+    html[data-theme="dark"] #modalImportExcel #importFilePreview .bg-green-50 {
+      background: rgba(0, 166, 81, 0.14) !important;
+      border-color: rgba(0, 166, 81, 0.35) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel .text-green-800 {
+      color: #bbf7d0 !important;
+    }
+    html[data-theme="dark"] #modalImportExcel .text-green-600 {
+      color: #86efac !important;
+    }
+    html[data-theme="dark"] #modalImportExcel #importReplaceWarning {
+      background: rgba(251, 146, 60, 0.18) !important;
+      border-color: rgba(251, 191, 36, 0.45) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel #importReplaceWarning .text-orange-700,
+    html[data-theme="dark"] #modalImportExcel #importReplaceWarning .text-orange-500 {
+      color: #fed7aa !important;
+    }
+    html[data-theme="dark"] #modalImportExcel #importReplaceWarning strong {
+      color: #ffedd5;
+    }
+    html[data-theme="dark"] #modalImportExcel #importProgressWrap .text-gray-600 {
+      color: var(--shell-text-muted) !important;
+    }
+    html[data-theme="dark"] #modalImportExcel .bg-gray-200 {
+      background: rgba(148, 163, 184, 0.28) !important;
+    }
+
     /* Dark — shell sidebar brand strip (keeps green identity on dark navy) */
     html[data-theme="dark"] .sidebar-header::before {
       content: '';
@@ -622,6 +1281,140 @@
       background: rgba(0, 166, 81, 0.22);
       color: #ecfdf5;
       border-color: rgba(0, 166, 81, 0.45);
+    }
+
+    #page-costs .costs-table-footer-bar { background: #f9fafb; }
+
+    /* Dark — Chi phí & Doanh thu (#page-costs only) */
+    html[data-theme="dark"] #page-costs .text-gray-800 { color: var(--shell-text) !important; }
+    html[data-theme="dark"] #page-costs .text-gray-700 { color: var(--shell-text) !important; }
+    html[data-theme="dark"] #page-costs .text-gray-600 { color: var(--shell-text-muted) !important; }
+    html[data-theme="dark"] #page-costs .text-gray-500 { color: var(--shell-text-muted) !important; }
+    html[data-theme="dark"] #page-costs .border-gray-100 { border-color: var(--shell-border) !important; }
+    html[data-theme="dark"] #page-costs .input-field,
+    html[data-theme="dark"] #page-costs .select-field,
+    html[data-theme="dark"] #page-costs input[type="date"],
+    html[data-theme="dark"] #page-costs table input[type="text"],
+    html[data-theme="dark"] #page-costs table input[type="number"],
+    html[data-theme="dark"] #page-costs table input[type="date"],
+    html[data-theme="dark"] #page-costs table select,
+    html[data-theme="dark"] #page-costs table textarea,
+    html[data-theme="dark"] #page-costs .costs-inline-input,
+    html[data-theme="dark"] #page-costs .costs-inline-select {
+      background: var(--shell-input-bg) !important;
+      color: var(--shell-text) !important;
+      border-color: var(--shell-border) !important;
+      color-scheme: dark;
+    }
+    html[data-theme="dark"] #page-costs .input-field::placeholder,
+    html[data-theme="dark"] #page-costs .costs-inline-input::placeholder {
+      color: var(--shell-text-muted);
+      opacity: 0.85;
+    }
+    html[data-theme="dark"] #page-costs .input-field:focus,
+    html[data-theme="dark"] #page-costs .select-field:focus,
+    html[data-theme="dark"] #page-costs .costs-inline-input:focus,
+    html[data-theme="dark"] #page-costs .costs-inline-select:focus {
+      border-color: rgba(0, 166, 81, 0.45) !important;
+      outline: 2px solid rgba(0, 166, 81, 0.25);
+      outline-offset: 1px;
+    }
+    html[data-theme="dark"] #page-costs select option,
+    html[data-theme="dark"] #page-costs select optgroup {
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #page-costs .bg-white {
+      background-color: var(--shell-input-bg) !important;
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #page-costs tr.bg-gray-50,
+    html[data-theme="dark"] #page-costs .bg-gray-50 {
+      background-color: rgba(255, 255, 255, 0.06) !important;
+    }
+    html[data-theme="dark"] #page-costs #costTable tfoot tr,
+    html[data-theme="dark"] #page-costs #revTfoot tr,
+    html[data-theme="dark"] #page-costs tr.costs-add-row,
+    html[data-theme="dark"] #page-costs tr.costs-table-add-row,
+    html[data-theme="dark"] #page-costs #tabPanelShared table tfoot tr {
+      background: var(--shell-surface) !important;
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #page-costs tr.costs-add-row td,
+    html[data-theme="dark"] #page-costs tr.costs-table-add-row td,
+    html[data-theme="dark"] #page-costs #tabPanelShared table tfoot td {
+      background: var(--shell-input-bg) !important;
+      border-color: var(--shell-table-row-border) !important;
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared table thead tr {
+      background: var(--shell-table-head-bg) !important;
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared table thead th {
+      color: var(--shell-table-head-text) !important;
+      border-color: var(--shell-border);
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared table tbody tr {
+      background: var(--shell-surface);
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared table tbody tr:hover {
+      background: var(--shell-row-hover);
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared table tbody td {
+      color: var(--shell-text);
+      border-color: var(--shell-table-row-border);
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared table tbody tr.bg-purple-50 {
+      background: rgba(168, 85, 247, 0.14) !important;
+    }
+    html[data-theme="dark"] #page-costs #sharedCostPagination,
+    html[data-theme="dark"] #page-costs .costs-table-footer-bar {
+      background: var(--shell-surface) !important;
+      border-top-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #page-costs #sharedCostPagination button,
+    html[data-theme="dark"] #page-costs #costPagination button {
+      background: var(--shell-btn-secondary-bg) !important;
+      color: var(--shell-btn-secondary-text) !important;
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #page-costs #sharedCostPagination button[style*="linear-gradient"],
+    html[data-theme="dark"] #page-costs #costPagination button.bg-blue-600 {
+      background: rgba(0, 166, 81, 0.35) !important;
+      color: #ecfdf5 !important;
+      border-color: rgba(0, 166, 81, 0.5) !important;
+    }
+    html[data-theme="dark"] #page-costs #sharedFilterTotalWrap {
+      background: rgba(251, 191, 36, 0.12) !important;
+      border-color: rgba(251, 191, 36, 0.35) !important;
+    }
+    html[data-theme="dark"] #page-costs #sharedFilterTotalWrap span,
+    html[data-theme="dark"] #page-costs #sharedFilterTotalWrap i {
+      color: #fcd34d !important;
+    }
+    html[data-theme="dark"] #page-costs #sharedFilterTotal {
+      color: var(--money-accent) !important;
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared .bg-blue-50 {
+      background: rgba(59, 130, 246, 0.12) !important;
+      border-color: rgba(96, 165, 250, 0.35) !important;
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared .text-blue-800,
+    html[data-theme="dark"] #page-costs #tabPanelShared .text-blue-600 {
+      color: #93c5fd !important;
+    }
+    html[data-theme="dark"] #page-costs #tabPanelAnalysis label.border.rounded,
+    html[data-theme="dark"] #page-costs #tabPanelDuplicates label.border.rounded {
+      background: var(--shell-input-bg);
+      border-color: var(--shell-border) !important;
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #page-costs #tabPanelAnalysis label.border.rounded:hover,
+    html[data-theme="dark"] #page-costs #tabPanelDuplicates label.border.rounded:hover {
+      background: var(--shell-row-hover);
+    }
+    html[data-theme="dark"] #page-costs #dupTableBody tr:hover {
+      background: rgba(248, 113, 113, 0.12) !important;
     }
 
     /* Dark — card-embedded data tables (#costTable, tasks, legal) */
@@ -782,6 +1575,29 @@
       gap: 8px;
       flex: 0 1 auto;
     }
+    .legal-investor-filter {
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      min-width: 180px;
+    }
+    #legalClientFilterCombobox .cb-input,
+    #legalClientFilterCombobox .cb-trigger {
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+      border-color: var(--shell-border);
+    }
+    .legal-related-search {
+      flex: 0 1 260px;
+      width: 260px;
+      max-width: min(280px, 42vw);
+      min-height: 36px;
+      padding: 6px 10px;
+      box-sizing: border-box;
+    }
+    html[data-theme="dark"] #legalRelatedSearch::placeholder {
+      color: var(--shell-text-faint);
+    }
     #page-legal #legalKPIRow { gap: 12px; margin-bottom: 14px !important; }
     #page-legal #legalKPIRow .kpi-card { padding: 14px 16px; min-height: 76px; }
     #page-legal #legalKPIRow .text-xs.text-gray-500 { color: var(--shell-text-muted); letter-spacing: 0.01em; }
@@ -789,7 +1605,16 @@
     .legal-left-col { flex-shrink: 0; width: 280px; min-width: 240px; }
     .legal-right-col { flex: 1; min-width: 0; }
     .legal-left-panel { padding: 12px; background: var(--shell-surface); border: 1px solid var(--shell-border); border-radius: 12px; box-shadow: 0 1px 4px var(--shell-shadow); }
-    .legal-project-list { max-height: calc(100vh - 220px); overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .legal-project-status-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .legal-project-status-chip {
+      font-size: 11px; font-weight: 600; line-height: 1.2; padding: 4px 8px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text-muted);
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .legal-project-status-chip:hover { background: var(--shell-row-hover); border-color: var(--shell-border-strong); color: var(--shell-text); }
+    .legal-project-status-chip.active { background: #00A651; border-color: #00A651; color: #fff; }
+    .legal-project-status-chip.active:hover { background: #009648; border-color: #009648; color: #fff; }
+    .legal-project-list { max-height: calc(100vh - 268px); overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
     .legal-project-card { width: 100%; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text); cursor: pointer; transition: background .15s, border-color .15s; }
     .legal-project-card:hover { background: var(--shell-row-hover); border-color: var(--shell-border-strong); }
     .legal-project-card.active { border-color: var(--primary); background: rgba(0, 166, 81, 0.1); box-shadow: 0 0 0 1px rgba(0, 166, 81, 0.25); }
@@ -1503,6 +2328,103 @@
       background: rgba(248, 113, 113, 0.15); color: #fca5a5; border-color: rgba(248, 113, 113, 0.35);
     }
 
+    /* Nhân sự — bảng sticky + danh sách (chỉ #page-users) */
+    #page-users #staffFullTable tbody tr.staff-row-even { background: #ffffff; }
+    #page-users #staffFullTable tbody tr.staff-row-odd { background: #f9fafb; }
+    #page-users #staffFullTable tbody tr.staff-table-row:hover { background: #eff6ff; }
+    #page-users #staffFullTable .staff-sticky-col { background: inherit; }
+    #page-users #staffFullTable thead .staff-sticky-head { background: #f9fafb; }
+
+    html[data-theme="dark"] #page-users .bg-gray-100.p-1.rounded-xl { background: var(--shell-topbar-bg) !important; }
+    html[data-theme="dark"] #page-users .bg-green-100 { background-color: rgba(0, 166, 81, 0.22) !important; }
+    html[data-theme="dark"] #page-users .text-green-600 { color: #86efac !important; }
+    html[data-theme="dark"] #page-users .text-green-700 { color: #86efac !important; }
+    html[data-theme="dark"] #page-users .bg-blue-100 { background-color: rgba(59, 130, 246, 0.22) !important; }
+    html[data-theme="dark"] #page-users .text-blue-600 { color: #93c5fd !important; }
+    html[data-theme="dark"] #page-users .bg-purple-100 { background-color: rgba(168, 85, 247, 0.22) !important; }
+    html[data-theme="dark"] #page-users .text-purple-600 { color: #d8b4fe !important; }
+    html[data-theme="dark"] #page-users #staffFullTable thead tr,
+    html[data-theme="dark"] #page-users #staffFullTable thead th.bg-gray-50,
+    html[data-theme="dark"] #page-users #staffFullTable thead .staff-sticky-head {
+      background: var(--shell-table-head-bg) !important;
+      color: var(--shell-table-head-text) !important;
+      border-color: var(--shell-border-strong) !important;
+    }
+    html[data-theme="dark"] #page-users #staffFullTable tbody tr.staff-row-even,
+    html[data-theme="dark"] #page-users #staffFullTable tbody tr.staff-row-odd {
+      background: var(--shell-surface) !important;
+    }
+    html[data-theme="dark"] #page-users #staffFullTable tbody tr.staff-row-odd {
+      background: rgba(255, 255, 255, 0.02) !important;
+    }
+    html[data-theme="dark"] #page-users #staffFullTable tbody tr.staff-table-row:hover {
+      background: var(--shell-row-hover) !important;
+    }
+    html[data-theme="dark"] #page-users #staffFullTable .staff-sticky-col {
+      background: inherit !important;
+      border-color: var(--shell-border) !important;
+      box-shadow: 2px 0 6px rgba(0, 0, 0, 0.25) !important;
+    }
+    html[data-theme="dark"] #page-users #staffFullTable tbody td {
+      color: var(--shell-text);
+      border-color: var(--shell-table-row-border);
+    }
+    html[data-theme="dark"] #page-users #staffFullTable tbody td .text-gray-600 {
+      color: var(--shell-text-muted) !important;
+    }
+    html[data-theme="dark"] #page-users #staffFullTable tbody td .text-gray-300,
+    html[data-theme="dark"] #page-users #staffFullTable tbody td .text-gray-400 {
+      color: var(--shell-text-faint) !important;
+    }
+    html[data-theme="dark"] #page-users #usersTable tr.table-row:hover {
+      background: var(--shell-row-hover) !important;
+    }
+    html[data-theme="dark"] #page-users #usersTable .bg-green-100 {
+      background-color: rgba(0, 166, 81, 0.22) !important;
+    }
+    html[data-theme="dark"] #page-users .bg-purple-100.text-purple-700,
+    html[data-theme="dark"] #page-users .bg-blue-100.text-blue-700,
+    html[data-theme="dark"] #page-users .bg-green-100.text-green-600,
+    html[data-theme="dark"] #page-users .bg-gray-100.text-gray-600 {
+      border: 1px solid var(--shell-border);
+    }
+
+    /* Nhân sự — drawer Hồ sơ nhân sự (#userDetailPanel), dark only */
+    html[data-theme="dark"] #userDetailPanel {
+      background: var(--shell-surface) !important;
+      color: var(--shell-text);
+      box-shadow: -4px 0 32px rgba(0, 0, 0, 0.45);
+    }
+    html[data-theme="dark"] #userDetailPanel > div.border-b.bg-white {
+      background: var(--shell-surface) !important;
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #userDetailPanel .text-gray-800 { color: var(--shell-text) !important; }
+    html[data-theme="dark"] #userDetailPanel .text-gray-500 { color: var(--shell-text-muted) !important; }
+    html[data-theme="dark"] #userDetailPanel .text-gray-400 { color: var(--shell-text-muted) !important; }
+    html[data-theme="dark"] #userDetailPanel .text-gray-600 { color: var(--shell-text-muted) !important; }
+    html[data-theme="dark"] #userDetailPanel button.hover\:bg-gray-100:hover { background: var(--shell-row-hover, rgba(255, 255, 255, 0.06)) !important; }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .bg-gray-50 {
+      background: var(--shell-input-bg) !important;
+      border: 1px solid var(--shell-border);
+    }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .border-gray-50 { border-color: var(--shell-border) !important; }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .bg-gray-200 { background: var(--shell-border) !important; }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .text-green-600 { color: #86efac !important; }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .text-yellow-500 { color: #fcd34d !important; }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .text-red-500 { color: #fca5a5 !important; }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .bg-green-100.text-green-700 {
+      background-color: rgba(0, 166, 81, 0.22) !important;
+      color: #86efac !important;
+      border: 1px solid rgba(0, 166, 81, 0.35);
+    }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .bg-red-50.text-red-400 {
+      background-color: rgba(239, 68, 68, 0.18) !important;
+      color: #fca5a5 !important;
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+    html[data-theme="dark"] #userDetailPanel #userDetailBody .line-through { opacity: 0.85; }
+
     /* Dark — legal package checklist (inline stage/table chrome) */
     html[data-theme="dark"] #legalStagesContainer [style*="background:#fafafa"],
     html[data-theme="dark"] #legalStagesContainer [style*="background:#f9fafb"] {
@@ -2079,6 +3001,9 @@
       <div class="nav-item active" onclick="navigate('dashboard')" data-tooltip="Dashboard">
         <i class="fas fa-tachometer-alt"></i><span>Dashboard</span>
       </div>
+      <div class="nav-item" onclick="navigate('project-dashboard')" data-tooltip="Dashboard dự án — theo dõi HSTK toàn công ty">
+        <i class="fas fa-th-large"></i><span>Dashboard dự án</span>
+      </div>
       <div class="nav-item" onclick="navigate('productivity')" data-tooltip="Năng suất nhân sự">
         <i class="fas fa-chart-bar"></i><span>Năng suất nhân sự</span>
       </div>
@@ -2263,6 +3188,31 @@
 
         <!-- Main 2-column layout: generated by executive-dashboard.js -->
         <div id="exec-main-layout"></div>
+      </div>
+
+      <!-- ========== PROJECT DASHBOARD (HSTK) ========== -->
+      <div id="page-project-dashboard" class="page">
+        <div class="flex flex-wrap justify-between items-center mb-4 gap-3">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Dashboard dự án</h1>
+            <p class="text-gray-500 text-sm mt-1">Theo dõi tiến độ HSTK mọi dự án (chỉ đọc, không hiển thị tiền)</p>
+          </div>
+          <div class="flex flex-wrap gap-2 items-center">
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" id="pdStuckOnly" onchange="loadProjectDashboardPage()"> Chỉ dự án đang vướng
+            </label>
+            <button class="btn-primary text-sm" onclick="loadProjectDashboardPage()"><i class="fas fa-sync mr-1"></i>Tải lại</button>
+          </div>
+        </div>
+        <div class="flex gap-1 mb-3 border-b border-gray-200 dark:border-gray-700" id="pdTabBar" role="tablist">
+          <button type="button" id="pdTabProject" class="pd-tab pd-tab-active" role="tab" aria-selected="true" onclick="setProjectDashboardTab('project')">Theo dự án</button>
+          <button type="button" id="pdTabMember" class="pd-tab" role="tab" aria-selected="false" onclick="setProjectDashboardTab('member')">Theo thành viên</button>
+        </div>
+        <div id="pdMemberFilterWrap" class="mb-3 hidden">
+          <label class="block text-xs text-gray-500 mb-1">Thành viên</label>
+          <select id="pdMemberFilter" class="select-field text-sm" style="min-width:220px" onchange="loadProjectDashboardPage()"></select>
+        </div>
+        <div id="projectDashboardRoot"></div>
       </div>
 
       <!-- ========== DASHBOARD ========== -->
@@ -3299,7 +4249,7 @@
               </table>
             </div>
             <!-- Shared cost pagination -->
-            <div id="sharedCostPagination" class="px-3 py-3 border-t border-gray-100 min-h-[48px]" style="background:#f9fafb"></div>
+            <div id="sharedCostPagination" class="costs-table-footer-bar px-3 py-3 border-t border-gray-100 min-h-[48px]"></div>
           </div>
 
           <!-- Tab: Phân tích chi tiết -->
@@ -3844,8 +4794,8 @@
               <table class="w-full text-sm" id="staffFullTable" style="border-collapse:separate;border-spacing:0;">
                 <thead style="position:sticky;top:0;z-index:20;">
                   <tr class="text-left text-gray-500 border-b text-xs uppercase bg-gray-50">
-                    <th class="py-3 px-3 whitespace-nowrap bg-gray-50 border-r border-gray-200" style="position:sticky;left:0;z-index:30;min-width:42px">#</th>
-                    <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary bg-gray-50 border-r border-gray-200" style="position:sticky;left:42px;z-index:30;min-width:200px;box-shadow:2px 0 6px rgba(0,0,0,0.08)" onclick="sortUserTable('full_name')">Họ và tên <i class="fas fa-sort ml-1 text-gray-300"></i></th>
+                    <th class="staff-sticky-head py-3 px-3 whitespace-nowrap bg-gray-50 border-r border-gray-200" style="position:sticky;left:0;z-index:30;min-width:42px">#</th>
+                    <th class="staff-sticky-head py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary bg-gray-50 border-r border-gray-200" style="position:sticky;left:42px;z-index:30;min-width:200px;box-shadow:2px 0 6px rgba(0,0,0,0.08)" onclick="sortUserTable('full_name')">Họ và tên <i class="fas fa-sort ml-1 text-gray-300"></i></th>
                     <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('job_title')">Chức danh <i class="fas fa-sort ml-1 text-gray-300"></i></th>
                     <th class="py-3 px-3 whitespace-nowrap">Giới tính</th>
                     <th class="py-3 px-3 whitespace-nowrap cursor-pointer hover:text-primary" onclick="sortUserTable('join_date')">Ngày vào CT <i class="fas fa-sort ml-1 text-gray-300"></i></th>
@@ -5650,6 +6600,10 @@
             <p class="text-gray-500 text-sm mt-0.5">Theo dõi hợp đồng, phụ lục, nghiệm thu, thanh toán và văn bản gửi đi</p>
           </div>
           <div class="legal-page-actions" id="legalPanelActions">
+            <input type="text" id="legalRelatedSearch" class="input-field legal-related-search" placeholder="Tìm mô tả, chủ đầu tư, gói thầu…" oninput="legalOnRelatedSearch(this.value)" autocomplete="off" aria-label="Tìm theo thông tin liên quan">
+            <div class="legal-investor-filter">
+              <div id="legalClientFilterCombobox" class="relative" style="min-width:180px"></div>
+            </div>
             <button onclick="openLegalLetterModal()" id="btnAddLetter" class="btn-accent hidden" style="display:none">
               <i class="fas fa-paper-plane mr-1"></i>Gửi văn bản
             </button>
@@ -5662,6 +6616,9 @@
             <button onclick="openImportExcelModal()" id="btnImportExcel" class="btn-secondary" title="Import từ file Excel" style="display:none">
               <i class="fas fa-file-excel mr-1" style="color:#1d6f42"></i>Import Excel
             </button>
+            <button onclick="openLegalChangeLogModal()" id="btnLegalChangeLog" class="btn-secondary" title="Xem lịch sử chỉnh sửa HSPL" style="display:none">
+              <i class="fas fa-history mr-1"></i>Lịch sử thay đổi
+            </button>
             <button onclick="openLegalLetterConfig()" id="btnLetterConfig" class="btn-secondary hidden" title="Cấu hình đánh số" style="display:none">
               <i class="fas fa-cog"></i>
             </button>
@@ -5672,6 +6629,7 @@
           <div class="legal-left-col">
             <div class="legal-left-panel">
               <input type="text" id="legalProjectSearch" class="input-field" placeholder="🔍 Tìm dự án…" oninput="legalOnProjectSearch(this.value)" autocomplete="off">
+              <div id="legalProjectStatusChips" class="legal-project-status-chips" role="tablist" aria-label="Lọc trạng thái dự án"></div>
               <div id="legalProjectList" class="legal-project-list">
                 <div class="legal-project-empty"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải…</div>
               </div>
@@ -6720,11 +7678,15 @@
         </div>
 
         <!-- Theo HSTK -->
+        <input type="hidden" id="taskDesignPackageId" value="">
         <div id="taskHstkGroup" class="mt-3">
           <label class="label"><i class="fas fa-file-alt text-indigo-400 mr-1"></i>Theo HSTK nào
             <span class="text-gray-400 font-normal">(hồ sơ thiết kế)</span></label>
-          <input type="text" id="taskHstkDate" class="input-field"
-            placeholder="VD: Theo HSTK ngày 01/01/2025, Bản vẽ số 05...">
+          <input type="text" id="taskHstkDate" class="input-field" list="taskHstkPackagesList"
+            placeholder="VD: tên folder YYMMDD-Mô tả hoặc R2…"
+            oninput="if(typeof markRequiredField==='function')markRequiredField(document.getElementById('taskModal'),'hstk_date','',!!(document.getElementById('taskDesignPackageId')?.value&&this.value.trim()))">
+          <datalist id="taskHstkPackagesList"></datalist>
+          <p id="taskHstkPkgHint" class="text-xs text-gray-500 mt-1" style="display:none"></p>
         </div>
 
         <!-- Ghi chú + CDE -->
@@ -8015,7 +8977,8 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260930g"></script>
+<script src="/static/app.js?v=20261002a"></script>
+<script src="/static/design-hstk.js?v=20261001p"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
@@ -8614,12 +9577,32 @@ document.addEventListener('keydown', function(e) {
 <!-- ============================================================
      MODAL: Sao chép HSPL từ dự án khác
      ============================================================ -->
+<div id="modalLegalChangeLog" class="modal-overlay hidden" style="z-index:1100" onclick="if(event.target===this)closeLegalChangeLogModal()">
+  <div class="modal legal-copy-dialog" style="max-width:920px;width:100%">
+    <div class="legal-copy-head">
+      <div>
+        <h3><i class="fas fa-history" style="color:var(--primary);margin-right:8px"></i>Lịch sử thay đổi</h3>
+        <p style="color:var(--shell-text-muted);font-size:13px;margin:4px 0 0">Thông tin dự án, theo dõi hồ sơ, thanh toán, Chi phí A và liên hệ.</p>
+      </div>
+      <button type="button" class="legal-copy-x" onclick="closeLegalChangeLogModal()" aria-label="Đóng"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="legal-copy-body" style="max-height:min(70vh,640px);overflow:auto">
+      <div id="legalChangeLogList" class="legal-change-log-list">
+        <div class="text-gray-500 text-sm py-6 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải…</div>
+      </div>
+    </div>
+    <div class="legal-copy-actions">
+      <button type="button" class="btn-secondary" onclick="closeLegalChangeLogModal()">Đóng</button>
+    </div>
+  </div>
+</div>
+
 <div id="modalLegalCopyFrom" class="modal-overlay hidden" style="z-index:1100">
   <div class="modal legal-copy-dialog">
     <div class="legal-copy-head">
       <div>
         <h3><i class="fas fa-copy" style="color:var(--primary);margin-right:8px"></i>Sao chép từ dự án khác</h3>
-        <p>Chỉ sao chép gói thầu, giai đoạn và hạng mục. Không sao chép thanh toán, tài liệu hay task.</p>
+        <p>Sao chép gói thầu (giai đoạn + hạng mục khung) và/hoặc nội dung bên trong gói. Không sao chép thanh toán hay task.</p>
       </div>
       <button type="button" class="legal-copy-x" onclick="closeLegalCopyFromModal()" aria-label="Đóng"><i class="fas fa-times"></i></button>
     </div>
@@ -8629,9 +9612,28 @@ document.addEventListener('keydown', function(e) {
         <select id="legalCopyFromSource" class="input-field" onchange="onLegalCopyFromSourceChange()"></select>
       </div>
       <div id="legalCopyFromPkgWrap" style="display:none">
-        <label class="legal-copy-label">Gói thầu cần sao chép</label>
-        <p style="margin:-2px 0 6px;font-size:12px;color:var(--shell-text-muted)">Không chọn ô nào nghĩa là sao chép tất cả.</p>
+        <label class="legal-copy-label">Gói thầu cần sao chép (tạo gói mới trên dự án đích)</label>
+        <p style="margin:-2px 0 6px;font-size:12px;color:var(--shell-text-muted)">Không chọn ô nào nghĩa là sao chép tất cả gói (trừ khi chỉ dùng mục nội dung bên dưới).</p>
         <div id="legalCopyFromPkgList" class="legal-copy-pkgs space-y-2"></div>
+      </div>
+      <hr class="legal-copy-section-divider">
+      <div>
+        <p class="legal-copy-section-title">Sao chép nội dung vào gói đã có</p>
+        <p class="legal-copy-note" style="margin-bottom:10px">Sao chép hạng mục theo dõi hồ sơ, tài liệu và văn bản gửi đi từ gói nguồn sang gói đích trên dự án đang mở. Bỏ qua dòng trùng tên/loại; giữ nguyên nội dung sẵn có trên gói đích. Không copy thanh toán, task.</p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <label class="legal-copy-label" for="legalCopyInnerSourcePkg">Gói nguồn</label>
+            <select id="legalCopyInnerSourcePkg" class="input-field" disabled>
+              <option value="">— Chọn dự án nguồn trước —</option>
+            </select>
+          </div>
+          <div>
+            <label class="legal-copy-label" for="legalCopyInnerDestPkg">Gói đích (dự án đang mở)</label>
+            <select id="legalCopyInnerDestPkg" class="input-field">
+              <option value="">— Không sao chép nội dung —</option>
+            </select>
+          </div>
+        </div>
       </div>
       <div>
         <span class="legal-copy-label">Khi trùng tên gói trên dự án đích</span>
