@@ -12,6 +12,7 @@ $AllowedAppOrigins = @(
   'http://127.0.0.1:8788',
   'http://localhost:8788',
   'https://ddcn.bimonecadvn.com'
+  'https://htkt.bimonecadvn.com'
 )
 
 Add-Type -AssemblyName System.Web
@@ -716,6 +717,8 @@ function Write-CorsHeaders([System.Net.HttpListenerResponse]$resp, [string]$orig
   }
   $resp.Headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
   $resp.Headers['Access-Control-Allow-Headers'] = 'Content-Type'
+  # Trang HTTPS (production) gọi 127.0.0.1: Chrome/Edge yêu cầu header này, nếu thiếu thì fetch thất bại dù helper đang chạy.
+  $resp.Headers['Access-Control-Allow-Private-Network'] = 'true'
 }
 
 function Read-JsonBody([System.IO.Stream]$inputStream) {
@@ -739,10 +742,26 @@ function Send-HttpJson([System.Net.HttpListenerResponse]$resp, [int]$status, $ob
   $resp.OutputStream.Close()
 }
 
+function Write-BimfolderLog([string]$msg) {
+  try {
+    $logDir = Join-Path $env:LOCALAPPDATA 'bimfolder'
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    Add-Content -LiteralPath (Join-Path $logDir 'listener.log') -Value ("{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg) -Encoding UTF8
+  } catch { }
+}
+
 function Start-BimfolderListener {
   $listener = New-Object System.Net.HttpListener
   $listener.Prefixes.Add($ListenerPrefix)
-  $listener.Start()
+  try {
+    $listener.Start()
+  } catch {
+    $msg = "Khong mo duoc cong 8765: $($_.Exception.Message). Chay lai install-bimfolder.ps1 va chap nhan UAC de cap quyen URL."
+    Write-BimfolderLog $msg
+    Write-Host $msg
+    exit 1
+  }
+  Write-BimfolderLog "listening $ListenerPrefix"
   Write-Host "bimfolder listener on $ListenerPrefix"
   while ($listener.IsListening) {
     $ctx = $null

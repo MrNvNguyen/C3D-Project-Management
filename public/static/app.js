@@ -719,6 +719,83 @@ function getStatusBadge(status) {
   return `<span class="badge badge-${badgeClass}">${icon}${labels[status] || status}</span>`
 }
 
+const TASK_ROW_STATUSES = [
+  { value: 'todo', label: 'Chờ làm' },
+  { value: 'in_progress', label: 'Đang làm' },
+  { value: 'review', label: 'Đang duyệt' },
+  { value: 'completed', label: 'Hoàn thành' },
+]
+
+function taskStatusControl(task, canEdit) {
+  if (!canEdit) return getStatusBadge(task.status)
+  return `<button type="button" class="task-status-btn" title="Đổi trạng thái" onclick="openTaskStatusMenu(event, ${Number(task.id)})">${getStatusBadge(task.status)}</button>`
+}
+
+let _taskStatusMenu = null
+
+function closeTaskStatusMenu() {
+  if (_taskStatusMenu) {
+    _taskStatusMenu.remove()
+    _taskStatusMenu = null
+  }
+  document.removeEventListener('click', _closeTaskStatusMenuOutside, true)
+}
+
+function _closeTaskStatusMenuOutside(e) {
+  if (_taskStatusMenu && !_taskStatusMenu.contains(e.target)) closeTaskStatusMenu()
+}
+
+function openTaskStatusMenu(event, taskId) {
+  event.stopPropagation()
+  event.preventDefault()
+  closeTaskStatusMenu()
+  const task = (_taskAllData || []).find(t => t.id === taskId) || allTasks.find(t => t.id === taskId)
+  if (!task) return
+  const current = task.status === 'done' ? 'completed' : task.status
+  const menu = document.createElement('div')
+  menu.className = 'task-status-menu'
+  menu.innerHTML = TASK_ROW_STATUSES.map(opt =>
+    `<button type="button" class="task-status-option${opt.value === current ? ' is-current' : ''}" data-status="${opt.value}">${getStatusBadge(opt.value)}</button>`
+  ).join('')
+  document.body.appendChild(menu)
+  const rect = event.currentTarget.getBoundingClientRect()
+  const menuHeight = 8 + TASK_ROW_STATUSES.length * 32
+  const top = rect.bottom + menuHeight > window.innerHeight ? Math.max(8, rect.top - menuHeight) : rect.bottom + 4
+  menu.style.top = top + 'px'
+  menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 168)) + 'px'
+  _taskStatusMenu = menu
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-status]')
+    if (!btn) return
+    e.stopPropagation()
+    const next = btn.dataset.status
+    closeTaskStatusMenu()
+    if (next && next !== current) setTaskStatusInline(taskId, next)
+  })
+  setTimeout(() => document.addEventListener('click', _closeTaskStatusMenuOutside, true), 0)
+}
+
+async function setTaskStatusInline(taskId, status) {
+  const copies = [_taskAllData, allTasks].filter(Boolean)
+  const prev = (copies[0] || []).find(t => t.id === taskId)?.status
+  copies.forEach(list => {
+    const row = list.find(t => t.id === taskId)
+    if (row) row.status = status
+  })
+  renderTaskRows()
+  try {
+    await api(`/tasks/${taskId}`, { method: 'put', data: { status } })
+    toast('Đã đổi trạng thái')
+  } catch (e) {
+    copies.forEach(list => {
+      const row = list.find(t => t.id === taskId)
+      if (row && prev !== undefined) row.status = prev
+    })
+    renderTaskRows()
+    toast('Lỗi đổi trạng thái: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
 function getPriorityBadge(p) {
   const labels = { low: 'Thấp', medium: 'TB', high: 'Cao', urgent: 'Khẩn' }
   return `<span class="badge badge-${p}">${labels[p] || p}</span>`
@@ -940,8 +1017,16 @@ function navigate(page, opts = {}) {
   }
   else if (page === 'dashboard') loadDashboard()
   else if (page === 'project-dashboard') {
-    if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
-    if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
+    if (typeof setProjectDashboardTab === 'function' && currentUser?.role === 'system_admin') {
+      const statusBtn = document.getElementById('pdTabStatus')
+      if (statusBtn) statusBtn.classList.remove('hidden')
+    }
+    if (window._pdState?.tab === 'status' && currentUser?.role === 'system_admin') {
+      if (typeof setProjectDashboardTab === 'function') setProjectDashboardTab('status')
+    } else {
+      if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
+      if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
+    }
   }
   else if (page === 'projects') loadProjects()
   else if (page === 'tasks') loadTasks()
@@ -4909,9 +4994,10 @@ function renderTaskRows() {
           <span class="text-xs text-gray-500">${t.progress||0}%</span>
         </div>
       </td>
-      <td class="py-2 pr-3">${getStatusBadge(t.status)}</td>
+      <td class="py-2 pr-3">${taskStatusControl(t, canEditThisTask)}</td>
       <td class="py-2">
         <div class="flex gap-1">
+          ${canLogTimesheetForTask(t) ? `<button type="button" onclick="openTimesheetForTask(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Khai timesheet cho ${escHtml(t.assigned_to_name || 'người phụ trách')}"><i class="fas fa-clock"></i></button>` : ''}
           ${canEditThisTask ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
           ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-400 hover:text-red-600 px-2 py-1 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
         </div>
@@ -4949,11 +5035,12 @@ function renderTasksMobileCards(tasks) {
       <div class="mlc-meta">${t.project_code || '—'} · ${t.assigned_to_name || 'Chưa giao'} · Hạn ${fmtDate(t.due_date)}</div>
       <div class="mlc-row">
         ${getPriorityBadge(t.priority)}
-        ${getStatusBadge(t.status)}
+        ${taskStatusControl(t, canEditThisTask)}
         <span class="text-xs text-gray-500">${t.progress || 0}%</span>
         ${overdue ? '<span class="badge badge-overdue text-xs">Trễ hạn</span>' : ''}
       </div>
       <div class="mlc-actions">
+        ${canLogTimesheetForTask(t) ? `<button type="button" onclick="openTimesheetForTask(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-clock mr-1"></i>Timesheet</button>` : ''}
         ${canEditThisTask ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-edit mr-1"></i>Sửa</button>` : ''}
         ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash mr-1"></i>Xóa</button>` : ''}
       </div>
@@ -8486,15 +8573,52 @@ function _tsSyncTaskLockState() {
 }
 
 // ── Khởi tạo combobox Task ─────────────────────────────────────────────────
+/** Nhân viên đang khai timesheet — danh sách task chỉ lấy task giao cho người này. */
+function _tsTimesheetAssigneeId() {
+  if (!currentUser?.id) return null
+  if (currentUser.role === 'system_admin') {
+    const picked = parseInt($('tsTargetUserHidden')?.value, 10)
+    return picked || currentUser.id
+  }
+  return currentUser.id
+}
+
+function _tsTasksForAssignee(tasks, keepId) {
+  const uid = Number(_tsTimesheetAssigneeId())
+  const editing = !!$('tsId')?.value
+  const keep = editing && keepId ? String(keepId) : ''
+  if (!uid) return tasks || []
+  return (tasks || []).filter(t => Number(t.assigned_to) === uid || (keep && String(t.id) === keep))
+}
+
+function _reloadTsTasksForCurrentAssignee() {
+  if ($('tsId')?.value) return
+  const proj = $('tsProjectHidden')?.value
+  if (proj) {
+    const token = ++_tsProjChangeToken
+    _loadAndInitTsTaskCombobox(proj, $('tsTaskHidden')?.value || null, _tsModalLocked, token)
+  }
+  Object.keys(_tsWeekDayState || {}).forEach(iso => {
+    const lines = _tsWeekDayState[iso]?.lines || []
+    lines.forEach(line => {
+      if (line.project_id) _loadTsWeekDayTasks(iso, line.lid, line.project_id, line.task_id || null)
+    })
+  })
+}
+
 function _initTsTaskCombobox(tasks = [], selectedTaskId = null, locked = false) {
   // Chuẩn hoá selectedTaskId về string để so sánh chính xác
   const selId = selectedTaskId != null ? String(selectedTaskId) : ''
 
   // Build items: có prefix [Hạng mục] để phân biệt task trùng tên
   const taskItems = _buildTsTaskItems(tasks, selId)
+  const catChosen = !!(parseInt($('tsCategoryHidden')?.value) || null)
+  const emptyLabel = (catChosen || !_tsCachedCategories.length)
+    ? '— Không có task được giao —'
+    : '— Chọn hạng mục trước —'
 
   createCombobox('tsTaskCombobox', {
-    placeholder: tasks.length ? '🔍 Tìm & chọn task...' : '— Chọn hạng mục trước —',
+    placeholder: tasks.length ? '🔍 Tìm & chọn task...' : emptyLabel,
     items: taskItems,
     value: selId,
     fullWidth: true,
@@ -8557,21 +8681,27 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
   if (spinner) spinner.style.display = 'inline'
   if (spinnerMulti) spinnerMulti.style.display = 'inline'
   try {
-    // exclude_done trước LIMIT; hạng mục lọc client trên cache đầy đủ
-    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1`)
+    // exclude_done trước LIMIT; chỉ task giao cho nhân viên đang khai
+    const assigneeId = _tsTimesheetAssigneeId()
+    const assigneeQ = assigneeId ? `&assigned_to=${assigneeId}` : ''
+    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1${assigneeQ}`)
     if (token !== null && token !== _tsProjChangeToken) return
     tasks = Array.isArray(tasks) ? tasks : []
+    tasks = _tsTasksForAssignee(tasks, selectedTaskId)
     // Giữ task đã chọn nếu đã completed (đang sửa timesheet cũ)
     if (selectedTaskId && !tasks.some(t => String(t.id) === String(selectedTaskId))) {
       try {
         const one = await api(`/tasks/${selectedTaskId}`)
-        if (one && one.id) tasks = [one, ...tasks]
+        const uid = Number(_tsTimesheetAssigneeId())
+        const keepForeign = !!$('tsId')?.value
+        if (one && one.id && (keepForeign || Number(one.assigned_to) === uid)) tasks = [one, ...tasks]
       } catch (_) { /* ignore */ }
     }
+    const visibleSel = tasks.some(t => String(t.id) === String(selectedTaskId)) ? selectedTaskId : null
     _tsCachedTasks = tasks
     const selCatId = parseInt($('tsCategoryHidden')?.value) || null
     const tasksToShow = selCatId ? tasks.filter(t => t.category_id === selCatId) : tasks
-    _initTsTaskCombobox(tasksToShow, selectedTaskId, locked)
+    _initTsTaskCombobox(tasksToShow, visibleSel, locked)
     // Re-render multi rows với task mới
     _tsRenderMultiRows()
   } catch (e) {
@@ -8584,6 +8714,36 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
       if (spinner) spinner.style.display = 'none'
       if (spinnerMulti) spinnerMulti.style.display = 'none'
     }
+  }
+}
+
+let _tsOpenFromTask = null
+
+function canLogTimesheetForTask(t) {
+  if (!t?.assigned_to || !currentUser?.id) return false
+  if (Number(t.assigned_to) === Number(currentUser.id)) return true
+  if (currentUser.role === 'system_admin') return true
+  return getEffectiveRoleForProject(t.project_id) === 'project_admin'
+}
+
+/** Mở form timesheet đã chọn sẵn task và người phụ trách của task đó. */
+async function openTimesheetForTask(taskId) {
+  const id = parseInt(taskId, 10)
+  const t = (_taskAllData || []).find(x => x.id === id) || (allTasks || []).find(x => x.id === id)
+  if (!t) { toast('Không tìm thấy task', 'warning'); return }
+  if (!t.assigned_to) { toast('Task chưa có người phụ trách', 'warning'); return }
+  if (!canLogTimesheetForTask(t)) { toast('Bạn không có quyền khai timesheet cho người này', 'warning'); return }
+  _tsOpenFromTask = {
+    project_id: t.project_id,
+    category_id: t.category_id || null,
+    task_id: t.id,
+    user_id: t.assigned_to,
+    user_name: t.assigned_to_name || ''
+  }
+  try {
+    await openTimesheetModal(null)
+  } finally {
+    _tsOpenFromTask = null
   }
 }
 
@@ -8610,26 +8770,38 @@ async function openTimesheetModal(tsId = null) {
   if (isAdmin && !tsId) {
     // Force re-init combobox mỗi lần mở modal
     if (_cbState['tsUserCombobox']) delete _cbState['tsUserCombobox']
+    const presetUserId = _tsOpenFromTask?.user_id ? Number(_tsOpenFromTask.user_id) : null
     const items = allUsers.map(u => ({
       value: String(u.id),
       label: u.full_name || u.username,
       sub: u.role ? (u.role === 'system_admin' ? 'System Admin' : u.role) : ''
     }))
+    if (presetUserId && !items.some(i => i.value === String(presetUserId))) {
+      items.unshift({ value: String(presetUserId), label: _tsOpenFromTask.user_name || `#${presetUserId}` })
+    }
     createCombobox('tsUserCombobox', {
       placeholder: '🔍 Tìm nhân viên...',
       items,
       fullWidth: true,
       onchange: (val) => {
         $('tsTargetUserHidden').value = val
-        // Cập nhật gợi ý dự án đã khai báo theo nhân viên được chọn
-        _updateTsDateHint($('tsDate').value, null, val ? parseInt(val) : null)
+        const uid = val ? parseInt(val) : null
+        _updateTsDateHint($('tsDate').value, null, uid)
+        _applyTsWeekAssignment($('tsDate').value, uid).then(() => {
+          if (_tsOpenFromTask) return
+          _reloadTsTasksForCurrentAssignee()
+        })
       }
     })
-    // Default: chính mình
     const selfUser = allUsers.find(u => u.id === currentUser.id)
     const selfLabel = selfUser ? (selfUser.full_name || selfUser.username) : String(currentUser.id)
-    _cbSelect('tsUserCombobox', String(currentUser.id), selfLabel)
-    $('tsTargetUserHidden').value = String(currentUser.id)
+    const presetUser = presetUserId ? allUsers.find(u => Number(u.id) === presetUserId) : null
+    const startId = presetUserId || currentUser.id
+    const startLabel = presetUser
+      ? (presetUser.full_name || presetUser.username)
+      : (presetUserId ? (_tsOpenFromTask.user_name || selfLabel) : selfLabel)
+    _cbSelect('tsUserCombobox', String(startId), startLabel)
+    $('tsTargetUserHidden').value = String(startId)
   } else if (isAdmin && tsId) {
     // Khi sửa: hiển thị tên nhân viên nhưng không cho đổi
     if (_cbState['tsUserCombobox']) delete _cbState['tsUserCombobox']
@@ -8789,6 +8961,16 @@ async function openTimesheetModal(tsId = null) {
     // Hiển thị gợi ý dự án đã khai báo cho ngày hôm nay
     const targetUid = isAdmin ? (parseInt($('tsTargetUserHidden').value) || currentUser.id) : null
     _updateTsDateHint(today(), null, targetUid)
+    const fromTask = _tsOpenFromTask
+    if (fromTask?.project_id) {
+      const tokenProj = ++_tsProjChangeToken
+      _initTsProjectCombobox(String(fromTask.project_id), false)
+      await _loadTsCategories(fromTask.project_id, fromTask.category_id || null, false)
+      if (fromTask.category_id && $('tsCategoryHidden')) $('tsCategoryHidden').value = String(fromTask.category_id)
+      await _loadAndInitTsTaskCombobox(fromTask.project_id, fromTask.task_id, false, tokenProj)
+    } else {
+      _applyTsWeekAssignment(today(), targetUid)
+    }
     // Cập nhật giờ HC mặc định = số giờ còn lại hôm nay (CN → OT)
     if (_isSundayIso(today())) {
       _applySundayDefaultsToSingleForm(today())
@@ -9146,6 +9328,12 @@ function _isSundayIso(iso) {
   return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay() === 0
 }
 
+function _isSaturdayIso(iso) {
+  const [y, m, d] = String(iso || '').split('-').map(Number)
+  if (!y || !m || !d) return false
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay() === 6
+}
+
 /** Giờ mặc định theo ngày: CN → OT 8h / HC 0; nửa ngày → HC 4; còn lại HC 8. */
 function _defaultHoursForDate(iso, dayType) {
   if (_isSundayIso(iso)) return { reg: 0, ot: 8 }
@@ -9256,17 +9444,21 @@ async function _loadTsWeekDayTasks(iso, lid, projectId, selectedTaskId = null) {
     onchange: onTaskChange
   })
   try {
-    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1`)
+    const assigneeId = _tsTimesheetAssigneeId()
+    const assigneeQ = assigneeId ? `&assigned_to=${assigneeId}` : ''
+    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1${assigneeQ}`)
     if (token !== _tsWeekDayLoadToken[tokenKey]) return
-    tasks = Array.isArray(tasks) ? tasks : []
     const st = _ensureWeekDayState(iso)
     const line = st.lines.find(l => l.lid === lid) || {}
     const sel = selectedTaskId != null ? selectedTaskId : (line.task_id || '')
+    tasks = _tsTasksForAssignee(Array.isArray(tasks) ? tasks : [], sel)
+    const visibleSel = tasks.some(t => String(t.id) === String(sel)) ? sel : ''
+    if (line && line.task_id && !visibleSel) line.task_id = ''
     if (_cbState[taskCbId]) delete _cbState[taskCbId]
     createCombobox(taskCbId, {
       placeholder: tasks.length ? '🔍 Task (tùy chọn)' : '— Không có task —',
-      items: _buildTsWeekDayTaskItems(tasks, sel),
-      value: sel ? String(sel) : '',
+      items: _buildTsWeekDayTaskItems(tasks, visibleSel),
+      value: visibleSel ? String(visibleSel) : '',
       fullWidth: true,
       teleport: true,
       panelMaxWidth: '420px',
@@ -9621,8 +9813,37 @@ function _onTsWeekCopyChange() {
       ? (parseInt($('tsTargetUserHidden')?.value) || currentUser.id) : null
     _applySundayDefaultsToSingleForm($('tsDate').value)
     _updateTsDateHint($('tsDate').value, null, uid)
+    _applyTsWeekAssignment($('tsDate').value, uid)
   }
   _syncTsWeekDayEntriesUI()
+}
+
+let _tsWeekAssignToken = 0
+
+/** Chọn sẵn dự án, hạng mục, task được giao cho nhân viên trong tuần của ngày đang khai. */
+async function _applyTsWeekAssignment(workDate, userId) {
+  if (_tsOpenFromTask) return
+  if ($('tsId')?.value) return
+  if (!workDate) return
+  const dayType = $('tsDayType')?.value || 'work'
+  if (!['work', 'half_day_am', 'half_day_pm', 'business_trip'].includes(dayType)) return
+  const token = ++_tsWeekAssignToken
+  let row
+  try {
+    let url = `/timesheets/week-assignment?work_date=${encodeURIComponent(workDate)}`
+    if (userId) url += `&user_id=${userId}`
+    row = await api(url)
+  } catch (_) {
+    return
+  }
+  if (token !== _tsWeekAssignToken) return
+  if (!row?.project_id) return
+  const tokenProj = ++_tsProjChangeToken
+  _initTsProjectCombobox(String(row.project_id), false)
+  await _loadTsCategories(row.project_id, row.category_id || null, false)
+  if (token !== _tsWeekAssignToken) return
+  if (row.category_id && $('tsCategoryHidden')) $('tsCategoryHidden').value = String(row.category_id)
+  await _loadAndInitTsTaskCombobox(row.project_id, row.task_id || null, false, tokenProj)
 }
 
 function _getSelectedWeekDates() {
@@ -9857,8 +10078,9 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
   }
   const isMultiModeUi = document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
   const effectiveFormReg = isMultiModeUi ? multiReg : formReg
-  // dayCap=0 (CN): OT được phép ngay
-  const otAllowed = !blocked && (dayCap <= 0 || (usedReg + effectiveFormReg) >= dayCap - 0.001)
+  // CN (dayCap=0) và T7: OT không bắt buộc đủ HC
+  const saturdayOt = _isSaturdayIso(selectedDate)
+  const otAllowed = !blocked && (dayCap <= 0 || saturdayOt || (usedReg + effectiveFormReg) >= dayCap - 0.001)
   const formLocked = $('tsOvertimeHours')?.dataset?.locked === '1'
 
   if (otInput) {
@@ -9870,7 +10092,9 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
     } else {
       otInput.max = remainingOt
       otInput.disabled = !!formLocked
-      otInput.title = dayCap <= 0 ? `Chủ nhật — còn ${remainingOt}h OT` : `Còn ${remainingOt}h OT`
+      otInput.title = dayCap <= 0
+        ? `Chủ nhật — còn ${remainingOt}h OT`
+        : (saturdayOt ? `Thứ 7 — còn ${remainingOt}h OT, không bắt đủ HC` : `Còn ${remainingOt}h OT`)
       const curOt = parseFloat(otInput.value) || 0
       if (curOt > remainingOt) otInput.value = remainingOt
     }
@@ -9889,7 +10113,9 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
       } else {
         otEl.max = remainingOt
         otEl.disabled = !!formLocked
-        otEl.title = dayCap <= 0 ? `Chủ nhật — còn ${remainingOt}h OT` : `Còn ${remainingOt}h OT`
+        otEl.title = dayCap <= 0
+          ? `Chủ nhật — còn ${remainingOt}h OT`
+          : (saturdayOt ? `Thứ 7 — còn ${remainingOt}h OT, không bắt đủ HC` : `Còn ${remainingOt}h OT`)
       }
     })
     if (typeof _tsUpdateMultiTotals === 'function') _tsUpdateMultiTotals()
@@ -10179,6 +10405,7 @@ $('tsDate').addEventListener('change', () => {
     _applySundayDefaultsToSingleForm($('tsDate').value)
     _updateTsDateHint($('tsDate').value, null, uid)
     _rebuildTsWeekCopyCheckboxes($('tsDate').value)
+    _applyTsWeekAssignment($('tsDate').value, uid)
   }
 })
 
@@ -10319,7 +10546,7 @@ $('tsForm').addEventListener('submit', async (e) => {
       }
       if (submitOt > 0.001) {
         const hcAfter = usedReg + submitReg
-        if (dayCap > 0 && hcAfter < dayCap - 0.001) {
+        if (!_isSaturdayIso(workDate) && dayCap > 0 && hcAfter < dayCap - 0.001) {
           const need = Math.max(0, +(dayCap - hcAfter).toFixed(2))
           toast(`⛔ Chỉ được khai OT khi đã đủ ${dayCap}h hành chính trong ngày. Hiện còn thiếu ${need}h HC.`, 'error')
           return
@@ -11704,9 +11931,8 @@ function renderCostTable() {
     const revTotalCashAll       = displayRevenues.reduce((s, r) => s + revCash(r), 0)
 
     tbody.innerHTML = displayRevenues.map(r => {
-      // Hiển thị ngày thông minh:
-      // - paid/partial: hiển thị revenue_date (ngày thanh toán thực tế)
-      // - pending: hiển thị request_date (ngày yêu cầu) kèm nhãn, hoặc "Chưa xác định"
+      // Ngày trên dòng đã vào sổ là revenue_date: ngày nghiệm thu, trống thì ngày nhập phiếu.
+      // Phiếu chờ (nếu còn) hiện ngày nghiệm thu.
       let dateCell
       if (r.payment_status === 'pending') {
         dateCell = r.request_date
@@ -12224,7 +12450,7 @@ function renderAssetsTable(assets) {
   // Flatten để phân trang: mỗi "row đơn vị" là 1 cha (kèm con của nó)
   if (!assets || assets.length === 0) {
     tbody.innerHTML = '<tr><td colspan="12" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
-    const pgDiv = $('assetPagination'); if (pgDiv) pgDiv.classList.add('hidden')
+    assetShowFilteredTotal(0)
     return
   }
 
@@ -12256,7 +12482,7 @@ function renderAssetsTable(assets) {
   const pgBtns = $('assetPaginationBtns')
   if (pgDiv) {
     if (totalPages <= 1) {
-      pgDiv.classList.add('hidden')
+      assetShowFilteredTotal(totalParents)
     } else {
       pgDiv.classList.remove('hidden')
       if (pgInfo) pgInfo.textContent = `Hiển thị ${start + 1}–${Math.min(start + ASSET_PAGE_SIZE, totalParents)} / ${totalParents} tài sản`
@@ -12283,10 +12509,30 @@ function renderAssetsTable(assets) {
   }
 }
 
+function assetFilterActive() {
+  return !!(($('assetSearch')?.value || '').trim()
+    || $('assetCategoryFilter')?.value
+    || $('assetStatusFilter')?.value
+    || $('assetDeprFilter')?.value)
+}
+
+function assetShowFilteredTotal(total) {
+  const pgDiv = $('assetPagination')
+  const pgInfo = $('assetPaginationInfo')
+  const pgBtns = $('assetPaginationBtns')
+  if (!pgDiv) return
+  if (!assetFilterActive()) {
+    pgDiv.classList.add('hidden')
+    return
+  }
+  pgDiv.classList.remove('hidden')
+  if (pgInfo) pgInfo.textContent = `${total} tài sản`
+  if (pgBtns) pgBtns.innerHTML = ''
+}
+
 function setAssetPage(p) {
-  const totalPages = Math.max(1, Math.ceil((allAssets || []).length / ASSET_PAGE_SIZE))
-  _assetPage = Math.max(1, Math.min(p, totalPages))
-  renderAssetsTable(allAssets)
+  _assetPage = Math.max(1, p)
+  filterAssets(true)
   const tbl = $('assetsTable'); if (tbl) tbl.closest('.overflow-x-auto')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
 }
 
@@ -14460,15 +14706,7 @@ async function loadProfile() {
       emailCard.classList.add('hidden')
     }
   }
-  // Show weekly report card only for system_admin
-  const weeklyCard = $('weeklyReportCard')
-  if (weeklyCard) {
-    if (user?.role === 'system_admin') {
-      weeklyCard.classList.remove('hidden')
-    } else {
-      weeklyCard.classList.add('hidden')
-    }
-  }
+  // Báo cáo tuần nằm ở Dashboard dự án → Tình trạng thực hiện
 
   // Render browser push notification toggle
   renderPushButton()
@@ -15001,9 +15239,61 @@ async function previewOverdueTasks() {
   }
 }
 
+async function loadZaloOverdueConfig() {
+  const status = $('zaloOverdueStatus')
+  try {
+    const data = await api('/admin/zalo-overdue')
+    const link = $('zaloOverdueGroupLink')
+    if (link && data.group_url) {
+      link.href = data.group_url
+      link.textContent = String(data.group_url).replace(/^https?:\/\//, '')
+    }
+    const idInput = $('zaloGroupChatId')
+    if (idInput && document.activeElement !== idInput) idInput.value = data.chat_id || ''
+    if (status) {
+      status.textContent = data.token_configured
+        ? (data.chat_id ? 'Bot và Chat ID đã lưu. Thứ 6 sẽ gửi vào nhóm khi có task quá hạn.' : 'Đã có Bot Token. Mời bot vào nhóm, gửi một tin, rồi bấm Lấy Chat ID.')
+        : 'Chưa có Bot Token.'
+    }
+  } catch (e) {
+    if (status) status.textContent = e.response?.data?.error || e.message
+  }
+}
+
+async function saveZaloOverdueConfig() {
+  const token = $('zaloBotToken')?.value?.trim() || ''
+  const chatId = $('zaloGroupChatId')?.value?.trim() || ''
+  const data = { zalo_group_chat_id: chatId }
+  if (token && !token.includes('****')) data.zalo_bot_token = token
+  try {
+    await api('/system-config', { method: 'PUT', data })
+    if ($('zaloBotToken')) $('zaloBotToken').value = ''
+    toast('Đã lưu cấu hình Zalo', 'success')
+    await loadZaloOverdueConfig()
+  } catch (e) {
+    toast('Lỗi lưu Zalo: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
+async function captureZaloGroupChat() {
+  const status = $('zaloOverdueStatus')
+  if (status) status.textContent = 'Đang hỏi bot...'
+  try {
+    const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data: {} })
+    const idInput = $('zaloGroupChatId')
+    if (idInput) idInput.value = res.chat_id || ''
+    if (status) status.textContent = 'Đã lấy Chat ID nhóm.'
+    toast('Đã lấy Chat ID nhóm Zalo', 'success')
+  } catch (e) {
+    const msg = e.response?.data?.error || e.message
+    if (status) status.textContent = msg
+    toast(msg, 'error', 5000)
+  }
+}
+
 async function sendOverdueReminders() {
   const resultEl = $('overdueReminderResult')
-  if (!confirm('Gửi email nhắc ⚠️ quá hạn đến tất cả nhân sự phụ trách task chưa hoàn thành?')) return
+  if (!confirm('Gửi email nhắc quá hạn đến nhân sự đang trễ task, leader dự án, System Admin, Project Admin, và nhóm Zalo?')) return
   if (resultEl) resultEl.textContent = 'Đang gửi...'
   try {
     const res = await api('/admin/send-overdue-reminders', { method: 'POST' })
@@ -15011,7 +15301,8 @@ async function sendOverdueReminders() {
       if (res.sent === 0) {
         resultEl.textContent = `✅ ${res.message || 'Không có task quá hạn nào'}`
       } else {
-        resultEl.textContent = `✅ Đã gửi ${res.sent}/${res.total_overdue} email thành công`
+        const zaloNote = res.zalo?.sent ? ', đã gửi nhóm Zalo' : (res.zalo?.error || res.zalo?.skipped ? `. Zalo: ${res.zalo.error || res.zalo.skipped}` : '')
+        resultEl.textContent = `✅ Đã gửi ${res.sent} mail cho người phụ trách` + (res.leader_sent ? `, ${res.leader_sent} mail cho leader` : '') + zaloNote
       }
     }
     toast(`✅ Đã gửi ${res.sent} email nhắc deadline`, 'success', 4000)
@@ -15035,7 +15326,7 @@ async function loadWeeklyReportConfig() {
     const daySelect = $('weeklyReportDay')
     if (daySelect) daySelect.value = cfg.day ?? '5'
     const hourSelect = $('weeklyReportHour')
-    if (hourSelect) hourSelect.value = cfg.hour ?? '8'
+    if (hourSelect) hourSelect.value = cfg.hour ?? '9'
     // Render preview stats
     renderWeeklyReportPreview(data)
   } catch(e) {
@@ -15100,7 +15391,7 @@ function renderWeeklyReportPreview(data) {
 async function saveWeeklyReportConfig() {
   const enabled = $('weeklyReportEnabled')?.checked ? '1' : '0'
   const day     = $('weeklyReportDay')?.value  || '5'
-  const hour    = $('weeklyReportHour')?.value || '8'
+  const hour    = $('weeklyReportHour')?.value || '9'
   try {
     await api('/system-config', { method: 'PUT', data: {
       weekly_report_enabled: enabled,
@@ -15116,13 +15407,13 @@ async function saveWeeklyReportConfig() {
 async function sendWeeklyReportNow() {
   const btn = $('btnSendWeeklyReport')
   const resultEl = $('weeklyReportResult')
-  if (!confirm('Gửi ngay báo cáo task tuần đến tất cả System Admin?')) return
+  if (!confirm('Gửi ngay báo cáo task tuần đến leader dự án, System Admin và Project Admin?')) return
   if (btn) btn.disabled = true
   if (resultEl) resultEl.textContent = 'Đang gửi...'
   try {
     const res = await api('/admin/weekly-task-report/send?force=1', { method: 'POST' })
     const msg = res.sent > 0
-      ? `✅ Đã gửi báo cáo tuần đến ${res.sent} admin (${res.week})`
+      ? `✅ Đã gửi báo cáo tuần đến ${res.sent} người (${res.week})`
       : `ℹ️ ${res.message || 'Đã xử lý'}`
     if (resultEl) resultEl.textContent = msg
     toast(msg, res.sent > 0 ? 'success' : 'info', 5000)
@@ -15139,6 +15430,7 @@ const EMAIL_EVENT_LABELS = {
   task_assigned:        '📌 Giao task',
   task_status_updated:  '🔄 Cập nhật task',
   task_overdue:         '⚠️ Quá hạn',
+  overdue_leader_digest:'⚠️ Quá hạn (leader)',
   weekly_task_report:   '📊 Báo cáo tuần',
   project_added:        '🏗️ Thêm dự án',
   project_updated:      '📝 Cập nhật dự án',
@@ -19293,7 +19585,7 @@ async function renderProjectFinancialTab(force = false) {
           <i class="fas fa-layer-group mr-2 text-purple-500"></i>Cơ cấu chi phí toàn công ty — ${fyLabel}
           <span class="ml-2 text-xs font-normal bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">% so với GTHĐ</span>
         </h3>
-        <div class="grid grid-cols-3 md:grid-cols-3 gap-4">
+        <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
           <div class="text-center p-4 bg-blue-50 rounded-xl">
             <div class="text-2xl font-bold text-blue-600">${fmtM(totals.direct_cost)}</div>
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí trực tiếp</div>
@@ -19311,6 +19603,12 @@ async function renderProjectFinancialTab(force = false) {
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí chung</div>
             <div class="text-xs text-yellow-600 mt-0.5">${_costBase > 0 ? pct(totals.shared_cost, _costBase) : 0}% ${_costBaseLabel}</div>
             ${bar(_costBase > 0 ? (totals.shared_cost / _costBase * 100) : 0,'bg-yellow-400')}
+          </div>
+          <div class="text-center p-4 bg-teal-50 rounded-xl">
+            <div class="text-2xl font-bold text-teal-600">${fmtM(totals.legal_cost_a_spent || 0)}</div>
+            <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí A đã chi</div>
+            <div class="text-xs text-teal-600 mt-0.5">${isLifetime ? 'Toàn vòng đời' : 'Trong năm tài chính'}</div>
+            <div class="text-xs text-gray-400 mt-1">Chỉ hiển thị, không tính vào chi phí hay doanh thu</div>
           </div>
         </div>
       </div>
@@ -21208,12 +21506,12 @@ function renderLegalCostA(data) {
   if (!container) return
   if (!data || !(data.groups || []).length) {
     if (totalEl) totalEl.textContent = 'Tổng trang: ' + fmtMoney(0)
-    if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Giá trị cộng mọi phiếu trong gói.'
+    if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Tổng chỉ cộng phiếu Đã chi.'
     container.innerHTML = '<div class="text-center py-10 text-gray-400">Chưa có phiếu thanh toán phù hợp</div>'
     return
   }
   if (totalEl) totalEl.textContent = 'Tổng trang: ' + fmtMoney(data.page_total || 0)
-  if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Giá trị cộng mọi phiếu trong gói.'
+  if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Tổng chỉ cộng phiếu Đã chi.'
 
   container.innerHTML = (data.groups || []).map(grp => {
     const rows = [...(grp.rows || [])].sort((a, b) => {

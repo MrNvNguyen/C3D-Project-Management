@@ -2,6 +2,7 @@
 
 $ErrorActionPreference = 'Stop'
 
+Get-ChildItem -LiteralPath $PSScriptRoot -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 $scriptPath = Join-Path $PSScriptRoot 'bimfolder.ps1'
 
 if (-not (Test-Path -LiteralPath $scriptPath)) {
@@ -128,6 +129,8 @@ $autoLaunchOrigins = @(
 
   'http://localhost:8788',
 
+  'https://ddcn.bimonecadvn.com',
+
   'https://bim.onecadvn.com'
 
 )
@@ -156,6 +159,47 @@ foreach ($keyPath in $autoLaunchKeys) {
 
 
 
-Write-Host 'Done. Quit Edge/Chrome fully, reopen, Ctrl+F5, then Chon folder on QLy HSTK.'
+function Test-BimfolderHealth {
+  try {
+    Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop | Out-Null
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Ensure-BimfolderUrlAcl {
+  $url = 'http://127.0.0.1:8765/'
+  $shown = & netsh http show urlacl url=$url 2>&1 | Out-String
+  if ($shown -match '8765') { return $true }
+  $added = & netsh http add urlacl url=$url user=Everyone 2>&1 | Out-String
+  if ($LASTEXITCODE -eq 0 -or $added -match 'successfully|thành công') { return $true }
+  Write-Host 'Can quyen Administrator de mo cong 8765. Chap nhan cua so UAC.'
+  $arg = "http add urlacl url=$url user=Everyone"
+  try {
+    $p = Start-Process -FilePath 'netsh' -ArgumentList $arg -Verb RunAs -Wait -PassThru
+    if ($p.ExitCode -eq 0) { return $true }
+  } catch {
+    Write-Warning $_.Exception.Message
+  }
+  $again = & netsh http show urlacl url=$url 2>&1 | Out-String
+  return ($again -match '8765')
+}
+
+if (-not (Test-BimfolderHealth)) {
+  if (-not (Ensure-BimfolderUrlAcl)) {
+    Write-Warning 'Chua cap duoc quyen cong 8765. Helper se khong lang nghe. Chay lai script nay va bam Yes o UAC.'
+  }
+  Start-Process -FilePath $ps -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Sta -WindowStyle Hidden -File `"$scriptPath`" -Listen" -WindowStyle Hidden | Out-Null
+  Start-Sleep -Seconds 2
+}
+
+if (Test-BimfolderHealth) {
+  Write-Host 'Helper dang chay: http://127.0.0.1:8765/health'
+} else {
+  Write-Warning 'Helper chua chay. Xem file %LOCALAPPDATA%\bimfolder\listener.log'
+}
+
+Write-Host 'Done. Quit Edge/Chrome fully, reopen, Ctrl+F5. If the browser asks for local network access, choose Allow.'
 
 

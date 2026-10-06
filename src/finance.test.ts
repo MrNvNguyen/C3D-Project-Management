@@ -8,8 +8,11 @@ import {
   contractValueBeforeVat,
   displayRevenuePaymentStatus,
   computeLegalCostA,
+  legalCostAAmountInUse,
+  legalCostAInFiscalRange,
   legalCostAFormulaLabel,
   resolveLegalCostAPct,
+  sumSpentLegalCostA,
   computeProjectBudget,
   computeProjectLaborFromAggregates,
   computeRealtimeLaborFromAggregates,
@@ -19,6 +22,7 @@ import {
   filterMlcMonths,
   monthDateRange,
   sumPendingBookedFromPayments,
+  revenueSyncDate,
   syncPaymentToRevenue,
   taskComputedProgress,
   yearDateRange,
@@ -127,6 +131,31 @@ describe('syncPaymentToRevenue (Wave A sync gate)', () => {
     expect(revenues.size).toBe(0)
   })
 
+  it('paid revenue year follows acceptance date, not paid date', async () => {
+    const { db, revenues } = createSyncTestDb(30)
+    await syncPaymentToRevenue(db, {
+      ...basePayment,
+      status: 'paid',
+      paid_date: '2026-09-30',
+      request_date: '2026-06-15',
+      created_at: '2026-09-30 02:00:00',
+    }, 1)
+    expect(revenues.get(1)!.revenue_date).toBe('2026-06-15')
+  })
+
+  it('blank acceptance date uses the payment entry date', async () => {
+    const { db, revenues } = createSyncTestDb(30)
+    await syncPaymentToRevenue(db, {
+      ...basePayment,
+      status: 'paid',
+      request_date: null,
+      paid_date: '2025-01-01',
+      created_at: '2026-09-30 02:00:00',
+    }, 1)
+    expect(revenues.get(1)!.revenue_date).toBe('2026-09-30')
+    expect(revenueSyncDate({ request_date: '', created_at: '2026-07-01T10:00:00Z' })).toBe('2026-07-01')
+  })
+
   it('processing books 700_000 (1_100_000 VAT10 fee30) with request_date', async () => {
     const { db, revenues } = createSyncTestDb(30)
     const revId = await syncPaymentToRevenue(db, { ...basePayment, status: 'processing' }, 1)
@@ -205,6 +234,30 @@ describe('computeLegalCostA (Wave D2 Chi phí A)', () => {
     expect(legalCostAFormulaLabel(30, 8)).toBe('30%/1.08')
     expect(legalCostAFormulaLabel(60, 10)).toBe('60%/1.1')
     expect(legalCostAFormulaLabel(30, 0)).toBe('30%')
+  })
+
+  it('override replaces the formula', () => {
+    expect(legalCostAAmountInUse(155_000_000, 8, 30, 10_000)).toBe(10_000)
+    expect(legalCostAAmountInUse(155_000_000, 8, 30, null)).toBe(43_055_556)
+  })
+
+  it('totals count only spent rows', () => {
+    expect(sumSpentLegalCostA([
+      { spend_status: 'spent', amount_in_use: 5_108_000_000 },
+      { spend_status: 'unspent', amount_in_use: 1_277_000_000 },
+      { spend_status: null, amount_in_use: 100 },
+    ])).toBe(5_108_000_000)
+  })
+
+  it('fiscal year uses paid date, lifetime is the caller’s unfiltered set', () => {
+    const inYear = { status: 'paid', request_date: '2025-06-01', paid_date: '2026-03-15' }
+    const otherYear = { status: 'paid', request_date: '2026-03-01', paid_date: '2025-11-01' }
+    const pending = { status: 'pending', request_date: '2026-04-01', paid_date: null }
+    const undated = { status: 'paid', request_date: null, paid_date: null }
+    expect(legalCostAInFiscalRange(inYear, '2026-02-01', '2027-01-31')).toBe(true)
+    expect(legalCostAInFiscalRange(otherYear, '2026-02-01', '2027-01-31')).toBe(false)
+    expect(legalCostAInFiscalRange(pending, '2026-02-01', '2027-01-31')).toBe(true)
+    expect(legalCostAInFiscalRange(undated, '2026-02-01', '2027-01-31')).toBe(false)
   })
 })
 

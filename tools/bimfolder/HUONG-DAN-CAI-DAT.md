@@ -10,7 +10,9 @@
 
    Không dùng `install-bimfolder.reg` trực tiếp — Windows **không** hiểu `%~dp0` trong registry, protocol sẽ không gọi được script.
 
-4. Sau khi chạy install, **đóng hẳn** Chrome/Edge rồi mở lại → **Ctrl+F5** tab dự án → QLy HSTK → **Khai báo bộ môn** (nếu chưa có) → **Chọn folder**. Lần đầu (helper chưa chạy) trình duyệt có thể hỏi **một lần** khi mở `bimfolder:listen`; sau khi helper lắng nghe `http://127.0.0.1:8765`, **Chọn folder** / mở đường dẫn dùng fetch — không còn hộp “Open External Link” cho pick.
+4. Cửa sổ cài phải in dòng `Helper dang chay: http://127.0.0.1:8765/health`. Nếu Windows hỏi UAC, bấm **Yes** — máy user thường không được mở cổng 8765 nếu thiếu bước này. Shortcut khởi động cùng Windows được tạo trong Startup của user đang cài.
+
+5. **Đóng hẳn** Chrome/Edge rồi mở lại → **Ctrl+F5**. Trang production là HTTPS nên trình duyệt có thể hỏi quyền **mạng nội bộ / local network** khi bấm mở folder: chọn **Cho phép**. Không cho phép thì link folder báo không kết nối helper dù helper đang chạy.
 
 
 

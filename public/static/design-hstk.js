@@ -123,7 +123,7 @@
   }
 
   const BIMFOLDER_HELPER_MSG =
-    'Không kết nối được bimfolder helper (127.0.0.1:8765). Chạy C:\\Onecad\\bimfolder\\bimfolder.ps1 -Listen (hoặc cài lại bimfolder).'
+    'Không kết nối được bimfolder trên máy này (127.0.0.1:8765). Nếu Windows báo Smart App Control: chuột phải CaiDat-MayUser.bat → Properties → tick Unblock (Bỏ chặn), chạy lại và bấm Yes ở UAC. Trình duyệt hỏi mạng nội bộ thì chọn Cho phép, rồi Ctrl+F5.'
 
   function isBimfolderNetworkError(e) {
     if (!e) return false
@@ -1304,18 +1304,30 @@
   }
 
   window.setProjectDashboardTab = function setProjectDashboardTab(tab) {
-    window._pdState.tab = tab === 'member' ? 'member' : 'project'
+    const canStatus = currentUser?.role === 'system_admin'
+    const next = tab === 'member' ? 'member' : (tab === 'status' && canStatus ? 'status' : 'project')
+    window._pdState.tab = next
     const wrap = document.getElementById('pdMemberFilterWrap')
-    const btnProj = document.getElementById('pdTabProject')
-    const btnMem = document.getElementById('pdTabMember')
-    if (wrap) wrap.classList.toggle('hidden', window._pdState.tab !== 'member')
-    if (btnProj) {
-      btnProj.classList.toggle('pd-tab-active', window._pdState.tab === 'project')
-      btnProj.setAttribute('aria-selected', window._pdState.tab === 'project' ? 'true' : 'false')
-    }
-    if (btnMem) {
-      btnMem.classList.toggle('pd-tab-active', window._pdState.tab === 'member')
-      btnMem.setAttribute('aria-selected', window._pdState.tab === 'member' ? 'true' : 'false')
+    const root = document.getElementById('projectDashboardRoot')
+    const statusPanel = document.getElementById('pdStatusPanel')
+    const stuck = document.getElementById('pdStuckOnlyWrap')
+    const statusBtn = document.getElementById('pdTabStatus')
+    if (wrap) wrap.classList.toggle('hidden', next !== 'member')
+    if (root) root.classList.toggle('hidden', next === 'status')
+    if (statusPanel) statusPanel.classList.toggle('hidden', next !== 'status')
+    if (stuck) stuck.classList.toggle('hidden', next === 'status')
+    if (statusBtn) statusBtn.classList.toggle('hidden', !canStatus)
+    ;[['pdTabProject', 'project'], ['pdTabMember', 'member'], ['pdTabStatus', 'status']].forEach(([id, name]) => {
+      const btn = document.getElementById(id)
+      if (!btn) return
+      const on = next === name
+      btn.classList.toggle('pd-tab-active', on)
+      btn.setAttribute('aria-selected', on ? 'true' : 'false')
+    })
+    if (next === 'status') {
+      if (typeof loadWeeklyReportConfig === 'function') loadWeeklyReportConfig()
+      if (typeof loadZaloOverdueConfig === 'function') loadZaloOverdueConfig()
+      return
     }
     if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
   }

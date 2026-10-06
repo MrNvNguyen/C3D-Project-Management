@@ -56,6 +56,50 @@ export function computeLegalCostA(
   return Math.round(beforeVat * fee / 100)
 }
 
+/** Giá trị đang dùng trên phiếu: override nếu có, không thì công thức. */
+export function legalCostAAmountInUse(
+  grossAmount: number,
+  vatPct: number,
+  storedPct: number | null | undefined,
+  amountOverride: number | null | undefined
+): number {
+  const formula = computeLegalCostA(grossAmount, vatPct, resolveLegalCostAPct(storedPct))
+  if (amountOverride == null || Number.isNaN(Number(amountOverride))) return formula
+  return Math.round(Number(amountOverride))
+}
+
+/** Tổng chỉ cộng phiếu Đã chi. Không cộng vào chi phí doanh thu. */
+export function sumSpentLegalCostA(rows: Array<{
+  spend_status?: string | null
+  amount_in_use: number
+}>): number {
+  return rows.reduce((sum, row) => {
+    if (row.spend_status !== 'spent') return sum
+    return sum + (Number(row.amount_in_use) || 0)
+  }, 0)
+}
+
+/** Ngày gắn Chi phí A vào năm tài chính: pending theo ngày đề nghị, còn lại ngày thu rồi ngày đề nghị. */
+export function legalCostAPaymentDate(row: {
+  status?: string | null
+  request_date?: string | null
+  paid_date?: string | null
+}): string {
+  const status = String(row.status || '')
+  const raw = status === 'pending' ? row.request_date : (row.paid_date || row.request_date)
+  return String(raw || '').slice(0, 10)
+}
+
+export function legalCostAInFiscalRange(
+  row: { status?: string | null; request_date?: string | null; paid_date?: string | null },
+  start: string,
+  end: string
+): boolean {
+  const day = legalCostAPaymentDate(row)
+  if (!day) return false
+  return day >= start.slice(0, 10) && day <= end.slice(0, 10)
+}
+
 /** Cộng dồn NT + TT trước VAT theo project_id (từ payment_requests). */
 export function aggregatePaymentsBeforeVat(
   rows: Array<{ project_id: number; amount?: number; paid_amount?: number; vat_pct?: number | null }>
@@ -204,6 +248,19 @@ function isoDateToday(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+function isoDay(value: string | null | undefined): string {
+  const day = String(value || '').slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : ''
+}
+
+/** Năm tài chính của doanh thu đồng bộ: ngày nghiệm thu, trống thì ngày nhập phiếu. */
+export function revenueSyncDate(input: {
+  request_date?: string | null
+  created_at?: string | null
+}): string {
+  return isoDay(input.request_date) || isoDay(input.created_at) || isoDateToday()
+}
+
 export function enrichPaymentMetrics(payment: {
   amount?: number
   paid_amount?: number
@@ -299,6 +356,7 @@ export async function syncPaymentToRevenue(
     notes: string | null
     vat_pct?: number | null
     request_date?: string | null
+    created_at?: string | null
   },
   userId: number
 ): Promise<number | null> {
@@ -328,14 +386,17 @@ export async function syncPaymentToRevenue(
     ? `[${payment.payment_phase}] ${payment.description}`
     : payment.description
   const revenueStatus = paymentStatusToRevenue(payment.status)
-  let revenueDate: string | null
-  if (status === 'processing') {
-    revenueDate = payment.request_date || isoDateToday()
-  } else if (status === 'partial' || status === 'paid') {
-    revenueDate = payment.paid_date || isoDateToday()
-  } else {
-    revenueDate = null
+  let enteredAt = payment.created_at || null
+  if (!enteredAt) {
+    const stamp = await db.prepare(
+      'SELECT created_at FROM payment_requests WHERE id = ?'
+    ).bind(payment.id).first() as { created_at?: string | null } | null
+    enteredAt = stamp?.created_at || null
   }
+  const revenueDate = revenueSyncDate({
+    request_date: payment.request_date,
+    created_at: enteredAt,
+  })
 
   let calcNote = ''
   if (vatPct > 0 && feePct > 0) {

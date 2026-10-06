@@ -277,6 +277,20 @@
     .badge-active { background: #dcfce7; color: #15803d; }
     .badge-planning { background: #dbeafe; color: #1d4ed8; }
     .badge-on_hold { background: #fef3c7; color: #92400e; }
+    .task-status-btn { background: none; border: 0; padding: 0; cursor: pointer; border-radius: 999px; }
+    .task-status-btn:hover .badge { outline: 2px solid #00A651; outline-offset: 1px; }
+    .task-status-menu {
+      position: fixed; z-index: 80; min-width: 148px; padding: 6px;
+      border-radius: 10px; background: var(--shell-surface); color: var(--shell-text);
+      border: 1px solid var(--shell-border); box-shadow: 0 8px 24px var(--shell-shadow);
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .task-status-option {
+      display: flex; align-items: center; width: 100%; background: transparent; border: 0;
+      border-radius: 8px; padding: 4px 6px; cursor: pointer; text-align: left;
+    }
+    .task-status-option:hover,
+    .task-status-option.is-current { background: var(--shell-row-hover); }
 
     /* ================================================================
        MISC UI
@@ -472,14 +486,25 @@
     html[data-theme="dark"] .text-gray-300 { color: #9fb0c4 !important; }
 
     /* Dark — trang Email thông báo: bỏ nền pastel, giữ chữ đọc được */
-    html[data-theme="dark"] #page-email-admin .bg-gradient-to-br {
+    html[data-theme="dark"] #page-email-admin .bg-gradient-to-br,
+    html[data-theme="dark"] #pdStatusPanel .bg-gradient-to-br {
       background-image: none !important;
       background-color: var(--shell-surface) !important;
     }
     html[data-theme="dark"] #page-email-admin .border-blue-200 { border-color: rgba(96, 165, 250, 0.45) !important; }
     html[data-theme="dark"] #page-email-admin .border-sky-300,
     html[data-theme="dark"] #page-email-admin .border-sky-100 { border-color: rgba(56, 189, 248, 0.4) !important; }
-    html[data-theme="dark"] #page-email-admin .border-orange-200 { border-color: rgba(251, 146, 60, 0.45) !important; }
+    html[data-theme="dark"] #page-email-admin .border-orange-200,
+    html[data-theme="dark"] #pdStatusPanel .border-orange-200 { border-color: rgba(251, 146, 60, 0.45) !important; }
+    html[data-theme="dark"] #pdStatusPanel .border-indigo-100 { border-color: rgba(129, 140, 248, 0.45) !important; }
+    html[data-theme="dark"] #pdStatusPanel .bg-indigo-50 { background-color: rgba(99, 102, 241, 0.16) !important; }
+    html[data-theme="dark"] #pdStatusPanel .text-indigo-600 { color: #c7d2fe !important; }
+    html[data-theme="dark"] #pdStatusPanel .hover\:text-indigo-800:hover { color: #e0e7ff !important; }
+    html[data-theme="dark"] #pdStatusPanel .text-green-600 { color: #86efac !important; }
+    html[data-theme="dark"] #pdStatusPanel .text-blue-600 { color: #93c5fd !important; }
+    html[data-theme="dark"] #pdStatusPanel .text-red-600,
+    html[data-theme="dark"] #pdStatusPanel .text-red-500 { color: #fca5a5 !important; }
+    html[data-theme="dark"] #pdStatusPanel .bg-gray-200 { background-color: rgba(255, 255, 255, 0.14) !important; }
     html[data-theme="dark"] #page-email-admin .border-green-200 { border-color: rgba(52, 211, 153, 0.4) !important; }
     html[data-theme="dark"] #page-email-admin .border-yellow-200 { border-color: rgba(250, 204, 21, 0.4) !important; }
     html[data-theme="dark"] #page-email-admin .bg-yellow-50 { background-color: rgba(250, 204, 21, 0.14) !important; }
@@ -1470,6 +1495,10 @@
     html[data-theme="dark"] .bg-red-50 { background: rgba(248, 113, 113, 0.12) !important; }
     html[data-theme="dark"] .bg-pink-50 { background: rgba(236, 72, 153, 0.12) !important; }
     html[data-theme="dark"] .bg-blue-50 { background: rgba(59, 130, 246, 0.12) !important; }
+    html[data-theme="dark"] #analytics-project-finance .bg-teal-50 { background: rgba(20, 184, 166, 0.16) !important; }
+    html[data-theme="dark"] #analytics-project-finance .text-teal-600 { color: #5eead4 !important; }
+    html[data-theme="dark"] #analytics-project-finance .bg-teal-50 .text-gray-600,
+    html[data-theme="dark"] #analytics-project-finance .bg-teal-50 .text-gray-400 { color: #ccfbf1 !important; }
     html[data-theme="dark"] #paymentSummaryCards .bg-amber-50 {
       background: rgba(251, 191, 36, 0.18) !important;
       border-color: rgba(252, 211, 77, 0.55) !important;
@@ -3198,7 +3227,7 @@
             <p class="text-gray-500 text-sm mt-1">Theo dõi tiến độ HSTK mọi dự án (chỉ đọc, không hiển thị tiền)</p>
           </div>
           <div class="flex flex-wrap gap-2 items-center">
-            <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <label id="pdStuckOnlyWrap" class="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" id="pdStuckOnly" onchange="loadProjectDashboardPage()"> Chỉ dự án đang vướng
             </label>
             <button class="btn-primary text-sm" onclick="loadProjectDashboardPage()"><i class="fas fa-sync mr-1"></i>Tải lại</button>
@@ -3207,6 +3236,124 @@
         <div class="flex gap-1 mb-3 border-b border-gray-200 dark:border-gray-700" id="pdTabBar" role="tablist">
           <button type="button" id="pdTabProject" class="pd-tab pd-tab-active" role="tab" aria-selected="true" onclick="setProjectDashboardTab('project')">Theo dự án</button>
           <button type="button" id="pdTabMember" class="pd-tab" role="tab" aria-selected="false" onclick="setProjectDashboardTab('member')">Theo thành viên</button>
+          <button type="button" id="pdTabStatus" class="pd-tab hidden" role="tab" aria-selected="false" onclick="setProjectDashboardTab('status')">Tình trạng thực hiện</button>
+        </div>
+        <div id="pdStatusPanel" class="hidden space-y-4">
+          <div class="card mb-6 border border-orange-200 bg-gradient-to-br from-orange-50 to-amber-50">
+            <div class="flex items-center gap-3 mb-4">
+              <div class="w-10 h-10 rounded-xl bg-orange-500 flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-bell text-white"></i>
+              </div>
+              <div class="flex-1">
+                <h3 class="font-bold text-gray-800">Gửi mail nhắc task quá hạn</h3>
+                <p class="text-xs text-gray-500">Gửi email đến nhân sự đang trễ task, leader của dự án đó, System Admin / Project Admin, và nhóm Zalo. Tự gửi Thứ 6 lúc 09:00, cùng giờ với báo cáo tuần.</p>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-3 items-center">
+              <button onclick="previewOverdueTasks()" class="btn-secondary flex items-center gap-2 text-sm">
+                <i class="fas fa-eye"></i> Xem trước danh sách
+              </button>
+              <button onclick="sendOverdueReminders()" class="btn-primary flex items-center gap-2 text-sm" style="background:#f97316;border-color:#f97316">
+                <i class="fas fa-paper-plane"></i> Gửi mail nhắc ngay
+              </button>
+              <span id="overdueReminderResult" class="text-xs text-gray-500 ml-2"></span>
+            </div>
+            <div class="mt-4 pt-3 border-t border-orange-200">
+              <p class="text-xs text-gray-600 mb-2">
+                <i class="fas fa-comment-dots mr-1"></i>
+                Nhóm Zalo nhận tin quá hạn:
+                <a id="zaloOverdueGroupLink" href="https://zalo.me/g/nquvtj706" target="_blank" rel="noopener" class="text-blue-600 hover:underline">zalo.me/g/nquvtj706</a>
+              </p>
+              <div class="flex flex-wrap gap-2 items-center">
+                <input id="zaloBotToken" type="password" class="input-field text-sm" style="width:220px" placeholder="Bot Token" autocomplete="off">
+                <input id="zaloGroupChatId" type="text" class="input-field text-sm" style="width:240px" placeholder="Chat ID nhóm" autocomplete="off">
+                <button type="button" onclick="saveZaloOverdueConfig()" class="btn-secondary text-sm">Lưu Zalo</button>
+                <button type="button" onclick="captureZaloGroupChat()" class="btn-secondary text-sm">Lấy Chat ID</button>
+                <span id="zaloOverdueStatus" class="text-xs text-gray-500"></span>
+              </div>
+              <p class="text-xs text-gray-400 mt-2">Tạo bot trên Zalo, mời bot vào nhóm, gửi một tin bất kỳ, rồi bấm Lấy Chat ID. Để trống token khi lưu nếu muốn giữ token cũ.</p>
+            </div>
+            <div id="overduePreviewList" class="hidden mt-4 overflow-x-auto">
+              <table class="w-full text-xs">
+                <thead><tr class="text-left text-gray-400 border-b text-xs uppercase">
+                  <th class="pb-2 pr-3">Task</th>
+                  <th class="pb-2 pr-3">Dự án</th>
+                  <th class="pb-2 pr-3">Phụ trách</th>
+                  <th class="pb-2 pr-3">Email</th>
+                  <th class="pb-2 pr-3">Hạn</th>
+                  <th class="pb-2">TT</th>
+                </tr></thead>
+                <tbody id="overduePreviewTbody" class="divide-y"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card" id="weeklyReportCard">
+            <div class="flex items-center gap-3 mb-4">
+              <i class="fas fa-chart-bar text-indigo-500 text-lg"></i>
+              <div>
+                <h3 class="font-bold text-gray-800">Báo cáo Task Hàng Tuần</h3>
+                <p class="text-xs text-gray-400 mt-0.5">Tổng hợp trạng thái task. Tự gửi Thứ 6 lúc 09:00 cho leader dự án, System Admin và Project Admin.</p>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-4 mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <div class="relative">
+                  <input type="checkbox" id="weeklyReportEnabled" class="sr-only peer" checked>
+                  <div class="w-10 h-5 bg-gray-300 rounded-full peer-checked:bg-indigo-500 transition-colors"></div>
+                  <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
+                </div>
+                <span class="text-sm font-medium text-gray-700">Bật báo cáo tuần</span>
+              </label>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-gray-500 font-medium whitespace-nowrap">Ngày gửi:</label>
+                <select id="weeklyReportDay" class="select-field text-sm py-1.5" style="width:130px">
+                  <option value="1">Thứ 2</option>
+                  <option value="2">Thứ 3</option>
+                  <option value="3">Thứ 4</option>
+                  <option value="4">Thứ 5</option>
+                  <option value="5" selected>Thứ 6</option>
+                  <option value="6">Thứ 7</option>
+                  <option value="0">Chủ nhật</option>
+                </select>
+              </div>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-gray-500 font-medium whitespace-nowrap">Lúc:</label>
+                <select id="weeklyReportHour" class="select-field text-sm py-1.5" style="width:90px">
+                  <option value="7">07:00</option>
+                  <option value="8">08:00</option>
+                  <option value="9" selected>09:00</option>
+                  <option value="10">10:00</option>
+                  <option value="12">12:00</option>
+                  <option value="17">17:00</option>
+                </select>
+              </div>
+              <button onclick="saveWeeklyReportConfig()" class="btn-primary text-sm px-3 py-1.5">
+                <i class="fas fa-save mr-1"></i>Lưu cấu hình
+              </button>
+            </div>
+            <div class="mb-3">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-semibold text-gray-600 uppercase tracking-wide">Xem trước — Thống kê task hiện tại</span>
+                <button onclick="loadWeeklyReportConfig()" class="text-xs text-indigo-600 hover:text-indigo-800">
+                  <i class="fas fa-sync-alt mr-1"></i>Làm mới
+                </button>
+              </div>
+              <div id="weeklyReportPreview">
+                <p class="text-xs text-gray-400 py-4 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-3 pt-3 border-t border-gray-100">
+              <button id="btnSendWeeklyReport" onclick="sendWeeklyReportNow()"
+                class="btn-primary flex items-center gap-2 text-sm" style="background:#6366f1;border-color:#6366f1">
+                <i class="fas fa-paper-plane"></i>Gửi báo cáo ngay
+              </button>
+              <span id="weeklyReportResult" class="text-xs text-gray-500"></span>
+            </div>
+            <p class="text-xs text-gray-400 mt-3 flex items-start gap-1.5">
+              <i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>
+              Mặc định <strong class="text-gray-600">Thứ 6 lúc 09:00</strong>: mail nhắc người đang trễ task (kèm nhóm Zalo) và báo cáo tuần cho leader dự án cùng System Admin / Project Admin.
+            </p>
+          </div>
         </div>
         <div id="pdMemberFilterWrap" class="mb-3 hidden">
           <label class="block text-xs text-gray-500 mb-1">Thành viên</label>
@@ -5013,41 +5160,6 @@
           </div>
         </div>
 
-        <!-- Overdue Reminder Card -->
-        <div class="card mb-6 border border-orange-200 bg-gradient-to-br from-orange-50 to-amber-50">
-          <div class="flex items-center gap-3 mb-4">
-            <div class="w-10 h-10 rounded-xl bg-orange-500 flex items-center justify-center flex-shrink-0">
-              <i class="fas fa-bell text-white"></i>
-            </div>
-            <div class="flex-1">
-              <h3 class="font-bold text-gray-800">Gửi mail nhắc task quá hạn</h3>
-              <p class="text-xs text-gray-500">Gửi email ⚠️ đến đúng nhân sự phụ trách các task đã quá deadline, chưa hoàn thành</p>
-            </div>
-          </div>
-          <div class="flex flex-wrap gap-3 items-center">
-            <button onclick="previewOverdueTasks()" class="btn-secondary flex items-center gap-2 text-sm">
-              <i class="fas fa-eye"></i> Xem trước danh sách
-            </button>
-            <button onclick="sendOverdueReminders()" class="btn-primary flex items-center gap-2 text-sm" style="background:#f97316;border-color:#f97316">
-              <i class="fas fa-paper-plane"></i> Gửi mail nhắc ngay
-            </button>
-            <span id="overdueReminderResult" class="text-xs text-gray-500 ml-2"></span>
-          </div>
-          <div id="overduePreviewList" class="hidden mt-4 overflow-x-auto">
-            <table class="w-full text-xs">
-              <thead><tr class="text-left text-gray-400 border-b text-xs uppercase">
-                <th class="pb-2 pr-3">Task</th>
-                <th class="pb-2 pr-3">Dự án</th>
-                <th class="pb-2 pr-3">Phụ trách</th>
-                <th class="pb-2 pr-3">Email</th>
-                <th class="pb-2 pr-3">Hạn</th>
-                <th class="pb-2">TT</th>
-              </tr></thead>
-              <tbody id="overduePreviewTbody" class="divide-y"></tbody>
-            </table>
-          </div>
-        </div>
-
         <!-- Setup Guide -->
         <div class="card mb-6 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200">
           <!-- Header có nút toggle -->
@@ -5416,90 +5528,6 @@
                 Email được gửi tự động đến địa chỉ email của từng nhân sự. Cập nhật email tại <strong class="text-gray-500">Nhân sự → Chỉnh sửa → Email</strong>.
               </p>
             </div>
-
-            <!-- ===== WEEKLY TASK REPORT ===== -->
-            <div class="card hidden" id="weeklyReportCard">
-              <div class="flex items-center gap-3 mb-4">
-                <i class="fas fa-chart-bar text-indigo-500 text-lg"></i>
-                <div>
-                  <h3 class="font-bold text-gray-800">Báo cáo Task Hàng Tuần</h3>
-                  <p class="text-xs text-gray-400 mt-0.5">Tổng hợp trạng thái task toàn bộ nhân sự, gửi tự động đến System Admin</p>
-                </div>
-              </div>
-
-              <!-- Config row -->
-              <div class="flex flex-wrap items-center gap-4 mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
-                <!-- Toggle bật/tắt -->
-                <label class="flex items-center gap-2 cursor-pointer">
-                  <div class="relative">
-                    <input type="checkbox" id="weeklyReportEnabled" class="sr-only peer" checked>
-                    <div class="w-10 h-5 bg-gray-300 rounded-full peer-checked:bg-indigo-500 transition-colors"></div>
-                    <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
-                  </div>
-                  <span class="text-sm font-medium text-gray-700">Bật báo cáo tuần</span>
-                </label>
-
-                <!-- Ngày gửi -->
-                <div class="flex items-center gap-2">
-                  <label class="text-xs text-gray-500 font-medium whitespace-nowrap">Ngày gửi:</label>
-                  <select id="weeklyReportDay" class="select-field text-sm py-1.5" style="width:130px">
-                    <option value="1">Thứ 2</option>
-                    <option value="2">Thứ 3</option>
-                    <option value="3">Thứ 4</option>
-                    <option value="4">Thứ 5</option>
-                    <option value="5" selected>Thứ 6</option>
-                    <option value="6">Thứ 7</option>
-                    <option value="0">Chủ nhật</option>
-                  </select>
-                </div>
-
-                <!-- Giờ gửi -->
-                <div class="flex items-center gap-2">
-                  <label class="text-xs text-gray-500 font-medium whitespace-nowrap">Lúc:</label>
-                  <select id="weeklyReportHour" class="select-field text-sm py-1.5" style="width:90px">
-                    <option value="7">07:00</option>
-                    <option value="8" selected>08:00</option>
-                    <option value="9">09:00</option>
-                    <option value="10">10:00</option>
-                    <option value="12">12:00</option>
-                    <option value="17">17:00</option>
-                  </select>
-                </div>
-
-                <!-- Lưu config -->
-                <button onclick="saveWeeklyReportConfig()" class="btn-primary text-sm px-3 py-1.5">
-                  <i class="fas fa-save mr-1"></i>Lưu cấu hình
-                </button>
-              </div>
-
-              <!-- Preview thống kê hiện tại -->
-              <div class="mb-3">
-                <div class="flex items-center justify-between mb-2">
-                  <span class="text-xs font-semibold text-gray-600 uppercase tracking-wide">📊 Xem trước — Thống kê task hiện tại</span>
-                  <button onclick="loadWeeklyReportConfig()" class="text-xs text-indigo-600 hover:text-indigo-800">
-                    <i class="fas fa-sync-alt mr-1"></i>Làm mới
-                  </button>
-                </div>
-                <div id="weeklyReportPreview">
-                  <p class="text-xs text-gray-400 py-4 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</p>
-                </div>
-              </div>
-
-              <!-- Gửi ngay -->
-              <div class="flex items-center gap-3 pt-3 border-t border-gray-100">
-                <button id="btnSendWeeklyReport" onclick="sendWeeklyReportNow()"
-                  class="btn-primary flex items-center gap-2 text-sm" style="background:#6366f1;border-color:#6366f1">
-                  <i class="fas fa-paper-plane"></i>Gửi báo cáo ngay
-                </button>
-                <span id="weeklyReportResult" class="text-xs text-gray-500"></span>
-              </div>
-
-              <p class="text-xs text-gray-400 mt-3 flex items-start gap-1.5">
-                <i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>
-                Báo cáo được gửi tự động mỗi <strong class="text-gray-600">Thứ 6</strong> đến tất cả System Admin có email. Nhấn "Gửi báo cáo ngay" để gửi thủ công bất kỳ lúc nào.
-              </p>
-            </div>
-            <!-- ===== END WEEKLY TASK REPORT ===== -->
 
             <!-- ===== END EMAIL SETTINGS ===== -->
 
@@ -8991,8 +9019,8 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261002d"></script>
-<script src="/static/design-hstk.js?v=20261001p"></script>
+<script src="/static/app.js?v=20261006c"></script>
+<script src="/static/design-hstk.js?v=20261006a"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
@@ -9465,6 +9493,136 @@
     color: #1e293b;
     background: #fff;
   }
+
+  /* Dark — form khai timesheet: chip ngày và chế độ khai báo không để chữ sáng trên nền trắng */
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label {
+    background: var(--shell-input-bg) !important;
+    border-color: var(--shell-border-strong) !important;
+    color: var(--shell-text) !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label span {
+    color: var(--shell-text) !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(input:checked) {
+    background: rgba(16, 185, 129, 0.28) !important;
+    border-color: #4ade80 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(input:checked) span {
+    color: #bbf7d0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(span.text-orange-700) {
+    border-color: #fb923c !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(span.text-orange-700) span {
+    color: #fdba74 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(span.text-orange-700):has(input:checked) {
+    background: rgba(234, 88, 12, 0.35) !important;
+    border-color: #fdba74 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(span.text-orange-700):has(input:checked) span {
+    color: #ffedd5 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWorkFields > .flex.items-center.gap-3 {
+    background: var(--shell-input-bg) !important;
+    border-color: var(--shell-border-strong) !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWorkFields > .flex.items-center.gap-3 span {
+    color: var(--shell-text) !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskRows > div {
+    background: #1e293b !important;
+    border-color: #4d6380 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskRows input[id^="tsMultiReg_"] {
+    background: rgba(37, 99, 235, 0.22) !important;
+    color: #dbeafe !important;
+    border-color: #60a5fa !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskRows input[id^="tsMultiOT_"] {
+    background: rgba(234, 88, 12, 0.22) !important;
+    color: #ffedd5 !important;
+    border-color: #fb923c !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskBlock > .flex > button {
+    background: rgba(99, 102, 241, 0.22) !important;
+    color: #e0e7ff !important;
+    border-color: #818cf8 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList > .rounded-lg {
+    background: #1e293b !important;
+    border-color: #4d6380 !important;
+    color: #e2e8f0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList > div[style*="fff7ed"] {
+    background: rgba(234, 88, 12, 0.22) !important;
+    border-color: #fb923c !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-gray-700,
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-gray-500,
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList label {
+    color: #e2e8f0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-blue-500 { color: #93c5fd !important; }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-orange-500,
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-orange-700 { color: #fdba74 !important; }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-indigo-600 { color: #c7d2fe !important; }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .bg-orange-100 {
+    background: rgba(234, 88, 12, 0.35) !important;
+    color: #ffedd5 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .bg-gray-100 {
+    background: rgba(255, 255, 255, 0.08) !important;
+    color: #e2e8f0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .bg-amber-100 {
+    background: rgba(245, 158, 11, 0.28) !important;
+    color: #fde68a !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekBanner {
+    background: rgba(16, 185, 129, 0.18) !important;
+    border-color: #4ade80 !important;
+    color: #bbf7d0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekBanner span {
+    color: #bbf7d0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsLeaveNotice {
+    background: rgba(245, 158, 11, 0.18) !important;
+    border-color: #fbbf24 !important;
+    color: #fde68a !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsLeaveNotice span {
+    color: #fde68a !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsDateHint {
+    background: rgba(245, 158, 11, 0.16) !important;
+    border-color: #fbbf24 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsDateHintRemain { color: #86efac !important; }
+  html[data-theme="dark"] #timesheetModal #tsDateHintProjects { color: #fde68a !important; }
+  html[data-theme="dark"] #timesheetModal #tsTaskLockHint,
+  html[data-theme="dark"] #timesheetModal #tsTaskLockHint span { color: #fcd34d !important; }
+  html[data-theme="dark"] #timesheetModal #tsTaskCategoryBadgeText {
+    background: rgba(59, 130, 246, 0.22) !important;
+    color: #bfdbfe !important;
+    border-color: #60a5fa !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskBlock > div[style*="border-top"] {
+    border-top-color: #4d6380 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskRows button[title="Xóa dòng này"]:hover {
+    background: rgba(248, 113, 113, 0.22) !important;
+    color: #fecaca !important;
+  }
+  html[data-theme="dark"] #tsBulkModal .flex.items-center.gap-4.p-3 {
+    background: var(--shell-input-bg) !important;
+    border-color: var(--shell-border-strong) !important;
+  }
+  html[data-theme="dark"] #tsBulkModal .flex.items-center.gap-4.p-3 span {
+    color: var(--shell-text) !important;
+  }
+  html[data-theme="dark"] #tsBulkModal .text-indigo-600 { color: #c7d2fe !important; }
 
   /* ── Timesheet weekend row highlight ── */
   /* Thứ 7: nền cam nhạt (250,192,144) */

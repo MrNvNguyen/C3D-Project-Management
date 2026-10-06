@@ -17,8 +17,11 @@ import {
   calendarPairsSpan,
   computeBookedRevenue,
   computeLegalCostA,
+  legalCostAAmountInUse,
+  legalCostAInFiscalRange,
   legalCostAFormulaLabel,
   resolveLegalCostAPct,
+  sumSpentLegalCostA,
   computeMonthLaborCost as computeMonthLaborCostCore,
   computeProjectBudget,
   computeProjectLaborFromTimesheets,
@@ -90,6 +93,9 @@ type Bindings = {
   CF_EMAIL_API_TOKEN?: string
   /** Optional. When set, the assistant may call a model once per question. */
   AI_API_KEY?: string
+  /** Zalo Bot token. UI lưu trong system_config; biến này là dự phòng. */
+  ZALO_BOT_TOKEN?: string
+  ZALO_GROUP_CHAT_ID?: string
 }
 
 // ===================================================
@@ -682,6 +688,36 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       }
     }
 
+    case 'overdue_leader_digest': {
+      const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const list = (data.tasks || []) as any[]
+      const rows = list.map((t) => `
+        <tr>
+          <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${esc(t.title)}</td>
+          <td style="padding:6px 8px;font-size:13px;color:#4b5563;">${esc(t.projectName)}</td>
+          <td style="padding:6px 8px;font-size:13px;color:#4b5563;">${esc(t.assigneeName)}</td>
+          <td style="padding:6px 8px;font-size:13px;color:#dc2626;font-weight:700;">${esc(t.deadline)} (+${t.daysOverdue || 0} ngày)</td>
+        </tr>`).join('')
+      const more = data.hiddenCount > 0 ? `<p style="font-size:12px;color:#6b7280;">Và ${data.hiddenCount} task quá hạn khác.</p>` : ''
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;">Xin chào <strong>${esc(data.recipientName)}</strong>,</p>
+        <p style="margin:0 0 12px 0;color:#6b7280;font-size:14px;">Các task quá hạn trong phạm vi <strong>${esc(data.scopeLabel || 'của bạn')}</strong>:</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr style="background:#fef2f2;">
+            <th style="padding:6px 8px;text-align:left;font-size:12px;">Task</th>
+            <th style="padding:6px 8px;text-align:left;font-size:12px;">Dự án</th>
+            <th style="padding:6px 8px;text-align:left;font-size:12px;">Phụ trách</th>
+            <th style="padding:6px 8px;text-align:left;font-size:12px;">Hạn</th>
+          </tr>
+          ${rows}
+        </table>
+        ${more}`
+      return {
+        subject: `[OneCad BIM] ⚠️ ${data.total || list.length} task quá hạn — ${data.scopeLabel || 'nhắc leader'}`,
+        html: emailBase('⚠️ Task quá hạn cần xử lý', body)
+      }
+    }
+
     default:
       return { subject: '[OneCad BIM] Thông báo mới', html: emailBase('Thông báo', '<p>Bạn có thông báo mới từ OneCad BIM.</p>') }
 
@@ -818,13 +854,20 @@ async function countResendSentToday(db: D1Database): Promise<number> {
   }
 }
 
+function normalizeEmailSecret(raw: string | undefined | null) {
+  let value = String(raw || '').trim()
+  if (/^bearer\s+/i.test(value)) value = value.replace(/^bearer\s+/i, '').trim()
+  if (!value || value.includes('****')) return ''
+  return value
+}
+
 async function resolveCloudflareEmailCreds(
   env: Bindings,
   db: D1Database
 ): Promise<{ accountId: string; apiToken: string } | null> {
   const cfg = await getSystemConfigMap(db, ['cloudflare_account_id', 'cloudflare_email_api_token'])
-  const accountId = (env.CF_ACCOUNT_ID || cfg.cloudflare_account_id || '').trim()
-  const apiToken = (env.CF_EMAIL_API_TOKEN || cfg.cloudflare_email_api_token || '').trim()
+  const accountId = (cfg.cloudflare_account_id || env.CF_ACCOUNT_ID || '').trim()
+  const apiToken = normalizeEmailSecret(cfg.cloudflare_email_api_token) || normalizeEmailSecret(env.CF_EMAIL_API_TOKEN)
   if (!accountId || !apiToken) return null
   return { accountId, apiToken }
 }
@@ -973,7 +1016,8 @@ async function sendEmail(env: Bindings, opts: {
     return 'skipped'
   }
 
-  let apiKey = env.RESEND_API_KEY || cfg.resend_api_key || ''
+  const resendKeys = [normalizeEmailSecret(cfg.resend_api_key), normalizeEmailSecret(env.RESEND_API_KEY)].filter((key, i, all) => key && all.indexOf(key) === i)
+  const apiKey = resendKeys[0] || ''
   const fromName = (cfg.email_from_name || DEFAULT_EMAIL_FROM_NAME).trim() || DEFAULT_EMAIL_FROM_NAME
   const fromAddress = (cfg.email_from_address || DEFAULT_EMAIL_FROM_ADDRESS).trim() || DEFAULT_EMAIL_FROM_ADDRESS
   const fromHeader = `${fromName} <${fromAddress}>`
@@ -1004,26 +1048,50 @@ async function sendEmail(env: Bindings, opts: {
 
   try {
     if (useResend) {
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: fromHeader,
-          to: [opts.to],
+      let resendOk = false
+      let lastStatus = 0
+      let lastErr = ''
+      for (const key of resendKeys) {
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: fromHeader,
+            to: [opts.to],
+            subject,
+            html,
+          }),
+        })
+        if (res.ok) {
+          resendOk = true
+          console.log(`[sendEmail] Resend SUCCESS to=${opts.to} event=${opts.eventType}`)
+          break
+        }
+        lastStatus = res.status
+        lastErr = (await res.text()).slice(0, 500)
+        console.log(`[sendEmail] Resend FAILED HTTP ${res.status}: ${lastErr}`)
+        if (res.status !== 401 && res.status !== 403) break
+      }
+      if (!resendOk && cfCreds && (lastStatus === 401 || lastStatus === 403)) {
+        provider = 'cloudflare'
+        await sendViaCloudflareRest(cfCreds, {
+          to: opts.to,
+          toName: opts.toName,
+          fromAddress,
+          fromName,
           subject,
           html,
-        }),
-      })
-      if (!res.ok) {
-        const err = await res.text()
+          text: plainText || subject,
+        })
+        console.log(`[sendEmail] Cloudflare REST SUCCESS after Resend auth failure to=${opts.to} event=${opts.eventType}`)
+      } else if (!resendOk) {
         status = 'failed'
-        errorMsg = err.slice(0, 500)
-        console.log(`[sendEmail] Resend FAILED HTTP ${res.status}: ${errorMsg}`)
-      } else {
-        console.log(`[sendEmail] Resend SUCCESS to=${opts.to} event=${opts.eventType}`)
+        errorMsg = lastStatus === 401 || lastStatus === 403
+          ? 'Resend từ chối API key. Nhập lại khóa trong Cấu hình hệ thống, hoặc bật Cloudflare Email.'
+          : lastErr
       }
     } else {
       await sendViaCloudflareRest(cfCreds!, {
@@ -4045,6 +4113,19 @@ function isSundayIsoDate(isoDate: string): boolean {
   return weekdayOfIsoDate(isoDate) === 0
 }
 
+/** Tuần T2–CN chứa ngày ISO. */
+function weekBoundsOfIsoDate(isoDate: string): { start: string; end: string } | null {
+  const dow = weekdayOfIsoDate(isoDate)
+  if (dow < 0) return null
+  const [y, m, d] = isoDate.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0))
+  const mondayOffset = dow === 0 ? -6 : 1 - dow
+  dt.setUTCDate(dt.getUTCDate() + mondayOffset)
+  const start = dt.toISOString().slice(0, 10)
+  dt.setUTCDate(dt.getUTCDate() + 6)
+  return { start, end: dt.toISOString().slice(0, 10) }
+}
+
 type TimesheetDayBudget = {
   dayCap: number
   usedReg: number
@@ -4058,6 +4139,8 @@ type TimesheetDayBudget = {
   leaveHint?: string
   /** Chủ nhật: không tính HC, chỉ OT */
   isSunday?: boolean
+  /** Thứ 7: tuần làm hoặc tuần nghỉ — OT không bắt buộc đủ HC */
+  isSaturday?: boolean
 }
 
 /** Ngân sách giờ HC trong ngày: nghỉ cả ngày → chặn; nửa ngày → cap 4h; CN → 0h HC; còn lại 8h − đã khai. */
@@ -4072,7 +4155,9 @@ async function getTimesheetDayBudget(
   } = {}
 ): Promise<TimesheetDayBudget> {
   const isSunday = isSundayIsoDate(workDate)
+  const isSaturday = weekdayOfIsoDate(workDate) === 6
   // Chủ nhật: không có giờ hành chính — chỉ OT (dayCap=0 → ot_requires_hc không chặn)
+  // Thứ 7: vẫn có trần HC 8h, nhưng OT không bắt buộc đủ HC (tuần làm / tuần nghỉ)
   let dayCap = isSunday ? 0 : 8
   let blocked = false
   let blockReason: string | undefined
@@ -4168,7 +4253,7 @@ async function getTimesheetDayBudget(
 
   return {
     dayCap, usedReg, remaining, usedOt, remainingOt, hcFilled,
-    blocked, blockReason, leaveHint, isSunday,
+    blocked, blockReason, leaveHint, isSunday, isSaturday,
   }
 }
 
@@ -4203,14 +4288,14 @@ function validateTimesheetHoursAgainstBudget(
     }
   }
   if (totalOT > 0.001) {
-    // OT chỉ sau khi đủ HC — trừ Chủ nhật (dayCap=0): được khai OT ngay
+    // OT chỉ sau khi đủ HC — trừ Chủ nhật (dayCap=0) và Thứ 7 (tuần làm / tuần nghỉ)
     // Dùng ?? không dùng || — dayCap=0 phải giữ 0 (tránh || 8)
     const dayCap = Number(budget.dayCap ?? 8)
     const used = Number(budget.usedReg) || 0
     const reg = Number(totalReg) || 0
     const ot = Number(totalOT) || 0
     const hcAfter = used + reg
-    if (dayCap > 0 && hcAfter < dayCap - 0.001) {
+    if (!budget.isSaturday && dayCap > 0 && hcAfter < dayCap - 0.001) {
       const need = Math.max(0, +(dayCap - hcAfter).toFixed(2))
       return {
         error: `Chỉ được khai OT khi đã đủ ${dayCap}h hành chính trong ngày. Hiện còn thiếu ${need}h HC (đã có ${used}h + đang nhập ${reg}h HC).`,
@@ -4241,6 +4326,94 @@ function validateTimesheetHoursAgainstBudget(
   return null
 }
 
+/** Việc được giao trong tuần: kế hoạch tuần trước, không có thì task assigned_to có hạn trong tuần. */
+async function findWeekAssignment(
+  db: D1Database,
+  userId: number,
+  workDate: string
+): Promise<{ project_id: number; category_id: number | null; task_id: number | null; source: string } | null> {
+  const bounds = weekBoundsOfIsoDate(workDate)
+  if (!bounds) return null
+
+  const planRow = await db.prepare(`
+    SELECT wp.project_id AS project_id,
+           wpi.linked_task_id AS task_id,
+           wpi.category AS category_name,
+           t.category_id AS task_category_id,
+           t.project_id AS task_project_id
+    FROM weekly_plan_items wpi
+    JOIN weekly_plans wp ON wp.id = wpi.plan_id
+    LEFT JOIN tasks t ON t.id = wpi.linked_task_id
+    WHERE wp.week_start <= ? AND wp.week_end >= ?
+      AND EXISTS (
+        SELECT 1 FROM json_each(CASE WHEN json_valid(wpi.assignee_ids) THEN wpi.assignee_ids ELSE '[]' END) je
+        WHERE CAST(je.value AS INTEGER) = ?
+      )
+    ORDER BY
+      CASE WHEN wpi.target_date = ? THEN 0 WHEN wpi.target_date IS NULL OR wpi.target_date = '' THEN 1 ELSE 2 END,
+      wpi.sort_order,
+      wpi.id
+    LIMIT 1
+  `).bind(bounds.end, bounds.start, userId, workDate).first() as any
+
+  if (planRow?.project_id) {
+    const projectId = Number(planRow.task_project_id) || Number(planRow.project_id)
+    let categoryId = planRow.task_category_id != null ? Number(planRow.task_category_id) : null
+    const taskId = planRow.task_id != null ? Number(planRow.task_id) : null
+    if (categoryId == null && planRow.category_name) {
+      const cat = await db.prepare(`
+        SELECT id FROM categories
+        WHERE project_id = ? AND (name = ? OR code = ?)
+        LIMIT 1
+      `).bind(projectId, planRow.category_name, planRow.category_name).first() as { id?: number } | null
+      if (cat?.id) categoryId = Number(cat.id)
+    }
+    return { project_id: projectId, category_id: categoryId, task_id: taskId, source: 'weekly_plan' }
+  }
+
+  const taskRow = await db.prepare(`
+    SELECT id AS task_id, project_id, category_id
+    FROM tasks
+    WHERE assigned_to = ?
+      AND status NOT IN ('cancelled', 'completed')
+      AND (
+        (due_date IS NOT NULL AND due_date >= ? AND due_date <= ?)
+        OR (start_date IS NOT NULL AND start_date >= ? AND start_date <= ?)
+      )
+    ORDER BY
+      CASE WHEN due_date = ? THEN 0 WHEN start_date = ? THEN 1 ELSE 2 END,
+      due_date ASC,
+      id ASC
+    LIMIT 1
+  `).bind(userId, bounds.start, bounds.end, bounds.start, bounds.end, workDate, workDate).first() as any
+
+  if (!taskRow?.project_id) return null
+  return {
+    project_id: Number(taskRow.project_id),
+    category_id: taskRow.category_id != null ? Number(taskRow.category_id) : null,
+    task_id: Number(taskRow.task_id),
+    source: 'task',
+  }
+}
+
+/** GET /api/timesheets/week-assignment?work_date=&user_id= — dự án/hạng mục/task được giao trong tuần */
+app.get('/api/timesheets/week-assignment', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const workDate = String(c.req.query('work_date') || '').trim()
+    if (!workDate) return c.json({ error: 'work_date required' }, 400)
+    const effRole = await getEffectiveRole(db, user)
+    const canOther = effRole === 'system_admin' || effRole === 'project_admin'
+    const qUser = parseInt(c.req.query('user_id') || '', 10)
+    const targetUserId = (canOther && Number.isFinite(qUser)) ? qUser : user.id
+    const assignment = await findWeekAssignment(db, targetUserId, workDate)
+    return c.json(assignment || { project_id: null, category_id: null, task_id: null, source: null })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 /** GET /api/timesheets/day-budget?work_date=&user_id= — gợi ý UI còn bao nhiêu giờ HC / OT */
 app.get('/api/timesheets/day-budget', authMiddleware, async (c) => {
   try {
@@ -4263,7 +4436,7 @@ app.get('/api/timesheets/day-budget', authMiddleware, async (c) => {
     return c.json({
       ...budget,
       max_ot: TS_MAX_OT_PER_DAY,
-      ot_allowed: !budget.blocked && budget.hcFilled,
+      ot_allowed: !budget.blocked && (budget.dayCap <= 0 || !!budget.isSaturday || budget.hcFilled),
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -8509,7 +8682,7 @@ app.get('/api/system-config', authMiddleware, adminOnly, async (c) => {
     // Mask API key value for security
     const configs: Record<string, any> = {}
     for (const row of (rows.results as any[])) {
-      if ((row.key === 'resend_api_key' || row.key === 'cloudflare_email_api_token') && row.value) {
+      if ((row.key === 'resend_api_key' || row.key === 'cloudflare_email_api_token' || row.key === 'zalo_bot_token') && row.value) {
         const v = String(row.value)
         const masked = v.length > 12 ? v.slice(0, 6) + '****' + v.slice(-4) : '****'
         configs[row.key] = { value: masked, description: row.description, updated_at: row.updated_at, configured: true }
@@ -8536,13 +8709,16 @@ app.put('/api/system-config', authMiddleware, adminOnly, async (c) => {
       'resend_daily_limit', 'cloudflare_email_enabled',
       'cloudflare_account_id', 'cloudflare_email_api_token',
       'weekly_report_enabled', 'weekly_report_day', 'weekly_report_hour',
+      'zalo_bot_token', 'zalo_group_chat_id',
     ]
     
     for (const [key, value] of Object.entries(data)) {
       if (!allowedKeys.includes(key)) continue
+      if ((key === 'resend_api_key' || key === 'cloudflare_email_api_token' || key === 'zalo_bot_token') && String(value || '').includes('****')) continue
+      const stored = (key === 'resend_api_key' || key === 'cloudflare_email_api_token' || key === 'zalo_bot_token') ? String(value || '').trim() : value
       await db.prepare(
         'INSERT OR REPLACE INTO system_config (key, value, updated_by, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)'
-      ).bind(key, value, user.id).run()
+      ).bind(key, stored, user.id).run()
     }
     return c.json({ success: true, message: 'Cấu hình đã được lưu' })
   } catch (e: any) {
@@ -9594,20 +9770,152 @@ app.post('/api/admin/dedup-tasks', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+function daysOverdueOf(dueDate: string) {
+  const due = new Date(dueDate + 'T00:00:00Z')
+  const vn = new Date(Date.now() + 7 * 3600 * 1000)
+  const today = Date.UTC(vn.getUTCFullYear(), vn.getUTCMonth(), vn.getUTCDate())
+  return Math.max(0, Math.floor((today - due.getTime()) / 86400000))
+}
+
+/** Mail tổng hợp quá hạn cho leader dự án và System Admin / Project Admin. */
+async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[]) {
+  if (!tasks.length) return 0
+  const leaders = await db.prepare(`
+    SELECT DISTINCT u.id, u.full_name, u.email, u.role
+    FROM users u
+    WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
+      AND (
+        u.role IN ('system_admin', 'project_admin')
+        OR u.id IN (SELECT leader_id FROM projects WHERE leader_id IS NOT NULL)
+        OR u.id IN (SELECT user_id FROM project_members WHERE role IN ('project_leader', 'leader'))
+      )
+  `).all()
+  const scopeRows = await db.prepare(`
+    SELECT leader_id AS user_id, id AS project_id FROM projects WHERE leader_id IS NOT NULL
+    UNION
+    SELECT user_id, project_id FROM project_members WHERE role IN ('project_leader', 'leader')
+  `).all()
+  const scope = new Map<number, Set<number>>()
+  for (const row of scopeRows.results as any[]) {
+    const uid = Number(row.user_id)
+    if (!scope.has(uid)) scope.set(uid, new Set())
+    scope.get(uid)!.add(Number(row.project_id))
+  }
+  let sent = 0
+  for (const leader of leaders.results as any[]) {
+    const appWide = leader.role === 'system_admin' || leader.role === 'project_admin'
+    const mine = scope.get(Number(leader.id))
+    const scoped = appWide ? tasks : tasks.filter(t => mine?.has(Number(t.project_id)))
+    if (!scoped.length) continue
+    const shown = scoped.slice(0, 30).map(t => ({
+      title: t.title,
+      projectName: `${t.project_code || ''} – ${t.project_name || ''}`.trim(),
+      assigneeName: t.assignee_name,
+      deadline: t.due_date,
+      daysOverdue: daysOverdueOf(t.due_date),
+    }))
+    try {
+      await sendEmail(env, {
+        to: leader.email,
+        toName: leader.full_name,
+        eventType: 'overdue_leader_digest',
+        data: {
+          recipientName: leader.full_name,
+          scopeLabel: appWide ? 'toàn công ty' : 'dự án bạn phụ trách',
+          tasks: shown,
+          total: scoped.length,
+          hiddenCount: Math.max(0, scoped.length - shown.length),
+        },
+        db,
+        userId: leader.id,
+        relatedType: 'system',
+        relatedId: 0,
+      })
+      sent++
+    } catch (_) { /* một leader lỗi không chặn các mail còn lại */ }
+  }
+  return sent
+}
+
+const ZALO_OVERDUE_GROUP_URL = 'https://zalo.me/g/nquvtj706'
+
+async function readZaloOverdueConfig(env: Bindings, db: D1Database) {
+  const rows = await db.prepare(
+    `SELECT key, value FROM system_config WHERE key IN ('zalo_bot_token','zalo_group_chat_id')`
+  ).all()
+  const map: Record<string, string> = {}
+  for (const row of rows.results as any[]) map[row.key] = String(row.value ?? '').trim()
+  return {
+    token: map.zalo_bot_token || String(env.ZALO_BOT_TOKEN || '').trim(),
+    chatId: map.zalo_group_chat_id || String(env.ZALO_GROUP_CHAT_ID || '').trim(),
+    groupUrl: ZALO_OVERDUE_GROUP_URL,
+  }
+}
+
+async function zaloBotCall(token: string, method: string, body?: Record<string, unknown>) {
+  const res = await fetch(`https://bot-api.zaloplatforms.com/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  })
+  const json = await res.json().catch(() => ({})) as any
+  return json
+}
+
+function findZaloGroupChatId(node: any): string | null {
+  if (!node || typeof node !== 'object') return null
+  const chat = node.chat
+  if (chat && String(chat.chat_type || chat.type || '') === 'GROUP' && chat.id) return String(chat.id)
+  const list = Array.isArray(node) ? node : Object.values(node)
+  for (const value of list) {
+    if (value && typeof value === 'object') {
+      const found = findZaloGroupChatId(value)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+function overdueZaloText(tasks: any[]) {
+  const lines = tasks.slice(0, 25).map(t => {
+    const days = daysOverdueOf(String(t.due_date || ''))
+    return `• ${t.project_code || ''} — ${t.title} — ${t.assignee_name || 'chưa giao'} — hạn ${t.due_date} (+${days} ngày)`
+  })
+  let text = `⚠️ Task quá hạn (${tasks.length})\n` + lines.join('\n')
+  if (tasks.length > 25) text += `\n… và ${tasks.length - 25} task khác`
+  if (text.length > 2000) text = text.slice(0, 1990) + '…'
+  return text
+}
+
+/** Gửi tóm tắt task quá hạn vào nhóm Zalo. Không chặn mail nếu Zalo lỗi. */
+async function notifyOverdueZalo(env: Bindings, db: D1Database, tasks: any[]) {
+  if (!tasks.length) return { sent: false, skipped: 'Không có task quá hạn' }
+  const cfg = await readZaloOverdueConfig(env, db)
+  if (!cfg.token) return { sent: false, skipped: 'Chưa có Bot Token Zalo' }
+  if (!cfg.chatId) return { sent: false, skipped: 'Chưa có Chat ID nhóm. Mời bot vào nhóm rồi bấm Lấy Chat ID.' }
+  try {
+    const json = await zaloBotCall(cfg.token, 'sendMessage', { chat_id: cfg.chatId, text: overdueZaloText(tasks) })
+    if (json?.ok) return { sent: true }
+    const reason = String(json?.description || json?.message || 'Zalo từ chối tin nhắn').slice(0, 180)
+    return { sent: false, error: reason }
+  } catch (e: any) {
+    return { sent: false, error: String(e?.message || 'Không gọi được Zalo').slice(0, 180) }
+  }
+}
+
 // ===================================================
 // SEND OVERDUE REMINDERS — gửi mail nhắc deadline cho đúng người phụ trách
 // POST /api/admin/send-overdue-reminders
 // Gửi mail task_overdue cho assigned_to của mỗi task quá hạn chưa hoàn thành
 // Có thể gọi từ cron job bên ngoài (VD: Cloudflare CRON, GitHub Actions...)
 // ===================================================
-app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (c) => {
+async function deliverOverdueReminders(env: Bindings, db: D1Database) {
   try {
-    const db = c.env.DB
 
     // Lấy tất cả task quá hạn, chưa hoàn thành, có assigned_to
     const overdueRows = await db.prepare(`
       SELECT
-        t.id, t.title, t.due_date, t.status, t.progress,
+        t.id, t.title, t.due_date, t.status, t.progress, t.project_id,
         t.assigned_to,
         u.email AS assignee_email, u.full_name AS assignee_name,
         p.name AS project_name, p.code AS project_code
@@ -9623,7 +9931,7 @@ app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (
 
     const tasks = overdueRows.results as any[]
     if (tasks.length === 0) {
-      return c.json({ success: true, sent: 0, message: 'Không có task quá hạn nào cần nhắc' })
+      return { status: 200, body: { success: true, sent: 0, leader_sent: 0, message: 'Không có task quá hạn nào cần nhắc' } }
     }
 
     let sent = 0
@@ -9637,7 +9945,7 @@ app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (
         today.setHours(0, 0, 0, 0)
         const daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / 86400000)
 
-        await sendEmail(c.env, {
+        await sendEmail(env, {
           to:        task.assignee_email,
           toName:    task.assignee_name,
           eventType: 'task_overdue',
@@ -9660,15 +9968,27 @@ app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (
       }
     }
 
-    return c.json({
-      success: true,
-      total_overdue: tasks.length,
-      sent,
-      errors: errors.length ? errors : undefined,
-    })
+    const leaderSent = await notifyOverdueLeaders(env, db, tasks)
+    const zalo = await notifyOverdueZalo(env, db, tasks)
+    return {
+      status: 200,
+      body: {
+        success: true,
+        total_overdue: tasks.length,
+        sent,
+        leader_sent: leaderSent,
+        zalo,
+        errors: errors.length ? errors : undefined,
+      }
+    }
   } catch (e: any) {
-    return c.json({ error: e.message }, 500)
+    return { status: 500, body: { error: e.message } }
   }
+}
+
+app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (c) => {
+  const result = await deliverOverdueReminders(c.env, c.env.DB)
+  return c.json(result.body, result.status as any)
 })
 
 // GET /api/admin/overdue-tasks-preview — xem trước danh sách sẽ nhận mail
@@ -9692,6 +10012,43 @@ app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c)
     return c.json(rows.results)
   } catch (e: any) {
     return c.json({ error: e.message }, 500) }
+})
+
+app.get('/api/admin/zalo-overdue', authMiddleware, adminOnly, async (c) => {
+  try {
+    const cfg = await readZaloOverdueConfig(c.env, c.env.DB)
+    return c.json({
+      group_url: cfg.groupUrl,
+      chat_id: cfg.chatId,
+      token_configured: !!cfg.token,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const cfg = await readZaloOverdueConfig(c.env, db)
+    if (!cfg.token) return c.json({ error: 'Chưa có Bot Token Zalo' }, 400)
+    const json = await zaloBotCall(cfg.token, 'getUpdates', { timeout: 1 })
+    if (json?.ok === false) {
+      return c.json({ error: String(json.description || json.message || 'Không đọc được tin nhắn của bot').slice(0, 180) }, 400)
+    }
+    const chatId = findZaloGroupChatId(json)
+    if (!chatId) {
+      return c.json({ error: 'Bot chưa thấy tin nhắn nhóm. Mời bot vào https://zalo.me/g/nquvtj706 rồi gửi một tin bất kỳ.' }, 404)
+    }
+    await db.prepare(
+      `INSERT INTO system_config (key, value, description, updated_by, updated_at) VALUES ('zalo_group_chat_id', ?, 'Chat ID nhóm Zalo nhắc task quá hạn', ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`
+    ).bind(chatId, user.id).run()
+    return c.json({ chat_id: chatId, group_url: cfg.groupUrl })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
 })
 
 // ===================================================
@@ -9738,7 +10095,7 @@ app.get('/api/admin/weekly-task-report/preview', authMiddleware, adminOnly, asyn
       config: {
         enabled:      cfgMap['weekly_report_enabled'] ?? '1',
         day:          cfgMap['weekly_report_day']     ?? '5',
-        hour:         cfgMap['weekly_report_hour']    ?? '8',
+        hour:         cfgMap['weekly_report_hour']    ?? '9',
       },
       memberStats: stats,
       totalMembers: stats.length,
@@ -9753,33 +10110,33 @@ app.get('/api/admin/weekly-task-report/preview', authMiddleware, adminOnly, asyn
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
-// POST /api/admin/weekly-task-report/send
-// Gửi báo cáo task cho tất cả system_admin. Có thể gọi thủ công hoặc từ cron.
-app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async (c) => {
+async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean) {
   try {
-    const db = c.env.DB
-
-    // Kiểm tra enabled (bỏ qua nếu gọi với ?force=1)
-    const force = c.req.query('force') === '1'
     if (!force) {
       const enabledRow = await db.prepare(`SELECT value FROM system_config WHERE key='weekly_report_enabled'`).first() as any
       if (enabledRow?.value === '0') {
-        return c.json({ success: false, message: 'Báo cáo tuần đang bị tắt. Dùng ?force=1 để gửi thủ công.' })
+        return { status: 200, body: { success: false, message: 'Báo cáo tuần đang bị tắt. Dùng ?force=1 để gửi thủ công.' } }
       }
     }
 
-    // Lấy danh sách system_admin có email
-    const admins = await db.prepare(
-      `SELECT id, full_name, email FROM users WHERE role='system_admin' AND is_active=1 AND email IS NOT NULL AND email!=''`
-    ).all()
+    const admins = await db.prepare(`
+      SELECT DISTINCT u.id, u.full_name, u.email
+      FROM users u
+      WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
+        AND (
+          u.role IN ('system_admin', 'project_admin')
+          OR u.id IN (SELECT leader_id FROM projects WHERE leader_id IS NOT NULL)
+          OR u.id IN (SELECT user_id FROM project_members WHERE role IN ('project_leader', 'leader'))
+        )
+    `).all()
     if ((admins.results as any[]).length === 0) {
-      return c.json({ success: false, message: 'Không có System Admin nào có email để gửi báo cáo.' })
+      return { status: 200, body: { success: false, message: 'Không có leader hoặc admin nào có email để gửi báo cáo.' } }
     }
 
     // Lấy thống kê task
     const memberStats = await getWeeklyTaskStats(db)
     if (memberStats.length === 0) {
-      return c.json({ success: true, sent: 0, message: 'Không có dữ liệu task nào để báo cáo.' })
+      return { status: 200, body: { success: true, sent: 0, message: 'Không có dữ liệu task nào để báo cáo.' } }
     }
 
     // Tạo nhãn tuần
@@ -9801,7 +10158,7 @@ app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async 
 
     for (const admin of admins.results as any[]) {
       try {
-        await sendEmail(c.env, {
+        await sendEmail(env, {
           to:        admin.email,
           toName:    admin.full_name,
           eventType: 'weekly_task_report',
@@ -9823,15 +10180,23 @@ app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async 
       }
     }
 
-    return c.json({
-      success: true,
-      sent,
-      total_admins: (admins.results as any[]).length,
-      week: weekLabel,
-      total_members: memberStats.length,
-      errors: errors.length ? errors : undefined,
-    })
-  } catch (e: any) { return c.json({ error: e.message }, 500) }
+    return {
+      status: 200,
+      body: {
+        success: true,
+        sent,
+        total_admins: (admins.results as any[]).length,
+        week: weekLabel,
+        total_members: memberStats.length,
+        errors: errors.length ? errors : undefined,
+      }
+    }
+  } catch (e: any) { return { status: 500, body: { error: e.message } } }
+}
+
+app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async (c) => {
+  const result = await deliverWeeklyReport(c.env, c.env.DB, c.req.query('force') === '1')
+  return c.json(result.body, result.status as any)
 })
 
 // ===================================================
@@ -12200,6 +12565,35 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+/** Chi phí A đã chi. range = năm tài chính; bỏ range = toàn vòng đời. Không cộng vào direct/labor/shared/profit. */
+async function companySpentLegalCostA(
+  db: any,
+  range?: { start: string; end: string } | null
+): Promise<number> {
+  const rows = await db.prepare(`
+    SELECT pr.amount, pr.status, pr.request_date, pr.paid_date,
+           COALESCE(pr.vat_pct, 0) as vat_pct,
+           lca.amount_override, lca.cost_a_pct
+    FROM payment_requests pr
+    INNER JOIN legal_cost_a lca ON lca.payment_request_id = pr.id
+    WHERE pr.amount > 0 AND pr.status != 'rejected'
+      AND lca.spend_status = 'spent'
+      AND ${paymentOnPackageSql('pr')}
+  `).all()
+  let total = 0
+  for (const raw of (rows.results as any[])) {
+    if (range && !legalCostAInFiscalRange(raw, range.start, range.end)) continue
+    const override = raw.amount_override == null ? null : Number(raw.amount_override)
+    total += legalCostAAmountInUse(
+      Number(raw.amount) || 0,
+      Number(raw.vat_pct) || 0,
+      raw.cost_a_pct == null ? null : Number(raw.cost_a_pct),
+      override
+    )
+  }
+  return total
+}
+
 // ── Analytics: Financial By Project (per-project breakdown) ──────────
 // GET /api/analytics/financial-by-project?year=YYYY
 // Trả về tài chính chi tiết cho tất cả dự án: GTHĐ, doanh thu, chi phí, lợi nhuận
@@ -12425,6 +12819,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
     totals.pct_direct = totalsPctBase > 0 ? Math.round((totals.direct_cost  / totalsPctBase) * 100 * 10) / 10 : 0
     totals.pct_labor  = totalsPctBase > 0 ? Math.round((totals.labor_cost   / totalsPctBase) * 100 * 10) / 10 : 0
     totals.pct_shared = totalsPctBase > 0 ? Math.round((totals.shared_cost  / totalsPctBase) * 100 * 10) / 10 : 0
+    totals.legal_cost_a_spent = await companySpentLegalCostA(db, { start: fyStart, end: fyEnd })
 
     return c.json({
       projects: projectData,
@@ -12638,6 +13033,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
     totals.pct_direct = totalsPctBaseLT > 0 ? Math.round((totals.direct_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
     totals.pct_labor  = totalsPctBaseLT > 0 ? Math.round((totals.labor_cost   / totalsPctBaseLT) * 100 * 10) / 10 : 0
     totals.pct_shared = totalsPctBaseLT > 0 ? Math.round((totals.shared_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
+    totals.legal_cost_a_spent = await companySpentLegalCostA(db)
 
     return c.json({
       projects: projectData,
@@ -13260,6 +13656,7 @@ async function applyProjectVatToPayments(db: D1Database, projectId: number, user
       notes: raw.notes || null,
       vat_pct: vat,
       request_date: raw.request_date || null,
+      created_at: raw.created_at || null,
     }, userId)
     await db.prepare('UPDATE payment_requests SET revenue_id = ? WHERE id = ?')
       .bind(revenueId || null, raw.id).run()
@@ -14738,6 +15135,7 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
       payment_phase: payment_phase || null, status: status || 'pending',
       revenue_id: null, notes: notes || null, vat_pct: vatPctVal,
       request_date: request_date || null,
+      created_at: null,
     }, user.id)
 
     // Lưu revenue_id vào payment nếu có
@@ -14854,6 +15252,7 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
         ? Math.min(100, Math.max(0, parseFloat(merged.vat_pct) || 0))
         : (current.vat_pct || 0),
       request_date: merged.request_date ?? current.request_date ?? null,
+      created_at: current.created_at || null,
     }, user.id)
 
     // Cập nhật revenue_id
@@ -15123,7 +15522,6 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
     ).bind(projectId).all()
 
     const groupMap = new Map<string, any[]>()
-    let pageTotal = 0
 
     for (const raw of rows.results as any[]) {
       const vatPct = Number(raw.vat_pct) || 0
@@ -15139,7 +15537,6 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
           ? Math.round(amountOverride)
           : formulaAmount
       const amountInUse = candidate
-      pageTotal += amountInUse
 
       const row = {
         payment_request_id: raw.id,
@@ -15172,12 +15569,12 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
       .map(([package_name, groupRows]) => ({
         package_name,
         rows: groupRows,
-        group_total: groupRows.reduce((s, r) => s + r.amount_in_use, 0),
+        group_total: sumSpentLegalCostA(groupRows),
       }))
 
     return c.json({
       groups,
-      page_total: pageTotal,
+      page_total: groups.reduce((s, g) => s + g.group_total, 0),
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -15314,6 +15711,7 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
         revenue_id: p.revenue_id || null, notes: p.notes || null,
         vat_pct: p.vat_pct || 0,
         request_date: p.request_date || null,
+        created_at: p.created_at || null,
       }, user.id)
       synced++
     }
@@ -15347,6 +15745,7 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
           revenue_id: p.revenue_id || null, notes: p.notes || null,
           vat_pct: p.vat_pct || 0,
           request_date: p.request_date || null,
+          created_at: p.created_at || null,
         }, user.id)
         synced++
       } catch (e: any) {
@@ -18961,4 +19360,31 @@ registerDesignRoutes(app, {
   getUserEmailInfo,
 })
 
-export default app
+/** Thứ 6 (theo cấu hình báo cáo tuần, giờ VN): nhắc người trễ và gửi báo cáo cho leader. */
+async function runFridayStatusMails(env: Bindings) {
+  const db = env.DB
+  const cfg = await db.prepare(
+    `SELECT key, value FROM system_config WHERE key IN ('weekly_report_enabled','weekly_report_day','weekly_report_hour','status_mail_last_sent')`
+  ).all()
+  const map: Record<string, string> = {}
+  for (const row of cfg.results as any[]) map[row.key] = String(row.value ?? '')
+  if (map.weekly_report_enabled === '0') return
+  const vn = new Date(Date.now() + 7 * 3600 * 1000)
+  const today = `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`
+  if (String(vn.getUTCDay()) !== (map.weekly_report_day || '5')) return
+  if (String(vn.getUTCHours()) !== (map.weekly_report_hour || '9')) return
+  if (map.status_mail_last_sent === today) return
+  await db.prepare(
+    `INSERT INTO system_config (key, value, description) VALUES ('status_mail_last_sent', ?, 'Ngày đã tự gửi mail tình trạng thực hiện')
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+  ).bind(today).run()
+  await deliverOverdueReminders(env, db)
+  await deliverWeeklyReport(env, db, true)
+}
+
+export default {
+  fetch: (request: Request, env: Bindings, ctx: any) => app.fetch(request, env, ctx),
+  scheduled: (_event: any, env: Bindings, ctx: any) => {
+    ctx.waitUntil(runFridayStatusMails(env))
+  },
+}
