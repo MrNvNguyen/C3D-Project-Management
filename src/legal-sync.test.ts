@@ -67,7 +67,7 @@ function createApplyTestDb() {
       client: 'Old client',
       description: 'Old',
       vat_pct: 10,
-      management_fee_pct: 30,
+      management_fee_pct: 12,
       legal_sync_peer_origin: null as string | null,
       legal_sync_source_project_id: null as number | null,
     },
@@ -165,14 +165,10 @@ function createApplyTestDb() {
             }
           } else if (norm.startsWith('DELETE FROM legal_sync_id_map')) {
             legal_sync_id_map.length = 0
-          } else if (norm.includes('UPDATE projects SET client')) {
+          } else if (norm.includes('UPDATE projects SET legal_sync_peer_origin')) {
             Object.assign(projects[0], {
-              client: state.binds[0],
-              description: state.binds[1],
-              vat_pct: state.binds[2],
-              management_fee_pct: state.binds[3],
-              legal_sync_peer_origin: state.binds[4],
-              legal_sync_source_project_id: state.binds[5],
+              legal_sync_peer_origin: state.binds[0],
+              legal_sync_source_project_id: state.binds[1],
             })
           } else if (norm.startsWith('INSERT INTO legal_packages')) {
             const id = ++nextId
@@ -238,7 +234,7 @@ function createApplyTestDb() {
 
   const baseBundle = (): LegalSyncBundle => ({
     source_project_id: 99,
-    project: { client: 'Peer client', description: 'Peer desc', vat_pct: 10, management_fee_pct: 30 },
+    project: { client: 'Peer client', description: 'Peer desc', vat_pct: 8, management_fee_pct: 40 },
     packages: [{
       id: 1,
       name: 'Peer pkg',
@@ -298,13 +294,19 @@ describe('applyLegalSyncBundle payments', () => {
     })
     expect(result.mode).toBe('run1')
     expect(h.projects[0].code).toBe('LOCAL')
+    expect(h.projects[0].name).toBe('Local Project')
+    expect(h.projects[0].client).toBe('Old client')
+    expect(h.projects[0].description).toBe('Old')
+    expect(h.projects[0].vat_pct).toBe(10)
+    expect(h.projects[0].management_fee_pct).toBe(12)
+    expect(h.projects[0].legal_sync_source_project_id).toBe(99)
     expect(h.deletedRevenueIds).toContain(900)
     expect(h.payment_requests.some(p => p.description === 'Old pay')).toBe(false)
     const peerPay = h.payment_requests.find(p => p.description === 'Peer NT')
     expect(peerPay).toBeTruthy()
     expect(peerPay?.amount).toBe(1_100_000)
     expect(h.project_revenues.length).toBeGreaterThan(0)
-    const { bookedRevenue } = computeBookedRevenue(1_100_000, 10, 30)
+    const { bookedRevenue } = computeBookedRevenue(1_100_000, 10, 12)
     expect(Number(h.project_revenues[h.project_revenues.length - 1].amount)).toBe(bookedRevenue)
   })
 

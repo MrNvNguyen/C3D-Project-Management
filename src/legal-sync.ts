@@ -400,15 +400,10 @@ export async function applyLegalSyncBundle(opts: ApplyLegalSyncOptions): Promise
   if (!run2) {
     await clearLocalLegalDossier(db, localProjectId)
     await db.prepare(
-      `UPDATE projects SET client = ?, description = ?, vat_pct = ?, management_fee_pct = ?,
-              legal_sync_peer_origin = ?, legal_sync_source_project_id = ?,
+      `UPDATE projects SET legal_sync_peer_origin = ?, legal_sync_source_project_id = ?,
               updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`
     ).bind(
-      bundle.project.client,
-      bundle.project.description,
-      bundle.project.vat_pct,
-      bundle.project.management_fee_pct,
       normalizePeerOrigin(peerOrigin),
       bundle.source_project_id,
       localProjectId
