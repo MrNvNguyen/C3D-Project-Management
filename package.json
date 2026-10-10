@@ -12,7 +12,9 @@
     "db:seed": "wrangler d1 execute cim-management-production --local --file=./migrations/0002_seed_data.sql"
   },
   "dependencies": {
-    "hono": "^4.12.2"
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "hono": "^4.12.2",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",
