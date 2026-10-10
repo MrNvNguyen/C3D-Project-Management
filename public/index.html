@@ -1607,8 +1607,19 @@
     .legal-investor-filter {
       display: flex;
       align-items: center;
-      flex: 0 0 auto;
-      min-width: 180px;
+      flex: 0 0 220px;
+      width: 220px;
+      min-width: 220px;
+      max-width: 220px;
+    }
+    #legalClientFilterCombobox,
+    #legalClientFilterCombobox_wrap {
+      width: 220px;
+      min-width: 0;
+      max-width: 220px;
+    }
+    #legalClientFilterCombobox_label {
+      min-width: 0;
     }
     #legalClientFilterCombobox .cb-input,
     #legalClientFilterCombobox .cb-trigger {
@@ -6660,7 +6671,7 @@
           <div class="legal-page-actions" id="legalPanelActions">
             <input type="text" id="legalRelatedSearch" class="input-field legal-related-search" placeholder="Tìm mô tả, chủ đầu tư, gói thầu…" oninput="legalOnRelatedSearch(this.value)" autocomplete="off" aria-label="Tìm theo thông tin liên quan">
             <div class="legal-investor-filter">
-              <div id="legalClientFilterCombobox" class="relative" style="min-width:180px"></div>
+              <div id="legalClientFilterCombobox" class="relative" style="width:220px;max-width:220px"></div>
             </div>
             <button onclick="openLegalLetterModal()" id="btnAddLetter" class="btn-accent hidden" style="display:none">
               <i class="fas fa-paper-plane mr-1"></i>Gửi văn bản
@@ -9046,7 +9057,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261010a"></script>
+<script src="/static/app.js?v=20261010d"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO

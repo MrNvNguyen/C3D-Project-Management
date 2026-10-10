@@ -4459,9 +4459,15 @@ function createCombobox(containerId, options = {}) {
   // teleport: true → panel is moved to document.body on open (escapes overflow:hidden/auto ancestors)
   const teleport = options.teleport || false
   const allowCreate = !!options.allowCreate
+  const multiple = !!options.multiple
+  const initValues = multiple
+    ? (Array.isArray(options.value) ? options.value : (initVal ? [initVal] : [])).map(v => String(v)).filter(Boolean)
+    : []
 
   _cbState[id] = {
-    value: initVal,
+    value: multiple ? '' : initVal,
+    values: initValues,
+    multiple,
     label: _cbLabelFor(items, initVal, placeholder, allowCreate),
     items,
     placeholder,
@@ -4556,25 +4562,48 @@ function _cbRenderOptions(id, query) {
     return
   }
   opts.innerHTML = filtered.map(i => {
-    const isSel = !i.create && String(i.value) === String(state.value)
+    const isSel = state.multiple
+      ? (i.value === '' ? !(state.values || []).length : (state.values || []).includes(String(i.value)))
+      : (!i.create && String(i.value) === String(state.value))
     const bg = isSel ? 'rgba(0,166,81,0.12)' : 'transparent'
     const col = i.create ? '#00A651' : (isSel ? '#00A651' : 'var(--shell-text)')
     const fw = isSel || i.create ? '600' : '400'
     const pickValue = i.value
     const pickLabel = i.create ? i.value : i.label
+    const mark = state.multiple
+      ? (i.value === '' ? '' : (isSel ? '☑' : '☐'))
+      : (isSel ? '✓' : '')
     return '<div style="padding:' + itemPad + ';font-size:' + itemFs + ';cursor:pointer;display:flex;align-items:center;gap:6px;background:' + bg + ';color:' + col + ';font-weight:' + fw + ';line-height:1.4"'
       + ' data-cb-value="' + escHtml(pickValue) + '" data-cb-label="' + escHtml(pickLabel) + '"'
       + ' onmouseenter="if(!' + isSel + '){this.style.background=\'var(--shell-row-hover)\';this.style.color=\'var(--shell-text)\'}"'
       + ' onmouseleave="this.style.background=\'' + bg + '\';this.style.color=\'' + col + '\'"'
-      + ' onclick="_cbPick(this,\'' + id + '\')">'
+      + ' onclick="event.stopPropagation();' + (state.multiple ? '_cbToggleValue' : '_cbPick') + '(this,\'' + id + '\')">'
+      + (mark ? '<span style="flex-shrink:0;width:1.1em;color:' + (isSel ? '#00A651' : 'var(--shell-text-faint)') + '">' + mark + '</span>' : '')
       + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(i.label) + '</span>'
-      + (isSel ? '<span style="flex-shrink:0;color:#00A651;font-size:12px">&#10003;</span>' : '')
+      + (!state.multiple && isSel ? '<span style="flex-shrink:0;color:#00A651;font-size:12px">&#10003;</span>' : '')
       + '</div>'
   }).join('')
 }
 
 function _cbPick(el, id) {
   _cbSelect(id, el.getAttribute('data-cb-value') || '', el.getAttribute('data-cb-label') || '')
+}
+
+function _cbToggleValue(el, id) {
+  const state = _cbState[id]
+  if (!state?.multiple) {
+    _cbPick(el, id)
+    return
+  }
+  const value = el.getAttribute('data-cb-value') || ''
+  if (!value) state.values = []
+  else {
+    const cur = state.values || []
+    state.values = cur.includes(value) ? cur.filter(v => v !== value) : cur.concat(value)
+  }
+  _cbUpdateTrigger(id)
+  _cbRenderOptions(id, $(id + '_search')?.value || '')
+  if (state.onchange) state.onchange((state.values || []).slice())
 }
 
 function _cbSearchKey(event, id) {
@@ -4588,12 +4617,33 @@ function _cbSearchKey(event, id) {
   _cbSelect(id, row.getAttribute('data-cb-value') || '', row.getAttribute('data-cb-label') || '')
 }
 
+function _cbMultiLabel(state) {
+  const values = state.values || []
+  if (!values.length) return ''
+  return values.map(v => _cbLabelFor(state.items || [], v, v, false)).join(', ')
+}
+
 function _cbUpdateTrigger(id) {
   const state = _cbState[id]
   if (!state) return
   const lbl = $(id + '_label')
   if (!lbl) return
   const trigger = lbl.parentElement
+  if (state.multiple) {
+    const text = _cbMultiLabel(state)
+    if (!text) {
+      lbl.textContent = state.placeholder
+      lbl.title = ''
+      lbl.style.color = 'var(--shell-text-faint)'
+      if (trigger) { trigger.style.borderColor = 'var(--shell-border)'; trigger.style.boxShadow = '' }
+    } else {
+      lbl.textContent = text
+      lbl.title = text
+      lbl.style.color = 'var(--shell-text)'
+      if (trigger) { trigger.style.borderColor = '#00A651'; trigger.style.boxShadow = '0 0 0 2px rgba(0,166,81,0.10)' }
+    }
+    return
+  }
   if (!state.value) {
     lbl.textContent = state.placeholder
     lbl.style.color = 'var(--shell-text-faint)'
@@ -20450,7 +20500,7 @@ let _legalProjectStatusFilter = 'all'
 let _legalTabSetByUser = false
 let _legalProjectSearch = ''
 let _legalRelatedSearch = ''
-let _legalProjectClientFilter = ''
+let _legalProjectClientFilter = []
 let _legalPackageNames = {}
 let _legalActivePackageId = null
 let _legalPaymentActivePackageId = null
@@ -20977,9 +21027,9 @@ function _legalProjectMatchesStatusChip(p) {
 function _legalFilteredProjects() {
   const qNameCode = _foldVn(_legalProjectSearch)
   const qRelated = _foldVn(_legalRelatedSearch)
-  const client = _legalProjectClientFilter
+  const clients = Array.isArray(_legalProjectClientFilter) ? _legalProjectClientFilter : []
   return (allProjects || []).filter(p => {
-    if (client && String(p.client || '') !== client) return false
+    if (clients.length && !clients.includes(String(p.client || ''))) return false
     if (!_legalProjectMatchesStatusChip(p)) return false
     if (qNameCode) {
       const hay = _foldVn(`${p.code || ''} ${p.name || ''}`)
@@ -21055,14 +21105,15 @@ function _legalInstallClientFilterCombobox() {
   createCombobox('legalClientFilterCombobox', {
     placeholder: 'Tất cả chủ đầu tư',
     items: clientItems,
-    value: _legalProjectClientFilter || '',
-    minWidth: '180px',
+    multiple: true,
+    value: _legalProjectClientFilter,
+    minWidth: '220px',
     onchange: (val) => legalOnClientFilterChange(val)
   })
 }
 
 async function legalOnClientFilterChange(val) {
-  _legalProjectClientFilter = (val || '').trim()
+  _legalProjectClientFilter = Array.isArray(val) ? val.map(v => String(v)).filter(Boolean) : []
   await _legalAfterProjectListFilterChange()
 }
 
