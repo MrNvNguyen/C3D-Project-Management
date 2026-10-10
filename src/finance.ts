@@ -514,17 +514,23 @@ export type ProjectMonthHours = {
   eff_hours: number
 }
 
-/** Pure allocation for all projects (realtime labor map). */
-export function computeRealtimeLaborFromAggregates(
+/** Pure allocation for all projects, plus the same rounding summed by calendar month. */
+export function computeRealtimeLaborBreakdown(
   months: MlcMonth[],
   projRows: ProjectMonthHours[],
-  compEffByMonth: Map<string, number>
-): Map<number, { labor_cost: number; labor_hours: number }> {
-  const result = new Map<number, { labor_cost: number; labor_hours: number }>()
+  compEffByMonth: Map<string, number>,
+  allowedProjectIds?: Set<number>
+): {
+  byProject: Map<number, { labor_cost: number; labor_hours: number }>
+  byMonth: Map<string, number>
+} {
+  const byProject = new Map<number, { labor_cost: number; labor_hours: number }>()
+  const byMonth = new Map<string, number>()
   const poolByKey = new Map(months.map(m => [yearMonthKey(m.year, m.month), m.pool]))
 
   for (const pr of projRows) {
     if (pr.project_id == null) continue
+    if (allowedProjectIds && !allowedProjectIds.has(pr.project_id)) continue
     const key = yearMonthKey(pr.year, pr.month)
     const pool = poolByKey.get(key) || 0
     if (pool <= 0) continue
@@ -533,13 +539,24 @@ export function computeRealtimeLaborFromAggregates(
     const cph = pool / compEff
     const laborCost = Math.round((pr.eff_hours || 0) * cph)
     const rawHours = pr.raw_hours || 0
-    const prev = result.get(pr.project_id) || { labor_cost: 0, labor_hours: 0 }
-    result.set(pr.project_id, {
+    const prev = byProject.get(pr.project_id) || { labor_cost: 0, labor_hours: 0 }
+    byProject.set(pr.project_id, {
       labor_cost: prev.labor_cost + laborCost,
       labor_hours: prev.labor_hours + rawHours,
     })
+    byMonth.set(key, (byMonth.get(key) || 0) + laborCost)
   }
-  return result
+  return { byProject, byMonth }
+}
+
+/** Pure allocation for all projects (realtime labor map). */
+export function computeRealtimeLaborFromAggregates(
+  months: MlcMonth[],
+  projRows: ProjectMonthHours[],
+  compEffByMonth: Map<string, number>,
+  allowedProjectIds?: Set<number>
+): Map<number, { labor_cost: number; labor_hours: number }> {
+  return computeRealtimeLaborBreakdown(months, projRows, compEffByMonth, allowedProjectIds).byProject
 }
 
 export async function fetchCompanyEffHoursByMonth(
@@ -764,13 +781,20 @@ export async function computeProjectLaborFromTimesheets(
   return computeProjectLaborFromAggregates(months, projByMonth, compEffByMonth)
 }
 
-/** Realtime labor per project; optional inclusive dateFrom/dateTo (NTC range). */
-export async function computeRealtimeLaborByProject(
+async function loadRealtimeLaborBreakdown(
   db: D1Database,
   otFactor: number,
   dateFrom?: string,
-  dateTo?: string
-): Promise<Map<number, { labor_cost: number; labor_hours: number }>> {
+  dateTo?: string,
+  allowedProjectIds?: Set<number>
+): Promise<{
+  byProject: Map<number, { labor_cost: number; labor_hours: number }>
+  byMonth: Map<string, number>
+}> {
+  const empty = {
+    byProject: new Map<number, { labor_cost: number; labor_hours: number }>(),
+    byMonth: new Map<string, number>(),
+  }
   let mlcRows: { year: number; month: number; total_labor_cost: number }[]
   if (dateFrom && dateTo) {
     const fromYm = parseYearMonthFromDate(dateFrom)
@@ -789,7 +813,7 @@ export async function computeRealtimeLaborByProject(
   }
 
   const months = filterMlcMonths(mlcRows, dateFrom, dateTo)
-  if (months.length === 0) return new Map()
+  if (months.length === 0) return empty
 
   const { start, endExclusive } = mlcDateSpan(mlcRows, dateFrom, dateTo)
 
@@ -798,7 +822,33 @@ export async function computeRealtimeLaborByProject(
     fetchCompanyEffHoursByMonth(db, otFactor, start, endExclusive),
   ])
 
-  return computeRealtimeLaborFromAggregates(months, projRows, compEffByMonth)
+  return computeRealtimeLaborBreakdown(months, projRows, compEffByMonth, allowedProjectIds)
+}
+
+/** Realtime labor per project; optional inclusive dateFrom/dateTo (NTC range). */
+export async function computeRealtimeLaborByProject(
+  db: D1Database,
+  otFactor: number,
+  dateFrom?: string,
+  dateTo?: string,
+  allowedProjectIds?: Set<number>
+): Promise<Map<number, { labor_cost: number; labor_hours: number }>> {
+  const maps = await loadRealtimeLaborBreakdown(db, otFactor, dateFrom, dateTo, allowedProjectIds)
+  return maps.byProject
+}
+
+/** Same allocation as computeRealtimeLaborByProject, also split by calendar month. */
+export async function computeRealtimeLaborByProjectAndMonth(
+  db: D1Database,
+  otFactor: number,
+  dateFrom?: string,
+  dateTo?: string,
+  allowedProjectIds?: Set<number>
+): Promise<{
+  byProject: Map<number, { labor_cost: number; labor_hours: number }>
+  byMonth: Map<string, number>
+}> {
+  return loadRealtimeLaborBreakdown(db, otFactor, dateFrom, dateTo, allowedProjectIds)
 }
 
 /** Month-level labor pool stats (admin monthly entry + company hours). */

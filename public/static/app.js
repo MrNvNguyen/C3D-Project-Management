@@ -12123,6 +12123,23 @@ function onCostTypeFilterChange() {
   renderCostTable()
 }
 
+function openRevenuePaymentStatus(projectId, paymentId) {
+  const pid = Number(projectId)
+  const payId = Number(paymentId)
+  if (!pid || !payId) {
+    toast('Không tìm thấy phiếu thanh toán của dòng này', 'error')
+    return
+  }
+  _legalFocusPaymentId = payId
+  _legalCurrentProjectId = pid
+  _legalCurrentTab = 'payments'
+  _legalTabSetByUser = true
+  if (Array.isArray(_legalProjectClientFilter) && _legalProjectClientFilter.length) _legalProjectClientFilter = []
+  _legalProjectSearch = ''
+  _legalProjectStatusFilter = 'all'
+  navigate('legal', { rest: ['payments'] })
+}
+
 function renderCostTable() {
   const head = $('costTableHead')
   const tbody = $('costTableBody')
@@ -12246,9 +12263,9 @@ function renderCostTable() {
           ${badges.join('')}
         </td>
         <td class="py-2 pr-3 text-center">
-          <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
+          <button type="button" class="rev-source-link text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap" title="Mở tình trạng thanh toán của phiếu này" onclick="openRevenuePaymentStatus(${Number(r.project_id) || 0}, ${Number(r.payment_request_id) || 0})">
             <i class="fas fa-${r.source === 'payment_request' ? 'file-invoice' : 'sync-alt'} mr-1"></i>${r.source === 'payment_request' ? 'Hồ Sơ PL' : 'Tình trạng TT'}
-          </span>
+          </button>
         </td>
       </tr>`
     }).join('') || '<tr><td colspan="9" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
@@ -20494,6 +20511,7 @@ let _legalCurrentProjectId = null
 let _legalOverviewData = null
 let _legalCostAData = null
 let _legalCurrentTab = 'info'
+let _legalFocusPaymentId = null
 let _legalPackageCounts = {}
 let _legalHasUnsignedContract = {}
 let _legalProjectStatusFilter = 'all'
@@ -24951,6 +24969,17 @@ function renderPaymentStatus(payments) {
   })
   html += `<p class="text-xs mt-2" style="color:var(--shell-text-muted)">STT tự điền khi dòng có nội dung. Bấm vào ô để sửa, Enter hoặc bấm ra ngoài để lưu.</p>`
   container.innerHTML = html
+  if (_legalFocusPaymentId) {
+    const row = container.querySelector(`[data-payment-id="${Number(_legalFocusPaymentId)}"]`)
+    _legalFocusPaymentId = null
+    if (row) {
+      row.classList.add('is-linked')
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      setTimeout(() => row.classList.remove('is-linked'), 2800)
+    } else {
+      toast('Không thấy phiếu thanh toán trong hồ sơ này', 'error')
+    }
+  }
 }
 
 // ─── Helper: tính doanh thu net từ giá trị nghiệm thu ────────────────────────

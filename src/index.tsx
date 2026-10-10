@@ -28,6 +28,7 @@ import {
   computeProjectBudget,
   computeProjectLaborFromTimesheets,
   computeRealtimeLaborByProject,
+  computeRealtimeLaborByProjectAndMonth,
   computeRealtimeLaborFromAggregates,
   displayRevenuePaymentStatus,
   enrichPaymentMetrics,
@@ -5616,6 +5617,7 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         pq.status        AS linked_payment_status,
         pr.notes,
         'revenue'        AS source,
+        pq.id            AS payment_request_id,
         -- Theo HĐ = gross NT từ payment_requests (NULL nếu orphan — không COALESCE sang booked)
         pq.amount                          AS paid_amount_original,
         -- Dòng tiền = số tiền thực đã thu (paid_amount từ payment_requests)
@@ -9509,9 +9511,12 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
     }
 
     // Tính realtime labor FY qua finance helper (1 pass, không strftime 12 tháng)
-    const rtLaborMap = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR, fyStart, fyEnd)
+    const activeProjectIds = new Set<number>((projectListRows.results as any[]).map((p: any) => p.id))
+    const laborMaps = await computeRealtimeLaborByProjectAndMonth(
+      db, OVERTIME_FACTOR, fyStart, fyEnd, activeProjectIds
+    )
     for (const p of (projectListRows.results as any[])) {
-      const rt = rtLaborMap.get(p.id)
+      const rt = laborMaps.byProject.get(p.id)
       if (!rt) continue
       realtimeMap[p.id].rt_labor_cost = rt.labor_cost
       realtimeMap[p.id].rt_hours = rt.labor_hours
@@ -9547,14 +9552,25 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       `).bind(...laborParamsSynced).all()
     }
 
-    // Monthly summary: other non-salary costs from project_costs trong NTC
+    // Monthly summary: chi phí trực tiếp của dự án chưa hủy, trong NTC
     const monthlySummary = await db.prepare(`
-      SELECT strftime('%Y-%m', cost_date) as month,
-        SUM(amount) as total_cost, cost_type
-      FROM project_costs
-      WHERE cost_date >= ? AND cost_date <= ? AND cost_type != 'salary'
-      GROUP BY month, cost_type ORDER BY month ASC
+      SELECT strftime('%Y-%m', pc.cost_date) as month,
+        SUM(pc.amount) as total_cost, pc.cost_type
+      FROM project_costs pc
+      JOIN projects p ON p.id = pc.project_id AND p.status != 'cancelled'
+      WHERE pc.cost_date >= ? AND pc.cost_date <= ? AND pc.cost_type != 'salary'
+      GROUP BY month, pc.cost_type ORDER BY month ASC
     `).bind(fyStart, fyEnd).all()
+
+    const sharedMonthly = await db.prepare(`
+      SELECT strftime('%Y-%m', sc.cost_date) as month,
+        SUM(sca.allocated_amount) as total_cost
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      JOIN projects p ON p.id = sca.project_id AND p.status != 'cancelled'
+      WHERE sc.year = ? AND sc.status != 'deleted'
+      GROUP BY strftime('%Y-%m', sc.cost_date)
+    `).bind(fyYear).all()
 
     const timesheetCost = await db.prepare(`
       SELECT ts.project_id, p.name as project_name, p.code as project_code,
@@ -9565,10 +9581,16 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       GROUP BY ts.project_id
     `).bind(fyStart, fyEnd).all()
 
-    // Merge monthly labor into monthlySummary for complete picture
+    // Biểu đồ tháng dùng lương đã phân bổ + chi phí chung đã phân bổ, cùng công thức với KPI
+    const allocatedLaborMonthly = [...laborMaps.byMonth.entries()].map(([month, total_cost]) => ({
+      month, total_cost, cost_type: 'salary'
+    }))
     const allMonthlyCosts = [
       ...(monthlySummary.results || []),
-      ...(monthlyLaborSummary.results || [])
+      ...allocatedLaborMonthly,
+      ...((sharedMonthly.results || []) as any[]).map((r: any) => ({
+        month: r.month, total_cost: r.total_cost || 0, cost_type: 'shared'
+      }))
     ]
 
     // Pool total: tái dùng monthlyLaborSummary (tránh 12 query riêng)
@@ -12509,9 +12531,10 @@ app.get('/api/analytics/task-analytics', authMiddleware, adminOnly, async (c) =>
 })
 
 // 4. Financial Analytics (phân tích tài chính tổng hợp)
-// ⚠️ ĐỒNG BỘ với /api/dashboard/cost-summary:
-//   - Dùng NTC date range thay vì năm lịch
-//   - Tính đủ: project_costs + labor costs + shared costs
+// ⚠️ Cùng công thức với /api/analytics/financial-by-project và trang Chi phí:
+//   - Chi phí trực tiếp: project_costs (không lương) của dự án chưa hủy, trong NTC
+//   - Lương: phân bổ timesheet × quỹ tháng, chỉ dự án chưa hủy
+//   - Chi phí chung: shared_cost_allocations của shared_costs.year = NTC, chưa xóa
 //   - Doanh thu vào sổ = paid+partial+pending đã NT
 app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
   try {
@@ -12523,21 +12546,30 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     const y = String(fyYear)
     const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(fyYear, fySettings)
 
+    const activeProjectRows = await db.prepare(
+      `SELECT id FROM projects WHERE status != 'cancelled'`
+    ).all()
+    const activeProjectIds = new Set<number>(
+      (activeProjectRows.results as { id: number }[]).map(r => r.id)
+    )
+
     // ── 1. KPI: DT vào sổ paid/partial theo revenue_date + pending theo request_date
     const rawRevenue = await db.prepare(`
-      SELECT strftime('%Y-%m', revenue_date) as month,
-        SUM(amount) as revenue
-      FROM project_revenues
-      WHERE payment_status IN ('paid','partial')
-        AND revenue_date >= ? AND revenue_date <= ?
-        AND ${revenueFromPackagePaymentSql('project_revenues')}
-      GROUP BY strftime('%Y-%m', revenue_date)
+      SELECT strftime('%Y-%m', pr.revenue_date) as month,
+        SUM(pr.amount) as revenue
+      FROM project_revenues pr
+      JOIN projects p ON p.id = pr.project_id AND p.status != 'cancelled'
+      WHERE pr.payment_status IN ('paid','partial')
+        AND pr.revenue_date >= ? AND pr.revenue_date <= ?
+        AND ${revenueFromPackagePaymentSql('pr')}
+      GROUP BY strftime('%Y-%m', pr.revenue_date)
     `).bind(fyStart, fyEnd).all()
 
     const rawPendingBooked = await db.prepare(`
       SELECT strftime('%Y-%m', pq.request_date) as month,
         SUM(pr.amount) as revenue
       FROM project_revenues pr
+      JOIN projects p ON p.id = pr.project_id AND p.status != 'cancelled'
       JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status = 'pending'
         AND pq.request_date >= ? AND pq.request_date <= ?
@@ -12545,43 +12577,30 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       GROUP BY strftime('%Y-%m', pq.request_date)
     `).bind(fyStart, fyEnd).all()
 
-    // ── 2. Chi phí trực tiếp (non-salary) trong NTC
+    // ── 2. Chi phí trực tiếp (non-salary) trong NTC, dự án chưa hủy
     const rawDirectCost = await db.prepare(`
-      SELECT strftime('%Y-%m', cost_date) as month, SUM(amount) as cost
-      FROM project_costs
-      WHERE cost_date >= ? AND cost_date <= ? AND cost_type != 'salary'
-      GROUP BY strftime('%Y-%m', cost_date)
+      SELECT strftime('%Y-%m', pc.cost_date) as month, SUM(pc.amount) as cost
+      FROM project_costs pc
+      JOIN projects p ON p.id = pc.project_id AND p.status != 'cancelled'
+      WHERE pc.cost_date >= ? AND pc.cost_date <= ? AND pc.cost_type != 'salary'
+      GROUP BY strftime('%Y-%m', pc.cost_date)
     `).bind(fyStart, fyEnd).all()
 
-    // ── 3. Labor costs trong NTC — PURE REALTIME từ monthly_labor_costs
-    // Không dùng project_labor_costs để đảm bảo khớp với tổng lương thực tế đã nhập
-    const fyEnd1Year = fySettings.start_month === 1 ? fyYear : fyYear + 1
-    let laborWhereSimple: string
-    let laborParams: any[]
-    if (fySettings.start_month === 1) {
-      laborWhereSimple = `year = ?`
-      laborParams = [fyYear]
-    } else {
-      laborWhereSimple = `((year = ? AND month >= ?) OR (year = ? AND month < ?))`
-      laborParams = [fyYear, fySettings.start_month, fyEnd1Year, fySettings.start_month]
-    }
+    // ── 3. Lương đã phân bổ vào dự án chưa hủy (không lấy cả quỹ tháng)
+    const laborBreakdown = await computeRealtimeLaborByProjectAndMonth(
+      db, OVERTIME_FACTOR, fyStart, fyEnd, activeProjectIds
+    )
 
-    // Luôn dùng monthly_labor_costs (tổng lương thực tế nhập theo tháng)
-    const mlcMonthly = await db.prepare(`
-      SELECT PRINTF('%d-%02d', year, month) as month,
-        total_labor_cost as labor_cost
-      FROM monthly_labor_costs WHERE ${laborWhereSimple}
-      ORDER BY month
-    `).bind(...laborParams).all()
-    const laborMonthly = mlcMonthly.results as any[]
-
-    // ── 4. Shared costs trong NTC
+    // ── 4. Chi phí chung đã phân bổ theo năm NTC (shared_costs.year)
     const sharedRows = await db.prepare(`
-      SELECT strftime('%Y-%m', cost_date) as month, SUM(amount) as shared_cost
-      FROM shared_costs
-      WHERE cost_date >= ? AND cost_date <= ?
-      GROUP BY strftime('%Y-%m', cost_date)
-    `).bind(fyStart, fyEnd).all()
+      SELECT strftime('%Y-%m', sc.cost_date) as month,
+        SUM(sca.allocated_amount) as shared_cost
+      FROM shared_cost_allocations sca
+      JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+      JOIN projects p ON p.id = sca.project_id AND p.status != 'cancelled'
+      WHERE sc.year = ? AND sc.status != 'deleted'
+      GROUP BY strftime('%Y-%m', sc.cost_date)
+    `).bind(fyYear).all()
 
     // ── 5. Build monthly map (12 tháng NTC)
     const revMap: Record<string, number> = {}
@@ -12590,7 +12609,7 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     const directCostMap: Record<string, number> = {}
     ;(rawDirectCost.results as any[]).forEach((r: any) => { directCostMap[r.month] = r.cost || 0 })
     const laborMap: Record<string, number> = {}
-    laborMonthly.forEach((r: any) => { laborMap[r.month] = r.labor_cost || 0 })
+    laborBreakdown.byMonth.forEach((cost, month) => { laborMap[month] = cost })
     const sharedMap: Record<string, number> = {}
     ;(sharedRows.results as any[]).forEach((r: any) => { sharedMap[r.month] = r.shared_cost || 0 })
 
@@ -12618,52 +12637,29 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     const totalPendingBooked = (rawPendingBooked.results as any[]).reduce((s: number, r: any) => s + (r.revenue || 0), 0)
     const totalRevenue = totalRevenuePaid + totalPendingBooked
     const totalDirectCost = (rawDirectCost.results as any[]).reduce((s: number, r: any) => s + (r.cost || 0), 0)
-    const totalLaborCost = laborMonthly.reduce((s: number, r: any) => s + (r.labor_cost || 0), 0)
+    let totalLaborCost = 0
+    laborBreakdown.byProject.forEach(v => { totalLaborCost += v.labor_cost || 0 })
     const totalSharedCost = (sharedRows.results as any[]).reduce((s: number, r: any) => s + (r.shared_cost || 0), 0)
     const totalCost = totalDirectCost + totalLaborCost + totalSharedCost
 
-    // ── 7. Cost breakdown by type (trong NTC, gộp cả project_costs + shared_costs)
-    // project_costs: chi phí trực tiếp theo loại
+    // ── 7. Chi phí theo loại: trực tiếp riêng, lương và chi phí chung là hai lát riêng (không cộng trùng)
     const costByTypeDirectRaw = await db.prepare(`
-      SELECT cost_type, SUM(amount) as total, COUNT(*) as count
-      FROM project_costs
-      WHERE cost_date >= ? AND cost_date <= ? AND cost_type != 'salary'
-      GROUP BY cost_type ORDER BY total DESC
+      SELECT pc.cost_type, SUM(pc.amount) as total, COUNT(*) as count
+      FROM project_costs pc
+      JOIN projects p ON p.id = pc.project_id AND p.status != 'cancelled'
+      WHERE pc.cost_date >= ? AND pc.cost_date <= ? AND pc.cost_type != 'salary'
+      GROUP BY pc.cost_type ORDER BY total DESC
     `).bind(fyStart, fyEnd).all()
 
-    // shared_costs: chi phí chung theo loại (đếm số phiếu gốc, không đếm allocations)
-    const costByTypeSharedRaw = await db.prepare(`
-      SELECT sc.cost_type,
-        SUM(sc.amount) as total,
-        COUNT(DISTINCT sc.id) as count
-      FROM shared_costs sc
-      WHERE sc.cost_date >= ? AND sc.cost_date <= ?
-        AND sc.status != 'deleted'
-        AND sc.cost_type != 'salary'
-      GROUP BY sc.cost_type
-    `).bind(fyStart, fyEnd).all()
-
-    // Gộp direct + shared theo cost_type
-    const costByTypeMap: Record<string, { cost_type: string; total: number; count: number }> = {}
-    ;(costByTypeDirectRaw.results as any[]).forEach((r: any) => {
-      costByTypeMap[r.cost_type] = { cost_type: r.cost_type, total: r.total || 0, count: r.count || 0 }
-    })
-    ;(costByTypeSharedRaw.results as any[]).forEach((r: any) => {
-      if (costByTypeMap[r.cost_type]) {
-        costByTypeMap[r.cost_type].total += r.total || 0
-        costByTypeMap[r.cost_type].count += r.count || 0
-      } else {
-        costByTypeMap[r.cost_type] = { cost_type: r.cost_type, total: r.total || 0, count: r.count || 0 }
-      }
-    })
-
-    const costByType: any[] = Object.values(costByTypeMap).sort((a, b) => b.total - a.total)
+    const costByType: any[] = (costByTypeDirectRaw.results as any[]).map((r: any) => ({
+      cost_type: r.cost_type, total: r.total || 0, count: r.count || 0,
+    }))
     if (totalLaborCost > 0) costByType.push({ cost_type: 'salary', total: totalLaborCost, count: 0 })
     if (totalSharedCost > 0) costByType.push({ cost_type: 'shared', total: totalSharedCost, count: 0 })
+    costByType.sort((a, b) => b.total - a.total)
 
     // ── 8. Top projects by revenue (trong NTC)
-    // Tính labor cost REALTIME để đồng bộ với financial-by-project
-    const realtimeLaborByProject = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR, fyStart, fyEnd)
+    const realtimeLaborByProject = laborBreakdown.byProject
     
     // FIX: Tách queries để tránh duplicate rows khi LEFT JOIN nhiều bảng
     // Query revenue (paid+partial trong kỳ + pending booked theo request_date)
@@ -12705,11 +12701,11 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       FROM projects p
       LEFT JOIN shared_cost_allocations sca ON sca.project_id = p.id
         AND sca.shared_cost_id IN (
-          SELECT id FROM shared_costs WHERE cost_date >= ? AND cost_date <= ?
+          SELECT id FROM shared_costs WHERE year = ? AND status != 'deleted'
         )
       WHERE p.status != 'cancelled'
       GROUP BY p.id
-    `).bind(fyStart, fyEnd).all()
+    `).bind(fyYear).all()
     
     // Build maps
     const topRevMap: Record<number, number> = {}

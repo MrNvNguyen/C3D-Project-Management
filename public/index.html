@@ -1766,6 +1766,17 @@
     .legal-payment-sheet-row > input[type="hidden"] { display: none; }
     .legal-payment-sheet-row:last-child { border-bottom: none; }
     .legal-payment-sheet-row:hover { background: var(--shell-row-hover); }
+    .legal-payment-sheet-row.is-linked {
+      box-shadow: inset 0 0 0 2px #3b82f6;
+      background: rgba(59, 130, 246, 0.22);
+    }
+    button.rev-source-link {
+      border: 0;
+      cursor: pointer;
+      font: inherit;
+      line-height: inherit;
+    }
+    button.rev-source-link:hover { text-decoration: underline; }
     .legal-payment-sheet-row.is-paid { background: #d1fae5; }
     .legal-payment-sheet-row.is-paid:hover { background: #bbf7d0; }
     .legal-payment-sheet-row.is-paid .legal-payment-sheet-text,
@@ -9057,7 +9068,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261010d"></script>
+<script src="/static/app.js?v=20261010e"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO

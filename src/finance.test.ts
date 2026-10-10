@@ -15,6 +15,7 @@ import {
   sumSpentLegalCostA,
   computeProjectBudget,
   computeProjectLaborFromAggregates,
+  computeRealtimeLaborBreakdown,
   computeRealtimeLaborFromAggregates,
   dayAfter,
   enrichPaymentMetrics,
@@ -555,6 +556,33 @@ describe('labor allocation (Wave 1a parity)', () => {
     expect(map.get(1)).toEqual({ labor_cost: 10_000_000, labor_hours: 10 })
     expect(map.get(2)).toEqual({ labor_cost: 20_000_000, labor_hours: 20 })
     expect(map.has(null as unknown as number)).toBe(false)
+  })
+
+  it('monthly labor sum matches project sum and skips projects outside the allowed set', () => {
+    const projRows = [
+      { project_id: 1, year: 2026, month: 8, raw_hours: 10, eff_hours: 10 },
+      { project_id: 2, year: 2026, month: 8, raw_hours: 20, eff_hours: 20 },
+      { project_id: 1, year: 2026, month: 9, raw_hours: 5, eff_hours: 5 },
+    ]
+    const months = [
+      { year: 2026, month: 8, pool: 100_000_000 },
+      { year: 2026, month: 9, pool: 50_000_000 },
+    ]
+    const compEffByMonth = new Map([
+      [yearMonthKey(2026, 8), 100],
+      [yearMonthKey(2026, 9), 50],
+    ])
+    const all = computeRealtimeLaborBreakdown(months, projRows, compEffByMonth)
+    const monthSum = [...all.byMonth.values()].reduce((s, n) => s + n, 0)
+    const projectSum = [...all.byProject.values()].reduce((s, v) => s + v.labor_cost, 0)
+    expect(monthSum).toBe(projectSum)
+    expect(all.byMonth.get('2026-08')).toBe(30_000_000)
+
+    const activeOnly = computeRealtimeLaborBreakdown(
+      months, projRows, compEffByMonth, new Set([1])
+    )
+    expect(activeOnly.byProject.has(2)).toBe(false)
+    expect([...activeOnly.byProject.values()].reduce((s, v) => s + v.labor_cost, 0)).toBe(15_000_000)
   })
 
   it('filterMlcMonths respects NTC inclusive end date year-month', () => {
