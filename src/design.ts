@@ -2158,6 +2158,25 @@ export type BuildDesignOverviewOpts = {
   forDashboard?: boolean
 }
 
+/** Cột task mở rộng có trên production qua init, chưa có trên D1 chỉ chạy migration. */
+export function designOverviewTaskSql(existingColumns: Iterable<string>) {
+  const cols = new Set(existingColumns)
+  const col = (name: string, fallback: string) => (cols.has(name) ? `t.${name}` : `${fallback} AS ${name}`)
+  const modelGate = cols.has('model_filename')
+    ? `AND t.model_filename IS NOT NULL AND TRIM(t.model_filename) != ''`
+    : 'AND 0'
+  return `SELECT t.id, t.title, t.status, t.progress, t.due_date,
+      ${col('cde_report', '0')},
+      ${col('hstk_date', 'NULL')},
+      t.design_package_id, t.discipline_code, t.category_id,
+      ${col('model_filename', 'NULL')},
+      t.phase, t.assigned_to, u.full_name AS assigned_to_name
+    FROM tasks t
+    LEFT JOIN users u ON u.id = t.assigned_to
+    WHERE t.project_id = ?
+      ${modelGate}`
+}
+
 export async function buildDesignOverview(
   db: D1Database,
   projectId: number,
@@ -2283,13 +2302,9 @@ export async function buildDesignOverview(
         ? taskPhaseKeyForDesignSheet(opts.phaseFilter, phases)
         : null
 
-  const tasks = await db.prepare(
-    `SELECT t.id, t.title, t.status, t.progress, t.cde_report, t.hstk_date, t.design_package_id, t.discipline_code, t.category_id,
-            t.model_filename, t.phase, t.assigned_to, u.full_name AS assigned_to_name
-     FROM tasks t
-     LEFT JOIN users u ON u.id = t.assigned_to
-     WHERE t.project_id = ? AND t.model_filename IS NOT NULL AND TRIM(t.model_filename) != ''`,
-  ).bind(projectId).all()
+  const taskInfo = await db.prepare('PRAGMA table_info(tasks)').all()
+  const taskCols = ((taskInfo.results || []) as Array<{ name?: string }>).map(row => String(row.name || ''))
+  const tasks = await db.prepare(designOverviewTaskSql(taskCols)).bind(projectId).all()
 
   const project = await db.prepare('SELECT code, project_code_letter FROM projects WHERE id = ?').bind(projectId).first() as any
   const projectCode = project?.code || ''
@@ -2629,10 +2644,18 @@ export function summarizeDashboardFromOverview(overview: { disciplines: any[] },
       }
       const cat = row.category_code
       if (!categoryMatrix[cat]) categoryMatrix[cat] = {}
+      const prev = categoryMatrix[cat][d.discipline_code]
+      const nextCompare = String(row.hstk_compare || '')
+      const compareRank = (flag: string) => flag === 'match_old' ? 3 : flag === 'unmatched' ? 2 : flag === 'match_latest' ? 1 : 0
+      const keepPrevCompare = prev && compareRank(String(prev.hstk_compare || '')) > compareRank(nextCompare)
       categoryMatrix[cat][d.discipline_code] = {
+        category_name: row.category_name || prev?.category_name || '',
         revision_updated: row.revision_updated,
         revision_current: row.revision_current,
         revision_lag: row.revision_lag,
+        hstk_compare: keepPrevCompare ? prev.hstk_compare : nextCompare,
+        hstk_reference: keepPrevCompare ? prev.hstk_reference : (row.hstk_reference || ''),
+        has_tasks: !!(prev?.has_tasks || row.tasks?.length),
         status:
           row.revision_lag >= 1
             ? 'lagging'
@@ -2683,7 +2706,7 @@ async function fetchOpenTaskPreviewForDashboard(
   if (!(await canAccessProject(db, user, projectId))) return []
   const ot = await db.prepare(
     `SELECT t.id, t.title, t.discipline_code, t.category_id, t.due_date, t.status, t.hstk_date,
-            u.full_name AS assigned_to_name, c.name AS category_name
+            u.full_name AS assigned_to_name, c.name AS category_name, c.code AS category_code
      FROM tasks t
      LEFT JOIN users u ON u.id = t.assigned_to
      LEFT JOIN categories c ON c.id = t.category_id

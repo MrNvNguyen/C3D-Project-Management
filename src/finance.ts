@@ -116,12 +116,13 @@ export function aggregatePaymentsBeforeVat(
   return { acceptanceByProject, cashByProject }
 }
 
-const NT_STATUSES = new Set(['pending', 'partial', 'paid'])
+const NT_STATUSES = new Set(['processing', 'partial', 'paid'])
 const CASH_STATUSES = new Set(['partial', 'paid'])
 
 /**
  * Ba số tiền từ payment_requests (không gồm booked).
- * NT trước VAT: pending+partial+paid; GTTT: partial+paid only; cancelled loại.
+ * NT trước VAT: Đã nghiệm thu + TT một phần + Đã thanh toán.
+ * Chờ thanh toán chỉ vào pendingAcceptance, không vào tổng NT. GTTT: partial+paid.
  */
 export function aggregateThreeMoney(
   rows: Array<{ status?: string; amount?: number; paid_amount?: number; vat_pct?: number | null }>
@@ -137,11 +138,15 @@ export function aggregateThreeMoney(
   let pendingAcceptanceBeforeVat = 0
   for (const r of rows) {
     const status = String(r.status || '')
-    if (status === 'cancelled' || !NT_STATUSES.has(status)) continue
+    if (status === 'cancelled' || status === 'rejected') continue
     const vat = Number(r.vat_pct) || 0
     const nt = amountExcludingVat(Number(r.amount) || 0, vat)
+    if (status === 'pending') {
+      pendingAcceptanceBeforeVat += nt
+      continue
+    }
+    if (!NT_STATUSES.has(status)) continue
     acceptanceBeforeVat += nt
-    if (status === 'pending') pendingAcceptanceBeforeVat += nt
     if (CASH_STATUSES.has(status)) {
       const paid = Number(r.paid_amount) || 0
       cashGross += paid
@@ -235,7 +240,7 @@ export function paymentStatusToRevenue(status: string): string {
   return 'pending'
 }
 
-/** Đợt Đang xử lý được ghi sổ với payment_status pending. Danh sách doanh thu hiện đúng trạng thái đợt. */
+/** Đợt Đã nghiệm thu (`processing`) được ghi sổ với payment_status pending. Danh sách doanh thu hiện đúng trạng thái đợt. */
 export function displayRevenuePaymentStatus(
   revenueStatus: string | null | undefined,
   linkedPaymentStatus: string | null | undefined
@@ -265,6 +270,7 @@ export function enrichPaymentMetrics(payment: {
   amount?: number
   paid_amount?: number
   vat_pct?: number | null
+  status?: string | null
 }, feePct: number) {
   const acceptance = Number(payment.amount) || 0
   const cashGross = Number(payment.paid_amount) || 0
@@ -274,10 +280,11 @@ export function enrichPaymentMetrics(payment: {
     vatPct,
     feePct
   )
+  const booksRevenue = !payment.status || payment.status === 'processing' || payment.status === 'partial' || payment.status === 'paid'
   return {
     acceptance_amount: acceptance,
     amount_before_vat: amountBeforeVat,
-    booked_revenue: bookedRevenue,
+    booked_revenue: booksRevenue ? bookedRevenue : null,
     cash_collected: cashGross,
     cash_before_vat: amountExcludingVat(cashGross, vatPct),
   }
@@ -335,6 +342,7 @@ export function revenueFromPackagePaymentSql(revenueAlias: string): string {
   return `EXISTS (
     SELECT 1 FROM payment_requests pq_pkg
     WHERE pq_pkg.revenue_id = ${revenueAlias}.id
+      AND pq_pkg.status IN ('processing', 'partial', 'paid')
       AND ${paymentOnPackageSql('pq_pkg')}
   )`
 }

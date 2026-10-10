@@ -43,6 +43,7 @@ import {
   isProjectExecutionPhaseKey,
   filterModelMatrixTasksForDesignSheet,
   taskPhaseMatchesDesignSheet,
+  designOverviewTaskSql,
 } from './design'
 
 function createProjectDesignDisciplineTestDb() {
@@ -690,6 +691,29 @@ describe('summarizeDashboardFromOverview', () => {
     expect(out.categoryMatrix).toEqual({})
     expect(out.blockers).toContain('Có task trễ hạn')
   })
+
+  it('stores the category name beside the code on each matrix cell', () => {
+    const out = summarizeDashboardFromOverview({
+      disciplines: [{
+        discipline_code: 'AR',
+        packages: [{ id: 1 }],
+        latest_package: { id: 1 },
+        model_matrix: [{
+          category_code: 'CC',
+          category_name: 'Cảnh quan',
+          revision_lag: 0,
+          revision_updated: 'R1',
+          revision_current: 'R1',
+          tasks: [],
+          hstk_compare: 'match_old',
+          hstk_reference: 'R0 · 2026-01-01 · goi cu',
+        }],
+      }],
+    }, { overdue_tasks: 0 })
+    expect(out.categoryMatrix.CC.AR.category_name).toBe('Cảnh quan')
+    expect(out.categoryMatrix.CC.AR.hstk_compare).toBe('match_old')
+    expect(out.categoryMatrix.CC.AR.hstk_reference).toBe('R0 · 2026-01-01 · goi cu')
+  })
 })
 
 describe('applyProjectDesignDisciplineDeclaration', () => {
@@ -875,5 +899,25 @@ describe('buildHstkReference', () => {
   })
   it('falls back to raw hstk_date', () => {
     expect(buildHstkReference({ hstk_date: 'custom-label', design_package_id: null }, pkgs, map)).toBe('custom-label')
+  })
+})
+
+describe('designOverviewTaskSql', () => {
+  it('selects extended task columns when the table has them', () => {
+    const sql = designOverviewTaskSql(['cde_report', 'hstk_date', 'model_filename'])
+    expect(sql).toContain('t.cde_report')
+    expect(sql).toContain('t.hstk_date')
+    expect(sql).toContain('t.due_date')
+    expect(sql).toContain('t.model_filename IS NOT NULL')
+  })
+
+  it('does not reference missing extended columns', () => {
+    const sql = designOverviewTaskSql(['id', 'title', 'status'])
+    expect(sql).not.toContain('t.cde_report')
+    expect(sql).not.toContain('t.hstk_date')
+    expect(sql).not.toContain('t.model_filename')
+    expect(sql).toContain('t.due_date')
+    expect(sql).toContain('0 AS cde_report')
+    expect(sql).toContain('AND 0')
   })
 })

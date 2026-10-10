@@ -1,1 +1,1 @@
-{"version":1,"include":["/api/*"],"exclude":[]}
+{"version":1,"include":["/api/*","/.well-known/oauth-protected-resource","/.well-known/oauth-protected-resource/*","/.well-known/oauth-authorization-server","/oauth/ddcn/*"],"exclude":[]}

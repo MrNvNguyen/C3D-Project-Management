@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ddcn": {
+      "url": "https://ddcn.bimonecadvn.com/api/ai/v1/mcp",
+      "bearer_token_env_var": "ONECAD_DDCN_TOKEN"
+    }
+  }
+}

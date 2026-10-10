@@ -468,35 +468,6 @@
     return list.filter(t => String(t.phase ?? '').trim() === phaseKey)
   }
 
-  function pickPrimaryMatrixTask(tasks) {
-    if (!tasks?.length) return null
-    return [...tasks].sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0))[0]
-  }
-
-  function formatDesignTaskCell(tasks) {
-    if (!tasks?.length) return '<span class="text-gray-400">—</span>'
-    return tasks
-      .map(t => {
-        const raw = String(t.title || '').trim()
-        const title = raw ? escHtml(raw) : '<span class="text-gray-400">—</span>'
-        if (t.id && raw) {
-          return `<div class="leading-snug"><button type="button" class="text-primary underline text-left" onclick="openTaskModal(${t.id})">${title}</button></div>`
-        }
-        return `<div class="leading-snug">${title}</div>`
-      })
-      .join('')
-  }
-
-  function formatDesignAssigneeCell(row, projectId) {
-    const sheetTasks = matrixTasksForActiveSheet(row.tasks, projectId)
-    const name =
-      (row.task_assignee_name && String(row.task_assignee_name).trim()) ||
-      pickPrimaryMatrixTask(sheetTasks)?.assigned_to_name ||
-      ''
-    if (!name) return '<span class="text-gray-400">—</span>'
-    return `<span class="text-gray-200 whitespace-nowrap">${escHtml(String(name).trim())}</span>`
-  }
-
   function revMatrixSideLabel(v) {
     if (v == null || v === '') return '—'
     const s = String(v).trim()
@@ -553,6 +524,7 @@
       <col style="width:min(200px,18vw)">
       <col style="width:172px">
       <col style="width:min(280px,26vw)">
+      <col style="width:96px">
       <col style="width:100px">
       <col style="width:88px">
       <col style="width:72px">
@@ -562,15 +534,75 @@
     </colgroup>`
 
   const MODEL_MATRIX_TABLE_CLASS =
-    'design-hstk-model-matrix w-full text-xs min-w-[1380px] bg-gray-950/90 rounded-lg overflow-hidden'
+    'design-hstk-model-matrix w-full text-xs min-w-[1480px] bg-gray-950/90 rounded-lg overflow-hidden'
 
-  function designTaskMatrixCell(projectId, rowKey, tasks, canAssign) {
-    const phaseTasks = matrixTasksForActiveSheet(tasks, projectId)
-    const assignBtn = canAssign
-      ? `<button type="button" class="btn-primary text-[10px] px-2 py-0.5 whitespace-nowrap shrink-0 self-start" onclick="assignDesignTask(${projectId},'${rowKey}')"><i class="fas fa-user-plus mr-1"></i>Giao task</button>`
-      : ''
-    const taskHtml = phaseTasks.length ? formatDesignTaskCell(phaseTasks) : ''
-    return `<div class="dh-task-cell">${taskHtml}${assignBtn}</div>`
+  function matrixTaskTitleHtml(task) {
+    if (!task) return '<span class="text-gray-400">—</span>'
+    const raw = String(task.title || '').trim()
+    if (!raw) return '<span class="text-gray-400">—</span>'
+    const title = escHtml(raw)
+    if (task.id) {
+      return `<button type="button" class="text-primary underline text-left" onclick="openTaskModal(${task.id})">${title}</button>`
+    }
+    return title
+  }
+
+  function matrixTaskDueHtml(task) {
+    if (!task) return '<span class="text-gray-400">—</span>'
+    const label = formatIsoDateVi(task.due_date)
+    return label === '—' ? '<span class="text-gray-400">—</span>' : escHtml(label)
+  }
+
+  function matrixTaskAssigneeHtml(task) {
+    const name = String(task?.assigned_to_name || '').trim()
+    if (!name) return '<span class="text-gray-400">—</span>'
+    return `<span class="text-gray-200 whitespace-nowrap">${escHtml(name)}</span>`
+  }
+
+  function renderModelMatrixRows(projectId, disciplineCode, rows, canAssign, canScan) {
+    if (!rows?.length) return ''
+    let body = ''
+    for (const row of rows) {
+      const rowKey = registerAssignRow(disciplineCode, row)
+      const phaseTasks = matrixTasksForActiveSheet(row.tasks, projectId)
+      const lines = phaseTasks.length ? phaseTasks : [null]
+      const span = lines.length
+      const spanAttr = span > 1 ? ` rowspan="${span}"` : ''
+      const catLabel = row.category_code
+        ? `${escHtml(row.category_code)} — ${escHtml(row.category_name || '')}`
+        : '—'
+      const codeFlag = row.project_code_mismatch
+        ? ' <span class="text-amber-600 text-[10px]" title="Mã dự án trong tên khác mã dự án">Mã DA khác</span>'
+        : ''
+      const assignBtn = canAssign
+        ? `<div class="mt-1"><button type="button" class="btn-primary text-[10px] px-2 py-0.5 whitespace-nowrap" onclick="assignDesignTask(${projectId},'${rowKey}')"><i class="fas fa-user-plus mr-1"></i>Giao task</button></div>`
+        : ''
+      lines.forEach((task, index) => {
+        const last = index === lines.length - 1
+        body += `<tr class="${last ? 'border-b border-gray-700/50' : ''} hover:bg-gray-800/40">`
+        if (index === 0) {
+          body += `<td class="py-1.5 px-2 text-xs text-gray-200 align-top"${spanAttr}>${catLabel}</td>`
+          body += categoryFolderPathCell(projectId, disciplineCode, row, canScan, span)
+          body += `<td class="py-1.5 px-2 text-xs font-mono text-gray-100 align-top dh-cell-wrap"${spanAttr}>${escHtml(row.model_name)}${codeFlag}</td>`
+        }
+        const status = task ? task.status : row.task_status
+        const progress = task ? task.progress : row.task_progress_percent
+        const cde = task ? task.cde_report : row.task_cde_report
+        const lineBorder = index > 0 ? ' border-t border-gray-800/80' : ''
+        body += `<td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-wrap${lineBorder}">${matrixTaskTitleHtml(task)}${last ? assignBtn : ''}</td>`
+        body += `<td class="py-1.5 px-2 text-xs text-gray-200 align-top dh-cell-nowrap${lineBorder}">${matrixTaskDueHtml(task)}</td>`
+        body += `<td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-nowrap${lineBorder}">${matrixTaskAssigneeHtml(task)}</td>`
+        body += `<td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap${lineBorder}">${matrixCvStatusCell(status)}</td>`
+        body += `<td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap${lineBorder}">${matrixCvProgressCell(progress)}</td>`
+        body += `<td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap${lineBorder}">${matrixCvCdeCell(cde)}</td>`
+        if (index === 0) {
+          body += `<td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-wrap"${spanAttr}>${formatHstkCompareCell(row)}</td>`
+          body += `<td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-nowrap"${spanAttr}>${revisionMatrixCell(row)}</td>`
+        }
+        body += '</tr>'
+      })
+    }
+    return body
   }
 
   function formatCategoryDossierStatusHtml(row) {
@@ -593,8 +625,9 @@
     return html
   }
 
-  function categoryFolderPathCell(projectId, disciplineCode, row, canScan) {
-    if (!row.category_id) return '<td class="py-1.5 px-2 text-xs text-gray-500 align-top">—</td>'
+  function categoryFolderPathCell(projectId, disciplineCode, row, canScan, rowspan) {
+    const span = rowspan > 1 ? ` rowspan="${rowspan}"` : ''
+    if (!row.category_id) return `<td class="py-1.5 px-2 text-xs text-gray-500 align-top"${span}>—</td>`
     const cid = row.category_id
     const fp = normalizeWindowsPath(row.category_folder_path || '')
     const dossierHtml = formatCategoryDossierStatusHtml(row)
@@ -602,13 +635,13 @@
       const pathBlock = fp
         ? `<a href="#" data-folder-path="${escHtml(fp)}" class="text-primary underline font-mono text-[10px] break-all" onclick="return designOpenFolder(event)">${escHtml(fp)}</a>`
         : '—'
-      return `<td class="py-1.5 px-2 text-xs align-top"><div>${pathBlock}</div>${dossierHtml}</td>`
+      return `<td class="py-1.5 px-2 text-xs align-top"${span}><div>${pathBlock}</div>${dossierHtml}</td>`
     }
     const inputId = `designCatFolder_${escHtml(disciplineCode)}_${cid}`
     const openLink = fp
       ? `<a href="#" data-folder-path="${escHtml(fp)}" class="text-primary text-[10px] whitespace-nowrap shrink-0 hover:underline" title="Mở folder trong Explorer" onclick="return designOpenFolder(event)"><i class="fas fa-folder-open mr-0.5"></i>Mở folder</a>`
       : ''
-    return `<td class="py-1.5 px-2 text-xs align-top">
+    return `<td class="py-1.5 px-2 text-xs align-top"${span}>
       <div class="flex items-center gap-1.5 flex-wrap min-w-[160px]">
         <input type="text" id="${inputId}" class="flex-1 min-w-[120px] text-[10px] border border-gray-600 rounded px-1.5 py-1 font-mono bg-gray-900 text-gray-100" placeholder="Z:\\DuAn\\…\\hạng mục" value="${escHtml(fp)}" title="Dán đường dẫn folder hạng mục trên NAS — Enter để lưu" onkeydown="designCategoryFolderInputKeydown(event,${projectId},'${escHtml(disciplineCode)}',${cid})" />
         ${openLink}
@@ -623,6 +656,7 @@
       <th class="text-left py-1.5 px-2 font-semibold">Đường dẫn folder</th>
       <th class="text-left py-1.5 px-2 font-semibold">Model</th>
       <th class="text-left py-1.5 px-2 font-semibold">Task</th>
+      <th class="text-left py-1.5 px-2 font-semibold whitespace-nowrap">Ngày hết hạn</th>
       <th class="text-left py-1.5 px-2 font-semibold whitespace-nowrap">Người phụ trách</th>
       <th class="text-center py-1.5 px-2 font-semibold whitespace-nowrap">Trạng thái</th>
       <th class="text-center py-1.5 px-2 font-semibold whitespace-nowrap">% hoàn thành</th>
@@ -630,33 +664,6 @@
       <th class="text-left py-1.5 px-2 font-semibold">Đối chiếu HS</th>
       <th class="text-left py-1.5 px-1 font-semibold leading-tight max-w-[4.75rem]"><span class="block">Rev đã cập nhật /</span><span class="block">Hiện tại</span></th>
     </tr></thead>`
-  }
-
-  function renderModelMatrixRows(projectId, disciplineCode, rows, canAssign, canScan) {
-    if (!rows?.length) return ''
-    let body = ''
-    for (const row of rows) {
-      const rowKey = registerAssignRow(disciplineCode, row)
-      const catLabel = row.category_code
-        ? `${escHtml(row.category_code)} — ${escHtml(row.category_name || '')}`
-        : '—'
-      const codeFlag = row.project_code_mismatch
-        ? ' <span class="text-amber-600 text-[10px]" title="Mã dự án trong tên khác mã dự án">Mã DA khác</span>'
-        : ''
-      body += `<tr class="border-b border-gray-700/50 hover:bg-gray-800/40">
-        <td class="py-1.5 px-2 text-xs text-gray-200 align-top">${catLabel}</td>
-        ${categoryFolderPathCell(projectId, disciplineCode, row, canScan)}
-        <td class="py-1.5 px-2 text-xs font-mono text-gray-100 align-top dh-cell-wrap">${escHtml(row.model_name)}${codeFlag}</td>
-        <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-wrap">${designTaskMatrixCell(projectId, rowKey, row.tasks, canAssign)}</td>
-        <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-nowrap">${formatDesignAssigneeCell(row, projectId)}</td>
-        <td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap">${matrixCvStatusCell(row.task_status)}</td>
-        <td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap">${matrixCvProgressCell(row.task_progress_percent)}</td>
-        <td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap">${matrixCvCdeCell(row.task_cde_report)}</td>
-        <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-wrap">${formatHstkCompareCell(row)}</td>
-        <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-nowrap">${revisionMatrixCell(row)}</td>
-      </tr>`
-    }
-    return body
   }
 
   function renderDisciplineModelMatrix(d, projectId, canAssign) {
@@ -1205,6 +1212,152 @@
     return String(s || '').toLowerCase()
   }
 
+  function pdActiveCategoryCode() {
+    return document.getElementById('pdCategoryFilter')?.value || ''
+  }
+
+  function pdActiveDisciplineCode() {
+    return document.getElementById('pdDisciplineFilter')?.value || ''
+  }
+
+  function pdCurrentSelectedProject() {
+    const id = window._pdState?.selectedProjectId
+    return (window._pdLastData?.projects || []).find(p => p.id === id) || null
+  }
+
+  function pdDisciplineByCode(code) {
+    const project = pdCurrentSelectedProject()
+    const fromProject = (project?.disciplines || []).find(d => d.discipline_code === code)
+    if (fromProject?.discipline_name) return fromProject
+    const catalog = (window._pdDisciplineCatalog || []).find(d => d.code === code)
+    if (catalog) return { discipline_code: catalog.code, discipline_name: catalog.name || '' }
+    return fromProject || { discipline_code: code, discipline_name: '' }
+  }
+
+  function pdDisciplineTeamMatch(disc, department) {
+    const dept = pdFoldText(department).trim()
+    if (!dept || !disc) return false
+    const code = pdFoldText(disc.discipline_code || disc.code).trim()
+    const name = pdFoldText(disc.discipline_name || disc.name).trim()
+    if (code && dept === code) return true
+    if (name && dept === name) return true
+    if (name && (dept.includes(name) || name.includes(dept))) return true
+    return false
+  }
+
+  function pdMembersForDiscipline(disc) {
+    const rows = window._pdMembers || []
+    if (!disc) return rows
+    return rows.filter(m => pdDisciplineTeamMatch(disc, m.department))
+  }
+
+  function pdFillMemberFilter() {
+    const sel = document.getElementById('pdMemberFilter')
+    if (!sel) return false
+    const prev = sel.value
+    const discCode = pdActiveDisciplineCode()
+    const disc = discCode ? pdDisciplineByCode(discCode) : null
+    const rows = disc ? pdMembersForDiscipline(disc) : (window._pdMembers || [])
+    sel.innerHTML = '<option value="">— Chọn thành viên —</option>' + rows.map(m => {
+      const dept = m.department ? ` — ${m.department}` : ''
+      return `<option value="${m.id}">${escHtml(m.full_name)}${escHtml(dept)}</option>`
+    }).join('')
+    const keep = prev && rows.some(m => String(m.id) === String(prev))
+    sel.value = keep ? prev : ''
+    const hint = document.getElementById('pdMemberFilterHint')
+    if (hint) {
+      if (!disc) hint.textContent = 'Toàn bộ nhân sự đang hoạt động'
+      else if (!rows.length) hint.textContent = `Chưa có nhân sự thuộc team bộ môn ${disc.discipline_code}${disc.discipline_name ? ' — ' + disc.discipline_name : ''}`
+      else hint.textContent = `Nhân sự thuộc team bộ môn ${disc.discipline_code}${disc.discipline_name ? ' — ' + disc.discipline_name : ''}`
+    }
+    return sel.value !== prev
+  }
+
+  function pdSyncSliceFilterOptions() {
+    const catSel = document.getElementById('pdCategoryFilter')
+    const discSel = document.getElementById('pdDisciplineFilter')
+    if (!catSel || !discSel) return
+    const project = pdCurrentSelectedProject()
+    if (project?.detail_loaded) {
+      const matrix = project.category_matrix || {}
+      const cats = Object.keys(matrix).sort()
+      const prev = catSel.value
+      catSel.innerHTML = '<option value="">Tất cả hạng mục</option>' + cats.map(code => {
+        const cells = Object.values(matrix[code] || {})
+        const name = String(cells.find(c => c && c.category_name)?.category_name || '').trim()
+        const label = name && name !== code ? `${code} — ${name}` : code
+        return `<option value="${escHtml(code)}">${escHtml(label)}</option>`
+      }).join('')
+      catSel.value = cats.includes(prev) ? prev : ''
+    } else if (!catSel.options.length) {
+      catSel.innerHTML = '<option value="">Tất cả hạng mục</option>'
+    }
+    const prevDisc = discSel.value
+    const catalog = window._pdDisciplineCatalog || []
+    const discs = catalog.length
+      ? catalog.map(d => ({ code: d.code, name: d.name || '' }))
+      : (project?.disciplines || []).map(d => ({ code: d.discipline_code, name: d.discipline_name || '' }))
+    if (discs.length || !discSel.options.length) {
+      discSel.innerHTML = '<option value="">Tất cả bộ môn</option>' + discs.map(d => {
+        const label = d.name && d.name !== d.code ? `${d.code} — ${d.name}` : d.code
+        return `<option value="${escHtml(d.code)}">${escHtml(label)}</option>`
+      }).join('')
+      if ([...discSel.options].some(o => o.value === prevDisc)) discSel.value = prevDisc
+    }
+  }
+
+  function pdBlockerMatchesSlice(line, cat, disc) {
+    if (!cat && !disc) return true
+    const text = String(line || '')
+    const hasCat = !!(cat && text.includes(`Hạng mục ${cat}`))
+    const hasDisc = !!(disc && (text.startsWith(`${disc}:`) || text.includes(`(${disc})`) || text.includes(`(${disc},`) || text.includes(`, ${disc})`) || text.includes(`, ${disc},`)))
+    if (cat && disc) return (hasCat && (hasDisc || text.includes(disc))) || (!text.includes('Hạng mục ') && hasDisc)
+    if (cat) return hasCat
+    return hasDisc
+  }
+
+  function pdSliceProject(p) {
+    const cat = pdActiveCategoryCode()
+    const disc = pdActiveDisciplineCode()
+    if (!p || (!cat && !disc)) return p
+    const matrix = {}
+    for (const code of Object.keys(p.category_matrix || {})) {
+      if (cat && code !== cat) continue
+      const row = {}
+      for (const dc of Object.keys(p.category_matrix[code] || {})) {
+        if (disc && dc !== disc) continue
+        row[dc] = p.category_matrix[code][dc]
+      }
+      if (Object.keys(row).length) matrix[code] = row
+    }
+    const tasks = (p.open_tasks_preview || []).filter(t => {
+      if (disc && String(t.discipline_code || '') !== disc) return false
+      if (!cat) return true
+      if (t.category_code && String(t.category_code) === cat) return true
+      const cells = Object.values(p.category_matrix?.[cat] || {})
+      const name = String(cells.find(c => c && c.category_name)?.category_name || '').trim()
+      return !!(name && String(t.category_name || '').trim() === name)
+    })
+    return {
+      ...p,
+      category_matrix: matrix,
+      disciplines: (p.disciplines || []).filter(d => !disc || d.discipline_code === disc),
+      open_tasks_preview: tasks,
+      blockers: (p.blockers || []).filter(b => pdBlockerMatchesSlice(b, cat, disc)),
+    }
+  }
+
+  window.pdOnDashboardSliceFilter = function pdOnDashboardSliceFilter() {
+    const memberChanged = pdFillMemberFilter()
+    const tab = window._pdState?.tab || 'project'
+    if (tab === 'member' && memberChanged) {
+      if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
+      return
+    }
+    const root = document.getElementById('projectDashboardRoot')
+    if (root && window._pdLastData) renderProjectDashboard(root, window._pdLastData)
+  }
+
   function pdProjectMatchesStatusChip(p) {
     const chip = window._pdProjectStatusFilter || 'all'
     if (chip === 'all') return true
@@ -1261,6 +1414,7 @@
       selId = filtered.length ? filtered[0].id : null
       window._pdState.selectedProjectId = selId
     }
+    pdSyncSliceFilterOptions()
 
     const listItemsEl = root.querySelector('.pd-list-items')
     const detailEl = root.querySelector('.pd-project-detail')
@@ -1304,19 +1458,28 @@
   }
 
   window.setProjectDashboardTab = function setProjectDashboardTab(tab) {
-    const canStatus = currentUser?.role === 'system_admin'
+    const canStatus = typeof canViewProjectStatusTab === 'function'
+      ? canViewProjectStatusTab()
+      : currentUser?.role === 'system_admin'
+    const canManage = typeof canManageStatusMail === 'function'
+      ? canManageStatusMail()
+      : currentUser?.role === 'system_admin'
     const next = tab === 'member' ? 'member' : (tab === 'status' && canStatus ? 'status' : 'project')
     window._pdState.tab = next
+    if (typeof writeRoute === 'function') writeRoute('project-dashboard', next === 'project' ? [] : [next])
     const wrap = document.getElementById('pdMemberFilterWrap')
     const root = document.getElementById('projectDashboardRoot')
     const statusPanel = document.getElementById('pdStatusPanel')
     const stuck = document.getElementById('pdStuckOnlyWrap')
+    const slice = document.getElementById('pdSliceFilters')
     const statusBtn = document.getElementById('pdTabStatus')
     if (wrap) wrap.classList.toggle('hidden', next !== 'member')
     if (root) root.classList.toggle('hidden', next === 'status')
     if (statusPanel) statusPanel.classList.toggle('hidden', next !== 'status')
     if (stuck) stuck.classList.toggle('hidden', next === 'status')
+    if (slice) slice.classList.toggle('hidden', next === 'status')
     if (statusBtn) statusBtn.classList.toggle('hidden', !canStatus)
+    document.querySelectorAll('.pd-status-admin-only').forEach(el => el.classList.toggle('hidden', !canManage))
     ;[['pdTabProject', 'project'], ['pdTabMember', 'member'], ['pdTabStatus', 'status']].forEach(([id, name]) => {
       const btn = document.getElementById(id)
       if (!btn) return
@@ -1326,7 +1489,7 @@
     })
     if (next === 'status') {
       if (typeof loadWeeklyReportConfig === 'function') loadWeeklyReportConfig()
-      if (typeof loadZaloOverdueConfig === 'function') loadZaloOverdueConfig()
+      if (canManage && typeof loadZaloOverdueConfig === 'function') loadZaloOverdueConfig()
       return
     }
     if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
@@ -1374,7 +1537,8 @@
     } catch (e) {
       if (window._pdDetailLoading !== reqId) return
       if (detailEl) {
-        detailEl.innerHTML = `<p class="text-red-600 text-sm p-4">Không tải được chi tiết dự án: ${escHtml(e.message)}</p>`
+        const msg = e.response?.data?.error || e.message
+        detailEl.innerHTML = `<p class="text-red-600 text-sm p-4">Không tải được chi tiết dự án: ${escHtml(msg)}</p>`
       }
     }
   }
@@ -1394,6 +1558,7 @@
   window.loadProjectDashboardPage = async function loadProjectDashboardPage() {
     const root = document.getElementById('projectDashboardRoot')
     if (!root) return
+    if (typeof window.initProjectDashboardFilters === 'function') await window.initProjectDashboardFilters()
     root.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải…</div>`
     const q = projectDashboardQueryParams()
     try {
@@ -1437,12 +1602,35 @@
     if (!cell) return '<td class="pd-matrix-cell text-gray-400">—</td>'
     const up = cell.revision_updated || '—'
     const cur = cell.revision_current || '—'
-    if (up === '—' && cur === '—') return '<td class="pd-matrix-cell text-gray-400">—</td>'
+    const bare = up === '—' && cur === '—'
     const match = up !== '—' && cur !== '—' && up === cur
     const lag = cell.status === 'lagging'
     const pillClass = match ? 'pd-rev-ok' : (lag ? 'pd-rev-warn' : '')
     const bar = match ? '<span class="pd-rev-bar" title="Revision khớp"></span>' : ''
-    return `<td class="pd-matrix-cell"><span class="pd-rev-pill ${pillClass}">${bar}${escHtml(up)} / ${escHtml(cur)}</span></td>`
+    const revHtml = bare
+      ? ''
+      : `<span class="pd-rev-pill ${pillClass}">${bar}${escHtml(up)} / ${escHtml(cur)}</span>`
+    const compare = matrixHstkCompareLabel(cell)
+    if (!revHtml && !compare) return '<td class="pd-matrix-cell text-gray-400">—</td>'
+    const title = cell.hstk_reference ? ` title="${escHtml(cell.hstk_reference)}"` : ''
+    return `<td class="pd-matrix-cell" style="white-space:normal"${title}>${revHtml}${compare}</td>`
+  }
+
+  function matrixHstkCompareLabel(cell) {
+    if (!cell || (cell.hstk_compare == null && !cell.has_tasks)) return ''
+    const flag = cell.hstk_compare
+    if (flag === 'match_latest') return '<div class="pd-rev-pill pd-rev-ok mt-1">Đúng HS mới nhất</div>'
+    if (flag === 'match_old') return '<div class="pd-rev-pill pd-rev-warn mt-1">Chậm HS</div>'
+    if (cell.has_tasks) return '<div class="text-gray-400 mt-1">Chưa khớp gói</div>'
+    if (flag) return '<div class="text-gray-400 mt-1">Chưa đối chiếu</div>'
+    return ''
+  }
+
+  function categoryMatrixLabel(matrix, cat) {
+    const cells = Object.values(matrix[cat] || {})
+    const name = String(cells.find(c => c && c.category_name)?.category_name || '').trim()
+    if (!name || name === cat) return `<span class="font-mono">${escHtml(cat)}</span>`
+    return `<span class="font-mono">${escHtml(cat)}</span> <span class="font-normal">${escHtml(name)}</span>`
   }
 
   function renderCategoryMatrix(p) {
@@ -1452,18 +1640,18 @@
       ? [...new Set(catCodes.flatMap(c => Object.keys(matrix[c] || {})))].sort()
       : []
     if (!catCodes.length || !discCodes.length) {
-      return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại)</p><p class="pd-empty-hint text-sm">Chưa có dữ liệu ma trận hạng mục.</p>`
+      return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại · đối chiếu HS)</p><p class="pd-empty-hint text-sm">Chưa có dữ liệu ma trận hạng mục.</p>`
     }
     let tbl = '<table class="pd-table pd-matrix"><thead><tr><th>Hạng mục</th>'
     for (const dc of discCodes) tbl += `<th class="font-mono">${escHtml(dc)}</th>`
     tbl += '</tr></thead><tbody>'
     for (const cat of catCodes) {
-      tbl += `<tr><td class="font-semibold">${escHtml(cat)}</td>`
+      tbl += `<tr><td class="font-semibold">${categoryMatrixLabel(matrix, cat)}</td>`
       for (const dc of discCodes) tbl += renderMatrixRevCell(matrix[cat]?.[dc])
       tbl += '</tr>'
     }
     tbl += '</tbody></table>'
-    return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại)</p><div class="pd-table-wrap">${tbl}</div>`
+    return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại · đối chiếu HS)</p><div class="pd-table-wrap">${tbl}</div>`
   }
 
   function renderRecentHstkPackages(p) {
@@ -1488,6 +1676,11 @@
     return `<p class="pd-section-title pd-recent-hstk">3 hồ sơ HSTK gần nhất / đã cập nhật (theo bộ môn)</p><div class="pd-table-wrap">${body}</div>`
   }
 
+  function pdCategoriesForDiscipline(p, code) {
+    const matrix = p.category_matrix || {}
+    return Object.keys(matrix).filter(cat => matrix[cat] && matrix[cat][code]).sort()
+  }
+
   function renderDisciplineHstkSection(p) {
     const discs = p.disciplines || []
     if (!discs.length) {
@@ -1497,9 +1690,19 @@
     for (const d of discs) {
       const hasPkg = (d.packages_timeline || []).length > 0 || !!d.latest_hstk
       const latest = formatHstkHeadline(d.latest_hstk)
+      const cats = pdCategoriesForDiscipline(p, d.discipline_code)
+      const catHtml = cats.length
+        ? cats.map(cat => categoryMatrixLabel(p.category_matrix, cat)).join('<br>')
+        : '<span class="text-gray-400">—</span>'
+      const people = pdMembersForDiscipline(d)
+      const peopleHtml = people.length
+        ? people.map(m => `<div class="leading-snug">${escHtml(m.full_name)}</div>`).join('')
+        : '<span class="text-gray-400">—</span>'
       rows += `<tr>
-        <td class="font-mono font-semibold">${escHtml(d.discipline_code)}</td>
+        <td class="font-mono font-semibold">${escHtml(d.discipline_code)}${d.discipline_name ? `<div class="font-sans font-normal text-gray-400">${escHtml(d.discipline_name)}</div>` : ''}</td>
         <td>${escHtml(d.leader_name || '—')}</td>
+        <td class="text-xs">${catHtml}</td>
+        <td class="text-xs">${peopleHtml}</td>
         <td class="font-mono">${escHtml(d.current_revision || '—')}</td>
         <td>${d.revision_change_count || 0} lần</td>
         <td>${hasPkg ? '<span class="text-primary">Có gói</span>' : '<span class="text-gray-400">—</span>'}</td>
@@ -1507,7 +1710,7 @@
       </tr>`
     }
     const tbl = `<table class="pd-table"><thead><tr>
-      <th>BM</th><th>Leader</th><th>Rev hiện tại</th><th>Lần sửa</th><th>Gói HSTK</th><th>HSTK mới nhất</th>
+      <th>BM</th><th>Leader</th><th>Hạng mục</th><th>Nhân sự team</th><th>Rev hiện tại</th><th>Lần sửa</th><th>Gói HSTK</th><th>HSTK mới nhất</th>
     </thead><tbody>${rows}</tbody></table>`
     return `<p class="pd-section-title">Hồ sơ theo bộ môn</p><div class="pd-table-wrap">${tbl}</div>`
   }
@@ -1674,9 +1877,12 @@
     if (p.detail_loaded === false) {
       return `${workloadHtml || ''}<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải chi tiết…</div>`
     }
-    const discCount = (p.disciplines || []).length
-    const lagCount = countCategoryMatrixByStatus(p, 'lagging')
-    const noTaskCount = countCategoryMatrixByStatus(p, 'none')
+    const view = pdSliceProject(p)
+    const sliced = !!(pdActiveCategoryCode() || pdActiveDisciplineCode())
+    const discCount = (view.disciplines || []).length
+    const lagCount = countCategoryMatrixByStatus(view, 'lagging')
+    const noTaskCount = countCategoryMatrixByStatus(view, 'none')
+    const openCount = sliced ? (view.open_tasks_preview || []).length : (p.open_tasks ?? 0)
     return `${workloadHtml || ''}<div class="pd-detail-panel">
       <div class="pd-detail-header">
         <div class="min-w-0 flex-1">
@@ -1692,14 +1898,14 @@
       <div class="pd-kpi-row">
         <div class="pd-kpi"><div class="pd-kpi-label">Bộ môn</div><div class="pd-kpi-value">${discCount}</div></div>
         <div class="pd-kpi"><div class="pd-kpi-label">HM chậm hồ sơ</div><div class="pd-kpi-value">${lagCount}</div></div>
-        <div class="pd-kpi"><div class="pd-kpi-label">Task chưa xong</div><div class="pd-kpi-value">${p.open_tasks ?? 0}</div></div>
+        <div class="pd-kpi"><div class="pd-kpi-label">Task chưa xong</div><div class="pd-kpi-value">${openCount}</div></div>
         <div class="pd-kpi"><div class="pd-kpi-label">HM chưa giao task</div><div class="pd-kpi-value">${noTaskCount}</div></div>
       </div>
-      ${renderGroupedAlerts(p)}
-      ${renderRecentHstkPackages(p)}
-      ${renderDisciplineHstkSection(p)}
-      ${renderCategoryMatrix(p)}
-      ${renderOpenTasksTable(p)}
+      ${renderGroupedAlerts(view)}
+      ${renderRecentHstkPackages(view)}
+      ${renderDisciplineHstkSection(view)}
+      ${renderCategoryMatrix(view)}
+      ${renderOpenTasksTable(view)}
     </div>`
   }
 
@@ -1726,6 +1932,7 @@
     let selId = window._pdState.selectedProjectId
     if (!projects.some(p => p.id === selId)) selId = projects.length ? projects[0].id : null
     window._pdState.selectedProjectId = selId
+    pdSyncSliceFilterOptions()
     const selected = selId ? (projects.find(p => p.id === selId) || projects[0]) : null
 
     const listHtml = projects.length
@@ -1755,12 +1962,17 @@
   window.initProjectDashboardFilters = async function () {
     const sel = document.getElementById('pdMemberFilter')
     if (!sel || sel.dataset.loaded) return
-    try {
-      const members = await api('/members')
-      sel.innerHTML = '<option value="">— Chọn thành viên —</option>' + members.map(m => `<option value="${m.id}">${escHtml(m.full_name)}</option>`).join('')
-      sel.dataset.loaded = '1'
-    } catch (_) { /* ignore */ }
     const wrap = document.getElementById('pdMemberFilterWrap')
     if (wrap) wrap.classList.toggle('hidden', (window._pdState?.tab || 'project') !== 'member')
+    try {
+      const [members, discs] = await Promise.all([api('/members'), api('/disciplines')])
+      window._pdMembers = Array.isArray(members) ? members : []
+      window._pdDisciplineCatalog = Array.isArray(discs) ? discs : []
+      pdSyncSliceFilterOptions()
+      pdFillMemberFilter()
+      sel.dataset.loaded = '1'
+    } catch (_) {
+      sel.innerHTML = '<option value="">Không tải được danh sách thành viên</option>'
+    }
   }
 })()

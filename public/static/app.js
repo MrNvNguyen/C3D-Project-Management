@@ -689,6 +689,14 @@ function refreshProjectRoleCache() {
   }
 }
 
+function canViewProjectStatusTab() {
+  return ['system_admin', 'project_admin', 'project_leader'].includes(currentUser?.role)
+}
+
+function canManageStatusMail() {
+  return currentUser?.role === 'system_admin'
+}
+
 // Kiểm tra user có quyền leader/admin trong bất kỳ dự án nào không
 function isAnyProjectLeaderOrAdmin() {
   const eff = getEffectiveGlobalRole()
@@ -929,9 +937,60 @@ const _adminOnlyPages = [
 ]
 const _pmoOnlyPages = ['executive-dashboard']
 
-function getPageFromHash() {
+const _routeSections = {
+  'project-dashboard': ['project', 'member', 'status'],
+  costs: ['costs', 'revenues', 'analysis', 'duplicates', 'shared'],
+  legal: ['info', 'stages', 'payments', 'cost-a', 'contacts', 'letters', 'minutes', 'docs'],
+  analytics: ['health', 'performance', 'tasks', 'team', 'timesheet', 'financial', 'project-finance', 'cost-breakdown'],
+  depreciation: ['monthly', 'assets', 'pending'],
+  users: ['list', 'table', 'stats'],
+}
+const _projectDetailTabs = ['tasks', 'weekly', 'chat', 'summary', 'estimate', 'qlydesign', 'hstk']
+const _routeSectionDefault = {
+  'project-dashboard': 'project',
+  costs: 'costs',
+  legal: 'info',
+  analytics: 'health',
+  depreciation: 'monthly',
+  users: 'list',
+}
+let _routeRestore = false
+let _openSection = ''
+
+function readRoute() {
   const raw = (window.location.hash || '').replace(/^#\/?/, '')
-  return (raw.split(/[/?#]/)[0] || '').trim()
+  const parts = raw.split('/').map(s => {
+    try { return decodeURIComponent(s) } catch (_) { return s }
+  }).filter(Boolean)
+  return { page: (parts[0] || '').trim(), rest: parts.slice(1) }
+}
+
+function getPageFromHash() {
+  return readRoute().page
+}
+
+function routeSection(page, rest) {
+  const allowed = _routeSections[page]
+  if (!allowed) return ''
+  const section = String((rest || [])[0] || '')
+  return allowed.includes(section) ? section : ''
+}
+
+function writeRoute(page, rest) {
+  if (_routeRestore || !page) return
+  const parts = [page, ...(rest || []).filter(Boolean)]
+  const newHash = '#/' + parts.map(encodeURIComponent).join('/')
+  if (window.location.hash === newHash) return
+  _navigatingByHash = true
+  window.location.hash = newHash
+  setTimeout(() => { _navigatingByHash = false }, 100)
+}
+
+function writeSection(page, section, fallback) {
+  const allowed = _routeSections[page]
+  if (!allowed || !allowed.includes(section)) return
+  const def = fallback || _routeSectionDefault[page] || ''
+  writeRoute(page, section === def ? [] : [section])
 }
 
 function canAccessPage(page) {
@@ -944,12 +1003,19 @@ function canAccessPage(page) {
 // Restore the page from URL hash (used on refresh / first load).
 // hashchange does not fire on initial load, so initApp must call this.
 function restorePageFromHash() {
-  const page = getPageFromHash()
-  if (_navigablePages.includes(page) && canAccessPage(page)) {
-    navigate(page, { fromHash: true })
+  const { page, rest } = readRoute()
+  if (page === 'project-detail' && /^\d+$/.test(String(rest[0] || ''))) {
+    _routeRestore = true
+    const tab = _projectDetailTabs.includes(rest[1]) ? rest[1] : ''
+    openProjectDetail(rest[0], tab === 'chat').then(() => {
+      if (tab && tab !== 'chat' && tab !== 'tasks') switchProjectTab(tab, Number(rest[0]))
+    }).finally(() => { _routeRestore = false })
     return
   }
-  navigate('dashboard')
+  _routeRestore = true
+  if (_navigablePages.includes(page) && canAccessPage(page)) navigate(page, { fromHash: true, rest })
+  else navigate('dashboard')
+  _routeRestore = false
 }
 
 // Flag to prevent hashchange loop when navigate() itself sets the hash
@@ -981,7 +1047,8 @@ function navigate(page, opts = {}) {
   const pageEl = $(`page-${page}`)
   if (pageEl) pageEl.classList.add('active')
 
-  const navEl = document.querySelector(`[onclick="navigate('${page}')"]`)
+  const navKey = page === 'project-detail' ? 'projects' : page
+  const navEl = document.querySelector(`[onclick="navigate('${navKey}')"]`)
   if (navEl) navEl.classList.add('active')
 
   const breadcrumbs = {
@@ -997,14 +1064,9 @@ function navigate(page, opts = {}) {
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
-  // Update URL hash for deep-linking (skip for sub-pages like project-detail)
-  if (_navigablePages.includes(page) && !opts.fromHash) {
-    const newHash = '#/' + page
-    if (window.location.hash !== newHash) {
-      _navigatingByHash = true
-      window.location.hash = newHash
-      setTimeout(() => { _navigatingByHash = false }, 100)
-    }
+  _openSection = routeSection(page, opts.rest || [])
+  if (!opts.fromHash && (_navigablePages.includes(page) || page === 'project-detail')) {
+    writeRoute(page, opts.rest || [])
   }
 
   if (page === 'executive-dashboard') {
@@ -1017,34 +1079,44 @@ function navigate(page, opts = {}) {
   }
   else if (page === 'dashboard') loadDashboard()
   else if (page === 'project-dashboard') {
-    if (typeof setProjectDashboardTab === 'function' && currentUser?.role === 'system_admin') {
+    if (typeof setProjectDashboardTab === 'function' && canViewProjectStatusTab()) {
       const statusBtn = document.getElementById('pdTabStatus')
       if (statusBtn) statusBtn.classList.remove('hidden')
     }
-    if (window._pdState?.tab === 'status' && currentUser?.role === 'system_admin') {
-      if (typeof setProjectDashboardTab === 'function') setProjectDashboardTab('status')
-    } else {
-      if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
-      if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
-    }
+    const section = _openSection || 'project'
+    if (typeof setProjectDashboardTab === 'function') setProjectDashboardTab(section)
+    else if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
   }
   else if (page === 'projects') loadProjects()
   else if (page === 'tasks') loadTasks()
   else if (page === 'timesheet') loadTimesheets()
   else if (page === 'gantt') loadGantt()
-  else if (page === 'costs') loadCostDashboard()
+  else if (page === 'costs') {
+    if (_openSection) currentCostTab = _openSection
+    loadCostDashboard()
+    switchCostTab(currentCostTab)
+  }
   else if (page === 'assets') loadAssets()
   else if (page === 'email-admin') loadEmailAdmin()
   else if (page === 'depreciation') loadDepreciation()
-  else if (page === 'users') loadUsers()
+  else if (page === 'users') {
+    const section = _openSection
+    loadUsers().then(() => { if (section && section !== 'list') switchUserTab(section) })
+  }
   else if (page === 'profile') loadProfile()
   else if (page === 'productivity') loadProductivity()
   else if (page === 'finance-project') { loadFinanceProjectPage() }
   else if (page === 'labor-cost') loadLaborCost()
   else if (page === 'cost-types') loadCostTypes()
   else if (page === 'system-config') loadSystemConfig()
-  else if (page === 'analytics') loadAnalytics()
-  else if (page === 'legal') loadLegal()
+  else if (page === 'analytics') {
+    if (_openSection) _analyticsActiveTab = _openSection
+    loadAnalytics(true)
+  }
+  else if (page === 'legal') {
+    if (_openSection) { _legalCurrentTab = _openSection; _legalTabSetByUser = true }
+    loadLegal()
+  }
   else if (page === 'leave') loadLeaveRequests()
 
   closeAllDropdowns()
@@ -3482,7 +3554,7 @@ async function openProjectDetail(id, openChatTab = false) {
     window._currentProjectDetailId = project.id
     window._currentProjectDetailMembers = project.members || []
 
-    navigate('project-detail')
+    navigate('project-detail', { rest: [String(project.id)] })
 
     // Render paginated task list (after DOM is ready)
     setTimeout(() => {
@@ -3578,6 +3650,24 @@ function updateProjectBudgetPreview() {
   previewEl.className = 'font-bold text-green-700 text-base mt-1'
 }
 
+function projectClientChoices() {
+  const seen = new Map()
+  for (const p of allProjects || []) {
+    const name = String(p.client || '').trim().replace(/\s+/g, ' ')
+    if (!name) continue
+    const key = name.toLocaleLowerCase('vi')
+    if (!seen.has(key)) seen.set(key, name)
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b, 'vi'))
+}
+
+function canonicalProjectClient(raw) {
+  const text = String(raw || '').trim().replace(/\s+/g, ' ')
+  if (!text) return ''
+  const key = text.toLocaleLowerCase('vi')
+  return projectClientChoices().find(c => c.toLocaleLowerCase('vi') === key) || text
+}
+
 function openProjectModal(project = null) {
   // Chỉ system_admin mới được tạo dự án mới
   if (!project && currentUser?.role !== 'system_admin') {
@@ -3605,7 +3695,18 @@ function openProjectModal(project = null) {
   $('projectCodeLetter').oninput = updateLetterPreview
   $('projectCode').addEventListener('input', updateLetterPreview)
   $('projectDesc').value = project?.description || ''
-  $('projectClient').value = project?.client || ''
+  const clientValue = canonicalProjectClient(project?.client || '')
+  $('projectClient').value = clientValue
+  createCombobox('projectFormClientBox', {
+    placeholder: 'Chọn hoặc tìm chủ đầu tư',
+    items: projectClientChoices().map(name => ({ value: name, label: name })),
+    value: clientValue,
+    fullWidth: true,
+    teleport: true,
+    allowCreate: true,
+    normalizeCreate: canonicalProjectClient,
+    onchange: (val) => { const el = $('projectClient'); if (el) el.value = val || '' },
+  })
   $('projectType').value = project?.project_type || 'building'
   $('projectStartDate').value = project?.start_date || ''
   $('projectEndDate').value = project?.end_date || ''
@@ -3643,7 +3744,7 @@ $('projectForm').addEventListener('submit', async (e) => {
   const data = {
     code: $('projectCode').value, name: $('projectName').value,
     project_code_letter: $('projectCodeLetter').value.trim() || $('projectCode').value.trim(),
-    description: $('projectDesc').value, client: $('projectClient').value,
+    description: $('projectDesc').value, client: canonicalProjectClient($('projectClient').value),
     project_type: $('projectType').value, status: $('projectStatus').value,
     start_date: $('projectStartDate').value, end_date: $('projectEndDate').value,
     vat_pct: currentUser?.role === 'system_admin' ? (parseFloat($('projectVatPct')?.value) || 0) : undefined,
@@ -4357,27 +4458,35 @@ function createCombobox(containerId, options = {}) {
 
   // teleport: true → panel is moved to document.body on open (escapes overflow:hidden/auto ancestors)
   const teleport = options.teleport || false
+  const allowCreate = !!options.allowCreate
 
   _cbState[id] = {
     value: initVal,
-    label: _cbLabelFor(items, initVal, placeholder),
+    label: _cbLabelFor(items, initVal, placeholder, allowCreate),
     items,
     placeholder,
     onchange: options.onchange || null,
     teleport,
+    allowCreate,
+    normalizeCreate: options.normalizeCreate || null,
     panelMaxWidth,
     dropdownMaxHeight
   }
 
   container.innerHTML = _cbHTML(id, placeholder, minWidth, fullWidth, panelMaxWidth, dropdownMaxHeight)
+  if (allowCreate) {
+    const search = $(id + '_search')
+    if (search) search.placeholder = 'Tìm hoặc nhập tên mới...'
+  }
   _cbRenderOptions(id, '')
   _cbUpdateTrigger(id)
 }
 
-function _cbLabelFor(items, value, placeholder) {
+function _cbLabelFor(items, value, placeholder, allowCreate) {
   if (!value) return placeholder
-  const found = items.find(i => String(i.value) === String(value))
-  return found ? found.label : placeholder
+  const found = (items || []).find(i => String(i.value) === String(value))
+  if (found) return found.label
+  return allowCreate ? String(value) : placeholder
 }
 
 // Helper: set combobox value by id (auto-resolves label from state.items)
@@ -4385,7 +4494,7 @@ function _cbSetValue(id, value) {
   const state = _cbState[id]
   if (!state) return
   if (String(state.value ?? '') === String(value ?? '')) return
-  const label = value ? _cbLabelFor(state.items || [], value, state.placeholder) : state.placeholder
+  const label = value ? _cbLabelFor(state.items || [], value, state.placeholder, state.allowCreate) : state.placeholder
   _cbSelect(id, value, label)
 }
 
@@ -4394,7 +4503,7 @@ function _cbAssignValue(id, value) {
   if (!state) return
   const next = value == null ? '' : String(value)
   state.value = next
-  state.label = next ? _cbLabelFor(state.items || [], next, state.placeholder) : state.placeholder
+  state.label = next ? _cbLabelFor(state.items || [], next, state.placeholder, state.allowCreate) : state.placeholder
   _cbUpdateTrigger(id)
   _cbRenderOptions(id, '')
 }
@@ -4415,7 +4524,7 @@ function _cbHTML(id, placeholder, minWidth, fullWidth, panelMaxWidth, dropdownMa
     + '<div id="' + id + '_panel" style="' + panelStyle + '">'
     + '<div style="padding:8px 10px 7px;border-bottom:1px solid var(--shell-border);position:relative">'
     + '<span style="position:absolute;left:18px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none">🔍</span>'
-    + '<input id="' + id + '_search" type="text" placeholder="T\u00ecm ki\u1EBFm..." style="' + searchStyle + '" oninput="_cbFilter(\'' + id + '\',this.value)" onclick="event.stopPropagation()" autocomplete="off">'
+    + '<input id="' + id + '_search" type="text" placeholder="T\u00ecm ki\u1EBFm..." style="' + searchStyle + '" oninput="_cbFilter(\'' + id + '\',this.value)" onkeydown="_cbSearchKey(event,\'' + id + '\')" onclick="event.stopPropagation()" autocomplete="off">'
     + '</div>'
     + '<div id="' + id + '_opts" style="' + optsStyle + '"></div>'
     + '</div></div>'
@@ -4426,9 +4535,18 @@ function _cbRenderOptions(id, query) {
   if (!state) return
   const opts = $(id + '_opts')
   if (!opts) return
-  const q = query.trim().toLowerCase()
+  const qRaw = String(query || '').trim()
+  const q = qRaw.toLowerCase()
   const allItems = [{ value: '', label: state.placeholder }, ...state.items]
-  const filtered = allItems.filter(i => !q || i.label.toLowerCase().includes(q))
+  let filtered = allItems.filter(i => !q || String(i.label).toLowerCase().includes(q) || String(i.value).toLowerCase().includes(q))
+  if (state.allowCreate && qRaw) {
+    const exact = state.items.some(i => String(i.label).trim().toLowerCase() === q || String(i.value).trim().toLowerCase() === q)
+    if (!exact) {
+      const created = state.normalizeCreate ? state.normalizeCreate(qRaw) : qRaw.replace(/\s+/g, ' ')
+      filtered = filtered.filter(i => i.value !== '')
+      filtered.push({ value: created, label: 'Tạo mới: ' + created, create: true })
+    }
+  }
   // Use larger font/padding for teleported panels (they have more space)
   const isTeleport = !!state.teleport
   const itemPad = isTeleport ? '9px 14px' : '7px 12px'
@@ -4438,20 +4556,36 @@ function _cbRenderOptions(id, query) {
     return
   }
   opts.innerHTML = filtered.map(i => {
-    const isSel = String(i.value) === String(state.value)
+    const isSel = !i.create && String(i.value) === String(state.value)
     const bg = isSel ? 'rgba(0,166,81,0.12)' : 'transparent'
-    const col = isSel ? '#00A651' : 'var(--shell-text)'
-    const fw = isSel ? '600' : '400'
-    const sv = String(i.value).replace(/'/g, '&#39;')
-    const sl = i.label.replace(/'/g, '&#39;')
+    const col = i.create ? '#00A651' : (isSel ? '#00A651' : 'var(--shell-text)')
+    const fw = isSel || i.create ? '600' : '400'
+    const pickValue = i.value
+    const pickLabel = i.create ? i.value : i.label
     return '<div style="padding:' + itemPad + ';font-size:' + itemFs + ';cursor:pointer;display:flex;align-items:center;gap:6px;background:' + bg + ';color:' + col + ';font-weight:' + fw + ';line-height:1.4"'
+      + ' data-cb-value="' + escHtml(pickValue) + '" data-cb-label="' + escHtml(pickLabel) + '"'
       + ' onmouseenter="if(!' + isSel + '){this.style.background=\'var(--shell-row-hover)\';this.style.color=\'var(--shell-text)\'}"'
       + ' onmouseleave="this.style.background=\'' + bg + '\';this.style.color=\'' + col + '\'"'
-      + ' onclick="_cbSelect(\'' + id + '\',\'' + sv + '\',\'' + sl + '\')">'
-      + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + i.label + '</span>'
+      + ' onclick="_cbPick(this,\'' + id + '\')">'
+      + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(i.label) + '</span>'
       + (isSel ? '<span style="flex-shrink:0;color:#00A651;font-size:12px">&#10003;</span>' : '')
       + '</div>'
   }).join('')
+}
+
+function _cbPick(el, id) {
+  _cbSelect(id, el.getAttribute('data-cb-value') || '', el.getAttribute('data-cb-label') || '')
+}
+
+function _cbSearchKey(event, id) {
+  if (event.key !== 'Enter') return
+  event.preventDefault()
+  event.stopPropagation()
+  const state = _cbState[id]
+  if (!state?.allowCreate) return
+  const row = document.querySelector('#' + id + '_opts [data-cb-value]')
+  if (!row) return
+  _cbSelect(id, row.getAttribute('data-cb-value') || '', row.getAttribute('data-cb-label') || '')
 }
 
 function _cbUpdateTrigger(id) {
@@ -6644,6 +6778,9 @@ function switchProjectTab(tab, projectId) {
       hstkBtn.style.color = '#ef4444'
     }
   }
+  if (pid && _projectDetailTabs.includes(tab)) {
+    writeRoute('project-detail', tab === 'tasks' ? [String(pid)] : [String(pid), tab])
+  }
 
   if (tab === 'weekly') {
     const container = $(`weeklyPlanContainer_${pid}`)
@@ -7631,6 +7768,48 @@ async function deleteSubtask(subId, taskId) {
 // TIMESHEET FILTER STATE — preserved between loadTimesheets calls
 // ================================================================
 let _tsDropdownsInitialised = false   // run dropdown population only once per page visit
+
+function tsDisciplineTeamMatch(disc, department) {
+  const fold = typeof _foldVn === 'function' ? _foldVn : (s) => String(s || '').toLowerCase()
+  const dept = fold(department).trim()
+  if (!dept || !disc) return false
+  const code = fold(disc.code).trim()
+  const name = fold(disc.name).trim()
+  if (code && dept === code) return true
+  if (name && dept === name) return true
+  if (name && (dept.includes(name) || name.includes(dept))) return true
+  return false
+}
+
+function tsMembersForDiscipline(members, discCode) {
+  if (!discCode) return members || []
+  const disc = (allDisciplines || []).find(d => d.code === discCode)
+  if (!disc) return members || []
+  return (members || []).filter(m => tsDisciplineTeamMatch(disc, m.department))
+}
+
+function tsUserFilterItems(members) {
+  return (members || []).map(m => ({
+    value: String(m.id),
+    label: `${m.full_name}${m.total_hours ? ' (' + m.total_hours + 'h)' : ''}`
+  }))
+}
+
+function refreshTsUserFilterForDiscipline() {
+  if (!_cbState['tsUserFilterCombobox']) return
+  const isAdmin = currentUser?.role === 'system_admin'
+  const source = _tsMembersCache?.length ? _tsMembersCache : (allUsers || [])
+  const base = isAdmin ? source : source.filter(m => m.role !== 'system_admin')
+  const discCode = _cbGetValue('tsDisciplineFilterCombobox') || ''
+  const items = tsUserFilterItems(tsMembersForDiscipline(base, discCode))
+  const savedUserId = _cbGetValue('tsUserFilterCombobox')
+  _cbSetItems('tsUserFilterCombobox', items, !!items.find(i => i.value === String(savedUserId)))
+}
+
+function onTsDisciplineFilterChange() {
+  refreshTsUserFilterForDiscipline()
+  loadTimesheets()
+}
 let _tsMembersCache = []              // cached result from /api/timesheets/members
 let _tsProjectsCache = []             // cached result from /api/timesheets/projects
 
@@ -7767,6 +7946,23 @@ async function initTsFilterDropdowns() {
     }
   } // end catch
 
+  const discItems = (allDisciplines || []).map(d => ({ value: d.code, label: `${d.code} - ${d.name}` }))
+  const savedDisc = _cbGetValue('tsDisciplineFilterCombobox')
+  if ($('tsDisciplineFilterCombobox')?.querySelector('[id$="_wrap"]')) {
+    _cbSetItems('tsDisciplineFilterCombobox', discItems, !!discItems.find(i => i.value === savedDisc))
+  } else if ($('tsDisciplineFilterCombobox')) {
+    createCombobox('tsDisciplineFilterCombobox', {
+      placeholder: 'Tất cả bộ môn',
+      items: discItems,
+      value: savedDisc || '',
+      fullWidth: true,
+      onchange: () => onTsDisciplineFilterChange()
+    })
+  }
+  if (_cbState['tsDisciplineFilterCombobox']) {
+    _cbState['tsDisciplineFilterCombobox'].onchange = () => onTsDisciplineFilterChange()
+  }
+
   // ------ Member dropdown — from /api/timesheets/members (admin/projAdmin only) ------
   const tsUserWrap = $('tsUserFilterWrap')
   const tsStatusW  = $('tsStatusFilterWrap')
@@ -7780,17 +7976,15 @@ async function initTsFilterDropdowns() {
       // Không backfill allUsers bằng /timesheets/members vì chỉ chứa user có timesheet
       // allUsers phải được fetch riêng từ /users khi cần (xem openTimesheetModal)
       const membersForFilter = isAdmin ? members : members.filter(m => m.role !== 'system_admin')
-      const items = membersForFilter.map(m => ({
-        value: String(m.id),
-        label: `${m.full_name}${m.total_hours ? ' (' + m.total_hours + 'h)' : ''}`
-      }))
+      const discCode = _cbGetValue('tsDisciplineFilterCombobox') || ''
+      const items = tsUserFilterItems(tsMembersForDiscipline(membersForFilter, discCode))
       if ($('tsUserFilterCombobox')?.querySelector('[id$="_wrap"]')) {
         _cbSetItems('tsUserFilterCombobox', items, !!items.find(i => i.value === savedUserId))
       } else {
         createCombobox('tsUserFilterCombobox', {
           placeholder: '👤 Tất cả nhân viên',
           items,
-          value: savedUserId || '',
+          value: items.some(i => i.value === String(savedUserId)) ? savedUserId : '',
           fullWidth: true,
           onchange: () => loadTimesheets()
         })
@@ -7798,7 +7992,8 @@ async function initTsFilterDropdowns() {
     } catch (_) {
       if (!allUsers.length) { try { allUsers = await api('/users') } catch(__) {} }
       const usersForFilter = isAdmin ? allUsers : allUsers.filter(u => u.role !== 'system_admin')
-      const items = usersForFilter.map(u => ({ value: String(u.id), label: u.full_name }))
+      const discCode = _cbGetValue('tsDisciplineFilterCombobox') || ''
+      const items = tsUserFilterItems(tsMembersForDiscipline(usersForFilter, discCode))
       const cbEl = $('tsUserFilterCombobox')
       if (cbEl && !cbEl.querySelector('[id$="_wrap"]')) {
         createCombobox('tsUserFilterCombobox', {
@@ -7853,6 +8048,7 @@ async function loadTimesheets() {
     const month     = $('tsMonthFilter')?.value   || ''
     const year      = $('tsYearFilter')?.value    || ''
     const projectId = _cbGetValue('tsProjectFilterCombobox')
+    const discipline = _cbGetValue('tsDisciplineFilterCombobox') || ''
     const memberId  = canSeeAll ? (_cbGetValue('tsUserFilterCombobox') || '') : ''
     const status    = canSeeAll ? ($('tsStatusFilter')?.value || '') : ''
 
@@ -7861,6 +8057,7 @@ async function loadTimesheets() {
     if (month)     url += `month=${month}&`
     if (year)      url += `year=${year}&`
     if (projectId) url += `project_id=${projectId}&`
+    if (discipline) url += `discipline=${encodeURIComponent(discipline)}&`
     if (memberId)  url += `member_id=${memberId}&`
     if (status)    url += `status=${status}&`
 
@@ -8104,6 +8301,7 @@ function resetTimesheetFilters() {
   const m = $('tsMonthFilter'); if (m) m.value = String(now.getMonth() + 1).padStart(2, '0')
   const y = $('tsYearFilter');  if (y) y.value  = String(now.getFullYear())
   const p = $('tsProjectFilterCombobox'); if (p && _cbState['tsProjectFilterCombobox']) { _cbSelect('tsProjectFilterCombobox', '', 'Tất cả dự án') }
+  if (_cbState['tsDisciplineFilterCombobox']) _cbSelect('tsDisciplineFilterCombobox', '', 'Tất cả bộ môn')
   if (_cbState['tsUserFilterCombobox']) _cbSelect('tsUserFilterCombobox', '', '👤 Tất cả nhân viên')
   const s = $('tsStatusFilter');  if (s) s.value = ''
   // Force re-populate dropdowns with latest data on next load
@@ -11349,6 +11547,7 @@ async function loadCosts() {
 
 async function switchCostTab(tab) {
   currentCostTab = tab
+  writeSection('costs', tab, 'costs')
   // Tab buttons
   const tabs = ['costs', 'revenues', 'analysis', 'duplicates', 'shared']
   tabs.forEach(t => {
@@ -13217,7 +13416,7 @@ let deprSummaryData = null
 
 async function loadDepreciation() {
   initDeprYearFilter()
-  switchDeprTab('monthly')  // Luôn bắt đầu ở tab Lịch theo tháng
+  switchDeprTab(_openSection || 'monthly')
   await loadDepreciationSummary()
   await loadDeprPending()
 }
@@ -13583,6 +13782,7 @@ Thao tác này không thể hoàn tác.`
 }
 
 function switchDeprTab(tab) {
+  writeSection('depreciation', tab, 'monthly')
   ;['monthly','assets','pending'].forEach(t => {
     const btn = $(`deprTab-${t}`)
     const content = $(`deprContent-${t}`)
@@ -13848,6 +14048,7 @@ function filterUsers() {
 let _userStatsCharts = {}
 
 function switchUserTab(tab) {
+  writeSection('users', tab, 'list')
   const isList  = tab === 'list'
   const isTable = tab === 'table'
   const isStats = tab === 'stats'
@@ -15239,21 +15440,52 @@ async function previewOverdueTasks() {
   }
 }
 
+function renderZaloOverdueGroups(groups) {
+  const box = $('zaloOverdueGroupList')
+  if (!box) return
+  const rows = Array.isArray(groups) ? groups.filter(g => g && (g.url || g.linked)) : []
+  if (!rows.length) {
+    box.innerHTML = '<p class="text-xs text-gray-400">Chưa có nhóm. Dán link zalo.me/g/... rồi bấm Thêm nhóm.</p>'
+    return
+  }
+  box.innerHTML = rows.map(g => {
+    const state = g.linked
+      ? '<span class="text-green-700">Đã gắn</span>'
+      : '<span class="text-amber-700">Chưa gắn Chat ID</span>'
+    if (!g.url) {
+      return `<div class="flex flex-wrap items-center gap-2 text-xs"><span>Nhóm đã gắn từ cấu hình cũ. Dán lại link để đặt tên.</span>${state}</div>`
+    }
+    const url = escHtml(g.url)
+    const label = escHtml(String(g.url).replace(/^https?:\/\//, ''))
+    return `<div class="flex flex-wrap items-center gap-2 text-xs">
+      <a href="${url}" target="_blank" rel="noopener" class="text-blue-600 hover:underline">${label}</a>
+      ${state}
+      <button type="button" class="btn-secondary text-xs" onclick="captureZaloGroupChat('${url}')">Lấy Chat ID</button>
+      <button type="button" class="text-red-600 hover:underline" onclick="removeZaloOverdueGroup('${url}')">Xóa</button>
+    </div>`
+  }).join('')
+}
+
 async function loadZaloOverdueConfig() {
   const status = $('zaloOverdueStatus')
   try {
     const data = await api('/admin/zalo-overdue')
-    const link = $('zaloOverdueGroupLink')
-    if (link && data.group_url) {
-      link.href = data.group_url
-      link.textContent = String(data.group_url).replace(/^https?:\/\//, '')
-    }
-    const idInput = $('zaloGroupChatId')
-    if (idInput && document.activeElement !== idInput) idInput.value = data.chat_id || ''
+    renderZaloOverdueGroups(data.groups || [])
+    const linked = (data.groups || []).filter(g => g.linked).length
+    const blocked = data.delivery_error
+    const reason = data.webhook_last?.reason
     if (status) {
-      status.textContent = data.token_configured
-        ? (data.chat_id ? 'Bot và Chat ID đã lưu. Thứ 6 sẽ gửi vào nhóm khi có task quá hạn.' : 'Đã có Bot Token. Mời bot vào nhóm, gửi một tin, rồi bấm Lấy Chat ID.')
-        : 'Chưa có Bot Token.'
+      if (!data.token_configured) status.textContent = 'Chưa có Bot Token.'
+      else if (!data.webhook_secret_configured) status.textContent = 'Đã có Bot Token. Nhập Secret Token webhook (đúng với Zalo) rồi Lưu.'
+      else if (blocked) status.textContent = blocked
+      else if (!data.groups?.length) status.textContent = 'Dán link nhóm để nhận tin quá hạn.'
+      else if (linked) status.textContent = `Sẽ gửi tin quá hạn vào ${linked} nhóm đã gắn.` + (data.webhook_on ? ' Webhook đang bật.' : ' Webhook chưa bật.')
+      else if (reason === 'secret') status.textContent = 'Zalo đã gọi tới nhưng Secret Token không khớp. Dán Secret Token trên Zalo vào ô này, bấm Lấy Chat ID, rồi tag bot một tin mới.'
+      else if (reason === 'private') status.textContent = 'Bot chỉ nhận tin nhắn riêng, chưa phải tin trong nhóm. Tag bot ngay trong nhóm.'
+      else if (reason === 'no-chat') status.textContent = 'Zalo đã gọi webhook nhưng không có cuộc trò chuyện nhóm.' + (data.webhook_last?.shape ? ` Dạng tin: ${data.webhook_last.shape}` : '')
+      else if (reason === 'ping') status.textContent = 'Zalo chỉ gửi tín hiệu kiểm tra, chưa có tin nhắn. Tag bot một tin mới trong nhóm.'
+      else if (reason === 'no-capture') status.textContent = 'Có tin nhóm nhưng chưa chọn đúng link. Bấm Lấy Chat ID trên đúng dòng nhóm, rồi tag bot một tin mới.'
+      else status.textContent = 'Đã có nhóm. Với từng nhóm, bấm Lấy Chat ID rồi tag bot một tin trong đúng nhóm đó.'
     }
   } catch (e) {
     if (status) status.textContent = e.response?.data?.error || e.message
@@ -15262,12 +15494,18 @@ async function loadZaloOverdueConfig() {
 
 async function saveZaloOverdueConfig() {
   const token = $('zaloBotToken')?.value?.trim() || ''
-  const chatId = $('zaloGroupChatId')?.value?.trim() || ''
-  const data = { zalo_group_chat_id: chatId }
+  const secret = $('zaloWebhookSecret')?.value?.trim() || ''
+  const data = {}
   if (token && !token.includes('****')) data.zalo_bot_token = token
+  if (secret && !secret.includes('****')) data.zalo_webhook_secret = secret
+  if (!Object.keys(data).length) {
+    toast('Nhập Bot Token hoặc Secret Token rồi bấm Lưu', 'warning')
+    return
+  }
   try {
     await api('/system-config', { method: 'PUT', data })
     if ($('zaloBotToken')) $('zaloBotToken').value = ''
+    if ($('zaloWebhookSecret')) $('zaloWebhookSecret').value = ''
     toast('Đã lưu cấu hình Zalo', 'success')
     await loadZaloOverdueConfig()
   } catch (e) {
@@ -15275,19 +15513,80 @@ async function saveZaloOverdueConfig() {
   }
 }
 
-async function captureZaloGroupChat() {
+async function addZaloOverdueGroup() {
+  const input = $('zaloGroupUrlInput')
+  const url = input?.value?.trim() || ''
+  if (!url) { toast('Dán link nhóm zalo.me/g/...', 'warning'); return }
+  try {
+    const res = await api('/admin/zalo-overdue/groups', { method: 'POST', data: { url } })
+    if (input) input.value = ''
+    renderZaloOverdueGroups(res.groups || [])
+    toast('Đã thêm nhóm Zalo', 'success')
+  } catch (e) {
+    toast(e.response?.data?.error || e.message, 'error')
+  }
+}
+
+async function removeZaloOverdueGroup(url) {
+  if (!confirm('Xóa nhóm này khỏi danh sách nhận tin quá hạn?')) return
+  try {
+    await api('/admin/zalo-overdue/groups', { method: 'DELETE', data: { url } })
+    await loadZaloOverdueConfig()
+    toast('Đã xóa nhóm', 'success')
+  } catch (e) {
+    toast(e.response?.data?.error || e.message, 'error')
+  }
+}
+
+async function captureZaloGroupChat(url) {
   const status = $('zaloOverdueStatus')
   if (status) status.textContent = 'Đang hỏi bot...'
+  const token = $('zaloBotToken')?.value?.trim() || ''
+  const secret = $('zaloWebhookSecret')?.value?.trim() || ''
+  const data = { url }
+  if (token && !token.includes('****')) data.zalo_bot_token = token
+  if (secret && !secret.includes('****')) data.zalo_webhook_secret = secret
   try {
-    const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data: {} })
-    const idInput = $('zaloGroupChatId')
-    if (idInput) idInput.value = res.chat_id || ''
-    if (status) status.textContent = 'Đã lấy Chat ID nhóm.'
-    toast('Đã lấy Chat ID nhóm Zalo', 'success')
+    const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data })
+    if (res.pending) {
+      if (status) status.textContent = res.message
+      toast(res.message, 'info', 8000)
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 2000))
+        const data = await api('/admin/zalo-overdue')
+        const row = (data.groups || []).find(g => g.url === url)
+        if (row?.linked) {
+          renderZaloOverdueGroups(data.groups || [])
+          if (status) status.textContent = 'Đã gắn Chat ID. Tin nhắc sẽ vào nhóm này.'
+          toast('Đã lấy Chat ID nhóm Zalo', 'success')
+          return
+        }
+        const reason = data.webhook_last?.reason
+        if (reason === 'secret') {
+          if (status) status.textContent = 'Zalo đã gọi tới nhưng Secret Token không khớp. Dán Secret Token trên Zalo vào ô này, bấm Lấy Chat ID, rồi tag bot một tin mới.'
+          toast('Secret Token webhook không khớp với Zalo', 'error', 8000)
+          return
+        }
+        if (reason === 'private') {
+          if (status) status.textContent = 'Bot chỉ nhận tin nhắn riêng, chưa phải tin trong nhóm. Tag bot ngay trong nhóm.'
+        }
+        if (reason === 'no-chat') {
+          if (status) status.textContent = 'Zalo đã gọi webhook nhưng không có cuộc trò chuyện nhóm.' + (data.webhook_last?.shape ? ` Dạng tin: ${data.webhook_last.shape}` : '')
+        }
+        if (reason === 'ping' && status) status.textContent = 'Zalo chỉ gửi tín hiệu kiểm tra, chưa có tin nhắn. Tag bot một tin mới trong nhóm.'
+      }
+      return
+    }
+    if (status) status.textContent = 'Đã gắn Chat ID. Tin nhắc sẽ vào nhóm này.'
+    toast(res.linked ? 'Nhóm đã gắn Chat ID' : 'Đã lấy Chat ID nhóm Zalo', 'success')
+    await loadZaloOverdueConfig()
   } catch (e) {
-    const msg = e.response?.data?.error || e.message
+    const raw = e.response?.data?.error || e.response?.statusText || e.message
+    const msg = /not found/i.test(String(raw))
+      ? 'Bot Token trên trang này không được Zalo nhận. Dán lại Bot Token và Secret Token, bấm Lưu Zalo, rồi Lấy Chat ID.'
+      : raw
     if (status) status.textContent = msg
-    toast(msg, 'error', 5000)
+    toast(msg, 'error', 8000)
   }
 }
 
@@ -15301,7 +15600,8 @@ async function sendOverdueReminders() {
       if (res.sent === 0) {
         resultEl.textContent = `✅ ${res.message || 'Không có task quá hạn nào'}`
       } else {
-        const zaloNote = res.zalo?.sent ? ', đã gửi nhóm Zalo' : (res.zalo?.error || res.zalo?.skipped ? `. Zalo: ${res.zalo.error || res.zalo.skipped}` : '')
+        const zaloCount = Number(res.zalo?.group_count || 0)
+        const zaloNote = res.zalo?.sent ? `, đã gửi ${zaloCount || 1} nhóm Zalo` : (res.zalo?.error || res.zalo?.skipped ? `. Zalo: ${res.zalo.error || res.zalo.skipped}` : '')
         resultEl.textContent = `✅ Đã gửi ${res.sent} mail cho người phụ trách` + (res.leader_sent ? `, ${res.leader_sent} mail cho leader` : '') + zaloNote
       }
     }
@@ -18022,7 +18322,7 @@ function getAnalyticsYear() {
   return document.getElementById('analyticsYear')?.value || new Date().getFullYear().toString()
 }
 
-async function loadAnalytics() {
+async function loadAnalytics(force = false) {
   // Set năm mặc định = năm hiện tại nếu chưa có options
   const sel = document.getElementById('analyticsYear')
   if (sel && !sel.dataset.initialized) {
@@ -18030,7 +18330,7 @@ async function loadAnalytics() {
     await initCalendarYearFilter(sel)
     sel.value = new Date().getFullYear().toString()
   }
-  switchAnalyticsTab(_analyticsActiveTab)
+  switchAnalyticsTab(_analyticsActiveTab, force)
 }
 
 function reloadAnalytics() {
@@ -18041,6 +18341,7 @@ function reloadAnalytics() {
 
 function switchAnalyticsTab(tab, force = false) {
   _analyticsActiveTab = tab
+  writeSection('analytics', tab, 'health')
   document.querySelectorAll('.analytics-tab').forEach(btn => btn.classList.remove('active'))
   const activeBtn = document.getElementById(`tab-${tab}`)
   if (activeBtn) activeBtn.classList.add('active')
@@ -20705,7 +21006,7 @@ async function _legalAfterProjectListFilterChange() {
   _legalShowProjectShell(false)
   if ($('legalKPIRow')) $('legalKPIRow').style.display = 'none'
   if ($('legalTabs')) $('legalTabs').style.display = 'none'
-  ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnCopyFromLegal', 'btnLegalChangeLog'].forEach(id => {
+  ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnLegalSync', 'btnCopyFromLegal', 'btnLegalChangeLog'].forEach(id => {
     if ($(id)) $(id).style.display = 'none'
   })
   if ($('legalProjectSelectCombobox') && typeof _cbAssignValue === 'function') {
@@ -20884,7 +21185,7 @@ async function loadLegal() {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnLegalSync','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
   }
 }
 
@@ -20895,7 +21196,7 @@ async function _onLegalProjectComboChange(val) {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnLegalSync','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
     renderLegalProjectList()
     return
   }
@@ -20978,7 +21279,7 @@ async function loadLegalProject(projectId) {
       // Nút header: hiện Gửi văn bản và Thêm tài liệu, ẩn các nút admin
       if ($('btnAddLetter')) $('btnAddLetter').style.display = ''
       if ($('btnAddDoc')) $('btnAddDoc').style.display = ''
-      ;['btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = 'none' })
+      ;['btnLetterConfig', 'btnImportExcel', 'btnLegalSync'].forEach(id => { if($(id)) $(id).style.display = 'none' })
       if ($('btnLegalChangeLog')) $('btnLegalChangeLog').style.display = ''
       // Ẩn KPI cards liên quan đến stages và payments
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
@@ -20997,6 +21298,9 @@ async function loadLegalProject(projectId) {
         if (btn) btn.style.display = ''
       })
       ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display = '' })
+      if ($('btnLegalSync')) {
+        $('btnLegalSync').style.display = currentUser?.role === 'system_admin' ? '' : 'none'
+      }
       // Khôi phục tất cả KPI cards
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
       if (kpiCards) kpiCards.forEach(card => card.style.display = '')
@@ -21047,6 +21351,7 @@ function switchLegalTab(tab) {
   // Nếu gọi từ onclick của người dùng → đánh dấu
   _legalCurrentTab = tab
   _legalTabSetByUser = true
+  writeSection('legal', tab, 'info')
   ;['info','stages','payments','cost-a','contacts','letters','minutes','docs'].forEach(t => {
     const btn = $('ltab-' + t)
     const panel = _legalTabPanelEl(t)
@@ -24281,6 +24586,10 @@ function _legalPaymentCountsAsCollected(status) {
   return status === 'paid' || status === 'partial'
 }
 
+function _legalPaymentCountsAsAcceptance(status) {
+  return status === 'processing' || status === 'partial' || status === 'paid'
+}
+
 function _legalPaymentDraftHasContent(rowEl) {
   if (!rowEl) return false
   const desc = rowEl.querySelector('[data-pfield="description"]')?.value?.trim()
@@ -24519,8 +24828,10 @@ function legalPaymentRefreshTotals() {
       const vat = _legalProjectVatPct()
       const status = row.querySelector('[data-pfield="status"]')?.value || 'pending'
       const isNew = row.classList.contains('is-new')
-      gross += amount
-      totalNt += calcRevenueNet(amount, vat, 0)
+      if (_legalPaymentCountsAsAcceptance(status)) {
+        gross += amount
+        totalNt += calcRevenueNet(amount, vat, 0)
+      }
       if (_legalPaymentCountsAsCollected(status)) totalCash += calcRevenueNet(paid, vat, 0)
       if (!isNew) {
         count += 1
@@ -24547,7 +24858,10 @@ function renderPaymentStatus(payments) {
   _legalPaymentActivePackageId = _legalPaymentNormPackageKey(_legalPaymentActivePackageId)
 
   const total = packagedPayments.length
-  const totalAmount = packagedPayments.reduce((s, p) => s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)), 0)
+  const totalAmount = packagedPayments.reduce((s, p) => {
+    if (!_legalPaymentCountsAsAcceptance(p.status)) return s
+    return s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0))
+  }, 0)
   const paidAmount = packagedPayments.reduce((s, p) => {
     if (!_legalPaymentCountsAsCollected(p.status)) return s
     return s + (p.cash_before_vat != null ? Number(p.cash_before_vat) : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0))
@@ -25226,6 +25540,90 @@ async function deleteLegalItemSubtask(subtaskId, taskId) {
 // ============================================================
 
 let _importExcelFile = null
+
+function closeLegalSyncModal() {
+  const m = $('modalLegalSync')
+  if (m) m.classList.add('hidden')
+}
+
+async function openLegalSyncModal() {
+  if (!_legalCurrentProjectId) {
+    toast('Vui lòng chọn dự án đích trước', 'warning')
+    return
+  }
+  if (currentUser?.role !== 'system_admin') {
+    toast('Chỉ System Admin mới được đồng bộ HSPL từ deployment khác', 'error')
+    return
+  }
+  const sel = $('legalSyncPeerProject')
+  const hint = $('legalSyncPeerHint')
+  if (sel) {
+    sel.innerHTML = '<option value="">— Đang tải danh sách peer… —</option>'
+    sel.disabled = true
+  }
+  if (hint) hint.textContent = ''
+  $('modalLegalSync')?.classList.remove('hidden')
+  try {
+    const data = await api('/legal/sync/peer-projects')
+    const projects = data?.projects || []
+    if (sel) {
+      if (!projects.length) {
+        sel.innerHTML = '<option value="">— Không có dự án trên peer —</option>'
+      } else {
+        sel.innerHTML = `<option value="">— Chọn dự án nguồn —</option>${projects.map(p =>
+          `<option value="${p.id}">[${escHtml(p.code || '')}] ${escHtml(p.name || '')}${p.client ? ' — ' + escHtml(p.client) : ''}</option>`
+        ).join('')}`
+      }
+      sel.disabled = false
+    }
+    const sync = _legalOverviewData?.legal_sync
+    if (hint) {
+      hint.textContent = sync?.same_peer && sync.source_project_id
+        ? `Lần trước đã đồng bộ từ dự án nguồn #${sync.source_project_id}. Chọn cùng dự án để chỉ thêm dòng mới; chọn dự án khác sẽ xóa toàn bộ hồ sơ pháp lý hiện tại.`
+        : 'Lần đầu với một dự án nguồn sẽ xóa hồ sơ pháp lý hiện tại của dự án đang mở rồi ghi lại bản từ hệ thống kia.'
+    }
+  } catch (err) {
+    if (sel) sel.innerHTML = `<option value="">— Lỗi: ${escHtml(err.message || 'Không tải peer')} —</option>`
+    toast(err.message || 'Không tải danh sách dự án peer', 'error')
+  }
+}
+
+async function executeLegalSyncFromPeer() {
+  if (!_legalCurrentProjectId) return
+  if (currentUser?.role !== 'system_admin') {
+    toast('Forbidden', 'error')
+    return
+  }
+  const sourceId = parseInt($('legalSyncPeerProject')?.value, 10)
+  if (!sourceId) {
+    toast('Chọn dự án nguồn trên peer', 'warning')
+    return
+  }
+  const sync = _legalOverviewData?.legal_sync
+  const run2 = !!(sync?.same_peer && Number(sync.source_project_id) === sourceId)
+  const msg = run2
+    ? 'Chỉ thêm các hàng HSPL còn thiếu từ nguồn (không cập nhật số tiền hay trạng thái đã có).\n\nTiếp tục?'
+    : 'Toàn bộ hồ sơ pháp lý hiện tại của dự án đích sẽ bị xóa và thay bằng bản sao từ deployment nguồn.\n\nTiếp tục?'
+  if (!confirm(msg)) return
+  const btn = $('btnLegalSyncSubmit')
+  if (btn) btn.disabled = true
+  try {
+    const res = await api(`/legal/${_legalCurrentProjectId}/sync-from`, {
+      method: 'POST',
+      data: { source_project_id: sourceId },
+    })
+    const modeLabel = res.mode === 'run2' ? 'Bổ sung' : 'Thay thế'
+    toast(`${modeLabel} HSPL thành công (${res.payments_inserted || 0} phiếu TT mới)`, 'success')
+    closeLegalSyncModal()
+    await loadLegalProject(_legalCurrentProjectId)
+    await loadLegalPackageCounts()
+    renderLegalProjectList()
+  } catch (err) {
+    toast(err.message || 'Đồng bộ thất bại', 'error')
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
 
 function closeLegalCopyFromModal() {
   const m = $('modalLegalCopyFrom')
@@ -31287,6 +31685,20 @@ function appendAssistantBubble(text, mine, extraHtml) {
   thread.scrollTop = thread.scrollHeight
 }
 
+function assistantThreadHistory() {
+  const thread = $('assistantThread')
+  if (!thread) return []
+  const bubbles = [...thread.querySelectorAll(':scope > .chat-bubble')]
+  return bubbles.slice(-6).map(el => {
+    const mine = el.classList.contains('me')
+    const text = (el.querySelector('.bubble-inner')?.innerText || '')
+      .replace(/\s*Xác nhận\s*$/u, '')
+      .trim()
+      .slice(0, 800)
+    return { role: mine ? 'user' : 'assistant', content: text }
+  }).filter(item => item.content)
+}
+
 async function submitAssistantAsk(ev) {
   ev.preventDefault()
   const input = $('assistantInput')
@@ -31294,9 +31706,10 @@ async function submitAssistantAsk(ev) {
   if (!message) return
   input.value = ''
   _assistantDraft = null
+  const history = assistantThreadHistory()
   appendAssistantBubble(message, true)
   try {
-    const data = await api('/assistant/ask', { method: 'POST', data: { message } })
+    const data = await api('/assistant/ask', { method: 'POST', data: { message, history } })
     _assistantDraft = data.draft || null
     const extra = data.draft
       ? `<div class="assistant-confirm"><button type="button" class="btn-primary text-xs" onclick="confirmAssistantDraft()">Xác nhận</button></div>`

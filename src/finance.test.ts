@@ -135,7 +135,7 @@ describe('syncPaymentToRevenue (Wave A sync gate)', () => {
     const { db, revenues } = createSyncTestDb(30)
     await syncPaymentToRevenue(db, {
       ...basePayment,
-      status: 'paid',
+      status: 'processing',
       paid_date: '2026-09-30',
       request_date: '2026-06-15',
       created_at: '2026-09-30 02:00:00',
@@ -147,7 +147,7 @@ describe('syncPaymentToRevenue (Wave A sync gate)', () => {
     const { db, revenues } = createSyncTestDb(30)
     await syncPaymentToRevenue(db, {
       ...basePayment,
-      status: 'paid',
+      status: 'processing',
       request_date: null,
       paid_date: '2025-01-01',
       created_at: '2026-09-30 02:00:00',
@@ -199,6 +199,15 @@ describe('syncPaymentToRevenue (Wave A sync gate)', () => {
     expect(id).toBeNull()
     expect(harness.deletedRevenueIds).toEqual([77])
     expect(harness.revenues.has(77)).toBe(false)
+  })
+
+  it('partial and paid book a revenue row', async () => {
+    for (const status of ['partial', 'paid'] as const) {
+      const { db, revenues } = createSyncTestDb(30)
+      const id = await syncPaymentToRevenue(db, { ...basePayment, status }, 1)
+      expect(id).toBe(1)
+      expect(revenues.get(1)!.amount).toBe(700_000)
+    }
   })
 
   it('rejected deletes linked revenue', async () => {
@@ -312,6 +321,11 @@ describe('enrichPaymentMetrics', () => {
     expect(m.booked_revenue).toBe(700_000)
     expect(m.cash_collected).toBe(500_000)
     expect(m.cash_before_vat).toBe(454_545) // 500_000 / 1.1
+    expect(enrichPaymentMetrics({ amount: 1_100_000, status: 'processing', vat_pct: 10 }, 30).booked_revenue).toBe(700_000)
+    expect(enrichPaymentMetrics({ amount: 1_100_000, status: 'paid', vat_pct: 10 }, 30).booked_revenue).toBe(700_000)
+    expect(enrichPaymentMetrics({ amount: 1_100_000, status: 'partial', vat_pct: 10 }, 30).booked_revenue).toBe(700_000)
+    expect(enrichPaymentMetrics({ amount: 1_100_000, status: 'pending', vat_pct: 10 }, 30).booked_revenue).toBeNull()
+    expect(enrichPaymentMetrics({ amount: 1_100_000, status: 'rejected', vat_pct: 10 }, 30).booked_revenue).toBeNull()
   })
 })
 
@@ -327,14 +341,15 @@ describe('amountExcludingVat / aggregatePaymentsBeforeVat', () => {
 })
 
 describe('aggregateThreeMoney', () => {
-  it('VAT 10%: pending+partial+paid; cancelled excluded; pending not in cash', () => {
+  it('VAT 10%: nghiệm thu is processing+partial+paid; chờ thanh toán stays out of the total', () => {
     const r = aggregateThreeMoney([
       { status: 'pending', amount: 1_100_000, paid_amount: 0, vat_pct: 10 },
+      { status: 'processing', amount: 1_100_000, paid_amount: 0, vat_pct: 10 },
       { status: 'partial', amount: 1_100_000, paid_amount: 550_000, vat_pct: 10 },
       { status: 'paid', amount: 1_100_000, paid_amount: 1_100_000, vat_pct: 10 },
+      { status: 'rejected', amount: 1_100_000, paid_amount: 0, vat_pct: 10 },
       { status: 'cancelled', amount: 9_999_000, paid_amount: 9_999_000, vat_pct: 10 },
     ])
-    // NT: 3 × 1_000_000 (cancelled out)
     expect(r.acceptanceBeforeVat).toBe(3_000_000)
     expect(r.pendingAcceptanceBeforeVat).toBe(1_000_000)
     // cash: 550k + 1.1M gross → before VAT 500_000 + 1_000_000
@@ -347,7 +362,7 @@ describe('aggregateThreeMoney', () => {
       { status: 'paid', amount: 544_000_000, paid_amount: 544_000_000, vat_pct: 8 },
       { status: 'pending', amount: 544_000_000, paid_amount: 0, vat_pct: 8 },
     ])
-    expect(r.acceptanceBeforeVat).toBe(503_703_704 * 2)
+    expect(r.acceptanceBeforeVat).toBe(503_703_704)
     expect(r.pendingAcceptanceBeforeVat).toBe(503_703_704)
     expect(r.cashBeforeVat).toBe(503_703_704)
     expect(r.cashGross).toBe(544_000_000)

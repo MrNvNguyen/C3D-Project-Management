@@ -2,6 +2,8 @@
 // BIM Project Management System - Main API
 // ===================================================
 import { Hono } from 'hono'
+import { createAiGateway } from './ai-gateway'
+import { createDdcnOAuth } from './ddcn-oauth'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { serveStatic } from 'hono/cloudflare-workers'
@@ -71,6 +73,17 @@ import {
 } from './legal-auth'
 import { copyLegalPackageInnerContent, planLegalCopyFromBody } from './legal-copy'
 import {
+  applyLegalSyncBundle,
+  buildLegalSyncBundle,
+  buildLegalSyncProjectList,
+  fetchPeerLegalSyncBundle,
+  fetchPeerLegalSyncProjectList,
+  isLegalSyncRun2,
+  legalSyncSecretFromRequest,
+  legalSyncSecretOk,
+  resolveLegalSyncDocumentFile,
+} from './legal-sync'
+import {
   auditCostAFields,
   auditLegalItemFields,
   auditPackageCreateEntries,
@@ -80,11 +93,27 @@ import {
   diffContactBookEntries,
   insertLegalAuditLogs,
 } from './legal-audit'
+import {
+  aggregateWeeklyMemberStats,
+  buildStatusMailScope,
+  cronSecretMatches,
+  daysOverdueOf,
+  projectsInStatusMailScope,
+  shouldSendFridayStatusMails,
+  STATUS_MAIL_RECIPIENTS_SQL,
+  STATUS_MAIL_SCOPE_SQL,
+  vnClock,
+} from './status-mail'
+import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, inspectZaloWebhook, latestZaloGroupChatId, latestZaloPrivateChatId, parseZaloOverdueGroups } from './zalo-bot'
 
 // ---- Types ----
 type Bindings = {
   DB: D1Database
   JWT_SECRET: string
+  AI_GATEWAY_KEY?: string
+  AI_GATEWAY_USER_ID?: string
+  /** Khóa gọi POST /api/cron/friday-status-mails. Pages không chạy cron. */
+  CRON_SECRET?: string
   RESEND_API_KEY: string
   FILES?: R2Bucket
   ALLOW_SYSTEM_INIT?: string
@@ -96,6 +125,12 @@ type Bindings = {
   /** Zalo Bot token. UI lưu trong system_config; biến này là dự phòng. */
   ZALO_BOT_TOKEN?: string
   ZALO_GROUP_CHAT_ID?: string
+  /** Secret Token trên màn webhook của Zalo Bot. UI lưu trong system_config. */
+  ZALO_WEBHOOK_SECRET?: string
+  /** Origin of peer deployment for legal dossier sync (HTTPS, no trailing slash). */
+  LEGAL_SYNC_PEER_ORIGIN?: string
+  /** Shared secret for /api/legal-sync/* export on both workers. */
+  LEGAL_SYNC_SECRET?: string
 }
 
 // ===================================================
@@ -754,7 +789,7 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
 
       const body = `
         <p style="margin:0 0 6px 0;color:#374151;font-size:15px;line-height:1.6;">Xin chào <strong>${data.recipientName}</strong>,</p>
-        <p style="margin:0 0 16px 0;color:#6b7280;font-size:14px;">Đây là báo cáo tổng hợp trạng thái task toàn bộ nhân sự <strong>${data.weekLabel || ''}</strong>.</p>
+        <p style="margin:0 0 16px 0;color:#6b7280;font-size:14px;">Đây là báo cáo tổng hợp trạng thái task <strong>${data.scopeLabel || 'toàn công ty'}</strong> trong <strong>${data.weekLabel || ''}</strong>.</p>
 
         <!-- Tổng quan -->
         <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
@@ -1333,6 +1368,9 @@ app.use('/api/*', cors({
   allowHeaders: ['Content-Type', 'Authorization'],
 }))
 
+app.route('/', createDdcnOAuth(verifyToken))
+app.route('/api/ai/v1', createAiGateway())
+
 // Auth middleware
 const authMiddleware = async (c: any, next: any) => {
   const authHeader = c.req.header('Authorization')
@@ -1358,6 +1396,15 @@ const adminOnly = async (c: any, next: any) => {
   const user = c.get('user') as any
   if (user?.role !== 'system_admin') {
     return c.json({ error: 'Access denied. System Admin only.' }, 403)
+  }
+  await next()
+}
+
+/** Xem tab Tình trạng thực hiện. Gửi mail và lưu khóa Zalo vẫn chỉ system_admin. */
+const statusDeskAccess = async (c: any, next: any) => {
+  const user = c.get('user') as any
+  if (!['system_admin', 'project_admin', 'project_leader'].includes(user?.role)) {
+    return c.json({ error: 'Access denied.' }, 403)
   }
   await next()
 }
@@ -3821,6 +3868,7 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     const qp = c.req.query()
     const { project_id, month, year, status } = qp
     const user_id = qp.user_id || qp.member_id || ''
+    const discipline = String(qp.discipline || '').trim()
     const limit = Math.min(Math.max(parseInt(qp.limit || '2000', 10) || 2000, 1), 5000)
     const offset = Math.max(parseInt(qp.offset || '0', 10) || 0, 0)
 
@@ -3899,6 +3947,17 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       query += ` AND ts.work_date >= ? AND ts.work_date < ?`
       params.push(start, endY)
     }
+    if (discipline) {
+      query += ` AND (
+        EXISTS (SELECT 1 FROM tasks td WHERE td.id = ts.task_id AND td.discipline_code = ?)
+        OR EXISTS (
+          SELECT 1 FROM timesheet_tasks tt
+          JOIN tasks td2 ON td2.id = tt.task_id
+          WHERE tt.timesheet_id = ts.id AND td2.discipline_code = ?
+        )
+      )`
+      params.push(discipline, discipline)
+    }
 
     // COUNT trạng thái đầy đủ (không bị LIMIT cắt) — KPI / bulk-approve
     const countQuery = `
@@ -3968,6 +4027,17 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       const endY = monthDateRange(parseInt(year), 12).endExclusive
       sumQ += ` AND ts.work_date >= ? AND ts.work_date < ?`
       sumParams.push(start, endY)
+    }
+    if (discipline) {
+      sumQ += ` AND (
+        EXISTS (SELECT 1 FROM tasks td WHERE td.id = ts.task_id AND td.discipline_code = ?)
+        OR EXISTS (
+          SELECT 1 FROM timesheet_tasks tt
+          JOIN tasks td2 ON td2.id = tt.task_id
+          WHERE tt.timesheet_id = ts.id AND td2.discipline_code = ?
+        )
+      )`
+      sumParams.push(discipline, discipline)
     }
 
     const summary = sumParams.length
@@ -8682,7 +8752,7 @@ app.get('/api/system-config', authMiddleware, adminOnly, async (c) => {
     // Mask API key value for security
     const configs: Record<string, any> = {}
     for (const row of (rows.results as any[])) {
-      if ((row.key === 'resend_api_key' || row.key === 'cloudflare_email_api_token' || row.key === 'zalo_bot_token') && row.value) {
+      if ((row.key === 'resend_api_key' || row.key === 'cloudflare_email_api_token' || row.key === 'zalo_bot_token' || row.key === 'zalo_webhook_secret') && row.value) {
         const v = String(row.value)
         const masked = v.length > 12 ? v.slice(0, 6) + '****' + v.slice(-4) : '****'
         configs[row.key] = { value: masked, description: row.description, updated_at: row.updated_at, configured: true }
@@ -8709,13 +8779,18 @@ app.put('/api/system-config', authMiddleware, adminOnly, async (c) => {
       'resend_daily_limit', 'cloudflare_email_enabled',
       'cloudflare_account_id', 'cloudflare_email_api_token',
       'weekly_report_enabled', 'weekly_report_day', 'weekly_report_hour',
-      'zalo_bot_token', 'zalo_group_chat_id',
+      'zalo_bot_token', 'zalo_webhook_secret', 'zalo_group_chat_id', 'zalo_group_chat_type',
     ]
+
+    if (data.zalo_group_chat_id !== undefined && data.zalo_group_chat_type === undefined) {
+      const prev = await db.prepare(`SELECT value FROM system_config WHERE key = 'zalo_group_chat_id'`).first() as any
+      if (String(prev?.value || '').trim() !== String(data.zalo_group_chat_id || '').trim()) data.zalo_group_chat_type = ''
+    }
     
     for (const [key, value] of Object.entries(data)) {
       if (!allowedKeys.includes(key)) continue
-      if ((key === 'resend_api_key' || key === 'cloudflare_email_api_token' || key === 'zalo_bot_token') && String(value || '').includes('****')) continue
-      const stored = (key === 'resend_api_key' || key === 'cloudflare_email_api_token' || key === 'zalo_bot_token') ? String(value || '').trim() : value
+      if ((key === 'resend_api_key' || key === 'cloudflare_email_api_token' || key === 'zalo_bot_token' || key === 'zalo_webhook_secret') && String(value || '').includes('****')) continue
+      const stored = (key === 'resend_api_key' || key === 'cloudflare_email_api_token' || key === 'zalo_bot_token' || key === 'zalo_webhook_secret') ? String(value || '').trim() : value
       await db.prepare(
         'INSERT OR REPLACE INTO system_config (key, value, updated_by, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)'
       ).bind(key, stored, user.id).run()
@@ -8995,7 +9070,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       `).all(),
       db.prepare(`
         SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status, request_date, paid_date
-        FROM payment_requests WHERE status IN ('pending','partial','paid')
+        FROM payment_requests WHERE status IN ('pending','processing','partial','paid')
       `).all(),
       db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as t FROM project_revenues
@@ -9100,7 +9175,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     const disciplineBreakdown = { results: taskGroupRows.filter(r => r.kind === 'discipline').map(r => ({ discipline_code: r.key, count: r.count, completed: r.completed })) }
 
     const payYtdFiltered = ((payRowsYtd as any)?.results as any[] || []).filter((r: any) => {
-      if (r.status === 'pending') {
+      if (r.status === 'pending' || r.status === 'processing') {
         return r.request_date && r.request_date >= fyStartNow && r.request_date <= fyEndNow
       }
       const d = r.paid_date || r.request_date
@@ -9770,42 +9845,16 @@ app.post('/api/admin/dedup-tasks', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-function daysOverdueOf(dueDate: string) {
-  const due = new Date(dueDate + 'T00:00:00Z')
-  const vn = new Date(Date.now() + 7 * 3600 * 1000)
-  const today = Date.UTC(vn.getUTCFullYear(), vn.getUTCMonth(), vn.getUTCDate())
-  return Math.max(0, Math.floor((today - due.getTime()) / 86400000))
-}
-
-/** Mail tổng hợp quá hạn cho leader dự án và System Admin / Project Admin. */
+/** Mail tổng hợp quá hạn: system admin cả công ty; quản lý và trưởng dự án chỉ dự án mình. */
 async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[]) {
   if (!tasks.length) return 0
-  const leaders = await db.prepare(`
-    SELECT DISTINCT u.id, u.full_name, u.email, u.role
-    FROM users u
-    WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
-      AND (
-        u.role IN ('system_admin', 'project_admin')
-        OR u.id IN (SELECT leader_id FROM projects WHERE leader_id IS NOT NULL)
-        OR u.id IN (SELECT user_id FROM project_members WHERE role IN ('project_leader', 'leader'))
-      )
-  `).all()
-  const scopeRows = await db.prepare(`
-    SELECT leader_id AS user_id, id AS project_id FROM projects WHERE leader_id IS NOT NULL
-    UNION
-    SELECT user_id, project_id FROM project_members WHERE role IN ('project_leader', 'leader')
-  `).all()
-  const scope = new Map<number, Set<number>>()
-  for (const row of scopeRows.results as any[]) {
-    const uid = Number(row.user_id)
-    if (!scope.has(uid)) scope.set(uid, new Set())
-    scope.get(uid)!.add(Number(row.project_id))
-  }
+  const leaders = await db.prepare(STATUS_MAIL_RECIPIENTS_SQL).all()
+  const scopeRows = await db.prepare(STATUS_MAIL_SCOPE_SQL).all()
+  const scope = buildStatusMailScope(scopeRows.results as any[])
   let sent = 0
   for (const leader of leaders.results as any[]) {
-    const appWide = leader.role === 'system_admin' || leader.role === 'project_admin'
-    const mine = scope.get(Number(leader.id))
-    const scoped = appWide ? tasks : tasks.filter(t => mine?.has(Number(t.project_id)))
+    const projectIds = projectsInStatusMailScope(Number(leader.id), String(leader.role || ''), scope)
+    const scoped = projectIds === null ? tasks : tasks.filter(t => projectIds.has(Number(t.project_id)))
     if (!scoped.length) continue
     const shown = scoped.slice(0, 30).map(t => ({
       title: t.title,
@@ -9821,7 +9870,7 @@ async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[])
         eventType: 'overdue_leader_digest',
         data: {
           recipientName: leader.full_name,
-          scopeLabel: appWide ? 'toàn công ty' : 'dự án bạn phụ trách',
+          scopeLabel: projectIds === null ? 'toàn công ty' : 'dự án bạn phụ trách',
           tasks: shown,
           total: scoped.length,
           hiddenCount: Math.max(0, scoped.length - shown.length),
@@ -9837,43 +9886,58 @@ async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[])
   return sent
 }
 
-const ZALO_OVERDUE_GROUP_URL = 'https://zalo.me/g/nquvtj706'
+const ZALO_WEBHOOK_URL = 'https://ddcn.bimonecadvn.com/api/zalo/webhook'
 
 async function readZaloOverdueConfig(env: Bindings, db: D1Database) {
   const rows = await db.prepare(
-    `SELECT key, value FROM system_config WHERE key IN ('zalo_bot_token','zalo_group_chat_id')`
+    `SELECT key, value FROM system_config WHERE key IN ('zalo_bot_token','zalo_group_chat_id','zalo_group_chat_type','zalo_webhook_secret','zalo_webhook_url','zalo_webhook_paused','zalo_overdue_groups','zalo_capture_url')`
   ).all()
   const map: Record<string, string> = {}
   for (const row of rows.results as any[]) map[row.key] = String(row.value ?? '').trim()
+  const chatId = map.zalo_group_chat_id || String(env.ZALO_GROUP_CHAT_ID || '').trim()
+  const chatType = map.zalo_group_chat_type === 'group' ? 'group' : (map.zalo_group_chat_type === 'private' ? 'private' : '')
+  let groups = parseZaloOverdueGroups(map.zalo_overdue_groups || '')
+  if (!groups.length && chatId && chatType === 'group') groups = [{ url: '', chatId }]
+  if (groups.length === 1 && groups[0].url && !groups[0].chatId && chatId && chatType === 'group') {
+    groups = [{ url: groups[0].url, chatId }]
+  }
   return {
     token: map.zalo_bot_token || String(env.ZALO_BOT_TOKEN || '').trim(),
-    chatId: map.zalo_group_chat_id || String(env.ZALO_GROUP_CHAT_ID || '').trim(),
-    groupUrl: ZALO_OVERDUE_GROUP_URL,
+    chatId,
+    chatType,
+    webhookSecret: map.zalo_webhook_secret || String(env.ZALO_WEBHOOK_SECRET || '').trim(),
+    webhookUrl: map.zalo_webhook_url || ZALO_WEBHOOK_URL,
+    webhookPaused: map.zalo_webhook_paused === '1',
+    groups,
+    captureUrl: canonicalZaloGroupUrl(map.zalo_capture_url || '') || '',
   }
+}
+
+async function writeSystemConfig(db: D1Database, key: string, value: string, userId: number | null) {
+  await db.prepare(
+    `INSERT INTO system_config (key, value, updated_by, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`
+  ).bind(key, value, userId).run()
 }
 
 async function zaloBotCall(token: string, method: string, body?: Record<string, unknown>) {
-  const res = await fetch(`https://bot-api.zaloplatforms.com/bot${token}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  })
-  const json = await res.json().catch(() => ({})) as any
-  return json
-}
-
-function findZaloGroupChatId(node: any): string | null {
-  if (!node || typeof node !== 'object') return null
-  const chat = node.chat
-  if (chat && String(chat.chat_type || chat.type || '') === 'GROUP' && chat.id) return String(chat.id)
-  const list = Array.isArray(node) ? node : Object.values(node)
-  for (const value of list) {
-    if (value && typeof value === 'object') {
-      const found = findZaloGroupChatId(value)
-      if (found) return found
-    }
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 8000)
+  try {
+    const res = await fetch(`https://bot-api.zaloplatforms.com/bot${token}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+      signal: ctrl.signal,
+    })
+    return await res.json().catch(() => ({})) as any
+  } catch (e: any) {
+    const timedOut = e?.name === 'AbortError' || e?.name === 'TimeoutError' || /timeout/i.test(String(e?.message || ''))
+    if (timedOut) return { ok: false, description: 'Zalo không phản hồi kịp' }
+    throw e
+  } finally {
+    clearTimeout(timer)
   }
-  return null
 }
 
 function overdueZaloText(tasks: any[]) {
@@ -9887,20 +9951,28 @@ function overdueZaloText(tasks: any[]) {
   return text
 }
 
-/** Gửi tóm tắt task quá hạn vào nhóm Zalo. Không chặn mail nếu Zalo lỗi. */
+/** Gửi tóm tắt task quá hạn vào từng nhóm Zalo đã gắn Chat ID. Không chặn mail nếu Zalo lỗi. */
 async function notifyOverdueZalo(env: Bindings, db: D1Database, tasks: any[]) {
   if (!tasks.length) return { sent: false, skipped: 'Không có task quá hạn' }
   const cfg = await readZaloOverdueConfig(env, db)
   if (!cfg.token) return { sent: false, skipped: 'Chưa có Bot Token Zalo' }
-  if (!cfg.chatId) return { sent: false, skipped: 'Chưa có Chat ID nhóm. Mời bot vào nhóm rồi bấm Lấy Chat ID.' }
-  try {
-    const json = await zaloBotCall(cfg.token, 'sendMessage', { chat_id: cfg.chatId, text: overdueZaloText(tasks) })
-    if (json?.ok) return { sent: true }
-    const reason = String(json?.description || json?.message || 'Zalo từ chối tin nhắn').slice(0, 180)
-    return { sent: false, error: reason }
-  } catch (e: any) {
-    return { sent: false, error: String(e?.message || 'Không gọi được Zalo').slice(0, 180) }
+  const targets = cfg.groups.filter((g) => g.chatId)
+  if (!targets.length) {
+    return { sent: false, skipped: 'Chưa có nhóm Zalo đã gắn Chat ID. Dán link nhóm, bấm Lấy Chat ID, rồi tag bot trong đúng nhóm đó.' }
   }
+  const text = overdueZaloText(tasks)
+  let sent = 0
+  const errors: string[] = []
+  for (const group of targets) {
+    try {
+      const json = await zaloBotCall(cfg.token, 'sendMessage', { chat_id: group.chatId, text })
+      if (json?.ok) sent++
+      else errors.push(String(json?.description || json?.message || 'Zalo từ chối tin nhắn').slice(0, 180))
+    } catch (e: any) {
+      errors.push(String(e?.message || 'Không gọi được Zalo').slice(0, 180))
+    }
+  }
+  return { sent: sent > 0, group_count: sent, error: sent ? undefined : errors[0] }
 }
 
 // ===================================================
@@ -9913,6 +9985,7 @@ async function deliverOverdueReminders(env: Bindings, db: D1Database) {
   try {
 
     // Lấy tất cả task quá hạn, chưa hoàn thành, có assigned_to
+    const todayIso = vnClock().isoDate
     const overdueRows = await db.prepare(`
       SELECT
         t.id, t.title, t.due_date, t.status, t.progress, t.project_id,
@@ -9922,12 +9995,12 @@ async function deliverOverdueReminders(env: Bindings, db: D1Database) {
       FROM tasks t
       JOIN users u ON u.id = t.assigned_to AND u.is_active = 1
       JOIN projects p ON p.id = t.project_id
-      WHERE t.due_date < date('now')
+      WHERE t.due_date < ?
         AND t.status NOT IN ('completed', 'review', 'cancelled')
         AND t.assigned_to IS NOT NULL
         AND u.email IS NOT NULL AND u.email != ''
       ORDER BY t.due_date ASC
-    `).all()
+    `).bind(todayIso).all()
 
     const tasks = overdueRows.results as any[]
     if (tasks.length === 0) {
@@ -9939,11 +10012,7 @@ async function deliverOverdueReminders(env: Bindings, db: D1Database) {
 
     for (const task of tasks) {
       try {
-        // Tính số ngày quá hạn
-        const dueDate = new Date(task.due_date)
-        const today   = new Date()
-        today.setHours(0, 0, 0, 0)
-        const daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / 86400000)
+        const daysOverdue = daysOverdueOf(String(task.due_date || ''))
 
         await sendEmail(env, {
           to:        task.assignee_email,
@@ -9992,7 +10061,7 @@ app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (
 })
 
 // GET /api/admin/overdue-tasks-preview — xem trước danh sách sẽ nhận mail
-app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c) => {
+app.get('/api/admin/overdue-tasks-preview', authMiddleware, statusDeskAccess, async (c) => {
   try {
     const db = c.env.DB
     const rows = await db.prepare(`
@@ -10003,12 +10072,12 @@ app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c)
       FROM tasks t
       JOIN users u ON u.id = t.assigned_to AND u.is_active = 1
       JOIN projects p ON p.id = t.project_id
-      WHERE t.due_date < date('now')
+      WHERE t.due_date < ?
         AND t.status NOT IN ('completed', 'review', 'cancelled')
         AND t.assigned_to IS NOT NULL
         AND u.email IS NOT NULL AND u.email != ''
       ORDER BY t.due_date ASC
-    `).all()
+    `).bind(vnClock().isoDate).all()
     return c.json(rows.results)
   } catch (e: any) {
     return c.json({ error: e.message }, 500) }
@@ -10016,38 +10085,204 @@ app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c)
 
 app.get('/api/admin/zalo-overdue', authMiddleware, adminOnly, async (c) => {
   try {
+    const user = c.get('user') as any
     const cfg = await readZaloOverdueConfig(c.env, c.env.DB)
+    const host = requestHost(c)
+    const hook = await ensureZaloWebhook(c.env, c.env.DB, user?.id ?? null, host).catch(() => ({ webhook_on: !cfg.webhookPaused, restored: false }))
+    let webhook_last: { reason?: string; event?: string } = {}
+    try { webhook_last = JSON.parse((await c.env.DB.prepare(`SELECT value FROM system_config WHERE key = 'zalo_webhook_last'`).first() as any)?.value || '{}') } catch { webhook_last = {} }
     return c.json({
-      group_url: cfg.groupUrl,
-      chat_id: cfg.chatId,
+      groups: cfg.groups.map((g) => ({ url: g.url, linked: !!g.chatId })),
       token_configured: !!cfg.token,
+      webhook_secret_configured: !!cfg.webhookSecret,
+      webhook_paused: !hook.webhook_on,
+      webhook_on: hook.webhook_on,
+      webhook_last,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
 })
 
+async function saveZaloGroups(db: D1Database, groups: { url: string; chatId: string }[], userId: number | null) {
+  await writeSystemConfig(db, 'zalo_overdue_groups', JSON.stringify(groups), userId)
+  const first = groups.find((g) => g.chatId)
+  await writeSystemConfig(db, 'zalo_group_chat_id', first?.chatId || '', userId)
+  await writeSystemConfig(db, 'zalo_group_chat_type', first?.chatId ? 'group' : '', userId)
+}
+
+app.post('/api/admin/zalo-overdue/groups', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const body = await c.req.json().catch(() => ({})) as any
+    const cfg = await readZaloOverdueConfig(c.env, db)
+    if (cfg.groups.length >= 20) return c.json({ error: 'Tối đa 20 nhóm Zalo' }, 400)
+    const next = addZaloGroupLink(cfg.groups, String(body.url || ''))
+    if (!next) return c.json({ error: 'Link không hợp lệ. Dán link nhóm dạng zalo.me/g/...' }, 400)
+    await saveZaloGroups(db, next, user.id)
+    return c.json({ groups: next.map((g) => ({ url: g.url, linked: !!g.chatId })) })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.delete('/api/admin/zalo-overdue/groups', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const body = await c.req.json().catch(() => ({})) as any
+    const url = canonicalZaloGroupUrl(String(body.url || ''))
+    if (!url) return c.json({ error: 'Thiếu link nhóm' }, 400)
+    const cfg = await readZaloOverdueConfig(c.env, db)
+    await saveZaloGroups(db, cfg.groups.filter((g) => g.url !== url), user.id)
+    if (cfg.captureUrl === url) await writeSystemConfig(db, 'zalo_capture_url', '', user.id)
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+async function restoreZaloWebhook(db: D1Database, token: string, secret: string, userId: number | null) {
+  if (!token || !secret) return { ok: false as const, description: 'Thiếu Bot Token hoặc Secret Token' }
+  const set = await zaloBotCall(token, 'setWebhook', { url: ZALO_WEBHOOK_URL, secret_token: secret })
+  if (set?.ok === false) return { ok: false as const, description: String(set.description || set.message || 'Không bật được webhook Zalo').slice(0, 180) }
+  await writeSystemConfig(db, 'zalo_webhook_url', ZALO_WEBHOOK_URL, userId)
+  await writeSystemConfig(db, 'zalo_webhook_paused', '0', userId)
+  return { ok: true as const }
+}
+
+function requestHost(c: { req: { url: string; header: (name: string) => string | undefined } }) {
+  const urlHost = new URL(c.req.url).host.split(':')[0].toLowerCase()
+  const forwarded = (c.req.header('x-forwarded-host') || c.req.header('host') || '').split(',')[0].trim().split(':')[0].toLowerCase()
+  if (forwarded && !isLocalAppHost(forwarded)) return forwarded
+  if (urlHost && !isLocalAppHost(urlHost)) return urlHost
+  return forwarded || urlHost
+}
+
+function isLocalAppHost(host: string) {
+  return host === '127.0.0.1' || host === 'localhost' || host === '0.0.0.0' || host.endsWith('.trycloudflare.com')
+}
+
+/** Bot chỉ có một webhook. Máy test không được kéo webhook khỏi production. */
+async function ensureZaloWebhook(env: Bindings, db: D1Database, userId: number | null, host: string) {
+  if (isLocalAppHost(host)) return { webhook_on: true, restored: false }
+  const cfg = await readZaloOverdueConfig(env, db)
+  if (!cfg.token || !cfg.webhookSecret) return { webhook_on: false, restored: false }
+  const info = await zaloBotCall(cfg.token, 'getWebhookInfo')
+  const liveUrl = String(info?.result?.url || '').trim()
+  if (liveUrl === ZALO_WEBHOOK_URL && !cfg.webhookPaused) return { webhook_on: true, restored: false }
+  const restored = await restoreZaloWebhook(db, cfg.token, cfg.webhookSecret, userId)
+  return { webhook_on: restored.ok === true, restored: restored.ok === true, error: restored.ok ? undefined : restored.description }
+}
+
 app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
+    const body = await c.req.json().catch(() => ({})) as any
+    if (body.zalo_bot_token && !String(body.zalo_bot_token).includes('****')) {
+      await writeSystemConfig(db, 'zalo_bot_token', String(body.zalo_bot_token).trim(), user.id)
+    }
+    if (body.zalo_webhook_secret && !String(body.zalo_webhook_secret).includes('****')) {
+      await writeSystemConfig(db, 'zalo_webhook_secret', String(body.zalo_webhook_secret).trim(), user.id)
+    }
+    const url = canonicalZaloGroupUrl(String(body.url || ''))
+    if (!url) return c.json({ error: 'Chọn một nhóm đã thêm trước khi lấy Chat ID' }, 400)
     const cfg = await readZaloOverdueConfig(c.env, db)
     if (!cfg.token) return c.json({ error: 'Chưa có Bot Token Zalo' }, 400)
-    const json = await zaloBotCall(cfg.token, 'getUpdates', { timeout: 1 })
-    if (json?.ok === false) {
-      return c.json({ error: String(json.description || json.message || 'Không đọc được tin nhắn của bot').slice(0, 180) }, 400)
+    const group = cfg.groups.find((g) => g.url === url)
+    if (!group) return c.json({ error: 'Nhóm này chưa có trong danh sách. Dán link rồi bấm Thêm nhóm.' }, 400)
+    if (group.chatId) {
+      return c.json({ url, linked: true, source: 'stored' })
     }
-    const chatId = findZaloGroupChatId(json)
-    if (!chatId) {
-      return c.json({ error: 'Bot chưa thấy tin nhắn nhóm. Mời bot vào https://zalo.me/g/nquvtj706 rồi gửi một tin bất kỳ.' }, 404)
+    if (!cfg.webhookSecret) {
+      return c.json({ error: 'Nhập Secret Token webhook vào ô cạnh Bot Token, rồi bấm Lấy Chat ID lại.' }, 400)
     }
-    await db.prepare(
-      `INSERT INTO system_config (key, value, description, updated_by, updated_at) VALUES ('zalo_group_chat_id', ?, 'Chat ID nhóm Zalo nhắc task quá hạn', ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`
-    ).bind(chatId, user.id).run()
-    return c.json({ chat_id: chatId, group_url: cfg.groupUrl })
+    if (isLocalAppHost(requestHost(c))) {
+      return c.json({ error: 'Máy test và production không dùng chung dữ liệu. Webhook của bot phải trỏ về production. Mở https://ddcn.bimonecadvn.com, bấm Lấy Chat ID, rồi tag bot một tin mới trong nhóm.' }, 400)
+    }
+    const listenUrl = ZALO_WEBHOOK_URL
+    await writeSystemConfig(db, 'zalo_capture_url', url, user.id)
+
+    const set = await zaloBotCall(cfg.token, 'setWebhook', { url: listenUrl, secret_token: cfg.webhookSecret })
+    if (set?.ok === false) {
+      const reason = String(set.description || set.message || '')
+      const error = /not found/i.test(reason)
+        ? 'Bot Token trên production không được Zalo nhận. Dán lại Bot Token và Secret Token vào trang này, bấm Lưu Zalo, rồi Lấy Chat ID.'
+        : (reason || 'Không bật được webhook Zalo').slice(0, 180)
+      return c.json({ error }, 400)
+    }
+    await writeSystemConfig(db, 'zalo_webhook_url', listenUrl, user.id)
+    await writeSystemConfig(db, 'zalo_webhook_paused', '0', user.id)
+
+    return c.json({
+      pending: true,
+      message: `Đã chọn nhóm ${url}. Tag bot một tin mới trong đúng nhóm đó, đợi vài giây, rồi bấm Lấy Chat ID lại.`,
+    })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
+  }
+})
+
+app.get('/api/zalo/webhook', (c) => c.json({ ok: true }))
+
+async function noteZaloWebhook(db: D1Database, reason: string, eventName: string, shape = '') {
+  await writeSystemConfig(db, 'zalo_webhook_last', JSON.stringify({
+    at: new Date().toISOString(),
+    reason,
+    event: String(eventName || '').slice(0, 80),
+    shape: String(shape || '').slice(0, 240),
+  }), null)
+}
+
+function zaloEventName(body: any) {
+  return String(body?.result?.event_name || body?.event_name || '').slice(0, 80)
+}
+
+app.post('/api/zalo/webhook', async (c) => {
+  try {
+    const db = c.env.DB
+    const inspected = inspectZaloWebhook(await c.req.text())
+    const body = inspected.body
+    const eventName = inspected.event || zaloEventName(body)
+    const chats = collectZaloChats(body)
+    if (!chats.length) {
+      await noteZaloWebhook(db, inspected.empty ? 'ping' : 'no-chat', eventName, inspected.shape)
+      return c.json({ ok: true })
+    }
+
+    const cfg = await readZaloOverdueConfig(c.env, db)
+    if (!cfg.webhookSecret) return c.json({ ok: false, error: 'Chưa cấu hình Secret Token webhook' }, 503)
+    const header = (c.req.header('X-Bot-Api-Secret-Token') || c.req.header('X-Zalo-Bot-Api-Secret-Token') || '').trim()
+    if (!cronSecretMatches(header, cfg.webhookSecret)) {
+      await noteZaloWebhook(db, 'secret', eventName)
+      return c.json({ ok: false }, 401)
+    }
+
+    const groupId = latestZaloGroupChatId(body)
+    if (groupId) {
+      const pending = cfg.groups.filter((g) => g.url && !g.chatId)
+      const target = canonicalZaloGroupUrl(cfg.captureUrl) || (pending.length === 1 ? pending[0].url : '')
+      const next = target ? assignZaloGroupChat(cfg.groups, target, groupId) : cfg.groups
+      const saved = next.find((g) => g.url === target && g.chatId === groupId)
+      if (!saved) {
+        await noteZaloWebhook(db, 'no-capture', eventName)
+        return c.json({ ok: true, chat_type: 'group' })
+      }
+      await saveZaloGroups(db, next, null)
+      await writeSystemConfig(db, 'zalo_capture_url', '', null)
+      await noteZaloWebhook(db, 'saved', eventName)
+      return c.json({ ok: true, chat_type: 'group' })
+    }
+    const privateId = latestZaloPrivateChatId(body)
+    if (privateId && cfg.groups.some((g) => g.chatId === privateId)) {
+      await saveZaloGroups(db, cfg.groups.map((g) => g.chatId === privateId ? { ...g, chatId: '' } : g), null)
+    }
+    await noteZaloWebhook(db, 'private', eventName)
+    return c.json({ ok: true, chat_type: 'private' })
+  } catch (e: any) {
+    return c.json({ ok: false, error: String(e?.message || 'webhook').slice(0, 180) }, 500)
   }
 })
 
@@ -10055,36 +10290,35 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
 // WEEKLY TASK REPORT — báo cáo task hàng tuần cho System Admin
 // ===================================================
 
-// Helper: lấy thống kê task cho toàn bộ nhân sự
-async function getWeeklyTaskStats(db: any) {
-  // Thống kê task của từng user (được giao task)
+/** Thống kê task theo người và dự án. Quá hạn so với hôm nay giờ VN. */
+async function getWeeklyTaskStatRows(db: any) {
   const rows = await db.prepare(`
     SELECT
       u.id,
       u.full_name AS name,
       u.email,
+      t.project_id,
       COUNT(DISTINCT t.id)                                                    AS total,
       COUNT(DISTINCT CASE WHEN t.status IN ('completed','review') THEN t.id END) AS done,
       COUNT(DISTINCT CASE WHEN t.status = 'in_progress'           THEN t.id END) AS inprogress,
       COUNT(DISTINCT CASE WHEN t.status IN ('todo','open')         THEN t.id END) AS todo,
       COUNT(DISTINCT CASE WHEN t.status NOT IN ('completed','review','cancelled')
                            AND t.due_date IS NOT NULL
-                           AND t.due_date < date('now')                       THEN t.id END) AS overdue
+                           AND t.due_date < ?                                THEN t.id END) AS overdue
     FROM users u
     JOIN tasks t ON t.assigned_to = u.id
     WHERE u.is_active = 1
       AND t.status != 'cancelled'
-    GROUP BY u.id, u.full_name, u.email
-    ORDER BY done DESC, total DESC
-  `).all()
+    GROUP BY u.id, u.full_name, u.email, t.project_id
+  `).bind(vnClock().isoDate).all()
   return (rows.results as any[])
 }
 
 // GET /api/admin/weekly-task-report/preview
-app.get('/api/admin/weekly-task-report/preview', authMiddleware, adminOnly, async (c) => {
+app.get('/api/admin/weekly-task-report/preview', authMiddleware, statusDeskAccess, async (c) => {
   try {
     const db = c.env.DB
-    const stats = await getWeeklyTaskStats(db)
+    const stats = aggregateWeeklyMemberStats(await getWeeklyTaskStatRows(db), null)
     const cfg = await db.prepare(
       `SELECT key, value FROM system_config WHERE key IN ('weekly_report_enabled','weekly_report_day','weekly_report_hour')`
     ).all()
@@ -10119,25 +10353,17 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
       }
     }
 
-    const admins = await db.prepare(`
-      SELECT DISTINCT u.id, u.full_name, u.email
-      FROM users u
-      WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
-        AND (
-          u.role IN ('system_admin', 'project_admin')
-          OR u.id IN (SELECT leader_id FROM projects WHERE leader_id IS NOT NULL)
-          OR u.id IN (SELECT user_id FROM project_members WHERE role IN ('project_leader', 'leader'))
-        )
-    `).all()
+    const admins = await db.prepare(STATUS_MAIL_RECIPIENTS_SQL).all()
     if ((admins.results as any[]).length === 0) {
       return { status: 200, body: { success: false, message: 'Không có leader hoặc admin nào có email để gửi báo cáo.' } }
     }
 
-    // Lấy thống kê task
-    const memberStats = await getWeeklyTaskStats(db)
-    if (memberStats.length === 0) {
+    const statRows = await getWeeklyTaskStatRows(db)
+    if (statRows.length === 0) {
       return { status: 200, body: { success: true, sent: 0, message: 'Không có dữ liệu task nào để báo cáo.' } }
     }
+    const scope = buildStatusMailScope((await db.prepare(STATUS_MAIL_SCOPE_SQL).all()).results as any[])
+    const companyStats = aggregateWeeklyMemberStats(statRows, null)
 
     // Tạo nhãn tuần
     const now = new Date()
@@ -10157,6 +10383,9 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
     const errors: string[] = []
 
     for (const admin of admins.results as any[]) {
+      const projectIds = projectsInStatusMailScope(Number(admin.id), String(admin.role || ''), scope)
+      const memberStats = projectIds === null ? companyStats : aggregateWeeklyMemberStats(statRows, projectIds)
+      if (!memberStats.length) continue
       try {
         await sendEmail(env, {
           to:        admin.email,
@@ -10164,6 +10393,7 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
           eventType: 'weekly_task_report',
           data: {
             recipientName: admin.full_name,
+            scopeLabel: projectIds === null ? 'toàn công ty' : 'dự án bạn phụ trách',
             weekLabel,
             generatedAt,
             memberStats,
@@ -10187,7 +10417,7 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
         sent,
         total_admins: (admins.results as any[]).length,
         week: weekLabel,
-        total_members: memberStats.length,
+        total_members: companyStats.length,
         errors: errors.length ? errors : undefined,
       }
     }
@@ -10197,6 +10427,16 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
 app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async (c) => {
   const result = await deliverWeeklyReport(c.env, c.env.DB, c.req.query('force') === '1')
   return c.json(result.body, result.status as any)
+})
+
+/** Pages không chạy cron. Lịch ngoài gọi endpoint này mỗi giờ bằng CRON_SECRET. */
+app.post('/api/cron/friday-status-mails', async (c) => {
+  const expected = String(c.env.CRON_SECRET || '')
+  if (!expected) return c.json({ error: 'CRON_SECRET chưa cấu hình' }, 503)
+  const header = c.req.header('Authorization') || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : String(c.req.header('X-Cron-Secret') || '').trim()
+  if (!cronSecretMatches(token, expected)) return c.json({ error: 'Unauthorized' }, 401)
+  return c.json(await runFridayStatusMails(c.env))
 })
 
 // ===================================================
@@ -12649,19 +12889,21 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status,
              request_date, paid_date
       FROM payment_requests
-      WHERE status IN ('paid', 'partial', 'pending')
+      WHERE status IN ('paid', 'partial', 'processing')
         AND ${paymentOnPackageSql('payment_requests')}
     `).all()
     const payRowsNtcFiltered = (payRowsNtc.results as any[]).filter((r: any) => {
-      if (r.status === 'pending') {
+      if (r.status === 'processing') {
         if (!r.request_date) return true
         return r.request_date >= fyStart && r.request_date <= fyEnd
       }
       const d = r.paid_date || r.request_date
       return d && d >= fyStart && d <= fyEnd
     })
-    const { acceptanceByProject: revOrigMap, cashByProject: paidAmtMap } =
-      aggregatePaymentsBeforeVat(payRowsNtcFiltered)
+    const { acceptanceByProject: revOrigMap } = aggregatePaymentsBeforeVat(payRowsNtcFiltered)
+    const { cashByProject: paidAmtMap } = aggregatePaymentsBeforeVat(
+      payRowsNtcFiltered.filter((r: any) => r.status === 'paid' || r.status === 'partial')
+    )
 
     const pendingThreeByProject: Record<number, number> = {}
     for (const r of payRowsNtcFiltered) {
@@ -12868,11 +13110,14 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
     const payRowsLT = await db.prepare(`
       SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
       FROM payment_requests
-      WHERE status IN ('paid', 'partial', 'pending')
+      WHERE status IN ('paid', 'partial', 'processing')
         AND ${paymentOnPackageSql('payment_requests')}
     `).all()
-    const { acceptanceByProject: revOrigMapLT, cashByProject: paidAmtMapLT } =
-      aggregatePaymentsBeforeVat(payRowsLT.results as any[])
+    const ltRows = payRowsLT.results as any[]
+    const { acceptanceByProject: revOrigMapLT } = aggregatePaymentsBeforeVat(ltRows)
+    const { cashByProject: paidAmtMapLT } = aggregatePaymentsBeforeVat(
+      ltRows.filter((r: any) => r.status === 'paid' || r.status === 'partial')
+    )
     const pendingThreeLT: Record<number, number> = {}
     for (const r of (payRowsLT.results as any[])) {
       if (r.status !== 'pending') continue
@@ -13532,6 +13777,152 @@ function legalPackageContractInput(data: any) {
   return { code, start_date: start, end_date: end, contract_value: contractValue, contract_signed }
 }
 
+// ── Legal cross-deployment sync (secret export + authenticated apply) ─────────
+
+function legalSyncExportAuthorized(c: { req: { header: (n: string) => string | undefined }; env: Bindings }): boolean {
+  const provided = legalSyncSecretFromRequest((name) => c.req.header(name))
+  return legalSyncSecretOk(provided, c.env.LEGAL_SYNC_SECRET)
+}
+
+// GET /api/legal-sync/projects — peer export (secret only)
+app.get('/api/legal-sync/projects', async (c) => {
+  if (!legalSyncExportAuthorized(c)) return c.json({ error: 'Unauthorized' }, 401)
+  try {
+    const projects = await buildLegalSyncProjectList(c.env.DB)
+    return c.json({ projects })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/legal-sync/projects/:id — peer export bundle (secret only)
+app.get('/api/legal-sync/projects/:id', async (c) => {
+  if (!legalSyncExportAuthorized(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const projectId = parseInt(c.req.param('id'))
+  if (!Number.isFinite(projectId) || projectId <= 0) return c.json({ error: 'Invalid project id' }, 400)
+  try {
+    const bundle = await buildLegalSyncBundle(c.env.DB, projectId)
+    return c.json(bundle)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/legal-sync/files/:documentId — peer document bytes (secret only)
+app.get('/api/legal-sync/files/:documentId', async (c) => {
+  if (!legalSyncExportAuthorized(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const documentId = parseInt(c.req.param('documentId'))
+  if (!Number.isFinite(documentId) || documentId <= 0) return c.json({ error: 'Invalid document id' }, 400)
+  try {
+    const resolved = await resolveLegalSyncDocumentFile(c.env.DB, c.env, documentId)
+    if (!resolved) return c.body(null, 404)
+    const { row, key } = resolved
+    if (key) {
+      const obj = await getR2(c.env, key)
+      if (obj) {
+        return new Response(obj.body, {
+          headers: {
+            'Content-Type': (row.content_type as string) || obj.httpMetadata?.contentType || 'application/octet-stream',
+            'Content-Disposition': `inline; filename="${row.file_name || 'document'}"`,
+          },
+        })
+      }
+    }
+    if (typeof row.file_url === 'string' && row.file_url.startsWith('data:')) {
+      const parsed = parseDataUri(row.file_url)
+      if (!parsed) return c.body(null, 404)
+      return new Response(parsed.bytes, {
+        headers: {
+          'Content-Type': parsed.contentType,
+          'Content-Disposition': `inline; filename="${row.file_name || 'document'}"`,
+        },
+      })
+    }
+    return c.body(null, 404)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/legal/sync/peer-projects — list peer projects (Bearer system_admin; secret stays on server)
+app.get('/api/legal/sync/peer-projects', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  if (user.role !== 'system_admin') return c.json({ error: 'Forbidden' }, 403)
+  const peerOrigin = String(c.env.LEGAL_SYNC_PEER_ORIGIN || '').trim()
+  const secret = String(c.env.LEGAL_SYNC_SECRET || '').trim()
+  if (!peerOrigin || !secret) {
+    return c.json({ error: 'Chưa cấu hình LEGAL_SYNC_PEER_ORIGIN / LEGAL_SYNC_SECRET trên worker' }, 503)
+  }
+  try {
+    const projects = await fetchPeerLegalSyncProjectList(peerOrigin, secret)
+    return c.json({ projects })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/legal/:projectId/sync-from — apply peer bundle onto local project
+app.post('/api/legal/:projectId/sync-from', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const localProjectId = parseInt(c.req.param('projectId'))
+  if (user.role !== 'system_admin') return c.json({ error: 'Forbidden' }, 403)
+  if (!Number.isFinite(localProjectId) || localProjectId <= 0) {
+    return c.json({ error: 'Invalid project id' }, 400)
+  }
+  if (!(await canAccessProject(c.env.DB, user, localProjectId))) {
+    return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+  }
+  const peerOrigin = String(c.env.LEGAL_SYNC_PEER_ORIGIN || '').trim()
+  const secret = String(c.env.LEGAL_SYNC_SECRET || '').trim()
+  if (!peerOrigin || !secret) {
+    return c.json({ error: 'Chưa cấu hình LEGAL_SYNC_PEER_ORIGIN / LEGAL_SYNC_SECRET trên worker' }, 503)
+  }
+  let body: { source_project_id?: number }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+  const sourceProjectId = parseInt(String(body.source_project_id ?? ''))
+  if (!Number.isFinite(sourceProjectId) || sourceProjectId <= 0) {
+    return c.json({ error: 'source_project_id required' }, 400)
+  }
+  try {
+    const localProj = await c.env.DB.prepare(
+      'SELECT id, code, name, legal_sync_peer_origin, legal_sync_source_project_id FROM projects WHERE id = ?'
+    ).bind(localProjectId).first() as any
+    if (!localProj) return c.json({ error: 'Project not found' }, 404)
+
+    const run2 = isLegalSyncRun2(
+      localProj.legal_sync_peer_origin,
+      localProj.legal_sync_source_project_id,
+      peerOrigin,
+      sourceProjectId
+    )
+    const bundle = await fetchPeerLegalSyncBundle(peerOrigin, secret, sourceProjectId)
+    const result = await applyLegalSyncBundle({
+      db: c.env.DB,
+      env: c.env,
+      localProjectId,
+      bundle,
+      peerOrigin,
+      secret,
+      actorUserId: user.id,
+      run2,
+    })
+    await syncProjectContractFromPackages(c.env.DB, localProjectId)
+    return c.json({
+      success: true,
+      mode: result.mode,
+      payments_inserted: result.payments_inserted,
+      payments_skipped: result.payments_skipped,
+      local_project: { id: localProj.id, code: localProj.code, name: localProj.name },
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // ── Package CRUD ──────────────────────────────────────────────────────────────
 
 // GET /api/legal/projects — danh sách dự án cho HSPL (system_admin + Support member)
@@ -14095,7 +14486,9 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
          FROM legal_items WHERE project_id = ? ORDER BY stage_id, sort_order, id`
       ).bind(projectId),
       db.prepare(
-        `SELECT id, name, code, contract_value, management_fee_pct, vat_pct FROM projects WHERE id = ?`
+        `SELECT id, name, code, contract_value, management_fee_pct, vat_pct,
+                legal_sync_peer_origin, legal_sync_source_project_id
+         FROM projects WHERE id = ?`
       ).bind(projectId),
       db.prepare(`SELECT COUNT(*) AS n FROM outgoing_letters WHERE project_id = ?`).bind(projectId),
       db.prepare(`SELECT COUNT(*) AS n FROM legal_documents WHERE project_id = ?`).bind(projectId),
@@ -14234,6 +14627,17 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
       minutes: shell ? null : minutes.results,
       project: projectInfo,
       can_manage,
+      legal_sync: user.role === 'system_admin'
+        ? {
+            source_project_id: projectRow?.legal_sync_source_project_id ?? null,
+            same_peer: isLegalSyncRun2(
+              projectRow?.legal_sync_peer_origin,
+              projectRow?.legal_sync_source_project_id,
+              String(c.env.LEGAL_SYNC_PEER_ORIGIN || ''),
+              Number(projectRow?.legal_sync_source_project_id)
+            ),
+          }
+        : undefined,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -14967,16 +15371,18 @@ app.get('/api/projects/:id/estimate-vs-actual', authMiddleware, adminOnly, async
 
   // ── 2. Thực tế — Doanh thu (toàn vòng đời; NT + TT trước VAT)
   const payActualRows = await db.prepare(`
-    SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct
+    SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
     FROM payment_requests
-    WHERE project_id = ? AND status IN ('paid', 'partial', 'pending')
+    WHERE project_id = ? AND status IN ('paid', 'partial', 'processing')
   `).bind(projectId).all()
   let nghiemThuBeforeVat = 0
   let dongTienBeforeVat = 0
   for (const r of (payActualRows.results as any[])) {
     const vat = Number(r.vat_pct) || 0
     nghiemThuBeforeVat += amountExcludingVat(Number(r.amount) || 0, vat)
-    dongTienBeforeVat += amountExcludingVat(Number(r.paid_amount) || 0, vat)
+    if (r.status === 'paid' || r.status === 'partial') {
+      dongTienBeforeVat += amountExcludingVat(Number(r.paid_amount) || 0, vat)
+    }
   }
   const bookedRevActual = await db.prepare(`
     SELECT SUM(amount) as doanh_thu_ns
@@ -18171,7 +18577,7 @@ app.get('/api/executive/dashboard', authMiddleware, pmoAccess, async (c) => {
     // 2. Ba số tiền: NT/GTTT trước VAT; booked gồm pending đã NT
     const payAllExec = await db.prepare(`
       SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
-      FROM payment_requests WHERE status IN ('pending','partial','paid','cancelled')
+      FROM payment_requests WHERE status IN ('pending','processing','partial','paid','cancelled')
     `).all()
     const threeExec = aggregateThreeMoney(payAllExec.results as any[])
     const bookedKpi = await db.prepare(`
@@ -18324,7 +18730,7 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
       LEFT JOIN (
         SELECT project_id,
           SUM(CASE WHEN status IN ('paid','partial') THEN paid_amount ELSE 0 END) AS collected_amount,
-          SUM(CASE WHEN status IN ('pending','partial','paid') THEN amount ELSE 0 END) AS acceptance_amount
+          SUM(CASE WHEN status IN ('processing','partial','paid') THEN amount ELSE 0 END) AS acceptance_amount
         FROM payment_requests
         WHERE ${paymentOnPackageSql('payment_requests')}
         GROUP BY project_id
@@ -18970,37 +19376,280 @@ app.delete('/api/knowledge/:id', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-async function callAssistantModel(apiKey: string, question: string, passages: any[], projects: any[]): Promise<any> {
-  const today = todayInVietnam()
-  const docs = passages.map((p, i) => `[${i + 1}] ${p.article.title}\n${String(p.article.body).slice(0, 1500)}`).join('\n\n') || '(không có đoạn khớp)'
-  const projectLines = projects.map(p => `${p.code} | ${p.name}`).join('\n') || '(không có dự án)'
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+type AssistantSection = {
+  allowed: boolean
+  denial: string | null
+  total: number
+  lines: string[]
+  overdueTotal?: number
+  leaveRemaining?: number | null
+  aboutSelf?: boolean
+}
+
+type AssistantProjectRow = { id: number, code: string, name: string, status?: string }
+
+export type AssistantFactPack = {
+  named: boolean
+  scopeLabel: string
+  scopeProjects: AssistantProjectRow[]
+  deniedProject: string | null
+  projects: AssistantSection
+  tasks: AssistantSection
+  timesheets: AssistantSection
+  leave: AssistantSection
+  legal: AssistantSection
+  money: AssistantSection
+  articles: AssistantSection
+}
+
+type AssistantTurn = { role: 'user' | 'assistant', content: string }
+
+function assistantDayMonth(iso: unknown): string {
+  const match = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!match) return ''
+  return `${match[3]}/${match[2]}`
+}
+
+function assistantTaskStatusLabel(status: unknown): string {
+  return ASSISTANT_TASK_STATUS[String(status || '')] || 'đang làm'
+}
+
+function assistantProjectStatusLabel(status: unknown): string {
+  return ASSISTANT_PROJECT_STATUS[String(status || '')] || ''
+}
+
+const ASSISTANT_SHEET_STATUS: Record<string, string> = {
+  draft: 'nháp',
+  submitted: 'đã gửi',
+  approved: 'đã duyệt',
+  rejected: 'bị trả',
+  processing: 'đang xử lý',
+}
+
+function assistantSheetStatusLabel(status: unknown): string {
+  return ASSISTANT_SHEET_STATUS[String(status || '')] || 'đã ghi'
+}
+
+function assistantHours(regular: unknown, overtime: unknown): string {
+  const hours = (Number(regular) || 0) + (Number(overtime) || 0)
+  const rounded = Math.round(hours * 10) / 10
+  return String(rounded)
+}
+
+function assistantCodeMentioned(question: string, code: string): boolean {
+  const foldedCode = foldAssistantText(code || '').trim()
+  if (foldedCode.length < 3) return false
+  const escaped = foldedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(foldAssistantText(question))
+}
+
+function pickAssistantWriteProject(question: string, projects: AssistantProjectRow[]): AssistantProjectRow | null {
+  const hits = [...projects]
+    .filter(project => assistantCodeMentioned(question, project.code))
+    .sort((a, b) => String(b.code || '').length - String(a.code || '').length)
+  if (hits.length) return hits[0]
+  return projects.length === 1 ? projects[0] : null
+}
+
+function assistantHoursInQuestion(question: string): number {
+  const match = foldAssistantText(question).match(/(\d+(?:[.,]\d+)?)\s*(gio|tieng|h)\b/)
+  if (!match) return 0
+  const hours = Number(match[1].replace(',', '.'))
+  return Number.isFinite(hours) && hours > 0 ? hours : 0
+}
+
+function assistantWorkDateInQuestion(question: string, today: string): string {
+  const folded = foldAssistantText(question)
+  const iso = folded.match(/\b(\d{4})-(\d{2})-(\d{2})\b/)
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`
+  const dmy = folded.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/)
+  if (dmy) {
+    const year = dmy[3] || today.slice(0, 4)
+    return `${year}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`
+  }
+  return today
+}
+
+function assistantTaskTitleFromQuestion(question: string, project: AssistantProjectRow): string {
+  return question
+    .replace(/tạo task|tao task|tạo công việc|tao cong viec|giao việc|giao viec/ig, ' ')
+    .replace(new RegExp(project.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ')
+    .replace(/\b(dự án|du an|trong|cho|vào|vao|hôm nay|hom nay)\b/ig, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Soạn bản nháp từ câu đã đủ mã dự án, ngày và số giờ, khi model không trả JSON dùng được. */
+export function assistantDraftFromQuestion(
+  question: string,
+  projects: AssistantProjectRow[],
+  today: string,
+): { reply: string, draft?: { kind: 'timesheet' | 'task', payload: Record<string, unknown> } } | null {
+  if (!wantsAssistantWrite(question)) return null
+  const project = pickAssistantWriteProject(question, projects)
+  if (!project) return { reply: 'Chưa soạn được timesheet hay task. Bạn nói lại mã dự án, ngày và số giờ.' }
+  const folded = foldAssistantText(question)
+  if (/tao task|tao cong viec|giao viec/.test(folded)) {
+    return assistantDraftFromModel(
+      { kind: 'task', project_code: project.code, title: assistantTaskTitleFromQuestion(question, project), reply: '' },
+      projects,
+      'Cần tên công việc trước khi soạn bản nháp.',
+    )
+  }
+  const hours = assistantHoursInQuestion(question)
+  if (!hours) return { reply: 'Chưa soạn được timesheet hay task. Bạn nói lại mã dự án, ngày và số giờ.' }
+  return assistantDraftFromModel(
+    {
+      kind: 'timesheet',
+      project_code: project.code,
+      work_date: assistantWorkDateInQuestion(question, today),
+      regular_hours: hours,
+      description: '',
+      reply: '',
+    },
+    projects,
+    'Chưa soạn được timesheet hay task. Bạn nói lại mã dự án, ngày và số giờ.',
+  )
+}
+
+function assistantCanCallModel(apiKey: string, accountId: string): boolean {
+  if (apiKey.startsWith('sk-')) return true
+  return /^[a-f0-9]{32}$/i.test(accountId)
+}
+
+export function clampAssistantHistory(raw: unknown): AssistantTurn[] {
+  if (!Array.isArray(raw)) return []
+  const turns: AssistantTurn[] = []
+  for (const item of raw.slice(-6)) {
+    const role = item?.role === 'assistant' ? 'assistant' : item?.role === 'user' ? 'user' : ''
+    if (!role) continue
+    const content = String(item?.content || '').replace(/\s+/g, ' ').trim().slice(0, 800)
+    if (!content) continue
+    turns.push({ role, content })
+  }
+  return turns
+}
+
+function assistantDenialReply(reason: string): string {
+  const why = String(reason || '').trim().replace(/\.+$/, '')
+  return `${why}. Bạn có thể hỏi task của mình hoặc phép của mình.`
+}
+
+export function polishAssistantReply(text: string): string {
+  let out = String(text || '')
+  const replacements: Array<[RegExp, string]> = [
+    [/\bin_progress\b/gi, 'đang làm'],
+    [/\bprocessing\b/gi, 'đang xử lý'],
+    [/\btodo\b/gi, 'chưa làm'],
+    [/\bon_hold\b/gi, 'tạm dừng'],
+    [/\bplanning\b/gi, 'lên kế hoạch'],
+    [/\bcompleted\b/gi, 'xong'],
+    [/\bcancelled\b/gi, 'đã hủy'],
+    [/\bsubmitted\b/gi, 'đã gửi'],
+    [/\bapproved\b/gi, 'đã duyệt'],
+    [/\brejected\b/gi, 'bị trả'],
+    [/\bdraft\b/gi, 'nháp'],
+    [/\breview\b/gi, 'chờ duyệt'],
+    [/\bactive\b/gi, 'đang chạy'],
+  ]
+  for (const [pattern, label] of replacements) out = out.replace(pattern, label)
+  out = out.replace(/\b\d{4}-(\d{2})-(\d{2})\b/g, (_all, month, day) => `${day}/${month}`)
+  out = out.replace(/\b(password_hash|salary_monthly|contract_value|bank_account|tax_code)\b/gi, '')
+  return out.replace(/[ \t]{2,}/g, ' ').trim()
+}
+
+export function assistantSystemPrompt(today: string): string {
+  return `Bạn là trợ lý nội bộ BIM PM. Người đọc là nhân sự trong công ty. Chỉ trả JSON.
+kind là answer, timesheet hoặc task. Trường reply là tiếng Việt.
+Số, tên, ngày trong reply phải có trong gói sự kiện. Không đổi số cho dễ nghe. Không bịa. Không yêu cầu thêm bảng. Không tự đọc cơ sở dữ liệu.
+Mở reply bằng một câu kết luận, xưng "bạn". Sau đó mỗi việc một dòng ngắn.
+Dùng lời thường: trễ hạn, đang làm, còn phép, doanh thu vào sổ. Không để mã in_progress, todo, processing, tên cột, hay JSON trong reply.
+Ngày viết ngày/tháng (01/10). Tiền giữ nguyên chuỗi trong gói.
+Nếu tổng lớn hơn số dòng được nêu, câu kết luận nói số tổng và nói rõ chỉ nêu vài việc nổi bật. Không đoán phần còn lại.
+Việc trễ hạn hoặc sắp hết phép thì nhắc ở câu đầu.
+Không emoji, không chào dài, không khuyên quy trình nếu bài tra cứu không có đoạn đó.
+Từ chối quyền: một câu nói rõ vì sao không xem được, rồi gợi ý hỏi task của mình hoặc phép của mình. Không giảng vai trò.
+Không có dữ liệu đúng câu: "Chưa thấy việc nào khớp trong phần bạn được xem."
+Hỏi quy trình mà không có bài tra cứu thì reply đúng "Chưa có tài liệu." và kind=answer.
+Lịch sử chỉ để hiểu câu nối tiếp. Số liệu lấy từ gói lần này, không lấy số từ lịch sử.
+Ví dụ không đạt: - [BOD] Mô hình kiến trúc — Nguyễn A — in_progress — hạn 2026-10-01 — trễ
+Ví dụ đạt: Bạn có 2 việc trễ ở BOD. Gấp nhất là «Mô hình kiến trúc» của Nguyễn A, hạn 01/10. Việc còn lại là «Bản vẽ MEP», hạn 03/10.
+Nếu người dùng muốn ghi chấm công hoặc tạo task, kind tương ứng. project_code phải là mã trong gói. work_date YYYY-MM-DD. Hôm nay là ${today}. regular_hours là số giờ họ nói, để 0 nếu họ không nói giờ. title là tên task họ nói.
+Không nhắc lương, mật khẩu, token, CCCD, tài khoản ngân hàng, mã số thuế, chi phí lương.
+JSON: {"kind":"answer","reply":"","project_code":"","work_date":"","regular_hours":0,"description":"","title":"","discipline_code":""}`
+}
+
+export function renderAssistantPack(pack: AssistantFactPack): string {
+  const blocks: string[] = []
+  if (pack.deniedProject) blocks.push(`Người hỏi không vào được dự án ${pack.deniedProject}.`)
+  else if (pack.named) blocks.push(`Phạm vi câu hỏi: ${pack.scopeLabel}.`)
+  const sections: Array<[string, AssistantSection]> = [
+    ['Dự án', pack.projects],
+    ['Task đang mở', pack.tasks],
+    ['Chấm công', pack.timesheets],
+    ['Phép', pack.leave],
+    ['Hồ sơ pháp lý', pack.legal],
+    ['Tiền', pack.money],
+    ['Bài tra cứu', pack.articles],
+  ]
+  for (const [label, section] of sections) {
+    const bits = [`${label}: tổng ${section.total}, nêu ${section.lines.length} dòng.`]
+    if (section.overdueTotal != null) bits.push(`Trong đó trễ hạn: ${section.overdueTotal}.`)
+    if (section.aboutSelf && section.leaveRemaining != null && section.leaveRemaining <= 2) {
+      bits.push('Sắp hết phép.')
+    }
+    if (section.denial) bits.push(`Không được xem: ${section.denial}`)
+    blocks.push(bits.join(' '))
+    if (section.lines.length) blocks.push(section.lines.join('\n'))
+  }
+  return blocks.join('\n\n').replace(/\b(password_hash|salary_monthly|contract_value|bank_account|tax_code)\b/gi, '')
+}
+
+export function assistantModelMessages(question: string, pack: AssistantFactPack, history: AssistantTurn[], today: string) {
+  const packText = renderAssistantPack(pack)
+  return [
+    { role: 'system' as const, content: assistantSystemPrompt(today) },
+    ...history.map(turn => ({ role: turn.role, content: turn.content })),
+    { role: 'user' as const, content: `Gói sự kiện:\n${packText}\n\nCâu hỏi:\n${question.slice(0, 2000)}` },
+  ]
+}
+
+async function callAssistantModel(apiKey: string, question: string, pack: AssistantFactPack, history: AssistantTurn[], accountId = ''): Promise<any> {
+  const messages = assistantModelMessages(question, pack, history, todayInVietnam())
+  const openai = apiKey.startsWith('sk-')
+  const url = openai
+    ? 'https://api.openai.com/v1/chat/completions'
+    : `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: openai ? 'gpt-4o-mini' : '@cf/meta/llama-3.1-8b-instruct',
       temperature: 0,
       response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: `Bạn là trợ lý nội bộ BIM PM. Chỉ trả JSON. kind là answer, timesheet hoặc task.
-Nếu người dùng hỏi quy trình, reply chỉ dựa trên các đoạn tài liệu. Không có trong tài liệu thì reply đúng câu "Chưa có tài liệu." và kind=answer. Không bịa bước.
-Nếu người dùng muốn chấm công hoặc tạo task, kind tương ứng. project_code phải là mã trong danh sách dự án. work_date YYYY-MM-DD. Hôm nay là ${today}. regular_hours là số giờ người dùng nói, để 0 nếu họ không nói giờ. title là tên task họ nói.
-Không nhắc lương, mật khẩu, token, doanh thu.
-JSON: {"kind":"answer","reply":"","project_code":"","work_date":"","regular_hours":0,"description":"","title":"","discipline_code":""}`,
-        },
-        {
-          role: 'user',
-          content: `Tài liệu:\n${docs}\n\nDự án được vào:\n${projectLines}\n\nCâu hỏi:\n${question.slice(0, 2000)}`,
-        },
-      ],
+      messages,
     }),
   })
   if (!res.ok) throw new Error('model_http_' + res.status)
   const data = await res.json() as any
-  const text = data?.choices?.[0]?.message?.content || '{}'
-  return JSON.parse(text)
+  const text = data?.choices?.[0]?.message?.content || data?.result?.response || '{}'
+  return parseAssistantModelJson(text)
+}
+
+function parseAssistantModelJson(text: string): any {
+  const raw = String(text || '').trim()
+  try {
+    return JSON.parse(raw)
+  } catch {
+    const start = raw.indexOf('{')
+    const end = raw.lastIndexOf('}')
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(raw.slice(start, end + 1))
+      } catch { /* fall through */ }
+    }
+  }
+  return { kind: 'answer', reply: raw }
 }
 
 function foldAssistantText(value: string): string {
@@ -19014,19 +19663,28 @@ function assistantLookupTopic(question: string): 'money' | 'people' | 'timesheet
   if (/nghi phep|ngay phep|phep nam|leave/.test(q)) return 'leave'
   if (/nhan su|nguoi dung|thanh vien|ai phu trach|ai trong/.test(q)) return 'people'
   if (/cham cong|timesheet|gio cong/.test(q)) return 'timesheet'
-  if (/task|cong viec|qua han|tre han|viec cua/.test(q)) return 'task'
+  if (/task|cong viec|qua han|tre han|\btre\b|viec cua/.test(q)) return 'task'
   if (/ho so|goi thau|phap ly|hop dong/.test(q)) return 'legal'
   if (/du an|project/.test(q)) return 'project'
   return null
 }
 
-function matchVisibleProject(projects: Array<{ id: number, code: string, name: string }>, question: string) {
-  const q = foldAssistantText(question)
-  const hits = projects.filter(p => {
-    const code = foldAssistantText(p.code || '')
-    return code.length >= 4 && q.includes(code)
-  })
-  return hits.length === 1 ? hits[0] : null
+async function resolveAssistantScope(db: D1Database, question: string, visible: AssistantProjectRow[]) {
+  const namedVisible = [...visible]
+    .sort((a, b) => String(b.code || '').length - String(a.code || '').length)
+    .find(project => assistantCodeMentioned(question, project.code))
+  if (namedVisible) return { scope: [namedVisible], deniedProject: null as string | null, named: true }
+  const all = await db.prepare(`
+    SELECT code FROM projects
+    WHERE code IS NOT NULL AND TRIM(code) != ''
+  `).all()
+  const hidden = ((all.results || []) as Array<{ code?: string }>)
+    .map(row => String(row.code || ''))
+    .filter(code => code && !visible.some(project => foldAssistantText(project.code) === foldAssistantText(code)))
+    .sort((a, b) => b.length - a.length)
+    .find(code => assistantCodeMentioned(question, code))
+  if (hidden) return { scope: [] as AssistantProjectRow[], deniedProject: hidden, named: true }
+  return { scope: visible, deniedProject: null as string | null, named: false }
 }
 
 function assistantMoney(amount: number): string {
@@ -19049,183 +19707,466 @@ const ASSISTANT_TASK_STATUS: Record<string, string> = {
   cancelled: 'Hủy',
 }
 
-async function lookupAssistantFacts(db: D1Database, user: any, question: string): Promise<string | null> {
-  if (wantsAssistantWrite(question)) return null
-  const topic = assistantLookupTopic(question)
-  const projects = await projectsVisibleTo(db, user)
-  const named = matchVisibleProject(projects, question)
-  if (!topic && !named) return null
-  const scope = named ? [named] : projects
-  const ids = scope.map(p => p.id)
-  const inProjects = ids.length
-    ? `IN (${ids.map(() => '?').join(',')})`
-    : 'IN (NULL)'
-  const q = foldAssistantText(question)
-  const scopeLine = named ? `${named.code} — ${named.name}` : 'các dự án bạn vào được'
-
-  if (topic === 'money') {
-    if (user.role !== 'system_admin') {
-      return 'Doanh thu, chi phí và thanh toán chỉ System Admin xem được.'
-    }
-    if (!ids.length) return 'Không có dự án nào để tính tiền.'
-    const booked = await db.prepare(`
-      SELECT COUNT(*) AS n, COALESCE(SUM(project_revenues.amount), 0) AS booked
-      FROM project_revenues
-      WHERE project_id ${inProjects}
-        AND ${revenueFromPackagePaymentSql('project_revenues')}
-    `).bind(...ids).first() as { n?: number, booked?: number } | null
-    const pays = await db.prepare(`
-      SELECT COUNT(*) AS n
-      FROM payment_requests
-      WHERE project_id ${inProjects}
-        AND status != 'rejected'
-        AND ${paymentOnPackageSql('payment_requests')}
-    `).bind(...ids).first() as { n?: number } | null
-    return `Doanh thu vào sổ trên ${scopeLine}: ${assistantMoney(booked?.booked || 0)} (${booked?.n || 0} dòng, chỉ đợt đang gắn gói). Đợt thanh toán gắn gói: ${pays?.n || 0}.`
+function taskRoleSql(user: any): { sql: string, params: any[] } {
+  if (user.role === 'system_admin') return { sql: '', params: [] }
+  if (user.role === 'project_admin' || user.role === 'project_leader') {
+    const sub = projectAccessSubquery(user.id)
+    return { sql: ` AND (t.assigned_to = ? OR t.project_id IN ${sub.sql})`, params: [user.id, ...sub.params] }
   }
+  return { sql: ' AND (t.assigned_to = ? OR t.assigned_by = ?)', params: [user.id, user.id] }
+}
 
-  if (!ids.length) return 'Bạn chưa thuộc dự án nào.'
-
-  if (topic === 'leave') {
-    const year = Number(todayInVietnam().slice(0, 4))
-    let targetId = user.id
-    let targetName = user.full_name || 'bạn'
-    const nameHint = q.replace(/nghi phep|ngay phep|phep nam|leave|cua toi|cua minh|cua|nam|nay|bao nhieu|con|ngay/g, ' ').replace(/\s+/g, ' ').trim()
-    if (user.role === 'system_admin' && nameHint.length >= 3) {
-      const users = await db.prepare(`SELECT id, full_name FROM users WHERE is_active = 1`).all()
-      const hit = ((users.results || []) as any[]).find(u => foldAssistantText(String(u.full_name || '')).includes(nameHint))
-      if (hit?.id) {
-        targetId = hit.id
-        targetName = hit.full_name
+function timesheetRoleSql(user: any, named: AssistantProjectRow | null, deniedProject: string | null, visibleIds: number[], leaderManagesNamed: boolean): { sql: string, params: any[], denial: string | null, allowed: boolean } {
+  if (deniedProject) {
+    return { sql: ' AND 1=0', params: [], denial: `Bạn không vào được dự án ${deniedProject}.`, allowed: false }
+  }
+  const isGlobalAdmin = user.role === 'system_admin' || user.role === 'project_admin'
+  if (isGlobalAdmin) {
+    if (named) return { sql: ' AND ts.project_id = ?', params: [named.id], denial: null, allowed: true }
+    if (user.role === 'system_admin') {
+      return {
+        sql: ` AND (ts.project_id IN (SELECT id FROM projects WHERE status IS NULL OR status != 'cancelled') OR ts.project_id IS NULL)`,
+        params: [],
+        denial: null,
+        allowed: true,
       }
     }
-    const row = await db.prepare(
-      `SELECT total_days, used_days FROM leave_balances WHERE user_id = ? AND year = ?`
-    ).bind(targetId, year).first() as { total_days?: number, used_days?: number } | null
-    if (!row) return `${targetName} chưa có quota phép năm ${year}.`
-    const total = Number(row.total_days) || 0
-    const used = Number(row.used_days) || 0
-    return `Phép năm ${year} của ${targetName}: ${total} ngày, đã dùng ${used}, còn ${Math.max(0, total - used)}.`
-  }
-
-  if (topic === 'people') {
-    if (user.role === 'system_admin' && !named) {
-      const rows = await db.prepare(`
-        SELECT full_name, role, department, is_active
-        FROM users
-        ORDER BY full_name COLLATE NOCASE
-        LIMIT 30
-      `).all()
-      const lines = ((rows.results || []) as any[]).map(u =>
-        `- ${u.full_name} — ${assistantRoleLabel(u.role)} — ${u.department || 'chưa có phòng'} — ${u.is_active ? 'đang hoạt động' : 'đã khóa'}`
-      )
-      return lines.length ? `Người dùng trên hệ thống:\n${lines.join('\n')}` : 'Chưa có người dùng.'
+    if (!visibleIds.length) {
+      return { sql: ' AND ts.project_id IS NULL AND ts.user_id = ?', params: [user.id], denial: null, allowed: true }
     }
-    const rows = await db.prepare(`
-      SELECT DISTINCT u.full_name, COALESCE(m.role, 'member') AS member_role, p.code
-      FROM projects p
-      JOIN project_members m ON m.project_id = p.id
-      JOIN users u ON u.id = m.user_id
-      WHERE p.id ${inProjects} AND u.is_active = 1
-      ORDER BY p.code, u.full_name COLLATE NOCASE
-      LIMIT 40
-    `).bind(...ids).all()
-    const lines = ((rows.results || []) as any[]).map(r =>
-      `- ${r.full_name} (${assistantRoleLabel(r.member_role)}) — ${r.code}`
-    )
-    return lines.length
-      ? `Thành viên trên ${scopeLine}:\n${lines.join('\n')}`
-      : `Chưa có thành viên trên ${scopeLine}.`
+    return {
+      sql: ` AND (ts.project_id IN (${visibleIds.map(() => '?').join(',')}) OR (ts.project_id IS NULL AND ts.user_id = ?))`,
+      params: [...visibleIds, user.id],
+      denial: null,
+      allowed: true,
+    }
   }
+  if (user.role === 'project_leader') {
+    if (named) {
+      if (!leaderManagesNamed) {
+        return { sql: ' AND 1=0', params: [], denial: 'Bạn không xem được chấm công của dự án này.', allowed: false }
+      }
+      return { sql: ' AND ts.project_id = ?', params: [named.id], denial: null, allowed: true }
+    }
+    const sub = projectAccessSubquery(user.id)
+    return {
+      sql: ` AND (ts.user_id = ? OR ts.project_id IN ${sub.sql})`,
+      params: [user.id, ...sub.params],
+      denial: 'Bạn không xem được chấm công ngoài dự án mình quản và ngoài chấm công của mình.',
+      allowed: true,
+    }
+  }
+  if (named) {
+    return {
+      sql: ' AND ts.user_id = ? AND ts.project_id = ?',
+      params: [user.id, named.id],
+      denial: 'Bạn chỉ xem được chấm công của mình.',
+      allowed: true,
+    }
+  }
+  return {
+    sql: ' AND ts.user_id = ?',
+    params: [user.id],
+    denial: 'Bạn chỉ xem được chấm công của mình.',
+    allowed: true,
+  }
+}
 
-  if (topic === 'timesheet') {
-    const seeTeam = user.role === 'system_admin' || user.role === 'project_admin'
-    const onlyMine = !seeTeam || /cua toi|cua minh/.test(q)
-    const mineSql = onlyMine ? 'AND t.user_id = ?' : ''
-    const binds = onlyMine ? [...ids, user.id] : ids
-    const rows = await db.prepare(`
-      SELECT t.work_date, t.regular_hours, t.overtime_hours, t.status, p.code, u.full_name
-      FROM timesheets t
-      JOIN users u ON u.id = t.user_id
-      LEFT JOIN projects p ON p.id = t.project_id
-      WHERE (t.project_id ${inProjects} OR (t.project_id IS NULL AND t.user_id = ?))
-        ${mineSql}
-      ORDER BY t.work_date DESC, t.id DESC
+async function assistantLeaveSection(db: D1Database, user: any, question: string): Promise<AssistantSection> {
+  const year = Number(todayInVietnam().slice(0, 4))
+  const { start, endExclusive } = yearDateRange(year)
+  let targetId = user.id
+  let targetName = 'bạn'
+  let aboutSelf = true
+  const denial = user.role === 'system_admin' ? null : 'Phép của người khác chỉ System Admin xem được.'
+  if (user.role === 'system_admin' && assistantLookupTopic(question) === 'leave') {
+    const nameHint = foldAssistantText(question)
+      .replace(/nghi phep|ngay phep|phep nam|leave|cua toi|cua minh|cua ban|bao nhieu|con lai|hom nay|ngay|nam nay|nam/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (nameHint.length >= 3) {
+      const users = await db.prepare(`SELECT id, full_name FROM users WHERE is_active = 1`).all()
+      const hits = ((users.results || []) as any[]).filter(row => foldAssistantText(String(row.full_name || '')).includes(nameHint))
+      if (hits.length === 1 && hits[0].id) {
+        targetId = hits[0].id
+        targetName = String(hits[0].full_name || 'người đó')
+        aboutSelf = targetId === user.id
+      }
+    }
+  }
+  const balance = await db.prepare(
+    `SELECT total_days FROM leave_balances WHERE user_id = ? AND year = ?`
+  ).bind(targetId, year).first() as { total_days?: number } | null
+  const usedRow = await db.prepare(`
+    SELECT COALESCE(SUM(total_days), 0) AS used
+    FROM leave_requests
+    WHERE user_id = ?
+      AND (
+        leave_type = 'annual_leave'
+        OR leave_type = 'half_day_am'
+        OR leave_type = 'half_day_pm'
+        OR (leave_type = 'sick_leave' AND total_days <= 3)
+      )
+      AND status = 'approved'
+      AND start_date >= ? AND start_date < ?
+  `).bind(targetId, start, endExclusive).first() as { used?: number } | null
+  if (!balance) {
+    const who = aboutSelf ? 'Bạn' : targetName
+    return {
+      allowed: true,
+      denial,
+      total: 0,
+      lines: [`${who} chưa có quota phép năm ${year}.`],
+      leaveRemaining: null,
+      aboutSelf,
+    }
+  }
+  const totalDays = Number(balance.total_days) || 0
+  const used = Number(usedRow?.used) || 0
+  const remaining = Math.max(0, Math.round((totalDays - used) * 10) / 10)
+  const who = aboutSelf ? 'bạn' : targetName
+  return {
+    allowed: true,
+    denial,
+    total: 1,
+    lines: [`Phép năm ${year} của ${who}: ${totalDays} ngày, đã dùng ${used}, còn ${remaining}.`],
+    leaveRemaining: remaining,
+    aboutSelf,
+  }
+}
+
+async function buildAssistantFactPack(db: D1Database, user: any, question: string): Promise<AssistantFactPack> {
+  const visible = await projectsVisibleTo(db, user)
+  const resolved = await resolveAssistantScope(db, question, visible)
+  const scope = resolved.scope
+  const ids = scope.map(project => project.id)
+  const namedProject = resolved.named && scope.length === 1 ? scope[0] : null
+  const scopeLabel = namedProject ? namedProject.code : 'các dự án bạn vào được'
+  const adminAll = user.role === 'system_admin' && !resolved.deniedProject
+  const projectPredicate = (alias: string) => {
+    if (resolved.deniedProject || (!namedProject && !adminAll && !ids.length)) return { sql: '1=0', params: [] as any[] }
+    if (namedProject) return { sql: `${alias}.project_id = ?`, params: [namedProject.id] }
+    if (adminAll) return { sql: `${alias}.project_id IN (SELECT id FROM projects WHERE status IS NULL OR status != 'cancelled')`, params: [] as any[] }
+    return { sql: `${alias}.project_id IN (${ids.map(() => '?').join(',')})`, params: ids }
+  }
+  const taskProject = projectPredicate('t')
+  const legalProject = projectPredicate('lp')
+  const revenueProject = projectPredicate('project_revenues')
+  const paymentProject = projectPredicate('payment_requests')
+  const emptyProjects: AssistantSection = resolved.deniedProject
+    ? { allowed: false, denial: `Bạn không vào được dự án ${resolved.deniedProject}.`, total: 0, lines: [] }
+    : {
+        allowed: true,
+        denial: null,
+        total: scope.length,
+        lines: scope.slice(0, 20).map(project => {
+          const status = assistantProjectStatusLabel(project.status)
+          return status ? `${project.code} — ${project.name} — ${status}` : `${project.code} — ${project.name}`
+        }),
+      }
+
+  const taskRole = taskRoleSql(user)
+  let leaderManagesNamed = false
+  if (user.role === 'project_leader' && namedProject) {
+    const sub = projectAccessSubquery(user.id)
+    const managed = await db.prepare(`SELECT 1 AS ok FROM projects WHERE id = ? AND id IN ${sub.sql} LIMIT 1`).bind(namedProject.id, ...sub.params).first()
+    leaderManagesNamed = !!managed
+  }
+  const sheetRole = timesheetRoleSql(user, namedProject, resolved.deniedProject, ids, leaderManagesNamed)
+  const today = todayInVietnam()
+  const taskWhere = `${taskProject.sql} AND t.status NOT IN ('completed', 'review', 'cancelled')${taskRole.sql}`
+  const taskBinds = [...taskProject.params, ...taskRole.params]
+
+  const sheetWhere = `1=1${sheetRole.sql}`
+  const canMoney = user.role === 'system_admin' && !resolved.deniedProject
+  const showContractValue = user.role === 'system_admin'
+
+  const [taskCount, taskRows, sheetCount, sheetRows, leave, legalCount, legalRows, booked, pays, articleRows] = await Promise.all([
+    resolved.deniedProject
+      ? Promise.resolve(null)
+      : db.prepare(`
+          SELECT COUNT(*) AS total,
+            SUM(CASE WHEN t.due_date IS NOT NULL AND t.due_date < ? THEN 1 ELSE 0 END) AS overdue_total
+          FROM tasks t
+          WHERE ${taskWhere}
+        `).bind(today, ...taskBinds).first() as Promise<{ total?: number, overdue_total?: number } | null>,
+    resolved.deniedProject
+      ? Promise.resolve({ results: [] })
+      : db.prepare(`
+          SELECT t.title, t.status, t.due_date, p.code, u.full_name
+          FROM tasks t
+          JOIN projects p ON p.id = t.project_id
+          LEFT JOIN users u ON u.id = t.assigned_to
+          WHERE ${taskWhere}
+          ORDER BY CASE WHEN t.due_date IS NOT NULL AND t.due_date < ? THEN 0 ELSE 1 END, t.due_date
+          LIMIT 12
+        `).bind(...taskBinds, today).all(),
+    db.prepare(`SELECT COUNT(*) AS total FROM timesheets ts WHERE ${sheetWhere}`).bind(...sheetRole.params).first() as Promise<{ total?: number } | null>,
+    db.prepare(`
+      SELECT ts.work_date, ts.regular_hours, ts.overtime_hours, ts.status, p.code, u.full_name
+      FROM timesheets ts
+      JOIN users u ON u.id = ts.user_id
+      LEFT JOIN projects p ON p.id = ts.project_id
+      WHERE ${sheetWhere}
+      ORDER BY ts.work_date DESC, ts.id DESC
       LIMIT 12
-    `).bind(...ids, user.id, ...binds.slice(ids.length)).all()
-    const lines = ((rows.results || []) as any[]).map(r => {
-      const hours = (Number(r.regular_hours) || 0) + (Number(r.overtime_hours) || 0)
-      return `- ${r.work_date} ${r.code || 'Nghỉ'} — ${hours} giờ — ${r.full_name} — ${r.status || 'draft'}`
-    })
-    const who = onlyMine ? 'của bạn' : 'trên ' + scopeLine
-    return lines.length ? `Chấm công gần nhất ${who}:\n${lines.join('\n')}` : `Chưa có chấm công ${who}.`
+    `).bind(...sheetRole.params).all(),
+    assistantLeaveSection(db, user, question),
+    resolved.deniedProject
+      ? Promise.resolve(null)
+      : db.prepare(`SELECT COUNT(*) AS total FROM legal_packages lp WHERE ${legalProject.sql}`).bind(...legalProject.params).first() as Promise<{ total?: number } | null>,
+    resolved.deniedProject
+      ? Promise.resolve({ results: [] })
+      : db.prepare(`
+          SELECT p.code AS project_code, lp.name, lp.code, lp.start_date, lp.end_date${showContractValue ? ', lp.contract_value' : ''}
+          FROM legal_packages lp
+          JOIN projects p ON p.id = lp.project_id
+          WHERE ${legalProject.sql}
+          ORDER BY p.code, lp.sort_order, lp.id
+          LIMIT 12
+        `).bind(...legalProject.params).all(),
+    canMoney
+      ? db.prepare(`
+          SELECT COUNT(*) AS n, COALESCE(SUM(project_revenues.amount), 0) AS booked
+          FROM project_revenues
+          WHERE ${revenueProject.sql}
+            AND ${revenueFromPackagePaymentSql('project_revenues')}
+        `).bind(...revenueProject.params).first() as Promise<{ n?: number, booked?: number } | null>
+      : Promise.resolve(null),
+    canMoney
+      ? db.prepare(`
+          SELECT COUNT(*) AS n
+          FROM payment_requests
+          WHERE ${paymentProject.sql}
+            AND status != 'rejected'
+            AND ${paymentOnPackageSql('payment_requests')}
+        `).bind(...paymentProject.params).first() as Promise<{ n?: number } | null>
+      : Promise.resolve(null),
+    db.prepare(`SELECT id, title, body, kind, audience FROM knowledge_articles`).all(),
+  ])
+
+  const taskList = ((taskRows as any)?.results || []) as any[]
+  const taskLines = taskList.map(row => {
+    const late = row.due_date && String(row.due_date) < today
+    const when = row.due_date ? `, hạn ${assistantDayMonth(row.due_date)}` : ''
+    const lateLabel = late ? ', trễ hạn' : ''
+    return `«${row.title}» của ${row.full_name || 'chưa giao'}, ${assistantTaskStatusLabel(row.status)}${when}${lateLabel}, dự án ${row.code}`
+  })
+  const tasks: AssistantSection = {
+    allowed: !resolved.deniedProject,
+    denial: resolved.deniedProject
+      ? `Bạn không vào được dự án ${resolved.deniedProject}.`
+      : user.role === 'member'
+        ? 'Task của người khác bạn không xem được.'
+        : user.role === 'project_leader' || user.role === 'project_admin'
+          ? 'Task ngoài dự án bạn quản, nếu không giao cho bạn, bạn không xem được.'
+          : null,
+    total: Number(taskCount?.total) || 0,
+    overdueTotal: Number(taskCount?.overdue_total) || 0,
+    lines: taskLines,
   }
 
-  if (topic === 'task') {
-    const onlyMine = user.role === 'member' || /cua toi|cua minh/.test(q)
-    const onlyOverdue = /tre|qua han/.test(q)
-    const today = todayInVietnam()
-    const mineSql = onlyMine ? 'AND t.assigned_to = ?' : ''
-    const lateSql = onlyOverdue ? `AND t.due_date IS NOT NULL AND t.due_date < ?` : ''
-    const binds = [...ids]
-    if (onlyMine) binds.push(user.id)
-    if (onlyOverdue) binds.push(today)
-    const rows = await db.prepare(`
-      SELECT t.title, t.status, t.due_date, p.code, u.full_name
-      FROM tasks t
-      JOIN projects p ON p.id = t.project_id
-      LEFT JOIN users u ON u.id = t.assigned_to
-      WHERE t.project_id ${inProjects}
-        AND t.status NOT IN ('completed', 'review', 'cancelled')
-        ${mineSql}
-        ${lateSql}
-      ORDER BY CASE WHEN t.due_date IS NOT NULL AND t.due_date < ? THEN 0 ELSE 1 END, t.due_date
-      LIMIT 12
-    `).bind(...binds, today).all()
-    const lines = ((rows.results || []) as any[]).map(r => {
-      const late = r.due_date && r.due_date < today ? ' — trễ' : ''
-      return `- [${r.code}] ${r.title} — ${r.full_name || 'chưa giao'} — ${ASSISTANT_TASK_STATUS[r.status] || r.status}${r.due_date ? ' — hạn ' + r.due_date : ''}${late}`
-    })
-    const label = onlyOverdue ? 'Task trễ hạn' : 'Task đang mở'
-    const who = onlyMine ? 'của bạn' : 'trên ' + scopeLine
-    return lines.length ? `${label} ${who}:\n${lines.join('\n')}` : `Không có ${label.toLowerCase()} ${who}.`
+  const sheetList = ((sheetRows as any)?.results || []) as any[]
+  const sheetTotal = Number(sheetCount?.total) || 0
+  const timesheets: AssistantSection = {
+    allowed: sheetRole.allowed,
+    denial: sheetRole.denial,
+    total: sheetRole.allowed ? sheetTotal : 0,
+    lines: sheetRole.allowed ? sheetList.map(row => {
+      const day = assistantDayMonth(row.work_date) || 'không rõ ngày'
+      return `${day} — ${row.code || 'Nghỉ'} — ${assistantHours(row.regular_hours, row.overtime_hours)} giờ — ${row.full_name} — ${assistantSheetStatusLabel(row.status)}`
+    }) : [],
   }
 
-  if (topic === 'legal') {
-    const showValue = user.role === 'system_admin'
-    const rows = await db.prepare(`
-      SELECT p.code AS project_code, lp.name, lp.code, lp.start_date, lp.end_date, lp.contract_value
-      FROM legal_packages lp
-      JOIN projects p ON p.id = lp.project_id
-      WHERE lp.project_id ${inProjects}
-      ORDER BY p.code, lp.sort_order, lp.id
-      LIMIT 30
-    `).bind(...ids).all()
-    const lines = ((rows.results || []) as any[]).map(r => {
-      const dates = [r.start_date, r.end_date].filter(Boolean).join(' → ')
-      const value = showValue ? ` — ${assistantMoney(r.contract_value || 0)}` : ''
-      return `- [${r.project_code}] ${r.name}${r.code ? ' (' + r.code + ')' : ''}${dates ? ' — ' + dates : ''}${value}`
-    })
-    return lines.length ? `Gói hồ sơ trên ${scopeLine}:\n${lines.join('\n')}` : `Chưa có gói hồ sơ trên ${scopeLine}.`
+  const legalList = ((legalRows as any)?.results || []) as any[]
+  const legal: AssistantSection = {
+    allowed: !resolved.deniedProject,
+    denial: showContractValue ? null : 'Giá trị hợp đồng và số tiền hồ sơ chỉ System Admin xem được.',
+    total: Number(legalCount?.total) || 0,
+    lines: legalList.map(row => {
+      const start = assistantDayMonth(row.start_date)
+      const end = assistantDayMonth(row.end_date)
+      const dates = start || end ? `, ${start || '?' } đến ${end || '?'}` : ''
+      const code = row.code ? ` (${row.code})` : ''
+      const value = showContractValue ? ` — ${assistantMoney(row.contract_value || 0)}` : ''
+      return `${row.project_code} — ${row.name}${code}${dates}${value}`
+    }),
   }
 
-  const rows = scope.slice(0, 15).map(p => `- ${p.code} — ${p.name}`)
-  const more = scope.length > 15 ? `\nVà thêm ${scope.length - 15} dự án.` : ''
-  if (!named) return `Bạn vào được ${scope.length} dự án:\n${rows.join('\n')}${more}`
+  const money: AssistantSection = canMoney
+    ? {
+        allowed: true,
+        denial: null,
+        total: Number(booked?.n) || 0,
+        lines: [`Doanh thu vào sổ trên ${scopeLabel}: ${assistantMoney(booked?.booked || 0)} (${booked?.n || 0} dòng, chỉ đợt đang gắn gói). Đợt thanh toán gắn gói: ${pays?.n || 0}.`],
+      }
+    : { allowed: false, denial: 'Doanh thu chỉ System Admin xem được.', total: 0, lines: [] }
 
-  const counts = await db.prepare(`
-    SELECT
-      SUM(CASE WHEN status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) AS open_n,
-      SUM(CASE WHEN status NOT IN ('completed','review','cancelled') AND due_date < ? THEN 1 ELSE 0 END) AS late_n
-    FROM tasks WHERE project_id = ?
-  `).bind(todayInVietnam(), named.id).first() as { open_n?: number, late_n?: number } | null
-  const packs = await db.prepare(
-    `SELECT name FROM legal_packages WHERE project_id = ? ORDER BY sort_order, id`
-  ).bind(named.id).all()
-  const packNames = ((packs.results || []) as any[]).map(r => r.name).join('; ') || 'chưa có gói'
-  const status = ASSISTANT_PROJECT_STATUS[named.status || ''] || ''
-  const statusLine = status ? `\nTrạng thái: ${status}.` : ''
-  return `${named.code} — ${named.name}.${statusLine}\nTask đang mở: ${counts?.open_n || 0}, trễ hạn: ${counts?.late_n || 0}.\nGói hồ sơ: ${packNames}.`
+  const readable = (((articleRows as any)?.results || []) as any[]).filter(article => articleReadableBy(String(article.audience || 'all'), user.role))
+  const ranked = rankArticles(readable, question).slice(0, 12)
+  const articles: AssistantSection = {
+    allowed: true,
+    denial: null,
+    total: ranked.length,
+    lines: ranked.map(hit => `${hit.article.title}\n${String(hit.article.body || '').slice(0, 1500)}`),
+  }
+
+  return {
+    named: resolved.named,
+    scopeLabel,
+    scopeProjects: scope,
+    deniedProject: resolved.deniedProject,
+    projects: emptyProjects,
+    tasks,
+    timesheets,
+    leave,
+    legal,
+    money,
+    articles,
+  }
+}
+
+function composeAssistantTasks(question: string, pack: AssistantFactPack): string {
+  if (pack.deniedProject) return assistantDenialReply(`Bạn không vào được dự án ${pack.deniedProject}`)
+  const overdueOnly = /tre|qua han/.test(foldAssistantText(question))
+  const overdueTotal = pack.tasks.overdueTotal || 0
+  const where = pack.named ? ` ở ${pack.scopeLabel}` : ''
+  if (overdueOnly) {
+    const lines = pack.tasks.lines.filter(line => line.includes('trễ hạn'))
+    if (!overdueTotal) return 'Chưa thấy việc nào khớp trong phần bạn được xem.'
+    let lead = `Bạn có ${overdueTotal} việc trễ hạn${where}.`
+    if (overdueTotal > lines.length) lead += ` Dưới đây là ${lines.length} việc nổi bật.`
+    return [lead, ...lines].join('\n')
+  }
+  if (!pack.tasks.total) return 'Chưa thấy việc nào khớp trong phần bạn được xem.'
+  let lead = overdueTotal
+    ? `Bạn có ${pack.tasks.total} việc đang mở${where}, trong đó ${overdueTotal} việc trễ hạn.`
+    : `Bạn có ${pack.tasks.total} việc đang mở${where}.`
+  if (pack.tasks.total > pack.tasks.lines.length) lead += ` Dưới đây là ${pack.tasks.lines.length} việc nổi bật.`
+  return [lead, ...pack.tasks.lines].join('\n')
+}
+
+function composeAssistantTimesheets(pack: AssistantFactPack): string {
+  if (!pack.timesheets.allowed) {
+    return assistantDenialReply(pack.timesheets.denial || 'Bạn không xem được chấm công này')
+  }
+  if (!pack.timesheets.total) return 'Chưa thấy việc nào khớp trong phần bạn được xem.'
+  const where = pack.named ? ` ở ${pack.scopeLabel}` : ''
+  let lead = `Bạn có ${pack.timesheets.total} dòng chấm công${where}.`
+  if (pack.timesheets.total > pack.timesheets.lines.length) lead += ` Dưới đây là ${pack.timesheets.lines.length} dòng gần nhất.`
+  const note = pack.timesheets.denial ? `\n${pack.timesheets.denial}` : ''
+  return [lead, ...pack.timesheets.lines].join('\n') + note
+}
+
+function composeAssistantLeave(pack: AssistantFactPack): string {
+  const line = pack.leave.lines[0]
+  if (!line) return 'Chưa thấy việc nào khớp trong phần bạn được xem.'
+  const low = pack.leave.aboutSelf && pack.leave.leaveRemaining != null && pack.leave.leaveRemaining <= 2
+  const lead = low ? `Bạn sắp hết phép. ${line}` : line
+  if (pack.leave.denial) return `${lead}\n${pack.leave.denial}`
+  return lead
+}
+
+function composeAssistantLegal(pack: AssistantFactPack): string {
+  if (pack.deniedProject) return assistantDenialReply(`Bạn không vào được dự án ${pack.deniedProject}`)
+  if (!pack.legal.total) return 'Chưa thấy việc nào khớp trong phần bạn được xem.'
+  const where = pack.named ? ` ở ${pack.scopeLabel}` : ''
+  let lead = `Bạn thấy ${pack.legal.total} gói hồ sơ${where}.`
+  if (pack.legal.total > pack.legal.lines.length) lead += ` Dưới đây là ${pack.legal.lines.length} gói.`
+  const note = pack.legal.denial ? `\n${pack.legal.denial}` : ''
+  return [lead, ...pack.legal.lines].join('\n') + note
+}
+
+function composeAssistantProjects(pack: AssistantFactPack): string {
+  if (pack.deniedProject) return assistantDenialReply(`Bạn không vào được dự án ${pack.deniedProject}`)
+  if (!pack.projects.total) return 'Bạn chưa thuộc dự án nào.'
+  const where = pack.named ? ` ở ${pack.scopeLabel}` : ''
+  const overdue = pack.tasks.overdueTotal || 0
+  let lead = pack.named
+    ? `Bạn vào được dự án ${pack.projects.lines[0] || pack.scopeLabel}.`
+    : `Bạn vào được ${pack.projects.total} dự án.`
+  if (pack.tasks.total) {
+    lead += overdue
+      ? ` Bạn có ${pack.tasks.total} việc đang mở${where}, trong đó ${overdue} việc trễ hạn.`
+      : ` Bạn có ${pack.tasks.total} việc đang mở${where}.`
+  }
+  if (!pack.named && pack.projects.total > pack.projects.lines.length) {
+    lead += ` Dưới đây là ${pack.projects.lines.length} dự án.`
+  }
+  const lines = pack.named ? [] : pack.projects.lines
+  return [lead, ...lines].filter(Boolean).join('\n')
+}
+
+export function composeAssistantPlain(question: string, pack: AssistantFactPack): string {
+  const topic = assistantLookupTopic(question)
+  const howTo = /quy trinh|cach |lam sao|huong dan/.test(foldAssistantText(question))
+  if (topic === 'money') {
+    if (!pack.money.allowed) return assistantDenialReply(pack.money.denial || 'Doanh thu chỉ System Admin xem được')
+    return pack.money.lines[0] || 'Chưa thấy việc nào khớp trong phần bạn được xem.'
+  }
+  if (pack.deniedProject && topic && topic !== 'leave') {
+    return assistantDenialReply(`Bạn không vào được dự án ${pack.deniedProject}`)
+  }
+  if (!topic && howTo) {
+    if (!pack.articles.lines.length) return 'Chưa có tài liệu.'
+    return pack.articles.lines[0]
+  }
+  if (topic === 'leave') return composeAssistantLeave(pack)
+  if (topic === 'timesheet') return composeAssistantTimesheets(pack)
+  if (topic === 'task') return composeAssistantTasks(question, pack)
+  if (topic === 'legal') return composeAssistantLegal(pack)
+  if (topic === 'project' || pack.named) return composeAssistantProjects(pack)
+  if (howTo) return pack.articles.lines[0] || 'Chưa có tài liệu.'
+  return 'Chưa thấy việc nào khớp trong phần bạn được xem.'
+}
+
+export function assistantDraftFromModel(
+  model: any,
+  projects: AssistantProjectRow[],
+  fallbackReply: string,
+): { reply: string, draft?: { kind: 'timesheet' | 'task', payload: Record<string, unknown> } } {
+  const kind = model?.kind === 'timesheet' || model?.kind === 'task' ? model.kind : 'answer'
+  const reply = polishAssistantReply(String(model?.reply || '').trim()) || fallbackReply
+  if (kind === 'answer') return { reply }
+  const code = String(model?.project_code || '').trim().toLowerCase()
+  const project = projects.find(p => String(p.code).toLowerCase() === code)
+    || projects.find(p => foldAssistantText(String(p.name || '')) === foldAssistantText(code))
+  if (!project) {
+    return { reply: reply || 'Không thấy dự án đó trong các dự án bạn được vào.' }
+  }
+  if (kind === 'timesheet') {
+    const hours = Number(model.regular_hours)
+    const workDate = /^\d{4}-\d{2}-\d{2}$/.test(String(model.work_date || '')) ? String(model.work_date) : todayInVietnam()
+    if (!hours || hours <= 0) {
+      return { reply: 'Cần số giờ chấm công trước khi soạn bản nháp.' }
+    }
+    return {
+      reply: `Bản nháp chấm công cho bạn: ${project.code} — ${project.name}, ngày ${assistantDayMonth(workDate)}, ${hours} giờ. Bấm xác nhận để ghi.`,
+      draft: {
+        kind: 'timesheet',
+        payload: {
+          project_id: project.id,
+          work_date: workDate,
+          regular_hours: hours,
+          description: String(model.description || '').slice(0, 500),
+        },
+      },
+    }
+  }
+  const title = String(model?.title || '').trim()
+  if (!title) return { reply: 'Cần tên công việc trước khi soạn bản nháp.' }
+  return {
+    reply: `Bản nháp task trong ${project.code} — ${project.name}: ${title}. Bấm xác nhận để tạo.`,
+    draft: {
+      kind: 'task',
+      payload: {
+        project_id: project.id,
+        title: title.slice(0, 200),
+        description: String(model.description || '').slice(0, 1000),
+        discipline_code: String(model.discipline_code || '').slice(0, 20) || null,
+      },
+    },
+  }
 }
 
 app.post('/api/assistant/ask', authMiddleware, async (c) => {
@@ -19238,81 +20179,57 @@ app.post('/api/assistant/ask', authMiddleware, async (c) => {
     if (asksOwnAccess(question) && !wantsAssistantWrite(question)) {
       return c.json({ reply: await ownAccessReply(db, user) })
     }
-    const lookedUp = await lookupAssistantFacts(db, user, question)
-    if (lookedUp) return c.json({ reply: lookedUp })
+    const history = clampAssistantHistory(data.history)
+    const pack = await buildAssistantFactPack(db, user, question)
+    const apiKey = String(c.env.AI_API_KEY || '').trim()
+    const accountId = String(c.env.CF_ACCOUNT_ID || '').trim()
+    const today = todayInVietnam()
 
-    const all = await db.prepare(
-      `SELECT id, title, body, kind, audience FROM knowledge_articles`
-    ).all()
-    const readable = ((all.results || []) as any[]).filter(a => articleReadableBy(String(a.audience || 'all'), user.role))
-    const ranked = rankArticles(readable, question)
-    const apiKey = c.env.AI_API_KEY
+    if (wantsAssistantWrite(question) && pack.deniedProject) {
+      return c.json({ reply: assistantDenialReply(`Bạn không vào được dự án ${pack.deniedProject}`) })
+    }
 
     if (!apiKey) {
       if (wantsAssistantWrite(question)) {
         return c.json({ reply: 'Chưa soạn được timesheet hay task vì máy chủ chưa có khóa AI. Tra cứu tài liệu vẫn dùng được.' })
       }
-      if (!ranked.length) return c.json({ reply: 'Chưa có tài liệu.' })
-      const best = ranked[0].article
-      return c.json({ reply: `${best.title}\n${best.body}` })
+      return c.json({ reply: composeAssistantPlain(question, pack) })
+    }
+
+    if (assistantLookupTopic(question) === 'money' && user.role !== 'system_admin') {
+      return c.json({ reply: composeAssistantPlain(question, pack) })
+    }
+
+    const localDraft = () => assistantDraftFromQuestion(question, pack.scopeProjects, today)
+
+    if (!assistantCanCallModel(apiKey, accountId)) {
+      if (wantsAssistantWrite(question)) {
+        return c.json(localDraft() || { reply: 'Chưa soạn được timesheet hay task. Bạn nói lại mã dự án, ngày và số giờ.' })
+      }
+      return c.json({ reply: composeAssistantPlain(question, pack) })
     }
 
     let model: any
     try {
-      const projects = await projectsVisibleTo(db, user)
-      model = await callAssistantModel(apiKey, question, ranked, projects)
+      model = await callAssistantModel(apiKey, question, pack, history, accountId)
     } catch {
-      if (!ranked.length) return c.json({ reply: 'Chưa có tài liệu.' })
-      const best = ranked[0].article
-      return c.json({ reply: `${best.title}\n${best.body}` })
+      if (wantsAssistantWrite(question)) {
+        return c.json(localDraft() || { reply: 'Chưa soạn được timesheet hay task. Bạn nói lại mã dự án, ngày và số giờ.' })
+      }
+      return c.json({ reply: composeAssistantPlain(question, pack) })
     }
 
     const kind = model?.kind === 'timesheet' || model?.kind === 'task' ? model.kind : 'answer'
-    const reply = String(model?.reply || '').trim() || (ranked.length ? `${ranked[0].article.title}\n${ranked[0].article.body}` : 'Chưa có tài liệu.')
-    if (kind === 'answer') return c.json({ reply })
-
-    const projects = await projectsVisibleTo(db, user)
-    const code = String(model.project_code || '').trim().toLowerCase()
-    const project = projects.find(p => String(p.code).toLowerCase() === code)
-      || projects.find(p => String(p.name).toLowerCase() === code)
-    if (!project) {
-      return c.json({ reply: reply || 'Không thấy dự án đó trong các dự án bạn được vào.' })
-    }
-
-    if (kind === 'timesheet') {
-      const hours = Number(model.regular_hours)
-      const workDate = /^\d{4}-\d{2}-\d{2}$/.test(String(model.work_date || '')) ? String(model.work_date) : todayInVietnam()
-      if (!hours || hours <= 0) {
-        return c.json({ reply: 'Cần số giờ chấm công trước khi soạn bản nháp.' })
+    let reply = polishAssistantReply(String(model?.reply || '').trim())
+    if (!reply) reply = composeAssistantPlain(question, pack)
+    if (!wantsAssistantWrite(question) || kind === 'answer') {
+      if (wantsAssistantWrite(question)) {
+        const drafted = localDraft()
+        if (drafted?.draft) return c.json(drafted)
       }
-      return c.json({
-        reply: `Bản nháp chấm công cho bạn: ${project.code} — ${project.name}, ngày ${workDate}, ${hours} giờ. Bấm xác nhận để ghi.`,
-        draft: {
-          kind: 'timesheet',
-          payload: {
-            project_id: project.id,
-            work_date: workDate,
-            regular_hours: hours,
-            description: String(model.description || '').slice(0, 500),
-          },
-        },
-      })
+      return c.json({ reply })
     }
-
-    const title = String(model.title || '').trim()
-    if (!title) return c.json({ reply: 'Cần tên công việc trước khi soạn bản nháp.' })
-    return c.json({
-      reply: `Bản nháp task trong ${project.code} — ${project.name}: ${title}. Bấm xác nhận để tạo.`,
-      draft: {
-        kind: 'task',
-        payload: {
-          project_id: project.id,
-          title: title.slice(0, 200),
-          description: String(model.description || '').slice(0, 1000),
-          discipline_code: String(model.discipline_code || '').slice(0, 20) || null,
-        },
-      },
-    })
+    return c.json(assistantDraftFromModel(model, pack.scopeProjects, reply))
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -19360,7 +20277,7 @@ registerDesignRoutes(app, {
   getUserEmailInfo,
 })
 
-/** Thứ 6 (theo cấu hình báo cáo tuần, giờ VN): nhắc người trễ và gửi báo cáo cho leader. */
+/** Theo cấu hình báo cáo tuần (giờ VN): nhắc người trễ và gửi báo cáo cho đúng phạm vi. */
 async function runFridayStatusMails(env: Bindings) {
   const db = env.DB
   const cfg = await db.prepare(
@@ -19368,18 +20285,18 @@ async function runFridayStatusMails(env: Bindings) {
   ).all()
   const map: Record<string, string> = {}
   for (const row of cfg.results as any[]) map[row.key] = String(row.value ?? '')
-  if (map.weekly_report_enabled === '0') return
-  const vn = new Date(Date.now() + 7 * 3600 * 1000)
-  const today = `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`
-  if (String(vn.getUTCDay()) !== (map.weekly_report_day || '5')) return
-  if (String(vn.getUTCHours()) !== (map.weekly_report_hour || '9')) return
-  if (map.status_mail_last_sent === today) return
+  const gate = shouldSendFridayStatusMails(map)
+  if (!gate.send) return { sent: false, skipped: gate.reason, today: gate.today }
+  const overdue = await deliverOverdueReminders(env, db)
+  const weekly = await deliverWeeklyReport(env, db, true)
+  if (overdue.status >= 400 || weekly.status >= 400) {
+    return { sent: false, skipped: 'failed', today: gate.today, overdue_status: overdue.status, weekly_status: weekly.status }
+  }
   await db.prepare(
     `INSERT INTO system_config (key, value, description) VALUES ('status_mail_last_sent', ?, 'Ngày đã tự gửi mail tình trạng thực hiện')
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
-  ).bind(today).run()
-  await deliverOverdueReminders(env, db)
-  await deliverWeeklyReport(env, db, true)
+  ).bind(gate.today).run()
+  return { sent: true, today: gate.today, overdue: overdue.body, weekly: weekly.body }
 }
 
 export default {

@@ -3227,6 +3227,20 @@
             <p class="text-gray-500 text-sm mt-1">Theo dõi tiến độ HSTK mọi dự án (chỉ đọc, không hiển thị tiền)</p>
           </div>
           <div class="flex flex-wrap gap-2 items-center">
+            <div id="pdSliceFilters" class="flex flex-wrap gap-2 items-center">
+              <label class="flex items-center gap-2 text-sm">
+                <span class="text-gray-500 whitespace-nowrap">Hạng mục</span>
+                <select id="pdCategoryFilter" class="select-field text-sm" style="min-width:190px" onchange="pdOnDashboardSliceFilter()">
+                  <option value="">Tất cả hạng mục</option>
+                </select>
+              </label>
+              <label class="flex items-center gap-2 text-sm">
+                <span class="text-gray-500 whitespace-nowrap">Bộ môn</span>
+                <select id="pdDisciplineFilter" class="select-field text-sm" style="min-width:170px" onchange="pdOnDashboardSliceFilter()">
+                  <option value="">Tất cả bộ môn</option>
+                </select>
+              </label>
+            </div>
             <label id="pdStuckOnlyWrap" class="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" id="pdStuckOnly" onchange="loadProjectDashboardPage()"> Chỉ dự án đang vướng
             </label>
@@ -3253,25 +3267,28 @@
               <button onclick="previewOverdueTasks()" class="btn-secondary flex items-center gap-2 text-sm">
                 <i class="fas fa-eye"></i> Xem trước danh sách
               </button>
-              <button onclick="sendOverdueReminders()" class="btn-primary flex items-center gap-2 text-sm" style="background:#f97316;border-color:#f97316">
+              <button onclick="sendOverdueReminders()" class="btn-primary flex items-center gap-2 text-sm pd-status-admin-only" style="background:#f97316;border-color:#f97316">
                 <i class="fas fa-paper-plane"></i> Gửi mail nhắc ngay
               </button>
               <span id="overdueReminderResult" class="text-xs text-gray-500 ml-2"></span>
             </div>
-            <div class="mt-4 pt-3 border-t border-orange-200">
+            <div class="mt-4 pt-3 border-t border-orange-200 pd-status-admin-only">
               <p class="text-xs text-gray-600 mb-2">
                 <i class="fas fa-comment-dots mr-1"></i>
-                Nhóm Zalo nhận tin quá hạn:
-                <a id="zaloOverdueGroupLink" href="https://zalo.me/g/nquvtj706" target="_blank" rel="noopener" class="text-blue-600 hover:underline">zalo.me/g/nquvtj706</a>
+                Nhóm Zalo nhận tin quá hạn. Dán link mời từng nhóm, rồi với mỗi nhóm bấm Lấy Chat ID và tag bot một tin trong đúng nhóm đó.
               </p>
               <div class="flex flex-wrap gap-2 items-center">
                 <input id="zaloBotToken" type="password" class="input-field text-sm" style="width:220px" placeholder="Bot Token" autocomplete="off">
-                <input id="zaloGroupChatId" type="text" class="input-field text-sm" style="width:240px" placeholder="Chat ID nhóm" autocomplete="off">
+                <input id="zaloWebhookSecret" type="password" class="input-field text-sm" style="width:200px" placeholder="Secret Token webhook" autocomplete="off">
                 <button type="button" onclick="saveZaloOverdueConfig()" class="btn-secondary text-sm">Lưu Zalo</button>
-                <button type="button" onclick="captureZaloGroupChat()" class="btn-secondary text-sm">Lấy Chat ID</button>
                 <span id="zaloOverdueStatus" class="text-xs text-gray-500"></span>
               </div>
-              <p class="text-xs text-gray-400 mt-2">Tạo bot trên Zalo, mời bot vào nhóm, gửi một tin bất kỳ, rồi bấm Lấy Chat ID. Để trống token khi lưu nếu muốn giữ token cũ.</p>
+              <div class="flex flex-wrap gap-2 items-center mt-2">
+                <input id="zaloGroupUrlInput" type="text" class="input-field text-sm" style="width:360px" placeholder="Dán link nhóm zalo.me/g/..." autocomplete="off">
+                <button type="button" onclick="addZaloOverdueGroup()" class="btn-secondary text-sm">Thêm nhóm</button>
+              </div>
+              <div id="zaloOverdueGroupList" class="mt-2 space-y-1"></div>
+              <p class="text-xs text-gray-400 mt-2">Webhook trên Zalo: <span class="font-mono">https://ddcn.bimonecadvn.com/api/zalo/webhook</span>. Nhập Secret Token trùng với Zalo rồi Lưu. Tin nhắc gửi tới mọi nhóm đã gắn Chat ID.</p>
             </div>
             <div id="overduePreviewList" class="hidden mt-4 overflow-x-auto">
               <table class="w-full text-xs">
@@ -3295,7 +3312,7 @@
                 <p class="text-xs text-gray-400 mt-0.5">Tổng hợp trạng thái task. Tự gửi Thứ 6 lúc 09:00 cho leader dự án, System Admin và Project Admin.</p>
               </div>
             </div>
-            <div class="flex flex-wrap items-center gap-4 mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
+            <div class="flex flex-wrap items-center gap-4 mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-xl pd-status-admin-only">
               <label class="flex items-center gap-2 cursor-pointer">
                 <div class="relative">
                   <input type="checkbox" id="weeklyReportEnabled" class="sr-only peer" checked>
@@ -3342,7 +3359,7 @@
                 <p class="text-xs text-gray-400 py-4 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</p>
               </div>
             </div>
-            <div class="flex items-center gap-3 pt-3 border-t border-gray-100">
+            <div class="flex items-center gap-3 pt-3 border-t border-gray-100 pd-status-admin-only">
               <button id="btnSendWeeklyReport" onclick="sendWeeklyReportNow()"
                 class="btn-primary flex items-center gap-2 text-sm" style="background:#6366f1;border-color:#6366f1">
                 <i class="fas fa-paper-plane"></i>Gửi báo cáo ngay
@@ -3358,6 +3375,7 @@
         <div id="pdMemberFilterWrap" class="mb-3 hidden">
           <label class="block text-xs text-gray-500 mb-1">Thành viên</label>
           <select id="pdMemberFilter" class="select-field text-sm" style="min-width:220px" onchange="loadProjectDashboardPage()"></select>
+          <p id="pdMemberFilterHint" class="text-xs text-gray-400 mt-1">Toàn bộ nhân sự đang hoạt động</p>
         </div>
         <div id="projectDashboardRoot"></div>
       </div>
@@ -3919,6 +3937,11 @@
             <div class="flex flex-col gap-0.5">
               <label class="text-xs text-gray-500 font-medium">Dự án</label>
               <div id="tsProjectFilterCombobox" style="width:200px"></div>
+            </div>
+            <!-- Discipline -->
+            <div class="flex flex-col gap-0.5">
+              <label class="text-xs text-gray-500 font-medium">Bộ môn</label>
+              <div id="tsDisciplineFilterCombobox" style="width:180px"></div>
             </div>
             <!-- Member (admin only) -->
             <div id="tsUserFilterWrap" class="hidden flex-col gap-0.5">
@@ -6651,6 +6674,9 @@
             <button onclick="openImportExcelModal()" id="btnImportExcel" class="btn-secondary" title="Import từ file Excel" style="display:none">
               <i class="fas fa-file-excel mr-1" style="color:#1d6f42"></i>Import Excel
             </button>
+            <button onclick="openLegalSyncModal()" id="btnLegalSync" class="btn-secondary" title="Đồng bộ hồ sơ pháp lý từ deployment khác" style="display:none">
+              <i class="fas fa-cloud-download-alt mr-1"></i>Đồng bộ
+            </button>
             <button onclick="openLegalChangeLogModal()" id="btnLegalChangeLog" class="btn-secondary" title="Xem lịch sử chỉnh sửa HSPL" style="display:none">
               <i class="fas fa-history mr-1"></i>Lịch sử thay đổi
             </button>
@@ -7506,7 +7532,8 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Chủ đầu tư</label>
-          <input type="text" id="projectClient" class="input-field" placeholder="Tên chủ đầu tư">
+          <div id="projectFormClientBox"></div>
+          <input type="hidden" id="projectClient">
         </div>
         <div>
           <label class="label">Loại dự án</label>
@@ -9019,8 +9046,8 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261006c"></script>
-<script src="/static/design-hstk.js?v=20261006a"></script>
+<script src="/static/app.js?v=20261010a"></script>
+<script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
@@ -9823,6 +9850,31 @@ document.addEventListener('keydown', function(e) {
         <button type="button" class="btn-secondary" onclick="closeLegalCopyFromModal()">Hủy</button>
         <button type="button" class="btn-primary" id="btnLegalCopyFromSubmit" onclick="executeLegalCopyFrom()">
           <i class="fas fa-copy mr-1"></i>Sao chép
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modalLegalSync" class="modal-overlay hidden" style="z-index:1100">
+  <div class="modal legal-copy-dialog">
+    <div class="legal-copy-head">
+      <div>
+        <h3><i class="fas fa-cloud-download-alt" style="color:var(--primary);margin-right:8px"></i>Đồng bộ từ deployment khác</h3>
+        <p>Chọn dự án nguồn trên hệ thống đối tác. Dữ liệu được áp vào dự án đang mở trên deployment này (giữ mã và tên dự án đích).</p>
+      </div>
+      <button type="button" class="legal-copy-x" onclick="closeLegalSyncModal()" aria-label="Đóng"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="legal-copy-body">
+      <div>
+        <label class="legal-copy-label" for="legalSyncPeerProject">Dự án nguồn (peer)</label>
+        <select id="legalSyncPeerProject" class="input-field"></select>
+        <p id="legalSyncPeerHint" class="legal-copy-note" style="margin-top:8px"></p>
+      </div>
+      <div class="legal-copy-actions">
+        <button type="button" class="btn-secondary" onclick="closeLegalSyncModal()">Hủy</button>
+        <button type="button" class="btn-primary" id="btnLegalSyncSubmit" onclick="executeLegalSyncFromPeer()">
+          <i class="fas fa-sync mr-1"></i>Đồng bộ
         </button>
       </div>
     </div>

@@ -1,0 +1,15 @@
+{
+  "name": "onecad-ddcn",
+  "version": "1.0.0",
+  "description": "Trợ lý điều hành BIM OneCAD: đọc dữ liệu chính thức từ DDCN để phân tích dự án và tải công việc phòng ban.",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "OneCAD DDCN",
+    "shortDescription": "Phân tích dự án và công việc BIM từ DDCN",
+    "developerName": "OneCAD Viet Nam",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ]
+  }
+}
