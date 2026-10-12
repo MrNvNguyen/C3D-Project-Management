@@ -925,7 +925,7 @@ function logout() {
 // ================================================================
 // Valid pages that can be deep-linked via URL hash
 const _navigablePages = [
-  'dashboard', 'project-dashboard', 'projects', 'tasks', 'timesheet', 'gantt', 'costs',
+  'dashboard', 'project-dashboard', 'weekly-board', 'projects', 'tasks', 'timesheet', 'gantt', 'costs',
   'assets', 'depreciation', 'users', 'profile', 'email-admin',
   'productivity', 'finance-project', 'labor-cost', 'cost-types',
   'system-config', 'analytics', 'legal', 'leave', 'executive-dashboard'
@@ -1052,7 +1052,7 @@ function navigate(page, opts = {}) {
   if (navEl) navEl.classList.add('active')
 
   const breadcrumbs = {
-    dashboard: 'Dashboard', 'project-dashboard': 'Dashboard dự án', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
+    dashboard: 'Dashboard', 'project-dashboard': 'Dashboard dự án', 'weekly-board': 'Kế hoạch tuần', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
     tasks: 'Công việc', timesheet: 'Timesheet', gantt: 'Tiến độ Gantt',
     costs: 'Chi phí & Doanh thu', assets: 'Tài sản', depreciation: 'Khấu hao tài sản',
     users: 'Nhân sự', profile: 'Hồ sơ', 'email-admin': 'Email Thông báo',
@@ -1118,6 +1118,7 @@ function navigate(page, opts = {}) {
     loadLegal()
   }
   else if (page === 'leave') loadLeaveRequests()
+  else if (page === 'weekly-board') loadWeeklyBoardPage()
 
   closeAllDropdowns()
   closeMobileDrawer()
@@ -2056,6 +2057,8 @@ async function handleNotifClick(notifId, type, relatedType, relatedId) {
   if (relatedType === 'task') {
     // Open task detail and switch to Chat tab
     await openTaskDetail(relatedId, true)
+  } else if (relatedType === 'weekly_board') {
+    navigate('weekly-board')
   } else if (relatedType === 'project') {
     // Open project detail and switch to Chat tab
     await openProjectDetail(relatedId, true)
@@ -28410,28 +28413,619 @@ async function saveLeaveDefaultDays() {
 // ═══ END LEAVE REQUESTS MODULE ════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// WEEKLY BOARD (Tổng quan — Kế hoạch tuần)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _weeklyBoardWeekStart = null
+let _weeklyBoardFilter = 'all'
+let _weeklyBoardData = null
+let _weeklyBoardMembersCache = {}
+
+const WB_STATUS_OPTS = [
+  { value: 'not_started', label: 'Chưa làm' },
+  { value: 'in_progress', label: 'Đang làm' },
+  { value: 'completed', label: 'Xong' },
+  { value: 'blocked', label: 'Vướng' },
+]
+
+function fmtWeekBoardTitle(weekStart, weekEnd, weekNum) {
+  const ws = parseDateOnly(weekStart), we = parseDateOnly(weekEnd)
+  const dd = d => d.getDate().toString().padStart(2, '0')
+  const mm = d => (d.getMonth() + 1).toString().padStart(2, '0')
+  return `Tuần ${weekNum} · ${dd(ws)}/${mm(ws)} – ${dd(we)}/${mm(we)}`
+}
+
+function weeklyBoardShiftWeek(delta) {
+  const base = _weeklyBoardWeekStart || getWeekStartEnd(todayLocalISO()).weekStart
+  _weeklyBoardWeekStart = getWeekStartEnd(addCalendarDays(base, delta * 7)).weekStart
+  loadWeeklyBoardPage(true)
+}
+
+function weeklyBoardGoCurrentWeek() {
+  _weeklyBoardWeekStart = getWeekStartEnd(todayLocalISO()).weekStart
+  loadWeeklyBoardPage(true)
+}
+
+function setWeeklyBoardFilter(f) {
+  _weeklyBoardFilter = f
+  renderWeeklyBoardTable()
+}
+
+function weeklyBoardItemAssigneeIds(it) {
+  if (Array.isArray(it.assignee_ids) && it.assignee_ids.length) {
+    return it.assignee_ids.map((id) => Number(id))
+  }
+  if (Array.isArray(it.assignees) && it.assignees.length) {
+    return it.assignees.map((a) => Number(a.id))
+  }
+  if (it.assignee_id != null) return [Number(it.assignee_id)]
+  return []
+}
+
+function weeklyBoardItemAssigneeLabel(it) {
+  if (it.assignee_names) return String(it.assignee_names)
+  if (Array.isArray(it.assignees) && it.assignees.length) {
+    return it.assignees.map((a) => a.name).filter(Boolean).join(', ')
+  }
+  return it.assignee_name || '—'
+}
+
+function weeklyBoardFilteredItems(items) {
+  const uid = Number(currentUser?.id)
+  const myName = String(currentUser?.full_name || '').trim().toLowerCase()
+  return (items || []).filter(it => {
+    if (_weeklyBoardFilter === 'mine') {
+      const ids = weeklyBoardItemAssigneeIds(it)
+      if (ids.length) return ids.includes(uid)
+      if (!myName) return false
+      return String(it.assignee_names || '').toLowerCase().split(',').map(s => s.trim()).includes(myName)
+    }
+    if (_weeklyBoardFilter === 'open') return it.status !== 'completed'
+    return true
+  })
+}
+
+async function loadWeeklyBoardPage(skipScroll) {
+  const root = $('weeklyBoardRoot')
+  if (!root) return
+  if (!_weeklyBoardWeekStart) {
+    _weeklyBoardWeekStart = getWeekStartEnd(todayLocalISO()).weekStart
+  }
+  root.innerHTML = `<div class="text-center py-16 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i></div>`
+  try {
+    _weeklyBoardData = await api(`/weekly-board?week=${encodeURIComponent(_weeklyBoardWeekStart)}`)
+    if (_weeklyBoardData?.week?.week_start) _weeklyBoardWeekStart = _weeklyBoardData.week.week_start
+    renderWeeklyBoardTable()
+    if (!skipScroll) root.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  } catch (e) {
+    root.innerHTML = `<div class="text-center py-16 text-red-500"><i class="fas fa-exclamation-circle mr-2"></i>${e.message}</div>`
+  }
+}
+
+function renderWeeklyBoardTable() {
+  const root = $('weeklyBoardRoot')
+  if (!root || !_weeklyBoardData) return
+  const wk = _weeklyBoardData.week
+  const weekNum = wk.week_number || getISOWeekNumber(wk.week_start)
+  const title = fmtWeekBoardTitle(wk.week_start, wk.week_end, weekNum)
+  const filtered = weeklyBoardFilteredItems(_weeklyBoardData.items)
+  const tasks = filtered.filter(it => it.kind !== 'self_report' && it.kind !== 'extra_report')
+  const selfReports = filtered.filter(it => it.kind === 'self_report' || it.kind === 'extra_report')
+  const addable = _weeklyBoardData.addable_projects || []
+  const reportable = _weeklyBoardData.reportable_projects || []
+  const showAdd = addable.length > 0
+
+  const groups = {}
+  const order = []
+  tasks.forEach(it => {
+    const k = it.project_id
+    if (!groups[k]) { groups[k] = { name: weeklyBoardProjectLabel(it), items: [] }; order.push(k) }
+    groups[k].items.push(it)
+  })
+
+  const filterBtn = (id, label) => {
+    const active = _weeklyBoardFilter === id
+    return `<button type="button" onclick="setWeeklyBoardFilter('${id}')" class="text-xs px-3 py-1.5 rounded-full border ${active ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}">${label}</button>`
+  }
+
+  let body = ''
+  if (!tasks.length) {
+    body = `<div class="text-center py-10 text-gray-400 text-sm">Không có việc được giao trong tuần này${_weeklyBoardFilter !== 'all' ? ' (theo bộ lọc)' : ''}.</div>`
+  } else {
+    body = order.map(pid => {
+      const g = groups[pid]
+      const rows = g.items.map(it => renderWeeklyBoardRow(it)).join('')
+      return `
+        <div class="mb-6">
+          <h3 class="wb-project-title"><i class="fas fa-folder-open text-green-600 mt-0.5"></i><span>${escHtml(g.name)}</span></h3>
+          <div class="border rounded-xl overflow-hidden">
+            <table class="wb-sheet text-sm">
+              <colgroup>
+                <col style="width:30%">
+                <col style="width:22%">
+                <col class="wb-col-date" style="width:92px">
+                <col style="width:26%">
+                <col class="wb-col-status" style="width:118px">
+                <col class="wb-col-act" style="width:40px">
+              </colgroup>
+              <thead><tr class="text-left text-xs text-gray-500 border-b bg-gray-50">
+                <th class="py-2 px-3">Việc</th>
+                <th class="py-2 px-3">Người PT</th>
+                <th class="py-2 px-3 wb-col-date">Hạn</th>
+                <th class="py-2 px-3">Kết quả</th>
+                <th class="py-2 px-3 wb-col-status">Trạng thái</th>
+                <th class="py-2 px-3 wb-col-act"></th>
+              </tr></thead>
+              <tbody class="divide-y">${rows}</tbody>
+            </table>
+          </div>
+        </div>`
+    }).join('')
+  }
+
+  const onCurrentWeek = wk.week_start === getWeekStartEnd(todayLocalISO()).weekStart
+
+  root.innerHTML = `
+    <div class="flex flex-wrap justify-between items-start mb-4 gap-3">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-800">Kế hoạch tuần</h1>
+        <p class="text-gray-500 text-sm">Việc cần làm theo tuần, gom theo dự án</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="btn-secondary text-xs px-3 py-2" onclick="weeklyBoardShiftWeek(-1)"><i class="fas fa-chevron-left"></i> Tuần trước</button>
+        <span class="text-sm font-semibold text-gray-800 px-2">${title}</span>
+        <button type="button" class="text-xs px-3 py-2 rounded-lg border ${onCurrentWeek ? 'bg-green-600 text-white border-green-600' : 'btn-secondary'}" onclick="weeklyBoardGoCurrentWeek()">Tuần này</button>
+        <button type="button" class="btn-secondary text-xs px-3 py-2" onclick="weeklyBoardShiftWeek(1)">Tuần sau <i class="fas fa-chevron-right"></i></button>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-2 mb-4">${filterBtn('all', 'Tất cả')}${filterBtn('mine', 'Của tôi')}${filterBtn('open', 'Chưa xong')}</div>
+    ${showAdd ? renderWeeklyBoardAddForm(addable, wk) : ''}
+    ${body}
+    ${renderWeeklyBoardSelfReports(selfReports, reportable, wk)}
+  `
+  weeklyBoardMountProjectCombos(showAdd ? addable : [], reportable)
+  if (showAdd && addable[0]?.id) {
+    setTimeout(() => weeklyBoardLoadMembers(addable[0].id), 0)
+  }
+  root.querySelectorAll('textarea.wb-result').forEach((el) => weeklyBoardAutosize(el))
+}
+
+function weeklyBoardResultControl(it) {
+  if (!it.can_edit_result) {
+    return `<span class="wb-result-read">${escHtml(it.result || '—')}</span>`
+  }
+  return `<textarea class="input-field wb-result" rows="1" id="wbResult_${it.id}" oninput="weeklyBoardAutosize(this)" onblur="saveWeeklyBoardResult(${it.id})" placeholder="Kết quả">${escHtml(it.result || '')}</textarea>`
+}
+
+function weeklyBoardAutosize(el) {
+  if (!el) return
+  const max = 120
+  const min = 38
+  el.style.height = '0px'
+  const border = Math.max(el.offsetHeight - el.clientHeight, 0)
+  const next = Math.min(Math.max(el.scrollHeight + border, min), max)
+  el.style.height = next + 'px'
+  el.style.overflowY = el.scrollHeight > el.clientHeight + 1 ? 'auto' : 'hidden'
+}
+
+function weeklyBoardLateBadge(it) {
+  if (!it.overdue) return ''
+  return `<span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold align-middle" style="background:rgba(239,68,68,.16);color:#fca5a5;border:1px solid rgba(239,68,68,.45)">Trễ hạn</span>`
+}
+
+function renderWeeklyBoardRow(it) {
+  const statusOpts = WB_STATUS_OPTS.map(o =>
+    `<option value="${o.value}" ${it.status === o.value ? 'selected' : ''}>${o.label}</option>`
+  ).join('')
+  const statusCell = it.can_edit_result
+    ? `<select class="select-field text-xs" id="wbStatus_${it.id}" onchange="saveWeeklyBoardResult(${it.id})">${statusOpts}</select>`
+    : `<span class="text-xs">${escHtml(WB_STATUS_OPTS.find(o => o.value === it.status)?.label || it.status)}</span>`
+  const delBtn = it.can_delete
+    ? `<button type="button" class="text-red-400 hover:text-red-600 text-xs" title="Xóa việc" onclick="deleteWeeklyBoardItem(${it.id})"><i class="fas fa-trash"></i></button>`
+    : ''
+  return `<tr class="hover:bg-gray-50">
+    <td class="py-2 px-3 text-xs">${escHtml(it.description)}${weeklyBoardLateBadge(it)}</td>
+    <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeCell(it)}</td>
+    <td class="py-2 px-3 text-xs wb-col-date">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
+    <td class="py-2 px-3 wb-result-cell">${weeklyBoardResultControl(it)}</td>
+    <td class="py-2 px-3 wb-col-status">${statusCell}</td>
+    <td class="py-2 px-3 wb-col-act">${delBtn}</td>
+  </tr>`
+}
+
+function weeklyBoardProjectLabel(p) {
+  const code = String(p.code || p.project_code || '').trim()
+  const name = String(p.name || p.project_name || '').trim()
+  return code ? `${code} · ${name}` : name
+}
+
+function weeklyBoardMountProjectCombos(addable, reportable) {
+  const mount = (id, projects, onchange) => {
+    const host = $(id)
+    if (!host || !projects?.length) return
+    createCombobox(id, {
+      placeholder: 'Chọn dự án',
+      items: projects.map(p => ({ value: String(p.id), label: weeklyBoardProjectLabel(p) })),
+      value: String(projects[0].id),
+      fullWidth: true,
+      teleport: true,
+      panelMaxWidth: '320px',
+      dropdownMaxHeight: '240px',
+      onchange,
+    })
+  }
+  mount('wbProjectCombobox', addable, (val) => { if (val) weeklyBoardLoadMembers(val) })
+  mount('wbReportProjectCombobox', reportable, null)
+}
+
+function weeklyBoardProjectId(comboboxId) {
+  const raw = _cbState[comboboxId]?.value
+  const id = Number(raw)
+  return id > 0 ? id : 0
+}
+
+function weeklyBoardAssigneeCell(it) {
+  const chips = weeklyBoardAssigneeChips(it)
+  if (!it.can_reassign) return chips
+  return `${chips}<button type="button" class="block mt-1 text-[11px] font-medium" style="color:#38bdf8" onclick="weeklyBoardOpenReassign(${Number(it.id)}, ${Number(it.project_id)})">Đổi người</button><div id="wbReassign_${Number(it.id)}" class="mt-1" hidden></div>`
+}
+
+async function weeklyBoardOpenReassign(itemId, projectId) {
+  const host = $('wbReassign_' + itemId)
+  if (!host) return
+  if (host.dataset.open === '1') {
+    host.hidden = true
+    host.dataset.open = '0'
+    return
+  }
+  host.hidden = false
+  host.dataset.open = '1'
+  host.innerHTML = '<div class="text-xs text-gray-400">Đang tải thành viên…</div>'
+  try {
+    const proj = await api('/projects/' + projectId)
+    const seen = new Set()
+    const members = []
+    ;(proj.members || []).forEach((m) => {
+      const uid = Number(m.user_id ?? m.id)
+      if (!uid || seen.has(uid)) return
+      seen.add(uid)
+      members.push({ id: uid, name: m.full_name || m.name || ('#' + uid) })
+    })
+    if (proj.leader_id && !seen.has(Number(proj.leader_id))) {
+      members.push({ id: Number(proj.leader_id), name: proj.leader_name || 'Leader' })
+    }
+    if (proj.admin_id && !seen.has(Number(proj.admin_id))) {
+      members.push({ id: Number(proj.admin_id), name: proj.admin_name || 'Admin dự án' })
+    }
+    members.sort((a, b) => String(a.name).localeCompare(String(b.name), 'vi'))
+    const boxId = 'wbReassignCb_' + itemId
+    host.innerHTML = `<div id="${boxId}"></div>`
+    createCombobox(boxId, {
+      placeholder: 'Chọn người phụ trách mới',
+      items: members.map((m) => ({ value: String(m.id), label: m.name })),
+      fullWidth: true,
+      teleport: true,
+      panelMaxWidth: '280px',
+      dropdownMaxHeight: '220px',
+      onchange: (val) => { if (val) weeklyBoardReassign(itemId, val) },
+    })
+  } catch (e) {
+    host.innerHTML = `<div class="text-xs text-red-400">${escHtml(e.message || 'Không tải được thành viên')}</div>`
+  }
+}
+
+async function weeklyBoardReassign(itemId, userId) {
+  try {
+    await api(`/weekly-board/items/${itemId}/assignee`, {
+      method: 'PATCH',
+      data: { assignee_id: Number(userId) },
+    })
+    toast('Đã giao lại người phụ trách', 'success')
+    await loadWeeklyBoardPage(true)
+  } catch (err) {
+    toast(err.message, 'error')
+  }
+}
+
+function weeklyBoardAssigneeChips(it) {
+  const people = Array.isArray(it.assignees) && it.assignees.length
+    ? it.assignees.map(a => a.name).filter(Boolean)
+    : String(weeklyBoardItemAssigneeLabel(it) || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (!people.length || people[0] === '—') return '<span class="text-gray-400">—</span>'
+  return people.map(name =>
+    `<span class="inline-flex items-center mr-1 mb-1 px-2 py-0.5 rounded-full text-[11px] font-medium" style="background:rgba(0,166,81,.14);border:1px solid rgba(0,166,81,.4)">${escHtml(name)}</span>`
+  ).join('')
+}
+
+function renderWeeklyBoardAddForm(addable, wk) {
+  return `
+    <div class="card mb-6" id="weeklyBoardAddCard">
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-plus-circle text-green-600 mr-2"></i>Giao việc</h3>
+        <span class="text-xs text-gray-400">Chọn nhiều người đang tham gia dự án</span>
+      </div>
+      <form class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3 items-end" onsubmit="submitWeeklyBoardItem(event)">
+        <input type="hidden" name="week_date" value="${wk.week_start}">
+        <div class="xl:col-span-3">
+          <label class="text-xs text-gray-500 block mb-1">Dự án</label>
+          <div id="wbProjectCombobox"></div>
+        </div>
+        <div class="xl:col-span-4">
+          <label class="text-xs text-gray-500 block mb-1">Nội dung</label>
+          <input type="text" name="description" class="input-field text-sm w-full" required placeholder="Việc cần làm trong tuần">
+        </div>
+        <div class="xl:col-span-3">
+          <label class="text-xs text-gray-500 block mb-1">Người phụ trách</label>
+          <div id="wbAssigneeCombobox"></div>
+        </div>
+        <div class="xl:col-span-2">
+          <label class="text-xs text-gray-500 block mb-1">Hạn trong tuần</label>
+          <input type="date" name="target_date" class="input-field text-sm w-full" required min="${wk.week_start}" max="${wk.week_end}">
+        </div>
+        <div class="md:col-span-2 xl:col-span-12">
+          <button type="submit" class="btn-primary text-xs px-4 py-2"><i class="fas fa-plus mr-1"></i>Thêm việc</button>
+        </div>
+      </form>
+    </div>`
+}
+
+function renderWeeklyBoardSelfReports(rows, reportable, wk) {
+  const statusOpts = WB_STATUS_OPTS.map(o => `<option value="${o.value}">${o.label}</option>`).join('')
+  const table = rows.length
+    ? `<div class="border rounded-xl overflow-hidden">
+        <table class="wb-sheet text-sm">
+          <colgroup>
+            <col style="width:22%">
+            <col style="width:24%">
+            <col style="width:18%">
+            <col style="width:22%">
+            <col class="wb-col-status" style="width:118px">
+            <col class="wb-col-act" style="width:40px">
+          </colgroup>
+          <thead><tr class="text-left text-xs text-gray-500 border-b bg-gray-50">
+            <th class="py-2 px-3">Dự án</th>
+            <th class="py-2 px-3">Nội dung</th>
+            <th class="py-2 px-3">Người báo cáo</th>
+            <th class="py-2 px-3">Kết quả</th>
+            <th class="py-2 px-3 wb-col-status">Trạng thái</th>
+            <th class="py-2 px-3 wb-col-act"></th>
+          </tr></thead>
+          <tbody class="divide-y">${rows.map(it => renderWeeklyBoardSelfRow(it)).join('')}</tbody>
+        </table>
+      </div>`
+    : `<p class="text-sm text-gray-400">Chưa có báo cáo nhân sự trong tuần này.</p>`
+  const form = reportable.length ? `
+    <form class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3 items-start mt-4" onsubmit="submitWeeklyBoardSelfReport(event)">
+      <input type="hidden" name="week_date" value="${wk.week_start}">
+      <div class="xl:col-span-3">
+        <label class="text-xs text-gray-500 block mb-1">Dự án</label>
+        <div id="wbReportProjectCombobox"></div>
+      </div>
+      <div class="xl:col-span-4">
+        <label class="text-xs text-gray-500 block mb-1">Nội dung báo cáo</label>
+        <input type="text" name="description" class="input-field text-sm w-full" required placeholder="Việc đã làm hoặc cần báo thêm">
+      </div>
+      <div class="xl:col-span-3">
+        <label class="text-xs text-gray-500 block mb-1">Kết quả</label>
+        <textarea name="result" class="input-field wb-result" rows="1" oninput="weeklyBoardAutosize(this)" placeholder="Kết quả"></textarea>
+      </div>
+      <div class="xl:col-span-2">
+        <label class="text-xs text-gray-500 block mb-1">Trạng thái</label>
+        <select name="status" class="select-field text-sm w-full">${statusOpts.replace('value="in_progress"', 'value="in_progress" selected')}</select>
+      </div>
+      <div class="md:col-span-2 xl:col-span-12">
+        <button type="submit" class="btn-secondary text-xs px-4 py-2"><i class="fas fa-plus mr-1"></i>Thêm báo cáo</button>
+      </div>
+    </form>` : ''
+  return `
+    <div class="card mb-6">
+      <div class="mb-3">
+        <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-user-edit text-sky-400 mr-2"></i>Báo cáo tuần nhân sự</h3>
+        <p class="text-xs text-gray-400 mt-1">Tự thêm báo cáo cho các dự án bạn đang tham gia, ngoài việc đã được giao.</p>
+      </div>
+      ${table}
+      ${form}
+    </div>`
+}
+
+function renderWeeklyBoardSelfRow(it) {
+  const edit = it.can_edit_result
+  const statusOpts = WB_STATUS_OPTS.map(o =>
+    `<option value="${o.value}" ${it.status === o.value ? 'selected' : ''}>${o.label}</option>`
+  ).join('')
+  const resultCell = weeklyBoardResultControl(it)
+  const statusCell = edit
+    ? `<select class="select-field text-xs" id="wbStatus_${it.id}" onchange="saveWeeklyBoardResult(${it.id})">${statusOpts}</select>`
+    : `<span class="text-xs">${escHtml(WB_STATUS_OPTS.find(o => o.value === it.status)?.label || it.status)}</span>`
+  const delBtn = it.can_delete
+    ? `<button type="button" class="text-red-400 hover:text-red-600 text-xs" title="Xóa báo cáo" onclick="deleteWeeklyBoardItem(${it.id})"><i class="fas fa-trash"></i></button>`
+    : ''
+  return `<tr>
+    <td class="py-2 px-3 text-xs font-medium">${escHtml(weeklyBoardProjectLabel(it))}</td>
+    <td class="py-2 px-3 text-xs">${escHtml(it.description)}</td>
+    <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeChips(it)}</td>
+    <td class="py-2 px-3 wb-result-cell">${resultCell}</td>
+    <td class="py-2 px-3 wb-col-status">${statusCell}</td>
+    <td class="py-2 px-3 wb-col-act">${delBtn}</td>
+  </tr>`
+}
+
+async function weeklyBoardLoadMembers(projectId) {
+  const host = $('wbAssigneeCombobox')
+  if (!host || !projectId) return
+  host.innerHTML = `<div class="text-xs text-gray-400 py-2">Đang tải thành viên…</div>`
+  try {
+    let members = _weeklyBoardMembersCache[projectId]
+    if (!members) {
+      const proj = await api(`/projects/${projectId}`)
+      const seen = new Set()
+      members = []
+      ;(proj.members || []).forEach(m => {
+        const uid = Number(m.user_id ?? m.id)
+        if (!uid || seen.has(uid)) return
+        seen.add(uid)
+        members.push({ id: uid, name: m.full_name || m.name || ('#' + uid) })
+      })
+      if (proj.leader_id && !seen.has(Number(proj.leader_id))) {
+        members.push({ id: Number(proj.leader_id), name: proj.leader_name || 'Leader' })
+      }
+      if (proj.admin_id && !seen.has(Number(proj.admin_id))) {
+        members.push({ id: Number(proj.admin_id), name: proj.admin_name || 'Admin dự án' })
+      }
+      members.sort((a, b) => String(a.name).localeCompare(String(b.name), 'vi'))
+      _weeklyBoardMembersCache[projectId] = members
+    }
+    host.innerHTML = ''
+    createCombobox('wbAssigneeCombobox', {
+      placeholder: members.length ? 'Chọn người phụ trách' : 'Dự án chưa có thành viên',
+      items: members.map(m => ({ value: String(m.id), label: m.name })),
+      multiple: true,
+      value: [],
+      fullWidth: true,
+      teleport: true,
+      panelMaxWidth: '320px',
+      dropdownMaxHeight: '240px',
+    })
+  } catch (e) {
+    host.innerHTML = `<div class="text-xs text-red-400 py-2">Không tải được thành viên</div>`
+  }
+}
+
+async function submitWeeklyBoardItem(e) {
+  e.preventDefault()
+  const form = e.target
+  const assigneeIds = (_cbState.wbAssigneeCombobox?.values || [])
+    .map((id) => Number(id)).filter((id) => id > 0)
+  if (!assigneeIds.length) {
+    toast('Chọn ít nhất một người phụ trách', 'error')
+    return
+  }
+  const fd = new FormData(form)
+  const payload = {
+    project_id: weeklyBoardProjectId('wbProjectCombobox'),
+    week_date: String(fd.get('week_date')),
+    description: String(fd.get('description')),
+    assignee_ids: assigneeIds,
+    target_date: String(fd.get('target_date')),
+  }
+  if (!payload.project_id) {
+    toast('Chọn dự án', 'error')
+    return
+  }
+  try {
+    await api('/weekly-board/items', { method: 'POST', data: payload })
+    toast('Đã giao việc, tạo task và gửi thông báo', 'success')
+    e.target.reset()
+    const pid = payload.project_id
+    if (pid) weeklyBoardLoadMembers(pid)
+    await loadWeeklyBoardPage(true)
+  } catch (err) {
+    toast(err.message, 'error')
+  }
+}
+
+async function submitWeeklyBoardSelfReport(e) {
+  e.preventDefault()
+  const fd = new FormData(e.target)
+  const payload = {
+    project_id: weeklyBoardProjectId('wbReportProjectCombobox'),
+    week_date: String(fd.get('week_date')),
+    description: String(fd.get('description') || '').trim(),
+    result: String(fd.get('result') || '').trim(),
+    status: String(fd.get('status') || 'in_progress'),
+  }
+  if (!payload.project_id) {
+    toast('Chọn dự án', 'error')
+    return
+  }
+  if (!payload.description) {
+    toast('Nhập nội dung báo cáo', 'error')
+    return
+  }
+  try {
+    await api('/weekly-board/reports', { method: 'POST', data: payload })
+    toast('Đã thêm báo cáo', 'success')
+    e.target.reset()
+    await loadWeeklyBoardPage(true)
+  } catch (err) {
+    toast(err.message, 'error')
+  }
+}
+
+async function saveWeeklyBoardResult(itemId) {
+  const resultEl = $(`wbResult_${itemId}`)
+  const statusEl = $(`wbStatus_${itemId}`)
+  if (!resultEl && !statusEl) return
+  try {
+    await api(`/weekly-board/items/${itemId}/result`, {
+      method: 'PATCH',
+      data: {
+        result: resultEl ? resultEl.value : '',
+        status: statusEl ? statusEl.value : 'in_progress',
+      },
+    })
+    toast('Đã lưu kết quả', 'success')
+    await loadWeeklyBoardPage(true)
+  } catch (err) {
+    toast(err.message, 'error')
+  }
+}
+
+async function deleteWeeklyBoardItem(itemId) {
+  if (!confirm('Xóa việc này? (Không xóa cả tuần)')) return
+  try {
+    await api(`/weekly-board/items/${itemId}`, { method: 'DELETE' })
+    toast('Đã xóa', 'success')
+    await loadWeeklyBoardPage(true)
+  } catch (err) {
+    toast(err.message, 'error')
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // WEEKLY PLAN & REPORT MODULE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+function todayLocalISO() {
+  const n = new Date()
+  const m = String(n.getMonth() + 1).padStart(2, '0')
+  const d = String(n.getDate()).padStart(2, '0')
+  return `${n.getFullYear()}-${m}-${d}`
+}
+function parseDateOnly(dateStr) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateStr || ''))
+  if (!m) return new Date()
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+}
+function formatDateOnly(dt) {
+  const y = dt.getFullYear()
+  const m = String(dt.getMonth() + 1).padStart(2, '0')
+  const d = String(dt.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+function addCalendarDays(dateStr, days) {
+  const dt = parseDateOnly(dateStr)
+  dt.setDate(dt.getDate() + days)
+  return formatDateOnly(dt)
+}
 function getWeekStartEnd(dateStr) {
-  const d = new Date(dateStr || Date.now())
+  const d = parseDateOnly(dateStr || todayLocalISO())
   const day = d.getDay()
   const diffToMon = (day === 0 ? -6 : 1 - day)
   const mon = new Date(d); mon.setDate(d.getDate() + diffToMon)
   const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
-  const fmt = dt => dt.toISOString().slice(0, 10)
-  return { weekStart: fmt(mon), weekEnd: fmt(sun) }
+  return { weekStart: formatDateOnly(mon), weekEnd: formatDateOnly(sun) }
 }
 function getISOWeekNumber(dateStr) {
-  const d = new Date(dateStr)
-  d.setHours(0,0,0,0)
-  d.setDate(d.getDate() + 3 - (d.getDay()||7) + 1)
-  const yearStart = new Date(d.getFullYear(), 0, 1)
-  return Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+  const { weekStart } = getWeekStartEnd(dateStr)
+  const mon = parseDateOnly(weekStart)
+  const thu = new Date(mon); thu.setDate(mon.getDate() + 3)
+  const yearStart = new Date(thu.getFullYear(), 0, 1)
+  return Math.ceil(((thu - yearStart) / 86400000 + 1) / 7)
 }
 function fmtWeekLabel(weekStart, weekEnd) {
-  const ws = new Date(weekStart), we = new Date(weekEnd)
+  const ws = parseDateOnly(weekStart), we = parseDateOnly(weekEnd)
   const dd = d => d.getDate().toString().padStart(2,'0')
   const mm = d => (d.getMonth()+1).toString().padStart(2,'0')
   return `${dd(ws)}/${mm(ws)} – ${dd(we)}/${mm(we)}/${we.getFullYear()}`
@@ -28758,12 +29352,13 @@ function showWeeklyPlanDetailModal(plan, report, projectId) {
 
   // Map plan_item_id → report_item
   const rptMap = {}
-  rptItems.filter(r => !r.is_extra).forEach(r => { if (r.plan_item_id) rptMap[r.plan_item_id] = r })
-  const extraItems = rptItems.filter(r => r.is_extra)
+  rptItems.forEach(r => { if (r.plan_item_id) rptMap[r.plan_item_id] = r })
+  const extraItems = rptItems.filter(r => r.is_extra && !r.plan_item_id)
 
   // Helper: lấy label bộ môn từ discipline code
   const discLabel = (code) => {
     if (!code) return '—'
+    if (code === 'self_report') return 'Báo cáo nhân sự'
     const d = (window.allDisciplines||[]).find(x => x.code === code)
     return d ? `${d.code} – ${d.name}` : code
   }
@@ -28917,7 +29512,15 @@ async function openWeeklyPlanModal(planId, projectId) {
 
   // Parse existing assignee_ids from plan items
   const parseAssigneeIds = (it) => {
-    try { return JSON.parse(it.assignee_ids || '[]') } catch { return [] }
+    try {
+      const p = JSON.parse(it.assignee_ids || '[]')
+      if (Array.isArray(p)) return p.map(Number).filter((n) => n > 0)
+      if (typeof p === 'number' && p > 0) return [p]
+    } catch {
+      const n = Number(String(it.assignee_ids || '').trim())
+      if (n > 0) return [n]
+    }
+    return []
   }
 
   // Build avatar color from name
@@ -29231,8 +29834,8 @@ function showWeeklyReportModal(plan, report, projectId) {
 
   // Map plan_item_id → report_item
   const rptMap = {}
-  rptItems.filter(r => !r.is_extra).forEach(r => { if (r.plan_item_id) rptMap[r.plan_item_id] = r })
-  const extraItems = rptItems.filter(r => r.is_extra)
+  rptItems.forEach(r => { if (r.plan_item_id) rptMap[r.plan_item_id] = r })
+  const extraItems = rptItems.filter(r => r.is_extra && !r.plan_item_id)
 
   const renderPlanRow = (it) => {
     const ri = rptMap[it.id] || {}
@@ -29263,7 +29866,7 @@ function showWeeklyReportModal(plan, report, projectId) {
   const renderDisciplineHeader = (code) => {
     const disciplines = window.allDisciplines || []
     const disc = disciplines.find(d => d.code === code)
-    const label = disc ? `${disc.code} – ${disc.name}` : (code || 'Chưa phân bộ môn')
+    const label = code === 'self_report' ? 'Báo cáo nhân sự' : (disc ? `${disc.code} – ${disc.name}` : (code || 'Chưa phân bộ môn'))
     const catColors = {
       general:'bg-gray-100 text-gray-700 border-gray-300',
       architecture:'bg-purple-100 text-purple-700 border-purple-300',

@@ -754,6 +754,50 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       }
     }
 
+    case 'weekly_board_assigned': {
+      const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const metaItems = [
+        { label: 'Dự án', value: esc(data.projectName || 'N/A') },
+        ...(data.deadline ? [{ label: 'Hạn', value: '📅 ' + esc(data.deadline) }] : []),
+        ...(data.weekLabel ? [{ label: 'Tuần', value: esc(data.weekLabel) }] : []),
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${esc(data.recipientName)}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Bạn được giao một việc trong kế hoạch tuần. Hệ thống đã tạo task tương ứng.</p>
+        ${emailCard('Việc', '📌 ' + esc(data.taskTitle))}
+        ${emailMeta(metaItems)}
+        ${data.coworkers ? `<p style="color:#6b7280;font-size:13px;font-family:Arial,Helvetica,sans-serif;margin-top:12px;">Cùng phụ trách: <strong style="color:#374151;">${esc(data.coworkers)}</strong></p>` : ''}
+        <p style="color:#6b7280;font-size:13px;font-family:Arial,Helvetica,sans-serif;margin-top:12px;">Người giao: <strong style="color:#374151;">${esc(data.assignedBy || 'N/A')}</strong></p>
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập để xem task và kế hoạch tuần.</p>`
+      return {
+        subject: `[OneCad BIM] Việc mới: ${data.taskTitle}`,
+        html: emailBase('Bạn được giao việc', body),
+      }
+    }
+
+    case 'weekly_board_report': {
+      const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const metaItems = [
+        { label: 'Dự án', value: esc(data.projectName || 'N/A') },
+        { label: 'Người báo cáo', value: esc(data.reporterName || 'N/A') },
+        { label: 'Trạng thái', value: esc(data.statusLabel || 'Đang làm') },
+        ...(data.weekLabel ? [{ label: 'Tuần', value: esc(data.weekLabel) }] : []),
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${esc(data.recipientName)}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Nhân sự vừa gửi báo cáo tuần cho dự án bạn quản lý.</p>
+        ${emailCard('Nội dung', esc(data.description || ''))}
+        ${emailMeta(metaItems)}
+        ${data.result ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="background-color:#f9fafb;border-radius:6px;padding:12px 16px;font-size:13px;color:#374151;font-family:Arial,Helvetica,sans-serif;white-space:pre-wrap;">${esc(data.result)}</td></tr></table>` : ''}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập mục Kế hoạch tuần để xem báo cáo.</p>`
+      return {
+        subject: `[OneCad BIM] Báo cáo tuần: ${data.projectName || 'Dự án'}`,
+        html: emailBase('Báo cáo tuần nhân sự', body),
+      }
+    }
+
     default:
       return { subject: '[OneCad BIM] Thông báo mới', html: emailBase('Thông báo', '<p>Bạn có thông báo mới từ OneCad BIM.</p>') }
 
@@ -1016,7 +1060,7 @@ async function sendEmail(env: Bindings, opts: {
   }
   // ─────────────────────────────────────────────────────────────────────────
 
-  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_reassigned_to', 'task_reassigned_from', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish'])
+  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_reassigned_to', 'task_reassigned_from', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish', 'weekly_board_assigned', 'weekly_board_report'])
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
     const pref = await opts.db.prepare(
@@ -2755,6 +2799,7 @@ app.get('/api/tasks', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
+    await clearWeeklyBoardTaskPhase(db)
     const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ, discipline, phase, priority, category_id, exclude_done } = c.req.query()
     // Theo dự án: cho phép nhiều hơn (detail/Gantt); danh sách toàn cục: mặc định thấp hơn
     const defaultLimit = project_id ? 5000 : 1000
@@ -2985,7 +3030,19 @@ app.get('/api/tasks/:id', authMiddleware, async (c) => {
   }
 })
 
-async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: any): Promise<{ status: number, body: any }> {
+async function clearWeeklyBoardTaskPhase(db: D1Database) {
+  try {
+    await db.prepare(`
+      UPDATE tasks
+      SET phase = NULL
+      WHERE task_type = 'other'
+        AND phase = 'basic_design'
+        AND description LIKE 'Tuần %'
+    `).run()
+  } catch { /* task cũ chưa có cột thì bỏ qua */ }
+}
+
+async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: any, opts?: { skipNotify?: boolean; emptyPhase?: boolean }): Promise<{ status: number, body: any }> {
   try {
     const { project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date, design_package_id } = data
 
@@ -3018,7 +3075,7 @@ async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: 
       `INSERT INTO tasks (project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date, design_package_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(project_id, category_id || null, legal_item_id || null, title, descriptionStored || null, discipline_code || null,
-      phase || 'basic_design', priority || 'medium', status || 'todo',
+      opts?.emptyPhase ? null : (phase || 'basic_design'), priority || 'medium', status || 'todo',
       assigned_to || null, user.id, start_date || null, due_date || null, estimated_hours || 0,
       task_type || 'model', model_filename || null, cde_report ? 1 : 0, work_notes || null, hstk_date || null,
       design_package_id || null).run()
@@ -3031,7 +3088,7 @@ async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: 
     ).bind(taskId, user.id, 'created', 'Task created').run()
 
     // Notify assigned user
-    if (assigned_to) {
+    if (assigned_to && !opts?.skipNotify) {
       await db.prepare(
         'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
       ).bind(assigned_to, 'Task mới được giao', `Bạn được giao task: ${title}`, 'info', 'task', taskId).run()
@@ -17994,23 +18051,42 @@ app.put('/api/leave-balances/:userId', authMiddleware, adminOnly, async (c) => {
 // WEEKLY PLANS & WEEKLY REPORTS API
 // ===================================================
 
-// Helper: get ISO week number + Monday of week
+// Calendar date in UTC so Monday does not shift a day in UTC+7 (toISOString).
+function calendarUTC(dateStr: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateStr || '').trim())
+  if (m) return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  const now = new Date()
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+}
+
+function formatUTCDate(dt: Date): string {
+  const y = dt.getUTCFullYear()
+  const mo = String(dt.getUTCMonth() + 1).padStart(2, '0')
+  const d = String(dt.getUTCDate()).padStart(2, '0')
+  return `${y}-${mo}-${d}`
+}
+
+// Helper: get ISO week number + Monday of week. Idempotent for its own weekStart.
 function getISOWeekInfo(dateStr: string): { weekNumber: number; year: number; weekStart: string; weekEnd: string } {
-  const d = new Date(dateStr)
-  d.setHours(0, 0, 0, 0)
-  const day = d.getDay()                       // 0=Sun, 1=Mon...
-  const diffToMon = (day === 0 ? -6 : 1 - day) // days to shift to get Monday
-  const mon = new Date(d)
-  mon.setDate(d.getDate() + diffToMon)
+  const src = calendarUTC(dateStr)
+  const day = src.getUTCDay()
+  const diffToMon = day === 0 ? -6 : 1 - day
+  const mon = new Date(src)
+  mon.setUTCDate(src.getUTCDate() + diffToMon)
   const sun = new Date(mon)
-  sun.setDate(mon.getDate() + 6)
-  const toISO = (dt: Date) => dt.toISOString().slice(0, 10)
-  // ISO week number
+  sun.setUTCDate(mon.getUTCDate() + 6)
   const thu = new Date(mon)
-  thu.setDate(mon.getDate() + 3)
-  const yearStart = new Date(thu.getFullYear(), 0, 1)
-  const weekNum = Math.ceil(((thu.getTime() - yearStart.getTime()) / 86400000 + 1) / 7)
-  return { weekNumber: weekNum, year: thu.getFullYear(), weekStart: toISO(mon), weekEnd: toISO(sun) }
+  thu.setUTCDate(mon.getUTCDate() + 3)
+  const year = thu.getUTCFullYear()
+  const weekNum = Math.ceil(((thu.getTime() - Date.UTC(year, 0, 1)) / 86400000 + 1) / 7)
+  return { weekNumber: weekNum, year, weekStart: formatUTCDate(mon), weekEnd: formatUTCDate(sun) }
+}
+
+// Plans saved before the UTC fix stored Monday as the previous calendar day.
+function legacyWeekStart(weekStart: string): string {
+  const dt = calendarUTC(weekStart)
+  dt.setUTCDate(dt.getUTCDate() - 1)
+  return formatUTCDate(dt)
 }
 
 // ── WEEKLY PLANS ─────────────────────────────────────────────────────────────
@@ -18213,6 +18289,949 @@ app.post('/api/projects/:projectId/weekly-plans/:planId/report', authMiddleware,
               it.notes != null ? String(it.notes) : null).run()
     }
     return c.json({ success: true, id: reportId })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ── WEEKLY BOARD (Tổng quan — một việc/lần, không xóa cả plan) ─────────────
+
+const WEEKLY_BOARD_STATUS_MAP: Record<string, string> = {
+  not_started: 'not_started',
+  in_progress: 'in_progress',
+  completed: 'completed',
+  blocked: 'blocked',
+  chua_lam: 'not_started',
+  dang_lam: 'in_progress',
+  xong: 'completed',
+  vuong: 'blocked',
+}
+
+const WEEKLY_BOARD_STATUS_LABEL: Record<string, string> = {
+  not_started: 'Chưa làm',
+  in_progress: 'Đang làm',
+  completed: 'Xong',
+  blocked: 'Vướng',
+}
+
+function weeklyBoardAccessSql(user: any): { clause: string; params: number[] } {
+  if (user.role === 'system_admin') return { clause: '1=1', params: [] }
+  const uid = Number(user.id)
+  return {
+    clause: `(p.admin_id = ? OR p.leader_id = ? OR EXISTS (
+      SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = ?
+    ))`,
+    params: [uid, uid, uid],
+  }
+}
+
+async function ensureWeeklyPlanForBoard(
+  db: D1Database,
+  projectId: number,
+  weekDate: string,
+  userId: number | null
+): Promise<{ planId: number; wi: ReturnType<typeof getISOWeekInfo> }> {
+  const wi = getISOWeekInfo(weekDate)
+  const legacyStart = legacyWeekStart(wi.weekStart)
+  let existing = await db.prepare(
+    `SELECT id FROM weekly_plans WHERE project_id = ? AND week_start = ?`
+  ).bind(projectId, wi.weekStart).first() as { id?: number } | null
+  if (!existing?.id) {
+    existing = await db.prepare(
+      `SELECT id FROM weekly_plans WHERE project_id = ? AND week_start = ?`
+    ).bind(projectId, legacyStart).first() as { id?: number } | null
+  }
+  if (existing?.id) {
+    return { planId: Number(existing.id), wi }
+  }
+  const planTitle = `Tuần ${wi.weekNumber} (${wi.weekStart} → ${wi.weekEnd})`
+  const r = await db.prepare(`
+    INSERT INTO weekly_plans (project_id, week_start, week_end, week_number, year, title, overall_goal, status, created_by)
+    VALUES (?,?,?,?,?,?,?,'published',?)
+  `).bind(
+    projectId, wi.weekStart, wi.weekEnd, Number(wi.weekNumber), Number(wi.year),
+    planTitle, null, userId
+  ).run()
+  return { planId: r.meta.last_row_id as number, wi }
+}
+
+function parseWeeklyPlanAssigneeIds(raw: string | null | undefined): number[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return [...new Set(parsed.map((x) => Number(x)).filter((n) => n > 0))]
+    }
+    if (typeof parsed === 'number' && parsed > 0) return [parsed]
+  } catch {
+    const n = Number(String(raw).trim())
+    if (n > 0) return [n]
+  }
+  return []
+}
+
+async function isWeeklyPlanAssignee(planItemAssigneeJson: string, userId: number): Promise<boolean> {
+  return parseWeeklyPlanAssigneeIds(planItemAssigneeJson).some((id) => id === userId)
+}
+
+async function upsertWeeklyBoardReportItem(
+  db: D1Database,
+  planId: number,
+  projectId: number,
+  planItemId: number,
+  description: string,
+  result: string | null,
+  status: string,
+  assigneeNames: string | null,
+  userId: number | null,
+  isExtra = 0
+) {
+  let report = await db.prepare(`SELECT id FROM weekly_reports WHERE plan_id = ?`).bind(planId).first() as { id?: number } | null
+  let reportId: number
+  if (report?.id) {
+    reportId = Number(report.id)
+  } else {
+    const r = await db.prepare(`
+      INSERT INTO weekly_reports (plan_id, project_id, status, submitted_by)
+      VALUES (?,?, 'draft', ?)
+    `).bind(planId, projectId, userId).run()
+    reportId = r.meta.last_row_id as number
+  }
+  const existing = await db.prepare(`
+    SELECT id FROM weekly_report_items WHERE report_id = ? AND plan_item_id = ?
+  `).bind(reportId, planItemId).first() as { id?: number } | null
+  const completionPct = status === 'completed' ? 100 : status === 'not_started' ? 0 : 50
+  if (existing?.id) {
+    await db.prepare(`
+      UPDATE weekly_report_items SET result=?, status=?, completion_pct=?, assignee_names=COALESCE(?, assignee_names)
+      WHERE id=?
+    `).bind(result, status, completionPct, assigneeNames, existing.id).run()
+  } else {
+    const maxSort = await db.prepare(`
+      SELECT COALESCE(MAX(sort_order), -1) AS m FROM weekly_report_items WHERE report_id = ?
+    `).bind(reportId).first() as { m?: number } | null
+    const sortOrder = Number(maxSort?.m ?? -1) + 1
+    await db.prepare(`
+      INSERT INTO weekly_report_items (report_id, plan_item_id, sort_order, description, result, completion_pct, status, assignee_names, is_extra)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).bind(reportId, planItemId, sortOrder, description, result, completionPct, status, assigneeNames, isExtra ? 1 : 0).run()
+  }
+}
+
+function addCalendarDaysUTC(dateStr: string, days: number): string {
+  const dt = calendarUTC(dateStr)
+  dt.setUTCDate(dt.getUTCDate() + days)
+  return formatUTCDate(dt)
+}
+
+// Hết tuần (Chủ nhật) mà việc chưa Xong thì chuyển sang tuần đang mở.
+async function carryUnfinishedWeeklyItems(db: D1Database, user: any, weekStart: string) {
+  const prevStart = addCalendarDaysUTC(weekStart, -7)
+  const prevLegacy = legacyWeekStart(prevStart)
+  const prevEnd = addCalendarDaysUTC(prevStart, 6)
+  const today = todayInVietnam()
+  const sourceWeekEnded = today > prevEnd
+  const access = weeklyBoardAccessSql(user)
+  const legacyDest = legacyWeekStart(weekStart)
+  const completedSql = `
+    EXISTS (
+      SELECT 1 FROM weekly_reports wr
+      JOIN weekly_report_items wri ON wri.report_id = wr.id AND wri.plan_item_id = src.id
+      WHERE wr.plan_id = src.plan_id AND wri.status = 'completed'
+    )`
+  const stale = await db.prepare(`
+    SELECT wpi.id
+    FROM weekly_plan_items wpi
+    JOIN weekly_plans wp ON wp.id = wpi.plan_id
+    JOIN projects p ON p.id = wp.project_id
+    LEFT JOIN weekly_plan_items src ON src.id = wpi.carried_from_item_id
+    LEFT JOIN weekly_plans srcPlan ON srcPlan.id = src.plan_id
+    WHERE wp.week_start IN (?, ?)
+      AND wpi.carried_from_item_id IS NOT NULL
+      AND ${access.clause}
+      AND (
+        src.id IS NULL
+        OR ${completedSql}
+        OR (srcPlan.week_start IN (?, ?) AND ? = 0)
+      )
+  `).bind(weekStart, legacyDest, ...access.params, prevStart, prevLegacy, sourceWeekEnded ? 1 : 0).all()
+  const staleIds = ((stale.results || []) as { id?: number }[]).map((row) => Number(row.id)).filter((id) => id > 0)
+  if (staleIds.length) {
+    const ph = staleIds.map(() => '?').join(',')
+    await db.prepare(`DELETE FROM weekly_report_items WHERE plan_item_id IN (${ph})`).bind(...staleIds).run()
+    await db.prepare(`DELETE FROM weekly_plan_items WHERE id IN (${ph})`).bind(...staleIds).run()
+  }
+
+  if (!sourceWeekEnded) return
+
+  const sources = await db.prepare(`
+    SELECT wpi.id, wpi.description, wpi.assignee_ids, wpi.assignee_names, wpi.target_date, wpi.priority, wp.project_id
+    FROM weekly_plans wp
+    JOIN projects p ON p.id = wp.project_id
+    JOIN weekly_plan_items wpi ON wpi.plan_id = wp.id
+    WHERE wp.week_start IN (?, ?)
+      AND IFNULL(wpi.category, '') != 'self_report'
+      AND ${access.clause}
+      AND NOT EXISTS (
+        SELECT 1 FROM weekly_reports wr
+        JOIN weekly_report_items wri ON wri.report_id = wr.id AND wri.plan_item_id = wpi.id
+        WHERE wr.plan_id = wp.id AND wri.status = 'completed'
+      )
+  `).bind(prevStart, prevLegacy, ...access.params).all()
+
+  const userId = Number(user?.id) || null
+  for (const src of (sources.results || []) as any[]) {
+    const description = String(src.description || '').trim()
+    if (!description) continue
+    const projectId = Number(src.project_id)
+    const { planId } = await ensureWeeklyPlanForBoard(db, projectId, weekStart, userId)
+    const exists = await db.prepare(
+      `SELECT id FROM weekly_plan_items WHERE plan_id = ? AND carried_from_item_id = ?`
+    ).bind(planId, src.id).first()
+    if (exists) continue
+    const maxSort = await db.prepare(
+      `SELECT COALESCE(MAX(sort_order), -1) AS m FROM weekly_plan_items WHERE plan_id = ?`
+    ).bind(planId).first() as { m?: number } | null
+    const sortOrder = Number(maxSort?.m ?? -1) + 1
+    try {
+      await db.prepare(`
+        INSERT INTO weekly_plan_items
+          (plan_id, sort_order, description, assignee_ids, assignee_names, target_date, priority, notes, carried_from_item_id)
+        VALUES (?,?,?,?,?,?,?,'Trễ hạn',?)
+      `).bind(
+        planId, sortOrder, description,
+        src.assignee_ids || '[]',
+        src.assignee_names || null,
+        src.target_date || null,
+        src.priority || 'normal',
+        src.id
+      ).run()
+    } catch (err: any) {
+      const msg = String(err?.message || err)
+      if (!/UNIQUE|constraint/i.test(msg)) throw err
+    }
+  }
+}
+
+// GET /api/weekly-board?week=YYYY-MM-DD
+app.get('/api/weekly-board', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const weekParam = c.req.query('week') || new Date().toISOString().slice(0, 10)
+    const wi = getISOWeekInfo(String(weekParam))
+    const legacyStart = legacyWeekStart(wi.weekStart)
+    const access = weeklyBoardAccessSql(user)
+    await carryUnfinishedWeeklyItems(db, user, wi.weekStart)
+
+    const rows = await db.prepare(`
+      SELECT
+        p.id AS project_id,
+        p.code AS project_code,
+        p.name AS project_name,
+        wpi.id AS item_id,
+        wpi.description,
+        wpi.assignee_ids,
+        wpi.assignee_names,
+        wpi.target_date,
+        wpi.category,
+        wpi.notes,
+        wpi.carried_from_item_id,
+        wri.result AS result_text,
+        wri.status AS result_status
+      FROM weekly_plans wp
+      JOIN projects p ON p.id = wp.project_id
+      JOIN weekly_plan_items wpi ON wpi.plan_id = wp.id
+      LEFT JOIN weekly_reports wr ON wr.plan_id = wp.id
+      LEFT JOIN weekly_report_items wri ON wri.report_id = wr.id AND wri.plan_item_id = wpi.id
+      WHERE wp.week_start IN (?, ?) AND ${access.clause}
+      ORDER BY p.name COLLATE NOCASE, wpi.sort_order, wpi.id
+    `).bind(wi.weekStart, legacyStart, ...access.params).all()
+
+    const extraRows = await db.prepare(`
+      SELECT
+        p.id AS project_id,
+        p.code AS project_code,
+        p.name AS project_name,
+        wri.id AS item_id,
+        wri.description,
+        wri.assignee_names,
+        wri.result AS result_text,
+        wri.status AS result_status
+      FROM weekly_plans wp
+      JOIN projects p ON p.id = wp.project_id
+      JOIN weekly_reports wr ON wr.plan_id = wp.id
+      JOIN weekly_report_items wri ON wri.report_id = wr.id
+      WHERE wp.week_start IN (?, ?)
+        AND wri.is_extra = 1
+        AND wri.plan_item_id IS NULL
+        AND ${access.clause}
+      ORDER BY p.name COLLATE NOCASE, wri.sort_order, wri.id
+    `).bind(wi.weekStart, legacyStart, ...access.params).all()
+
+    const addableProjects = await db.prepare(`
+      SELECT p.id, p.code, p.name
+      FROM projects p
+      WHERE ${access.clause}
+      ORDER BY p.code COLLATE NOCASE, p.name COLLATE NOCASE
+    `).bind(...access.params).all()
+
+    const uid = Number(user.id)
+    const reportable: { id: number; name: string; code: string }[] = []
+    const addable: { id: number; name: string; code: string }[] = []
+    for (const p of (addableProjects.results || []) as any[]) {
+      const pid = Number(p.id)
+      const row = { id: pid, name: String(p.name), code: p.code ? String(p.code) : '' }
+      reportable.push(row)
+      if (await isProjectLeaderOrAdmin(db, user, pid)) addable.push(row)
+    }
+
+    const allAssigneeIds = new Set<number>()
+    const rawRows = (rows.results || []) as any[]
+    for (const row of rawRows) {
+      parseWeeklyPlanAssigneeIds(row.assignee_ids).forEach((id) => allAssigneeIds.add(id))
+    }
+    const nameById = new Map<number, string>()
+    if (allAssigneeIds.size > 0) {
+      const idList = [...allAssigneeIds]
+      const placeholders = idList.map(() => '?').join(',')
+      const users = await db.prepare(
+        `SELECT id, full_name FROM users WHERE id IN (${placeholders})`
+      ).bind(...idList).all()
+      for (const u of (users.results || []) as { id: number; full_name: string }[]) {
+        nameById.set(Number(u.id), String(u.full_name))
+      }
+    }
+
+    const items = []
+    for (const row of rawRows) {
+      const projectId = Number(row.project_id)
+      const assigneeIds = parseWeeklyPlanAssigneeIds(row.assignee_ids)
+      const storedNames = String(row.assignee_names || '').split(',').map((s) => s.trim()).filter(Boolean)
+      const assignees = assigneeIds.map((id, i) => ({
+        id,
+        name: nameById.get(id) || storedNames[i] || `#${id}`,
+      }))
+      const assigneeNamesDisplay = assignees.length
+        ? assignees.map((a) => a.name).join(', ')
+        : (row.assignee_names || null)
+      const isAssignee = assigneeIds.includes(uid)
+      const leaderOrAdmin = await isProjectLeaderOrAdmin(db, user, projectId)
+      items.push({
+        id: Number(row.item_id),
+        project_id: projectId,
+        project_code: row.project_code ? String(row.project_code) : '',
+        project_name: row.project_name,
+        description: row.description,
+        assignee_ids: assigneeIds,
+        assignees,
+        assignee_names: assigneeNamesDisplay,
+        target_date: row.target_date,
+        result: row.result_text ?? '',
+        status: row.result_status || 'not_started',
+        can_edit_result: isAssignee || leaderOrAdmin,
+        can_reassign: isAssignee && row.category !== 'self_report' && await isWeeklyBoardProjectLeader(db, user, projectId),
+        can_delete: leaderOrAdmin || (row.category === 'self_report' && isAssignee),
+        kind: row.category === 'self_report' ? 'self_report' : 'task',
+        overdue: row.carried_from_item_id != null || String(row.notes || '').trim() === 'Trễ hạn',
+      })
+    }
+
+    for (const row of (extraRows.results || []) as any[]) {
+      const description = String(row.description || '').trim()
+      if (!description) continue
+      const projectId = Number(row.project_id)
+      const same = items.find((it) =>
+        it.project_id === projectId && String(it.description || '').trim() === description
+      )
+      if (same) {
+        if (!String(same.result || '').trim() && row.result_text) {
+          same.result = row.result_text
+          if (row.result_status) same.status = row.result_status
+        }
+        continue
+      }
+      items.push({
+        id: `x${row.item_id}`,
+        project_id: projectId,
+        project_code: row.project_code ? String(row.project_code) : '',
+        project_name: row.project_name,
+        description,
+        assignee_ids: [],
+        assignees: [],
+        assignee_names: row.assignee_names || null,
+        target_date: null,
+        result: row.result_text ?? '',
+        status: row.result_status || 'in_progress',
+        can_edit_result: false,
+        can_delete: false,
+        kind: 'extra_report',
+      })
+    }
+
+    return c.json({
+      week: {
+        week_number: wi.weekNumber,
+        week_start: wi.weekStart,
+        week_end: wi.weekEnd,
+      },
+      addable_projects: addable,
+      reportable_projects: reportable,
+      items,
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+async function deliverUserNotice(
+  db: D1Database,
+  env: Bindings,
+  notice: {
+    userId: number
+    title: string
+    message: string
+    eventType: string
+    data: Record<string, any>
+    relatedType: string
+    relatedId: number
+  }
+) {
+  try {
+    await db.prepare(
+      'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(notice.userId, notice.title, notice.message, 'info', notice.relatedType, notice.relatedId).run()
+  } catch { /* chuông là best-effort */ }
+  try {
+    const info = await getUserEmailInfo(db, notice.userId)
+    if (info?.email) {
+      await sendEmail(env, {
+        to: info.email,
+        toName: info.full_name,
+        eventType: notice.eventType,
+        data: notice.data,
+        db,
+        userId: notice.userId,
+        relatedType: notice.relatedType,
+        relatedId: notice.relatedId,
+        skipPush: true,
+      })
+    }
+  } catch { /* mail không được chặn việc giao / báo cáo */ }
+  sendWebPush(db, notice.userId, {
+    title: notice.title,
+    body: notice.message,
+    tag: `${notice.eventType}-${notice.relatedId}-${notice.userId}`,
+    url: notice.relatedType === 'weekly_board' ? '/#/weekly-board' : '/',
+    notifId: null,
+    relatedType: notice.relatedType,
+    relatedId: notice.relatedId,
+  }).catch(() => {})
+}
+
+async function isWeeklyBoardProjectLeader(db: D1Database, user: any, projectId: number): Promise<boolean> {
+  const uid = Number(user.id)
+  const row = await db.prepare(`
+    SELECT 1 AS ok FROM projects WHERE id = ? AND leader_id = ?
+    UNION
+    SELECT 1 FROM project_members
+      WHERE project_id = ? AND user_id = ? AND role IN ('project_leader', 'leader')
+    LIMIT 1
+  `).bind(projectId, uid, projectId, uid).first()
+  return !!row
+}
+
+function parseLinkedTaskMap(raw: string | null | undefined): Record<string, number> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, number> = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      const userId = Number(key)
+      const taskId = Number(value)
+      if (userId > 0 && taskId > 0) out[String(userId)] = taskId
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+async function saveWeeklyItemTaskLinks(db: D1Database, itemId: number, taskByUser: Record<string, number>) {
+  const first = Object.values(taskByUser)[0] || null
+  try {
+    await db.prepare(
+      `UPDATE weekly_plan_items SET linked_task_id = ?, linked_task_ids = ? WHERE id = ?`
+    ).bind(first, JSON.stringify(taskByUser), itemId).run()
+  } catch {
+    try {
+      await db.prepare(`UPDATE weekly_plan_items SET linked_task_id = ? WHERE id = ?`).bind(first, itemId).run()
+    } catch { /* cột chưa migrate */ }
+  }
+}
+
+async function weeklyBoardManagerIds(db: D1Database, projectId: number, exceptUserId: number): Promise<number[]> {
+  const rows = await db.prepare(`
+    SELECT DISTINCT uid FROM (
+      SELECT admin_id AS uid FROM projects WHERE id = ?
+      UNION
+      SELECT leader_id AS uid FROM projects WHERE id = ?
+      UNION
+      SELECT user_id AS uid FROM project_members
+        WHERE project_id = ? AND role IN ('project_admin', 'project_leader')
+    ) src
+    WHERE uid IS NOT NULL AND uid != ?
+  `).bind(projectId, projectId, projectId, exceptUserId).all()
+  return ((rows.results || []) as { uid?: number }[])
+    .map((r) => Number(r.uid))
+    .filter((id) => id > 0)
+}
+
+async function notifyWeeklyBoardReport(
+  db: D1Database,
+  env: Bindings,
+  projectId: number,
+  reporterId: number,
+  reporterName: string,
+  description: string,
+  result: string,
+  status: string,
+  weekLabel: string,
+) {
+  const proj = await db.prepare('SELECT code, name FROM projects WHERE id = ?').bind(projectId).first() as { code?: string; name?: string } | null
+  const projectName = proj?.code ? `${proj.code} · ${proj.name || ''}` : String(proj?.name || 'Dự án')
+  const statusLabel = WEEKLY_BOARD_STATUS_LABEL[status] || status
+  const snippet = description.length > 140 ? description.slice(0, 137) + '...' : description
+  const message = `${reporterName} báo cáo ${projectName}: ${snippet}`
+  const managers = await weeklyBoardManagerIds(db, projectId, reporterId)
+  for (const managerId of managers) {
+    await deliverUserNotice(db, env, {
+      userId: managerId,
+      title: 'Báo cáo tuần nhân sự',
+      message,
+      eventType: 'weekly_board_report',
+      data: {
+        projectName,
+        reporterName,
+        description,
+        result,
+        statusLabel,
+        weekLabel,
+      },
+      relatedType: 'weekly_board',
+      relatedId: projectId,
+    })
+  }
+}
+
+// POST /api/weekly-board/items — thêm một việc (INSERT only)
+app.post('/api/weekly-board/items', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const userId = Number(user.id)
+    const body = await c.req.json()
+    const projectId = Number(body.project_id)
+    const weekDate = String(body.week_date || body.week || new Date().toISOString().slice(0, 10))
+    const description = String(body.description || '').trim()
+    const targetDate = body.target_date ? String(body.target_date) : null
+    let assigneeIds: number[] = []
+    if (Array.isArray(body.assignee_ids)) {
+      assigneeIds = [...new Set(body.assignee_ids.map((x: unknown) => Number(x)).filter((n: number) => n > 0))]
+    } else if (body.assignee_id != null && body.assignee_id !== '') {
+      const one = Number(body.assignee_id)
+      if (one > 0) assigneeIds = [one]
+    }
+
+    if (!projectId || !description || assigneeIds.length === 0 || !targetDate) {
+      return c.json({ error: 'project_id, description, assignee_ids (≥1), target_date required' }, 400)
+    }
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    if (!(await isProjectLeaderOrAdmin(db, user, projectId))) {
+      return c.json({ error: 'Chỉ quản lý dự án mới thêm việc' }, 403)
+    }
+
+    const ph = assigneeIds.map(() => '?').join(',')
+    const validCount = await db.prepare(`
+      SELECT COUNT(DISTINCT uid) AS c FROM (
+        SELECT pm.user_id AS uid FROM project_members pm
+          WHERE pm.project_id = ? AND pm.user_id IN (${ph})
+        UNION
+        SELECT p.admin_id AS uid FROM projects p
+          WHERE p.id = ? AND p.admin_id IN (${ph})
+        UNION
+        SELECT p.leader_id AS uid FROM projects p
+          WHERE p.id = ? AND p.leader_id IN (${ph})
+      ) WHERE uid IS NOT NULL
+    `).bind(projectId, ...assigneeIds, projectId, ...assigneeIds, projectId, ...assigneeIds).first() as { c?: number } | null
+    if (Number(validCount?.c ?? 0) !== assigneeIds.length) {
+      return c.json({ error: 'Mọi người phụ trách phải là thành viên dự án' }, 400)
+    }
+
+    const { planId, wi } = await ensureWeeklyPlanForBoard(db, projectId, weekDate, userId)
+    if (targetDate < wi.weekStart || targetDate > wi.weekEnd) {
+      return c.json({ error: 'Hạn phải nằm trong tuần đang chọn' }, 400)
+    }
+
+    const users = await db.prepare(
+      `SELECT id, full_name FROM users WHERE id IN (${ph})`
+    ).bind(...assigneeIds).all()
+    const nameById = new Map<number, string>()
+    for (const u of (users.results || []) as { id: number; full_name: string }[]) {
+      nameById.set(Number(u.id), String(u.full_name))
+    }
+    const assigneeNames = assigneeIds.map((id) => nameById.get(id) || `#${id}`).join(', ')
+
+    const maxSort = await db.prepare(`
+      SELECT COALESCE(MAX(sort_order), -1) AS m FROM weekly_plan_items WHERE plan_id = ?
+    `).bind(planId).first() as { m?: number } | null
+    const sortOrder = Number(maxSort?.m ?? -1) + 1
+
+    const ins = await db.prepare(`
+      INSERT INTO weekly_plan_items (plan_id, sort_order, description, assignee_ids, assignee_names, target_date, priority)
+      VALUES (?,?,?,?,?,?, 'normal')
+    `).bind(planId, sortOrder, description, JSON.stringify(assigneeIds), assigneeNames, targetDate).run()
+    const itemId = Number(ins.meta.last_row_id)
+
+    const taskTitle = description.length > 180 ? description.slice(0, 177) + '...' : description
+    const weekLabel = `Tuần ${wi.weekNumber} (${wi.weekStart} → ${wi.weekEnd})`
+    const taskDescription = `${weekLabel}.\nNgười phụ trách: ${assigneeNames}.\n${description}`
+    const taskIds: number[] = []
+    try {
+      for (const assigneeId of assigneeIds) {
+        const created = await createTaskRecord(db, c.env, user, {
+          project_id: projectId,
+          title: taskTitle,
+          description: taskDescription,
+          task_type: 'other',
+          priority: 'medium',
+          status: 'todo',
+          assigned_to: assigneeId,
+          start_date: wi.weekStart,
+          due_date: targetDate,
+        }, { skipNotify: true, emptyPhase: true })
+        if (created.status !== 201 || !created.body?.id) {
+          throw new Error(created.body?.error || 'Không tạo được task')
+        }
+        taskIds.push(Number(created.body.id))
+      }
+      const taskByUser: Record<string, number> = {}
+      assigneeIds.forEach((assigneeId, index) => { taskByUser[String(assigneeId)] = taskIds[index] })
+      await saveWeeklyItemTaskLinks(db, itemId, taskByUser)
+    } catch (err: any) {
+      for (const taskId of taskIds) {
+        try { await db.prepare('DELETE FROM task_history WHERE task_id = ?').bind(taskId).run() } catch { /* ignore */ }
+        try { await db.prepare('DELETE FROM tasks WHERE id = ?').bind(taskId).run() } catch { /* ignore */ }
+      }
+      try { await db.prepare('DELETE FROM weekly_plan_items WHERE id = ?').bind(itemId).run() } catch { /* ignore */ }
+      return c.json({ error: err?.message || 'Không tạo được task cho người phụ trách' }, 500)
+    }
+
+    const proj = await db.prepare('SELECT code, name FROM projects WHERE id = ?').bind(projectId).first() as { code?: string; name?: string } | null
+    const projectName = proj?.code ? `${proj.code} · ${proj.name || ''}` : String(proj?.name || '')
+    for (let i = 0; i < assigneeIds.length; i++) {
+      const assigneeId = assigneeIds[i]
+      const taskId = taskIds[i]
+      await deliverUserNotice(db, c.env, {
+        userId: assigneeId,
+        title: 'Việc mới được giao',
+        message: `Bạn được giao: ${taskTitle}`,
+        eventType: 'weekly_board_assigned',
+        data: {
+          taskTitle,
+          projectName,
+          deadline: targetDate,
+          weekLabel,
+          coworkers: assigneeNames,
+          assignedBy: user.full_name || '',
+        },
+        relatedType: 'task',
+        relatedId: taskId,
+      })
+    }
+
+    return c.json({ success: true, id: itemId, plan_id: planId, task_ids: taskIds })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/weekly-board/reports — nhân sự tự thêm báo cáo cho một dự án
+app.post('/api/weekly-board/reports', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const userId = Number(user.id)
+    const body = await c.req.json()
+    const projectId = Number(body.project_id)
+    const weekDate = String(body.week_date || body.week || new Date().toISOString().slice(0, 10))
+    const description = String(body.description || '').trim()
+    const result = body.result != null ? String(body.result) : ''
+    const rawStatus = String(body.status || 'in_progress')
+    const status = WEEKLY_BOARD_STATUS_MAP[rawStatus] || WEEKLY_BOARD_STATUS_MAP.in_progress
+
+    if (!projectId || !description) {
+      return c.json({ error: 'project_id và nội dung báo cáo là bắt buộc' }, 400)
+    }
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+
+    const me = await db.prepare(`SELECT full_name FROM users WHERE id = ?`).bind(userId).first() as { full_name?: string } | null
+    const myName = String(me?.full_name || user.full_name || 'Tôi')
+    const { planId } = await ensureWeeklyPlanForBoard(db, projectId, weekDate, userId)
+
+    const maxSort = await db.prepare(`
+      SELECT COALESCE(MAX(sort_order), -1) AS m FROM weekly_plan_items WHERE plan_id = ?
+    `).bind(planId).first() as { m?: number } | null
+    const sortOrder = Number(maxSort?.m ?? -1) + 1
+
+    const ins = await db.prepare(`
+      INSERT INTO weekly_plan_items (plan_id, sort_order, category, description, assignee_ids, assignee_names, priority)
+      VALUES (?,?, 'self_report', ?, ?, ?, 'normal')
+    `).bind(planId, sortOrder, description, JSON.stringify([userId]), myName).run()
+    const itemId = ins.meta.last_row_id as number
+
+    await upsertWeeklyBoardReportItem(
+      db, planId, projectId, itemId, description, result, status, myName, userId, 1
+    )
+    const weekInfo = getISOWeekInfo(weekDate)
+    await notifyWeeklyBoardReport(
+      db, c.env, projectId, userId, myName, description, result, status,
+      `Tuần ${weekInfo.weekNumber} (${weekInfo.weekStart} → ${weekInfo.weekEnd})`,
+    )
+    return c.json({ success: true, id: itemId, plan_id: planId })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PATCH /api/weekly-board/items/:id/assignee — leader đang phụ trách giao lại một người
+app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const userId = Number(user.id)
+    const itemId = parseInt(c.req.param('id'))
+    const body = await c.req.json()
+    const nextId = Number(body.assignee_id)
+    if (!nextId) return c.json({ error: 'Chọn người phụ trách mới' }, 400)
+
+    const row = await db.prepare(`
+      SELECT wpi.id, wpi.description, wpi.assignee_ids, wpi.category, wpi.target_date, wpi.linked_task_id,
+             wp.project_id, wp.week_start, wp.week_end, wp.week_number
+      FROM weekly_plan_items wpi
+      JOIN weekly_plans wp ON wp.id = wpi.plan_id
+      WHERE wpi.id = ?
+    `).bind(itemId).first() as any
+    if (!row) return c.json({ error: 'Not found' }, 404)
+    if (row.category === 'self_report') return c.json({ error: 'Không giao lại báo cáo nhân sự tự thêm' }, 400)
+    const projectId = Number(row.project_id)
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    const assigneeIds = parseWeeklyPlanAssigneeIds(row.assignee_ids)
+    if (!assigneeIds.includes(userId) || !(await isWeeklyBoardProjectLeader(db, user, projectId))) {
+      return c.json({ error: 'Chỉ leader đang phụ trách mới được giao lại' }, 403)
+    }
+    if (nextId === userId) return c.json({ error: 'Người này đang phụ trách' }, 400)
+    if (assigneeIds.includes(nextId)) return c.json({ error: 'Người này đã nằm trong danh sách phụ trách' }, 400)
+
+    const ph = '?'
+    const valid = await db.prepare(`
+      SELECT COUNT(DISTINCT uid) AS c FROM (
+        SELECT pm.user_id AS uid FROM project_members pm
+          WHERE pm.project_id = ? AND pm.user_id IN (${ph})
+        UNION
+        SELECT p.admin_id AS uid FROM projects p
+          WHERE p.id = ? AND p.admin_id IN (${ph})
+        UNION
+        SELECT p.leader_id AS uid FROM projects p
+          WHERE p.id = ? AND p.leader_id IN (${ph})
+      ) src WHERE uid IS NOT NULL
+    `).bind(projectId, nextId, projectId, nextId, projectId, nextId).first() as { c?: number } | null
+    if (Number(valid?.c ?? 0) !== 1) {
+      return c.json({ error: 'Người phụ trách mới phải đang tham gia dự án' }, 400)
+    }
+
+    const nextUser = await db.prepare(`SELECT id, full_name FROM users WHERE id = ?`).bind(nextId).first() as { full_name?: string } | null
+    const nextName = String(nextUser?.full_name || `#${nextId}`)
+    const nameRows = await db.prepare(
+      `SELECT id, full_name FROM users WHERE id IN (${assigneeIds.map(() => '?').join(',')})`
+    ).bind(...assigneeIds).all()
+    const nameById = new Map<number, string>()
+    for (const u of (nameRows.results || []) as { id: number; full_name: string }[]) {
+      nameById.set(Number(u.id), String(u.full_name))
+    }
+    const nextAssignees = assigneeIds.map((id) => id === userId ? nextId : id)
+    const nextNames = nextAssignees.map((id) => id === nextId ? nextName : (nameById.get(id) || `#${id}`)).join(', ')
+
+    const description = String(row.description || '')
+    const taskTitle = description.length > 180 ? description.slice(0, 177) + '...' : description
+    let taskMap: Record<string, number> = {}
+    try {
+      const linkRow = await db.prepare(`SELECT linked_task_ids FROM weekly_plan_items WHERE id = ?`).bind(itemId).first() as { linked_task_ids?: string } | null
+      taskMap = parseLinkedTaskMap(linkRow?.linked_task_ids)
+    } catch { /* cột chưa migrate */ }
+    let taskId = taskMap[String(userId)] || null
+    if (taskId) {
+      const exists = await db.prepare(`SELECT id FROM tasks WHERE id = ? AND project_id = ?`).bind(taskId, projectId).first()
+      if (!exists) taskId = null
+    }
+    if (!taskId && row.linked_task_id) {
+      const linked = await db.prepare(
+        `SELECT id, assigned_to FROM tasks WHERE id = ? AND project_id = ?`
+      ).bind(row.linked_task_id, projectId).first() as { id?: number; assigned_to?: number } | null
+      if (linked?.id && Number(linked.assigned_to) === userId) taskId = Number(linked.id)
+    }
+    if (!taskId) {
+      const found = await db.prepare(`
+        SELECT id FROM tasks
+        WHERE project_id = ? AND assigned_to = ? AND title = ? AND due_date IS ?
+        ORDER BY id DESC LIMIT 1
+      `).bind(projectId, userId, taskTitle, row.target_date || null).first() as { id?: number } | null
+      if (found?.id) taskId = Number(found.id)
+    }
+
+    if (taskId) {
+      const task = await db.prepare(
+        `SELECT id, title, project_id, priority, due_date, assigned_to FROM tasks WHERE id = ?`
+      ).bind(taskId).first() as any
+      await db.prepare(`UPDATE tasks SET assigned_to = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(nextId, taskId).run()
+      if (task) {
+        await notifyTaskAssigneeChange(db, c.env, user, task, Number(task.assigned_to) || userId, nextId)
+      }
+    } else {
+      const weekLabel = row.week_start
+        ? `Tuần ${row.week_number || ''} (${row.week_start} → ${row.week_end})`
+        : ''
+      const created = await createTaskRecord(db, c.env, user, {
+        project_id: projectId,
+        title: taskTitle,
+        description: `${weekLabel}.\nNgười phụ trách: ${nextNames}.\n${description}`,
+        task_type: 'other',
+        priority: 'medium',
+        status: 'todo',
+        assigned_to: nextId,
+        start_date: row.week_start || null,
+        due_date: row.target_date || null,
+      }, { skipNotify: true, emptyPhase: true })
+      if (created.status !== 201 || !created.body?.id) {
+        return c.json({ error: created.body?.error || 'Không tạo được task cho người mới' }, 500)
+      }
+      taskId = Number(created.body.id)
+      await notifyTaskAssigneeChange(db, c.env, user, {
+        id: taskId,
+        title: taskTitle,
+        project_id: projectId,
+        priority: 'medium',
+        due_date: row.target_date || null,
+      }, null, nextId)
+    }
+
+    delete taskMap[String(userId)]
+    taskMap[String(nextId)] = taskId
+    await db.prepare(
+      `UPDATE weekly_plan_items SET assignee_ids = ?, assignee_names = ? WHERE id = ?`
+    ).bind(JSON.stringify(nextAssignees), nextNames, itemId).run()
+    await saveWeeklyItemTaskLinks(db, itemId, taskMap)
+    try {
+      await db.prepare(`UPDATE weekly_report_items SET assignee_names = ? WHERE plan_item_id = ?`).bind(nextNames, itemId).run()
+    } catch { /* dòng báo cáo có thể chưa có */ }
+
+    return c.json({ success: true, assignee_ids: nextAssignees, task_id: taskId })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PATCH /api/weekly-board/items/:id/result
+app.patch('/api/weekly-board/items/:id/result', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const userId = Number(user.id)
+    const itemId = parseInt(c.req.param('id'))
+    const body = await c.req.json()
+    const result = body.result != null ? String(body.result) : ''
+    const rawStatus = String(body.status || 'in_progress')
+    const status = WEEKLY_BOARD_STATUS_MAP[rawStatus] || WEEKLY_BOARD_STATUS_MAP.in_progress
+
+    const row = await db.prepare(`
+      SELECT wpi.id, wpi.description, wpi.assignee_ids, wpi.assignee_names,
+             wp.id AS plan_id, wp.project_id
+      FROM weekly_plan_items wpi
+      JOIN weekly_plans wp ON wp.id = wpi.plan_id
+      WHERE wpi.id = ?
+    `).bind(itemId).first() as any
+    if (!row) return c.json({ error: 'Not found' }, 404)
+    const projectId = Number(row.project_id)
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    const isAssignee = await isWeeklyPlanAssignee(row.assignee_ids, userId)
+    const leaderOrAdmin = await isProjectLeaderOrAdmin(db, user, projectId)
+    if (!isAssignee && !leaderOrAdmin) {
+      return c.json({ error: 'Không có quyền cập nhật kết quả' }, 403)
+    }
+
+    const prev = await db.prepare(`
+      SELECT wri.result, wri.status
+      FROM weekly_report_items wri
+      JOIN weekly_reports wr ON wr.id = wri.report_id
+      WHERE wr.plan_id = ? AND wri.plan_item_id = ?
+    `).bind(row.plan_id, itemId).first() as { result?: string | null; status?: string | null } | null
+    const prevResult = prev ? String(prev.result ?? '') : null
+    const prevStatus = prev ? String(prev.status || 'not_started') : null
+    const changed = prevResult === null
+      ? (result.trim() !== '' || status !== 'not_started')
+      : (prevResult !== result || prevStatus !== status)
+
+    await upsertWeeklyBoardReportItem(
+      db, Number(row.plan_id), projectId, itemId, String(row.description),
+      result, status, row.assignee_names, userId
+    )
+    if (isAssignee && changed) {
+      const planWeek = await db.prepare(
+        `SELECT week_number, week_start, week_end FROM weekly_plans WHERE id = ?`
+      ).bind(row.plan_id).first() as { week_number?: number; week_start?: string; week_end?: string } | null
+      const weekLabel = planWeek?.week_start
+        ? `Tuần ${planWeek.week_number || ''} (${planWeek.week_start} → ${planWeek.week_end})`
+        : ''
+      const reporter = await db.prepare(`SELECT full_name FROM users WHERE id = ?`).bind(userId).first() as { full_name?: string } | null
+      await notifyWeeklyBoardReport(
+        db, c.env, projectId, userId,
+        String(reporter?.full_name || user.full_name || 'Nhân sự'),
+        String(row.description || ''),
+        result,
+        status,
+        weekLabel,
+      )
+    }
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/weekly-board/items/:id
+app.delete('/api/weekly-board/items/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const itemId = parseInt(c.req.param('id'))
+
+    const row = await db.prepare(`
+      SELECT wpi.id, wpi.category, wpi.assignee_ids, wp.project_id
+      FROM weekly_plan_items wpi
+      JOIN weekly_plans wp ON wp.id = wpi.plan_id
+      WHERE wpi.id = ?
+    `).bind(itemId).first() as any
+    if (!row) return c.json({ error: 'Not found' }, 404)
+    const projectId = Number(row.project_id)
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    const leaderOrAdmin = await isProjectLeaderOrAdmin(db, user, projectId)
+    const ownReport = row.category === 'self_report' && await isWeeklyPlanAssignee(row.assignee_ids, Number(user.id))
+    if (!leaderOrAdmin && !ownReport) {
+      return c.json({ error: 'Không có quyền xóa dòng này' }, 403)
+    }
+
+    await db.prepare(`DELETE FROM weekly_report_items WHERE plan_item_id = ?`).bind(itemId).run()
+    await db.prepare(`DELETE FROM weekly_plan_items WHERE id = ?`).bind(itemId).run()
+    return c.json({ success: true })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 

@@ -425,6 +425,74 @@
     @keyframes slideUp { from { transform: translateX(-50%) translateY(20px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }
     @keyframes cbFadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
     .input-field { width: 100%; border: 1px solid var(--shell-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color 0.2s; background: var(--shell-input-bg); color: var(--shell-text); }
+    #page-weekly-board textarea.wb-result {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 38px;
+      max-height: 120px;
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      resize: none;
+      overflow-x: hidden;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      vertical-align: top;
+    }
+    #page-weekly-board .wb-project-title {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 0 0 8px;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.45;
+      color: var(--shell-text);
+      word-break: break-word;
+    }
+    #page-weekly-board .wb-project-title span {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    #page-weekly-board .wb-sheet {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+    }
+    #page-weekly-board .wb-sheet th,
+    #page-weekly-board .wb-sheet td {
+      vertical-align: top;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: break-word;
+      line-height: 1.45;
+    }
+    #page-weekly-board .wb-sheet .wb-col-date,
+    #page-weekly-board .wb-sheet .wb-col-status,
+    #page-weekly-board .wb-sheet .wb-col-act {
+      white-space: nowrap;
+      word-break: normal;
+      overflow-wrap: normal;
+    }
+    #page-weekly-board .wb-sheet .select-field {
+      width: 100%;
+      min-width: 0;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    #page-weekly-board .wb-result-read {
+      display: block;
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--shell-text);
+    }
     #taskTitle[readonly] { cursor: default; }
     .input-field:focus { border-color: #00A651; box-shadow: 0 0 0 3px rgba(0,166,81,0.1); }
     .select-field { width: 100%; border: 1px solid var(--shell-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; background: var(--shell-input-bg); color: var(--shell-text); outline: none; }
@@ -3054,6 +3122,9 @@
       </div>
       <div class="nav-item" onclick="navigate('project-dashboard')" data-tooltip="Dashboard dự án — theo dõi HSTK toàn công ty">
         <i class="fas fa-th-large"></i><span>Dashboard dự án</span>
+      </div>
+      <div class="nav-item" onclick="navigate('weekly-board')" data-tooltip="Kế hoạch tuần — việc cần làm theo tuần">
+        <i class="fas fa-calendar-week"></i><span>Kế hoạch tuần</span>
       </div>
       <div class="nav-item" onclick="navigate('productivity')" data-tooltip="Năng suất nhân sự">
         <i class="fas fa-chart-bar"></i><span>Năng suất nhân sự</span>
@@ -5970,6 +6041,11 @@
 
       </div>
 
+
+      <!-- ========== WEEKLY BOARD PAGE ========== -->
+      <div id="page-weekly-board" class="page">
+        <div id="weeklyBoardRoot"></div>
+      </div>
 
       <!-- ========== PRODUCTIVITY PAGE ========== -->
       <div id="page-productivity" class="page">
@@ -9068,7 +9144,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261010e"></script>
+<script src="/static/app.js?v=20261012n"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
